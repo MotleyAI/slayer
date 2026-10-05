@@ -12,7 +12,7 @@ Where the **dialect-class methods** are tested in
   cover the dialect.
 * The type-probe path (``_get_column_types_sync`` /
   ``_get_column_types_async``) also applies the dialect's timeout SQL.
-* Snowflake stays out of ``_ASYNC_DRIVERS`` (sync driver only).
+* Snowflake has no async driver (sync driver only).
 * The ``LIMIT 0`` type probe is preserved on Snowflake (no LIMIT 1 fallback).
 """
 
@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from slayer.sql import client
+from slayer.sql.dialects import dialect_for_ds_type
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +104,7 @@ class TestSnowflakeStatementTimeout:
         assert timeout_sql == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 42"
 
     def test_execute_async_emits_dialect_timeout_sql(self) -> None:
-        """Async sibling — even though Snowflake isn't in _ASYNC_DRIVERS,
+        """Async sibling — even though Snowflake has no async driver,
         ``_execute_sql_async`` MUST emit the dialect timeout when called
         directly with db_type='snowflake', so a future native-async
         driver Just Works."""
@@ -165,8 +166,8 @@ class TestSnowflakeAsyncRouting:
     """snowflake-connector-python is sync only; SlayerSQLClient must NOT
     treat it as an async-capable driver."""
 
-    def test_snowflake_not_in_async_drivers(self) -> None:
-        assert "snowflake" not in client._ASYNC_DRIVERS
+    def test_snowflake_has_no_async_driver(self) -> None:
+        assert dialect_for_ds_type("snowflake").async_driver is None
 
     def test_async_connection_string_returns_none_for_snowflake(self) -> None:
         cs = "snowflake://?connection_name=default"

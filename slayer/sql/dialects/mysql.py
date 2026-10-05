@@ -44,6 +44,10 @@ class MysqlDialect(SqlDialect):
     log2_native: bool = True
     # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
     max_identifier_bytes: int | None = 64
+    url_scheme: str | None = "mysql+pymysql"
+    sync_driver: str | None = "pymysql"
+    async_driver: str | None = "aiomysql"
+    install_extra: str | None = "mysql"
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_execution_time = {timeout_seconds * 1000}"

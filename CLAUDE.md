@@ -38,8 +38,8 @@ poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
 poetry run ruff check slayer/ tests/                 # lint
-uvx --no-build --from living-architecture==0.2.1 la-arch-check     # architecture check (CI's pin)
-uvx --no-build --from living-architecture==0.2.1 la-arch-diagrams  # regenerate arc42 diagrams
+poetry run la-arch-check                             # architecture check (as CI runs it)
+poetry run la-arch-diagrams                          # regenerate arc42 diagrams
 ```
 
 ## Key Conventions

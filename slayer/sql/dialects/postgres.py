@@ -44,6 +44,10 @@ class PostgresDialect(SqlDialect):
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
+    url_scheme: str | None = "postgresql"
+    sync_driver: str | None = "psycopg2"
+    async_driver: str | None = "asyncpg"
+    install_extra: str | None = "postgres"
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(
