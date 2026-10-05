@@ -6,6 +6,7 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
@@ -62,6 +63,9 @@ _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 _LIVE_REFINEMENT_BELOW_VERSION = 8
 _MODEL_LOAD_CONCURRENCY = 8
 _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
+# Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
+_RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
+    "_RAW_PASS", default=None)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -430,6 +434,7 @@ class StorageBackend(ABC):
             await self._validate_column_granularities(model)
             _validate_default_time_dimension(model)
         await self._save_model_impl(model)
+        self._forget_raw(data_source=model.data_source, name=model.name)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -527,10 +532,15 @@ class StorageBackend(ABC):
                 except StoredDocumentLoadError as exc:
                     return exc
 
-        loaded = await asyncio.gather(*(
-            _load(ds, name) for ds, name in await self._list_all_model_identities()
-            if (data_source is None or ds == data_source) and name != exclude
-        ))
+        token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
+        try:
+            loaded = await asyncio.gather(*(
+                _load(ds, name) for ds, name in await self._list_all_model_identities()
+                if (data_source is None or ds == data_source) and name != exclude
+            ))
+        finally:
+            if token is not None:
+                _RAW_PASS.reset(token)
         return (
             [m for m in loaded if isinstance(m, SlayerModel)],
             [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
@@ -568,6 +578,23 @@ class StorageBackend(ABC):
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
+    async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
+        """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
+        memo = _RAW_PASS.get()
+        if memo is None:
+            return await self._load_raw_model_dict(name=name, data_source=data_source)
+        read = memo.get((self, data_source, name))
+        if read is None:
+            read = memo[(self, data_source, name)] = asyncio.ensure_future(
+                self._load_raw_model_dict(name=name, data_source=data_source))
+        return await asyncio.shield(read)  # one waiter's cancellation must not fail the others
+
+    def _forget_raw(self, *, data_source: str, name: str) -> None:
+        """Drop ``(data_source, name)`` from the enclosing pass's raw reads after a write to it."""
+        memo = _RAW_PASS.get()
+        if memo is not None:
+            memo.pop((self, data_source, name), None)
+
     async def delete_model(
         self,
         name: str,
@@ -582,6 +609,7 @@ class StorageBackend(ABC):
             data_source=resolved_data_source, name=resolved_name,
         )
         if deleted:
+            self._forget_raw(data_source=resolved_data_source, name=resolved_name)
             canonical = f"{resolved_data_source}.{resolved_name}"
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=canonical,
@@ -725,7 +753,7 @@ class StorageBackend(ABC):
         for join in joins:
             if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
                 continue
-            peer = await self._load_raw_model_dict(
+            peer = await self._cached_raw_model_dict(
                 name=join["target_model"], data_source=data_source,
             )
             join["join_pairs"] = canonical_join_pairs(
@@ -739,21 +767,32 @@ class StorageBackend(ABC):
         columns = data.get("columns")
         if data.get("source_queries") or not isinstance(columns, list):
             return
-        keys: list[tuple[Any, str | None]] = []
-        joins = data.get("joins")
-        for join in joins if isinstance(joins, list) else []:
-            peer = await self._load_raw_model_dict(name=join["target_model"], data_source=data_source) if (
-                isinstance(join, dict) and isinstance(join.get("target_model"), str)) else None
-            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
-            keys.extend((src, _stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
-        for ds, sibling_name in await self._list_all_model_identities():
-            sibling = await self._load_raw_model_dict(name=sibling_name, data_source=ds) if (
-                ds == data_source and sibling_name != name) else None
-            if sibling is not None:
-                keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
+        keys = await self._outgoing_keys(joins=data.get("joins"), data_source=data_source)
+        keys += await self._sibling_keys_into(name=name, columns=columns, data_source=data_source)
         for key, key_type in keys:
             if _undeclared_key(key=key, columns=columns):
                 columns.append({"name": key, "hidden": True, **({"type": key_type} if key_type else {})})
+
+    async def _outgoing_keys(self, *, joins: Any, data_source: str) -> list[tuple[Any, str | None]]:
+        """Source-side keys of ``joins``, each typed like its target key."""
+        keys: list[tuple[Any, str | None]] = []
+        for join in joins if isinstance(joins, list) else []:
+            target = join.get("target_model") if isinstance(join, dict) else None
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
+            keys.extend((src, _stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
+        return keys
+
+    async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
+        """Target-side keys of every same-datasource sibling's joins into ``name``."""
+        keys: list[tuple[Any, str | None]] = []
+        for ds, sibling_name in await self._list_all_model_identities():
+            if ds != data_source or sibling_name == name:
+                continue
+            sibling = await self._cached_raw_model_dict(name=sibling_name, data_source=ds)
+            if sibling is not None:
+                keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
+        return keys
 
     async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
         queries = data.get("source_queries")
@@ -802,7 +841,7 @@ class StorageBackend(ABC):
             except AmbiguousModelError:
                 return None
             data_source = identity[0] if identity is not None else None
-        raw = await self._load_raw_model_dict(name=name, data_source=data_source) if data_source else None
+        raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
         return (raw, data_source) if isinstance(raw, dict) and data_source else None
 
     async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
@@ -816,7 +855,7 @@ class StorageBackend(ABC):
             joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
             target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
                 (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
-            peer = await self._load_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             if peer is None:
                 return None
             current = peer
@@ -851,7 +890,7 @@ class StorageBackend(ABC):
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
-            cache[peer_name] = await self._load_raw_model_dict(
+            cache[peer_name] = await self._cached_raw_model_dict(
                 name=peer_name, data_source=data_source,
             )
         counterpart = _stored_counterpart(
@@ -918,7 +957,7 @@ class StorageBackend(ABC):
             if i == len(chain) - 1:
                 return True
             if hop not in cache:
-                cache[hop] = await self._load_raw_model_dict(
+                cache[hop] = await self._cached_raw_model_dict(
                     name=hop, data_source=data_source,
                 )
             current = cache[hop]

@@ -473,6 +473,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
         _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=model_name)
 
     # ---- datasource CRUD ---------------------------------------------------
 

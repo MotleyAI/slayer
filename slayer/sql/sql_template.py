@@ -35,6 +35,7 @@ _OTHER_STRING_TOKENS = frozenset({
     TokenType.NATIONAL_STRING, TokenType.BYTE_STRING, TokenType.RAW_STRING, TokenType.HEREDOC_STRING,
     TokenType.UNICODE_STRING, TokenType.HEX_STRING, TokenType.BIT_STRING,
 })
+_UNSAFE_INTERVAL_CHARS = re.compile(r"['\\]")
 #: A string literal's text: literal pieces and ``(name,)`` placeholders.
 LiteralParts = tuple[str | tuple[str], ...]
 
@@ -142,7 +143,7 @@ class SqlTemplate(BaseModel):
         super().__init__(text=text, dialect=dialect)  # NOSONAR(S930) — BaseModel.__init__ takes **data
         tokens = _tokenize(text=self.text, dialect=self.dialect)
         _reject_other_literal_kinds(tokens=tokens, text=self.text)
-        taken = {t.text.lower() for t in tokens}
+        taken = self.text.lower()  # a sentinel may occur nowhere, not even inside a literal
         fresh = (s for s in (f"__slayer_ph{i}__" for i in count()) if s not in taken)
         names: dict[str, str] = {}
         literals: dict[str, LiteralParts] = {}
@@ -151,7 +152,9 @@ class SqlTemplate(BaseModel):
             spans.append((start, end, sentinel := next(fresh)))
             names[sentinel] = name
         for token, parts in _quoted_placeholders(tokens):
-            spans.append((token.start, token.end, sentinel := next(fresh)))
+            sentinel = next(fresh)
+            # Quoted, so typed literals (``DATE '{d}'``) still parse.
+            spans.append((token.start, token.end, f"'{sentinel}'"))
             literals[sentinel] = parts
         sql = self.text
         for start, end, sentinel in sorted(spans, reverse=True):
@@ -160,8 +163,8 @@ class SqlTemplate(BaseModel):
             root = parse_expression(sql=sql, target_dialect=_target(self.dialect))
         except SqlglotError as e:
             raise SqlTemplateError(f"cannot parse {self.text!r}: {e}") from e
-        labels = {**names, **{s: next(iter(_part_names(p)), "{{") for s, p in literals.items()}}
-        self._check_positions(root=root, names=labels)
+        self._check_positions(root=root, names=names)
+        self._check_literal_sentinels(root=root, literals=literals)
         self._root = root
         self._names = names
         self._literals = literals
@@ -181,6 +184,12 @@ class SqlTemplate(BaseModel):
         if missing:
             self._misplaced(names[missing.pop()])
 
+    def _check_literal_sentinels(self, *, root: Expression, literals: dict[str, LiteralParts]) -> None:
+        texts = [str(lit.this) for lit in root.find_all(exp.Literal) if lit.is_string]
+        for sentinel, parts in literals.items():
+            if not any(sentinel in t for t in texts):
+                self._misplaced(next(iter(_part_names(parts)), "{{"))
+
     def _misplaced(self, name: str) -> None:
         raise SqlTemplateError(
             f"placeholder {{{name}}} in {self.text!r} is not in an expression position",
@@ -198,16 +207,14 @@ class SqlTemplate(BaseModel):
     def render(self, bindings: Mapping[str, Expression]) -> Expression:
         """A fresh AST with each placeholder replaced by a copy of its binding; a string literal splices its bindings' literal values."""
         root = self._root.copy()
+        if self._literals:
+            root = self._render_literals(root=root, bindings=bindings)
         sites = [
             c for c in root.find_all(exp.Column)
-            if isinstance(c.this, exp.Identifier) and (c.this.name in self._names or c.this.name in self._literals)
+            if isinstance(c.this, exp.Identifier) and c.this.name in self._names
         ]
         for site in sites:
-            sentinel = site.this.name
-            if sentinel in self._literals:
-                value: Expression = exp.Literal.string(self._literal_text(parts=self._literals[sentinel], bindings=bindings))
-            else:
-                value = self._binding(name=self._names[sentinel], bindings=bindings).copy()
+            value = self._binding(name=self._names[site.this.name], bindings=bindings).copy()
             if is_operator(value) and is_operator(site.parent):
                 value = exp.Paren(this=value)
             if site is root:
@@ -215,6 +222,28 @@ class SqlTemplate(BaseModel):
             else:
                 site.replace(value)
         return root
+
+    def _render_literals(self, *, root: Expression, bindings: Mapping[str, Expression]) -> Expression:
+        # One pass, so a spliced value is never itself rescanned for sentinels.
+        pattern = re.compile("|".join(map(re.escape, self._literals)))
+
+        def spliced(sentinel: str, *, interval: bool) -> str:
+            value = self._literal_text(parts=self._literals[sentinel], bindings=bindings)
+            # Some generators (Postgres, Snowflake) emit an INTERVAL operand unescaped.
+            if interval and _UNSAFE_INTERVAL_CHARS.search(value):
+                raise SqlTemplateError(
+                    f"placeholder {{{next(iter(_part_names(self._literals[sentinel])), '{{')}}} in an INTERVAL "
+                    f"literal of `{self.text}` cannot take a value holding a quote or backslash",
+                )
+            return value
+
+        def splice(node: Expression) -> Expression:
+            if not (isinstance(node, exp.Literal) and node.is_string) or not pattern.search(text := str(node.this)):
+                return node
+            interval = node.find_ancestor(exp.Interval) is not None
+            return exp.Literal.string(pattern.sub(lambda m: spliced(m.group(0), interval=interval), text))
+
+        return root.transform(splice, copy=False)
 
     def _binding(self, *, name: str, bindings: Mapping[str, Expression]) -> Expression:
         if name not in bindings:

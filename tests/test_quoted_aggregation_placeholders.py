@@ -227,6 +227,52 @@ class TestQuotedBindingValue:
         assert "WHEN orders.amount > 2 THEN 'gt 2' END" in sql
 
 
+_DATED = "MAX(CASE WHEN {value} > 0 THEN {kind} '{d}' END)"
+_DAYS = "MAX(CASE WHEN {value} > 0 THEN INTERVAL '{n}' DAY END)"
+
+
+class TestTypedLiteral:
+    @pytest.mark.parametrize("kind", ["DATE", "TIMESTAMP"])
+    @pytest.mark.parametrize("dialect", TIER1)
+    async def test_typed_literal_placeholder_renders(self, dialect: str, kind: str) -> None:
+        agg = _agg(_DATED.replace("{kind}", kind), name="dated", d="'2024-01-02'")
+        check_aggregation_definition(where="w", agg=agg, dialect=dialect)
+        sql = await _dry("dated(amount)", agg=agg, dialect=dialect)
+        literals = [lit.this for lit in _then_literal(sql, dialect=dialect).find_all(exp.Literal)]
+        assert literals == ["2024-01-02"], sql
+
+    @pytest.mark.parametrize("dialect", TIER1)
+    async def test_sentinel_shaped_text_in_another_literal_is_kept(self, dialect: str) -> None:
+        kept = "p__slayer_ph0____slayer_ph1____slayer_ph2__s"
+        agg = _agg(f"MAX(CASE WHEN {{value}} > 0 THEN CONCAT('{kept}', '{{d}}') END)", name="tagged", d="'x'")
+        sql = await _dry("tagged(amount)", agg=agg, dialect=dialect)
+        literals = [lit.this for lit in _then_literal(sql, dialect=dialect).find_all(exp.Literal)]
+        assert literals == [kept, "x"], sql
+
+    async def test_typed_literal_placeholder_executes(self) -> None:
+        agg = _agg("SUM({value}) * EXTRACT(DAY FROM DATE '{d}')", name="dated", d="'2024-01-02'")
+        async with seeded_exec_engine(dialect="duckdb", seed=_seed, models=[_orders(agg)]) as (engine, _db):
+            resp = await engine.execute(_q("dated(amount)"))
+        assert float(resp.data[0]["orders.m"]) == pytest.approx(TWICE_SUM)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
+    async def test_interval_value_renders(self, dialect: str) -> None:
+        sql = await _dry("days(amount, n=3)", agg=_agg(_DAYS, name="days", n="2"), dialect=dialect)
+        interval = sqlglot.parse_one(sql, read=dialect).find(exp.Interval)
+        assert interval is not None, sql
+        assert str(interval.this.this).startswith("3"), sql
+
+    @pytest.mark.parametrize("formula", [_DAYS, _DAYS.replace("'{n}'", "('{n}')")])
+    @pytest.mark.parametrize("value", ["a'b", "a\\b"])
+    @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
+    async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
+        kwarg = exp.Literal.string(value).sql(dialect=dialect)
+        agg = _agg(formula, name="days", n="2")
+        with pytest.raises(SqlTemplateError) as ei:
+            await _dry(f"days(amount, n={kwarg!r})", agg=agg, dialect=dialect)
+        _names_placeholder(err=ei.value, name="n", formula=formula)
+
+
 class TestNonLiteralBindingRejected:
     @pytest.mark.parametrize(("formula", "name", "defaults"), [
         pytest.param("MAX(CASE WHEN {value} > 0 THEN '{value}' END)", "value", {}, id="value"),

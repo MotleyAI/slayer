@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import warnings
+from collections.abc import Generator
+from contextlib import contextmanager
 
 import pytest
 import sqlglot
@@ -12,6 +15,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
 from slayer.storage import migrations as mig
+from slayer.storage.base import _RAW_PASS
 from tests._stored_upgrade_fixtures import (
     AMOUNT_BY_REGION,
     BACKENDS,
@@ -142,6 +146,85 @@ class TestTargetSide:
         model = await storage.get_model("customers", data_source=DS)
         assert model is not None
         assert "id" not in {c.name for c in model.columns}
+
+
+class TestFirstOpenCost:
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_load_models_reads_each_raw_document_a_bounded_number_of_times(self, tmp_path, backend):
+        n = 20
+        models = [
+            {"version": 10, "name": f"m{i}", "sql_table": f"t{i}", "data_source": DS,
+             "columns": [{"name": "id", "type": "INT", "primary_key": True}],
+             "joins": [{"target_model": f"m{(i + 1) % n}", "join_pairs": [["fk", "id"]], "cardinality": "many_to_one"}]}
+            for i in range(n)
+        ]
+        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None, models=models)
+        read = storage._load_raw_model_dict
+        reads: list[str] = []
+
+        async def counted(*, name: str, data_source: str) -> dict | None:
+            reads.append(name)
+            return await read(name=name, data_source=data_source)
+
+        storage._load_raw_model_dict = counted  # type: ignore[method-assign]
+        loaded, failed = await storage.load_models(data_source=DS)
+        assert (len(loaded), failed) == (n, [])
+        assert all(column_of(m, "fk").hidden for m in loaded)
+        assert len(reads) <= 3 * n
+
+
+@contextmanager
+def _raw_pass() -> Generator[None]:
+    token = _RAW_PASS.set({})
+    try:
+        yield
+    finally:
+        _RAW_PASS.reset(token)
+
+
+class TestRawPassMemo:
+    async def test_two_backends_never_share_a_read(self, tmp_path):
+        stores = [
+            await raw_store(backend="yaml", base=str(tmp_path / f"s{i}"), datasource=None,
+                            models=[customers_v10(declare_pk=bool(i))])
+            for i in range(2)
+        ]
+        with _raw_pass():
+            docs = [await s._cached_raw_model_dict(name="customers", data_source=DS) for s in stores]
+        assert [[c["name"] for c in d["columns"]][0] for d in docs if d] == ["name", "id"]
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_cancelled_waiter_does_not_fail_the_other(self, tmp_path, backend):
+        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None,
+                                  models=[customers_v10()])
+        read, gate = storage._load_raw_model_dict, asyncio.Event()
+
+        async def slow(*, name: str, data_source: str) -> dict | None:
+            await gate.wait()
+            return await read(name=name, data_source=data_source)
+
+        storage._load_raw_model_dict = slow  # type: ignore[method-assign]
+        with _raw_pass():
+            first, second = (asyncio.ensure_future(storage._cached_raw_model_dict(name="customers", data_source=DS))
+                             for _ in range(2))
+            await asyncio.sleep(0)
+            first.cancel()
+            gate.set()
+            doc = await second
+        assert doc is not None
+        assert doc["name"] == "customers"
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_column_sample_update_is_seen_within_the_pass(self, tmp_path, backend):
+        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None,
+                                  models=[customers_v10()])
+        with _raw_pass():
+            await storage._cached_raw_model_dict(name="customers", data_source=DS)
+            await storage.update_column_sampled(data_source=DS, model_name="customers", column_name="region",
+                                                sampled="s", sampled_values=["North"], distinct_count=1)
+            doc = await storage._cached_raw_model_dict(name="customers", data_source=DS)
+        assert doc is not None
+        assert _hidden(doc, "region")["distinct_count"] == 1
 
 
 class TestLeftForValidation:

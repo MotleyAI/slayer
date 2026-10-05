@@ -365,6 +365,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             column_name=column_name, sampled=sampled,
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
+        self._forget_raw(data_source=data_source, name=model_name)
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
