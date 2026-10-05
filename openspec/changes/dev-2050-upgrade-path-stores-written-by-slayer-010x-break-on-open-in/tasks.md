@@ -116,6 +116,7 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 
 - [x] 5.1 Source-side hidden-column repair after canonicalisation: valid names only; type from the peer's raw target column when it is a valid `DataType`. Verify: 1.3's source cases pass.
 - [x] 5.2 Target-side repair: the migrating table- or SQL-backed document scans raw siblings for incoming joins and appends its own hidden columns. Unreadable siblings are skipped; query-backed docs are untouched. Verify: 1.3's target and corrupt-sibling cases pass.
+- [x] 5.3 Re-ingest matches a live column to the stored base column it is the physical spelling of (system principle 16), unless another stored column carries that name, so a renamed column is merged rather than duplicated (the 0.10.2 Cube import's `amount_col` with `sql: amount` beside the measure `amount`). Verify: `tests/test_additive_merge_physical_spelling.py` and the corpus `cube` re-ingest pass.
 
 ## 6. Quoted aggregation placeholders
 

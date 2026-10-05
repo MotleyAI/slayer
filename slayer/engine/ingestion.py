@@ -1651,8 +1651,13 @@ def _additive_merge_existing(
     Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
     non-None ``source_kind`` refresh.
     """
-    existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
+    persisted_names = {c.name for c in persisted.columns}
+    # A live column is the persisted column it is the physical spelling of, else the one named like it.
+    live_name = {
+        c.name: c.physical_name if c.is_base and c.physical_name not in persisted_names - {c.name} else c.name
+        for c in persisted.columns
+    }
 
     widened_column_names: list[str] = []
     described_column_names: list[str] = []
@@ -1661,7 +1666,7 @@ def _additive_merge_existing(
     for persisted_col in persisted.columns:
         merged_col, did_widen, unique_filled, described = _merge_one_column(
             persisted_col=persisted_col,
-            fresh_col=fresh_by_name.get(persisted_col.name),
+            fresh_col=fresh_by_name.get(live_name[persisted_col.name]),
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
@@ -1672,7 +1677,7 @@ def _additive_merge_existing(
         if did_widen:
             widened_column_names.append(persisted_col.name)
 
-    new_cols = [c for c in fresh.columns if c.name not in existing_by_name]
+    new_cols = [c for c in fresh.columns if c.name not in persisted_names | set(live_name.values())]
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 
