@@ -1104,24 +1104,23 @@ def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
     scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
+    """A numeric-only aggregation over a text or temporal expression fails here, not in the database."""
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
     column_type = scope_column_type(scope=scope, bundle=bundle)
     if boolean_valued(source, column_type=column_type):
-        if agg in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN]:
-            return
-        kind = "boolean"
-    elif (temporal := temporal_type(source, column_type=column_type)) is not None:
-        kind = f"non-numeric ({temporal.value})"
+        return
+    if (temporal := temporal_type(source, column_type=column_type)) is not None:
+        kind = temporal.value
     elif _expression_is_confidently_text(
         source, model=scope.source_model if isinstance(scope, ModelScope) else None,
     ):
-        kind = "non-numeric (text)"
+        kind = "text"
     else:
         return
     raise AggregationNotAllowedError(
         column=key_display(source), agg=agg,
-        reason=f"{agg!r} requires a numeric value, but the aggregated expression is {kind}. Use a "
+        reason=f"{agg!r} requires a numeric value, but the aggregated expression is non-numeric ({kind}). Use a "
         f"counting or min/max aggregation, or make the expression numeric.",
     )
 

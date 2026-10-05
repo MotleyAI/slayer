@@ -9,7 +9,7 @@ orders (id, customer_id, region, status, ordered_at, amount, flag):
    3  200  east  ok    2025-01-20    30  false
    4  200  west  void  2025-02-20  NULL  NULL
    5  200  west  ok    2025-03-10  NULL  false
-customers (id, name, vip):  100 A true | 200 B false | 300 C NULL (no orders)
+customers (id, name, vip, score):  100 A true NULL | 200 B false NULL | 300 C NULL NULL (no orders)
 
 flag: sum 2, avg 0.5, min false, max true, count 4, count_distinct 2.
 By region: east sum 2 / avg 2/3 / min false / max true; west sum 0 / avg 0 / min false / max false.
@@ -65,6 +65,7 @@ def customers_model(*, data_source: str = "test") -> SlayerModel:
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="name", type=DataType.TEXT),
             Column(name="vip", type=DataType.BOOLEAN),
+            Column(name="score", type=DataType.INT),
         ],
     )
 
@@ -122,7 +123,7 @@ _ORDER_ROWS = [
     (4, 200, "west", "void", "2025-02-20", None, None),
     (5, 200, "west", "ok", "2025-03-10", None, False),
 ]
-_CUSTOMER_ROWS = [(100, "A", True), (200, "B", False), (300, "C", None)]
+_CUSTOMER_ROWS = [(100, "A", True, None), (200, "B", False, None), (300, "C", None, None)]
 
 #: Per-dialect (text type, boolean type, true, false) spellings for the seed DDL / literals.
 _SPELLINGS = {
@@ -158,7 +159,7 @@ def seed_statements(dialect: str) -> List[str]:
         f"CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, region {text}, "
         f"status {text}, ordered_at DATE, amount INTEGER, flag {boolean})",
         insert("orders", _ORDER_ROWS),
-        f"CREATE TABLE customers (id INTEGER PRIMARY KEY, name {text}, vip {boolean})",
+        f"CREATE TABLE customers (id INTEGER PRIMARY KEY, name {text}, vip {boolean}, score INTEGER)",
         insert("customers", _CUSTOMER_ROWS),
     ]
 

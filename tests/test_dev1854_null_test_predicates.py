@@ -11,7 +11,6 @@ import pytest
 from tests._dev1846_fixtures import (
     ModelMeasure,
     SlayerQuery,
-    gen,
     make_exec_engine,
     month_key,
     month_td,
@@ -39,15 +38,6 @@ def _by_store_month(resp) -> dict:
         (r["sales.store"], month_key(r["sales.ordered_at"])): r
         for r in resp.data
     }
-
-
-async def _error(*, measures):
-    """The (type-name, message) of the raise a query produces, or fail."""
-    try:
-        await gen(_q(measures=measures))
-    except Exception as exc:  # noqa: BLE001 — the exception itself is the contract
-        return type(exc).__name__, str(exc)
-    raise AssertionError("expected the query to fail closed, but it generated SQL")
 
 
 class TestNullTestExecution:
@@ -118,11 +108,12 @@ class TestNullTestExecution:
 
 
 class TestNullTestTypingContract:
-    async def test_null_test_in_value_position_rejected(self) -> None:
-        name, msg = await _error(measures=[ModelMeasure(
-            formula="consecutive_periods((hi_rev:sum is None) + 1)", name="x")])
-        assert name == "ValueError", (name, msg)
-        low = msg.lower()
-        assert "consecutive_periods" in low, msg
-        assert "boolean" in low, msg
-        assert "value position" in low, msg
+    async def test_null_test_in_value_position_is_its_integer(self, exec_engine) -> None:
+        """``(… is None) + 1`` is 1 or 2, never 0: B's NULL March keeps the run going."""
+        resp = await exec_engine.execute(_q(
+            dimensions=["store"],
+            measures=[ModelMeasure(formula="consecutive_periods((hi_rev:sum is None) + 1)", name="streak")],
+        ))
+        by = _by_store_month(resp)
+        for store in ("A", "B"):
+            assert [int(by[(store, m)]["sales.streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]

@@ -298,12 +298,6 @@ class AggregationValueClass(StrEnum):
     FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
 
 
-# Aggregations that read a boolean input as its integer (true 1, false 0); min / max
-# convert the result back to BOOLEAN.
-BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = frozenset({"sum", "avg", "min", "max"})
-BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
-
-
 def classify_aggregation(
     *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
 ) -> AggregationValueClass:
@@ -360,7 +354,8 @@ def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") ->
 # Note: percentile is dialect-dependent (no single template works on
 # SQLite/ClickHouse/MySQL) and lives in generator._build_percentile instead.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
-    "weighted_avg": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+    # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
+    "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }
 
 # Built-in aggregations that require specific parameters.
@@ -388,6 +383,11 @@ NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "covar_samp", "covar_pop",
 })
 
+# Aggregations that read a boolean input as its integer (true 1, false 0); min / max
+# convert the result back to BOOLEAN.
+BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
+BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = NUMERIC_ONLY_AGGREGATIONS | BOOLEAN_RESTORED_AGGREGATIONS
+
 
 # Per-type default whitelist, used when a column declares no explicit
 # ``allowed_aggregations``.
@@ -406,9 +406,8 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.TEXT: frozenset({
         "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),
-    DataType.BOOLEAN: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "sum", "avg", "min", "max", "first", "last",
-    }),
+    # A boolean is its integer inside a numeric aggregation.
+    DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
     DataType.DATE: frozenset({
         "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),

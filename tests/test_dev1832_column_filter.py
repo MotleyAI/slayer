@@ -48,6 +48,7 @@ from tests._dev1832_fixtures import (
     WAVG_AMOUNT_WEIGHT_QAMT,
     WAVG_QAMT_WEIGHT_QTY,
     WAVG_QAMT_WEIGHT_QTY_WRONG,
+    WEIGHTED_AVG_QAMT_WEIGHT_QTY,
     _SALES_ROWS,
     dev1832_models,
     gen,
@@ -187,13 +188,17 @@ class TestSingleColumnUnchanged:
 # --------------------------------------------------------------------------- #
 class TestBehaviourChanges:
     async def test_parameters_not_masked_by_source_filter(self, exec_backend) -> None:
-        """#1: weighted_avg(q_amount, weight=quantity) masks the value, not the
-        weight — the former filter-everything form is now wrong."""
+        """#1: the custom wavg(q_amount, weight=quantity) masks the value, not the
+        weight — the former filter-everything form is now wrong. The built-in
+        weighted_avg skips the masked (NULL) values' weights, like any NULL value."""
         resp = await exec_backend.execute(
-            sales_q(measures=[_measure("weighted_avg(q_amount, weight=quantity)")]))
+            sales_q(measures=[_measure("wavg(q_amount, weight=quantity)")]))
         got = float(resp.data[0]["sales.m"])
         assert got == pytest.approx(WAVG_QAMT_WEIGHT_QTY)
         assert got != pytest.approx(WAVG_QAMT_WEIGHT_QTY_WRONG)
+        builtin = await exec_backend.execute(
+            sales_q(measures=[_measure("weighted_avg(q_amount, weight=quantity)")]))
+        assert float(builtin.data[0]["sales.m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
 
     async def test_filtered_column_used_as_parameter_is_masked(self, exec_backend) -> None:
         """#2: weighted_avg(amount, weight=q_amount) masks the weight (NULL on

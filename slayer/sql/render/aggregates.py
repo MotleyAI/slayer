@@ -21,6 +21,7 @@ from slayer.core.enums import (
     DataType,
 )
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.render.row_expr import int_value
 
 # Which mechanism renders an aggregation. Retained as data so the generator's
 # dispatch is a table lookup rather than five stacked conditionals.
@@ -116,19 +117,24 @@ def is_builtin_agg(name: str) -> bool:
     return name in AGG_REGISTRY
 
 
+def aggregate_input(*, value: Expression, aggregation: str, input_type: Optional[DataType]) -> Expression:
+    """The value ``aggregation`` reads: a BOOLEAN input to a numeric aggregation is its integer."""
+    if input_type is DataType.BOOLEAN and aggregation in BOOLEAN_LOWERED_AGGREGATIONS:
+        return int_value(value)
+    return value
+
+
 def apply_aggregate(
     *, entry: AggEntry, value: Expression, input_type: Optional[DataType], dialect: SqlDialect,
 ) -> Expression:
-    """``entry``'s direct-node aggregate over ``value``; a BOOLEAN input to sum / avg / min / max
-    aggregates its integer, min / max converting the result back to the dialect's boolean."""
+    """``entry``'s direct-node aggregate over ``value`` (read via :func:`aggregate_input`); a boolean
+    ``min`` / ``max`` converts the result back to the dialect's boolean."""
     if entry.node_class is None:
         raise ValueError(f"Aggregation {entry.name!r} has no SQL node to render.")
     if entry.dispatch == DISPATCH_DISTINCT:
         return entry.node_class(this=exp.Distinct(expressions=[value]))
-    if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_LOWERED_AGGREGATIONS:
-        return entry.node_class(this=value)
-    aggregate = entry.node_class(this=exp.Cast(this=value, to=exp.DataType.build("INT")))
+    aggregate = entry.node_class(this=aggregate_input(value=value, aggregation=entry.name, input_type=input_type))
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
-    if entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
+    if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
     return exp.Cast(this=aggregate, to=exp.DataType(this=exp.DataType.Type(restored.value)))

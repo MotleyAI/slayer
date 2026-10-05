@@ -30,7 +30,7 @@
 ## 4. Emission
 
 - [x] 4.1 Aggregate-application helper in `slayer/sql/render/aggregates.py` (integer lowering for sum/avg/min/max over BOOLEAN; min/max cast back via `declared_cast_type`); verify its unit tests
-- [ ] 4.2 Route `generator._build_agg`, `value_expr._render_builtin_aggregate` (and the HAVING seam) and the association producer's level-1 pick through the helper, input type from `boolean_valued`; verify 1.5–1.7 and 1.12 pass
+- [x] 4.2 Route `generator._build_agg`, `value_expr._render_builtin_aggregate` (and the HAVING seam) and the association producer's level-1 pick through the helper, input type from `boolean_valued`; verify 1.5–1.7 and 1.12 pass
 - [x] 4.3 SQL Server predicate-value rewrite in `slayer/sql/dialects/tsql.py` over the assembled statement; verify 1.11 passes
 
 ## 5. Docs and gates
@@ -38,5 +38,19 @@
 - [x] 5.1 `docs/concepts/models.md`: per-type table adds `avg` for `boolean`; one sentence on how booleans are aggregated (sum counts trues, avg is the share, min/max stay boolean)
 - [x] 5.2 `docs/concepts/formulas.md` (aggregated-expression grammar): one sentence that comparisons and `in` can be aggregated (`sum(amount > 15)`)
 - [x] 5.3 Drop the nonexistent `BETWEEN` from `consecutive_periods`: the input sentence in `docs/concepts/formulas.md` and the predicate-shape error strings in `slayer/sql/generator.py`; verify 1.14 passes
-- [ ] 5.4 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with the CI invocation, `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green
+- [x] 5.4 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with the CI invocation, `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green
 - [ ] 5.5 Comment on DEV-1970 that it is delivered by DEV-2046's PR and that its `BETWEEN` half is moot (Mode B has no `BETWEEN`; the internal `BetweenKey` was deleted by DEV-1999)
+
+## 6. Plan amendment (user-approved 2026-10-05)
+
+- [x] 6.1 Tests: `tests/test_dev2046_all_null_inputs.py` — every built-in over all-NULL numeric and boolean inputs, locally, cross-model, in a stage, window, partition and association, on SQLite + DuckDB (association fixture row added); `test_comparison_by_region` west oracle → `None`
+- [x] 6.2 Tests: statistical aggregations over booleans accepted with hand-computed values (`median(flag)` 0.5, `median(amount > 15)` 1, `stddev_samp(coalesce(flag, false))` ≈ 0.5477, `percentile`, `weighted_avg`); BOOLEAN default set = numeric set; emission tests for the stat / dialect-hook / formula builders taking the integer
+- [x] 6.3 Tests: booleans in numeric positions — `flag * amount`, `(amount > 15) + 1`, `round(flag)`, `coalesce(flag, 0)`, `iif(x, flag, 2)`, `flag = 1`, `(sum(amount) > 50) + (count(*) > 1)` executed on SQLite + DuckDB + Postgres; T-SQL arithmetic operand is the INT of the BIT value
+- [x] 6.4 Tests: `sum(True)`, `avg(True)`, `max(True)`, `count(True)`, `sum(1 > 2)` executed (row count / 1.0 / true / row count / 0)
+- [x] 6.5 Flip the existing rejection tests to acceptance (`test_expression_aggregations.py` boolean gates, `test_dev1846_composite_transforms.py` arithmetic / scalar-argument, `test_dev1854_null_test_predicates.py` null test plus 1, `test_dev2046_boolean_exec.py` statistical rejection, `test_dev2046_boolean_emission.py` T-SQL arithmetic operand); `test_dev1744_naming_allocator.py` no-leaf fixture → nested aggregate; `test_agg_render_spec.py` pins 12 fields
+- [x] 6.6 Re-bless goldens per protocol: `ts/series_in_pred::tsql`; `reject/cp_boolean_numeric` (5 dialects) → `cp/boolean_numeric` emitted SQL
+- [x] 6.7 Implement decisions 3 (value-read lowering for every numeric aggregation), 7, 8, 9; verify 6.1–6.6 pass
+- [x] 6.8 `architecture/semantics.arc42.md` Axiom 4 all-NULL clause + its enforced tag (approved edit)
+- [x] 6.9 Docs: `docs/concepts/models.md` boolean row = numeric set and the sentence says every numeric aggregation; `docs/concepts/formulas.md` one sentence on booleans in arithmetic, and the `consecutive_periods` input sentence drops the value-position rejection
+- [ ] 6.10 Comment on DEV-1972 that expression sources now reach the builders as AST
+- [x] 6.11 `weighted_avg` skips a NULL value's weight and never divides as integers (user-approved 2026-10-05): template fix; re-derive the `weighted_avg` oracles that counted NULL values' weights; `test_parameters_not_masked_by_source_filter` checks the unmasked weight through the custom `wavg`; MODIFIED `models/column-filters` scenario

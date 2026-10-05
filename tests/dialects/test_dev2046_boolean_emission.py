@@ -84,6 +84,53 @@ class TestLoweringOnEveryDialect:
             assert _int_cast(agg.this), f"{agg.sql(dialect=dialect)} takes a raw boolean in HAVING"
 
 
+class TestStatisticalBuildersTakeTheInteger:
+    """The stat, dialect-hook and formula builders read a boolean input as its integer."""
+
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    @pytest.mark.parametrize("formula", ["stddev_samp(flag)", "weighted_avg(flag, weight=amount)"])
+    async def test_every_dialect(self, dialect: str, formula: str) -> None:
+        tree = await _statement(dialect, formula)
+        assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite", "snowflake"])
+    @pytest.mark.parametrize("formula", ["median(flag)", "percentile(flag, p=0.5)"])
+    async def test_percentile_family(self, dialect: str, formula: str) -> None:
+        tree = await _statement(dialect, formula)
+        assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
+
+
+def _bare_flags(tree: Expr) -> List[str]:
+    """Every ``flag`` column read outside an integer cast."""
+    return [
+        c.sql() for c in tree.find_all(exp.Column)
+        if c.name == "flag" and not (c.parent is not None and _int_cast(c.parent))
+    ]
+
+
+class TestBooleansInNumericPositions:
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    async def test_arithmetic_and_scalar_operands(self, dialect: str) -> None:
+        tree = await _statement(dialect, "sum(flag * amount)", "max(round(flag))", "sum(coalesce(flag, 0))")
+        assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    async def test_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
+        tree = await _statement(dialect, "count(*)", filters=["flag = true"])
+        where = _nodes(tree, exp.Where)[0]
+        assert not [c for c in where.find_all(exp.Cast) if _int_cast(c)], where.sql(dialect=dialect)
+
+
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    async def test_having_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
+        """``max(flag) = true`` compares two booleans: neither side reads as an integer."""
+        tree = await _statement(dialect, "count(*)", dimensions=["region"], filters=["max(flag) = true"])
+        having = _nodes(tree, exp.Having)[0]
+        # Only the aggregate's own lowering / restore casts may appear (SQLite / MySQL spell BOOLEAN as an int).
+        stray = [c for c in having.find_all(exp.Cast) if not isinstance(c.parent, exp.Max) and not isinstance(c.this, exp.Max)]
+        assert stray == [], having.sql(dialect=dialect)
+
+
 class TestUnchangedAggregations:
     """Count family, first / last and custom aggregations receive the boolean unchanged."""
 
@@ -195,10 +242,12 @@ class TestSqlServerPredicateValues:
         assert _bare_value_predicates(tree) == []
 
     async def test_arithmetic_operand_is_a_value(self) -> None:
+        """A boolean arithmetic operand is its integer: the INT of the predicate's BIT value."""
         tree = await _statement("tsql", "(sum(amount) > 50) + 0", dimensions=["region"])
         (add,) = _nodes(_projection(tree, "v0"), exp.Add)
         operand = add.this.unnest() if isinstance(add.this, exp.Paren) else add.this
-        assert _is_bit_value(operand), add.sql(dialect="tsql")
+        assert _int_cast(operand), add.sql(dialect="tsql")
+        assert _is_bit_value(operand.this), add.sql(dialect="tsql")
         assert _bare_value_predicates(tree) == []
 
     async def test_nested_predicate_wrapped_once(self) -> None:

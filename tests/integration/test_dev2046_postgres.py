@@ -123,3 +123,54 @@ async def test_first_last_pick(pg_engine: SlayerQueryEngine) -> None:
         time_dimensions=month_td(), measures=[m("first(flag, window='90d')")],
     ))
     assert set(by_month(windowed).values()) == {True}
+
+
+@pytest.mark.integration
+async def test_statistical_aggregations(pg_engine: SlayerQueryEngine) -> None:
+    resp = await pg_engine.execute(orders_q(measures=[
+        m("median(flag)", "md"), m("percentile(flag, p=0.5)", "p"),
+        m("stddev_samp(amount > 15)", "sd"), m("weighted_avg(flag, weight=amount)", "w"),
+    ]))
+    row = resp.data[0]
+    assert _num(row["orders.md"]) == pytest.approx(0.5)
+    assert _num(row["orders.p"]) == pytest.approx(0.5)
+    assert _num(row["orders.sd"]) == pytest.approx((1 / 3) ** 0.5)
+    assert _num(row["orders.w"]) == pytest.approx(0.5)
+
+
+@pytest.mark.integration
+async def test_literal_sources(pg_engine: SlayerQueryEngine) -> None:
+    resp = await pg_engine.execute(orders_q(dimensions=["region"], measures=[
+        m("sum(True)", "s"), m("max(True)", "mx"), m("sum(1 > 2)", "f"),
+    ]))
+    assert by_dim(resp, "region", "s") == {"east": 3, "west": 2}
+    assert by_dim(resp, "region", "mx") == {"east": True, "west": True}
+    assert by_dim(resp, "region", "f") == {"east": 0, "west": 0}
+
+
+@pytest.mark.integration
+async def test_numeric_positions(pg_engine: SlayerQueryEngine) -> None:
+    """Postgres has no boolean arithmetic: each boolean below must read as its integer."""
+    resp = await pg_engine.execute(orders_q(measures=[
+        m("sum(flag * amount)", "fa"), m("sum((amount > 15) + 1)", "p1"), m("max(round(flag))", "r"),
+        m("sum(coalesce(flag, 0))", "c"), m("sum(iif(amount > 15, flag, 2))", "i"),
+    ]))
+    row = resp.data[0]
+    assert row["orders.fa"] == 30
+    assert row["orders.p1"] == 5
+    assert _num(row["orders.r"]) == 1
+    assert row["orders.c"] == 2
+    assert row["orders.i"] == 7
+    filtered = await pg_engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = 1"]))
+    assert filtered.data[0]["orders.v"] == 2
+    measures = await pg_engine.execute(orders_q(
+        dimensions=["region"], measures=[m("(sum(amount) > 50) + (count(*) > 1)")],
+    ))
+    assert by_dim(measures, "region") == {"east": 2, "west": None}
+
+
+@pytest.mark.integration
+async def test_weighted_avg_integer_inputs(pg_engine: SlayerQueryEngine) -> None:
+    """Integer value and weight never divide as integers; a NULL value's weight is skipped."""
+    resp = await pg_engine.execute(orders_q(measures=[m("weighted_avg(amount, weight=customer_id)")]))
+    assert _num(resp.data[0]["orders.v"]) == pytest.approx(9000 / 400)

@@ -21,8 +21,7 @@ carry identity only); system P6 (AST-built SQL). No arc42 / `.c4` edit is needed
 **Goals:** one boolean-type authority, one aggregate classifier, one aggregate-application
 helper — so no render site or type surface can disagree again.
 
-**Non-Goals:** boolean lowering for statistical / parametric aggregations (they stay rejected
-over booleans); changing `count` semantics over booleans (counts non-NULL, as today);
+**Non-Goals:** changing `count` semantics over booleans (counts non-NULL, as today);
 Oracle predicate-as-value (Oracle 23ai accepts boolean expressions; older Oracle has no boolean
 columns).
 
@@ -50,15 +49,17 @@ columns).
    suggestion rejected: that disagreement is what this change removes).
 
 3. **One aggregate-application helper in `slayer/sql/render/aggregates.py`** taking the
-   registry entry, the input expression and the input's `DataType`. For a BOOLEAN input and
-   `sum` / `avg` / `min` / `max`: `CAST(input AS INT)` inside the aggregate; for `min` / `max`
-   the aggregate is wrapped back to the dialect's declared BOOLEAN cast
-   (`declared_cast_type`), so the expression is boolean wherever it is used and the slot cast
-   (idempotent `_wrap_cast_for_type`) does not double it. Every other aggregation and every
-   non-boolean input passes through unchanged; the custom / formula dispatch is untouched.
-   `_build_agg`, `_render_builtin_aggregate` (and the HAVING seam that uses them) and the
-   association producer's level-1 pick all apply aggregates through it; the pick's level-2
-   aggregate receives the picked value's BOOLEAN type. *Alternative rejected:* per-dialect
+   registry entry, the input expression and the input's `DataType`. A BOOLEAN input to any
+   numeric aggregation is read as `CAST(input AS INT)` — applied where the builders read the
+   aggregated value (`AggRenderSpec.input_type`, set from decision 1 where the spec is built),
+   so the simple, stat, dialect-hook (`median` / `percentile`) and `weighted_avg` builders all
+   receive the integer; for `min` / `max` the aggregate is wrapped back to the dialect's declared
+   BOOLEAN cast (`declared_cast_type`), so the expression is boolean wherever it is used and the
+   slot cast (idempotent `_wrap_cast_for_type`) does not double it. The count family,
+   `first` / `last` and custom aggregations receive the raw boolean. `_build_agg`,
+   `_render_builtin_aggregate` (and the HAVING seam that uses them), the association producer's
+   level-1 pick and the ranked `first` / `last` pick all apply aggregates through it; the pick's
+   level-2 aggregate receives the picked value's BOOLEAN type. *Alternative rejected:* per-dialect
    `bool_and` / `bool_or` — sqlglot's `LogicalOr` renders `LOGICAL_OR` on T-SQL and
    ClickHouse (invalid there); the cast round-trip transpiles on all twelve dialects probed.
 
@@ -72,8 +73,8 @@ columns).
    (comparison, connective, NOT, IN, BETWEEN — reachable from Mode-A column SQL — LIKE, IS)
    whose parent is a value position with
    `CAST(CASE WHEN p THEN 1 WHEN NOT p THEN 0 END AS BIT)`; condition positions (WHERE, HAVING,
-   JOIN ON, CASE WHEN condition, and a predicate nested inside another predicate) are left
-   alone. NULL stays NULL (neither WHEN matches).
+   JOIN ON, CASE WHEN condition, and an operand of `and` / `or` / `not`) are left alone — a
+   comparison's operand is a value. NULL stays NULL (neither WHEN matches).
 
 6. **Grammar and sources.** `_AGG_SOURCE_KINDS` gains `Cmp` and `BoolOp` (a bare `TupleLit`
    stays rejected). A `Cmp` binds to `ArithmeticKey`, `InKey` or the transient
@@ -90,9 +91,30 @@ columns).
    grammar feature needing a precedence-aware rewrite (a token-local one silently mis-scopes
    `a - b between 1 and 2`), outside this change.
 
-7. **Gates.** `avg` joins `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]`.
-   `_reject_non_numeric_expression_agg` rejects a boolean-valued expression only for
-   numeric-only aggregations outside that set.
+7. **Gates.** `DEFAULT_AGGREGATIONS_BY_TYPE[BOOLEAN]` is the numeric set.
+   `_reject_non_numeric_expression_agg` treats a boolean-valued expression as numeric; only text
+   and temporal expressions stay rejected. A non-aggregatable bound source raises
+   `AggregationNotAllowedError` at bind.
+
+8. **Booleans in numeric positions.** Outside aggregation, a boolean-valued operand (decision 1)
+   of `+ - * / %`, a boolean argument in a numeric scalar position (the math scalars; a
+   `coalesce` / `ifnull` / `nullif` / `greatest` / `least` / `iif` branch mixed with numeric
+   ones), and a boolean compared with a number (`flag = 1`, `p in (1, 0)`) render as
+   `CAST(x AS INT)` and type as INT; a boolean compared with a boolean stays boolean. One
+   lowering pass in the row and composite renderers, keyed on decision 1. `consecutive_periods`
+   accepts these shapes (a boolean-shaped node in a numeric position is a value); it still rejects
+   a top-level string-family call.
+
+9. **Expression sources as AST.** `AggRenderSpec.value` carries an expression source's rendered
+   AST; `_spec_value` / `_resolve_value_ast` read it directly, so a SLayer-rendered expression is
+   never re-parsed (`sum(True)` no longer becomes a column `"TRUE"`). Derived-column expansions,
+   string parameters and the `unmangle_dotted_table_refs` repair stay with DEV-1972, which gets a
+   comment.
+
+10. **All-NULL inputs.** A built-in aggregation skips NULL inputs, so an all-NULL cell takes the
+    empty value (0 for the count family, NULL otherwise) in every location — local, cross-model,
+    stage, window, partition, association; boolean `sum` is a `SUM`, never coerced to 0. Stated
+    as semantics Axiom 4, enforced by `tests/test_dev2046_all_null_inputs.py`.
 
 ## Risks / Trade-offs
 
@@ -107,3 +129,5 @@ columns).
   re-bless only goldens whose old value was the bug.
 - [`tests/test_dev1847_gate.py:51-52` asserts the old row-level comparison rejection] → flips to
   acceptance (user-approved in planning).
+- [Existing rejection tests and goldens for boolean-in-numeric shapes] → flip to acceptance, as
+  listed in proposal.md › Impact (user-approved 2026-10-05).

@@ -26,8 +26,10 @@ boolean-valued. The same recognition SHALL drive binding gates, result typing an
 - **THEN** the input is boolean-valued and aggregated as in the lowering requirement below
 
 ### Requirement: Numeric aggregations lower a boolean input to an integer
-`sum`, `avg`, `min` and `max` over a boolean-valued input SHALL aggregate the input's integer
-value — true as 1, false as 0, NULL as NULL — so NULL inputs are ignored as for any aggregate.
+Every numeric aggregation — `sum`, `avg`, `min`, `max`, `median`, `percentile`, `weighted_avg`,
+`stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop` — over a
+boolean-valued input SHALL aggregate the input's integer value — true as 1, false as 0, NULL as
+NULL — so NULL inputs are ignored as for any aggregate.
 `min` and `max` SHALL return a BOOLEAN, converted back within the aggregate expression itself,
 so the aggregate is boolean wherever it appears (projection, post-aggregation filter, ordering,
 arithmetic). The count family (`count`, `count_distinct`, `count_distinct_approx`), `first`,
@@ -53,6 +55,16 @@ input SHALL remain boolean in every non-aggregate position (dimension, row filte
 - **THEN** each filter applies after aggregation and executes on Postgres, keeping exactly the
   groups whose value satisfies it
 
+#### Scenario: Statistical aggregations read the integer
+- **WHEN** the same query selects `median(flag)`, `median(amount > 15)` (over `amount` values
+  `10, 20, 30, NULL`) and `stddev_samp(coalesce(flag, false))`
+- **THEN** it returns 0.5, 1 and the sample standard deviation of `1, 1, 0, 0, 0` (≈ 0.5477)
+
+#### Scenario: Literal sources
+- **WHEN** a query by `region` selects `sum(True)`, `avg(True)`, `max(True)`, `count(True)` and
+  `sum(1 > 2)`
+- **THEN** each region returns its row count, 1.0, true, its row count and 0
+
 #### Scenario: Counting keeps the boolean
 - **WHEN** a query selects `count(flag)` and `count_distinct(flag)` over the same rows
 - **THEN** it returns 4 and 2 — false values counted, NULL not
@@ -66,8 +78,9 @@ input SHALL remain boolean in every non-aggregate position (dimension, row filte
 ### Requirement: Boolean aggregation result types and formats
 The result of an aggregation over a boolean-valued input SHALL be typed and formatted as:
 `sum` → INT with INTEGER format; `avg` → DOUBLE with PERCENT format unless the source column
-declares a format, which wins; `min` / `max` → BOOLEAN; the count family → INT; `first` /
-`last` and custom aggregations → the source type. Every surface that reports an aggregate's
+declares a format, which wins; `min` / `max` → BOOLEAN; every other numeric aggregation → DOUBLE,
+as over an INT source; the count family → INT; `first` / `last` and custom aggregations → the
+source type. Every surface that reports an aggregate's
 type — query response metadata, stage schemas consumed by a later stage, and the SQL facade's
 metric catalogue — SHALL report the same type for the same column and aggregation.
 
@@ -90,12 +103,10 @@ metric catalogue — SHALL report the same type for the same column and aggregat
 - **THEN** every metric's data type equals the type the query engine assigns the same column and
   aggregation, including custom aggregations (the source type)
 
-### Requirement: Boolean defaults include avg
-A BOOLEAN column with no explicit allowed-aggregations list SHALL accept `count`,
-`count_distinct`, `count_distinct_approx`, `sum`, `avg`, `min`, `max`, `first` and `last`. A
-boolean-valued expression source SHALL accept every aggregation in that set (subject to the
-existing `first` / `last`-over-an-expression rejection) and SHALL reject other numeric-only
-aggregations at binding with a typed error.
+### Requirement: Boolean defaults are the numeric set
+A BOOLEAN column with no explicit allowed-aggregations list SHALL accept exactly the aggregations
+a numeric column accepts. A boolean-valued expression source SHALL be numeric for every
+aggregation (subject to the existing `first` / `last`-over-an-expression rejection).
 
 #### Scenario: Avg allowed by default
 - **WHEN** a model declares a BOOLEAN column without `allowed_aggregations` and a query selects
@@ -106,9 +117,52 @@ aggregations at binding with a typed error.
 - **WHEN** a measure is written `sum(coalesce(flag, false))`
 - **THEN** it binds and returns the number of true rows
 
-#### Scenario: Statistical aggregation over a boolean rejected
-- **WHEN** a measure is written `median(flag)` or `median(amount > 15)`
-- **THEN** it fails at binding with a typed error, never in the database
+#### Scenario: Statistical aggregation over a boolean accepted
+- **WHEN** a measure is written `median(flag)`, `percentile(flag, p=0.5)` or
+  `stddev_samp(amount > 15)`
+- **THEN** it binds and aggregates the integer values, never a database error
+
+### Requirement: Booleans are integers in numeric positions
+Outside aggregation, a boolean-valued value SHALL be its integer (true 1, false 0, NULL NULL)
+wherever a number is needed: an arithmetic operand, a numeric scalar-function argument, a
+branch of a conditional or null-handling call whose other branches are numeric, and an operand
+compared with a number. A boolean compared with a boolean, and every condition position, SHALL
+keep the boolean. The result types as INT where the boolean alone supplies the number.
+
+#### Scenario: Arithmetic over booleans
+- **WHEN** a query selects `sum(flag * amount)`, `sum((amount > 15) + 1)` and
+  `max(round(flag))`
+- **THEN** they return 30 (only order 1's 10 and order 2's 20 are flagged), 5 and 1 on SQLite,
+  DuckDB and Postgres, never a database error
+
+#### Scenario: Mixed conditional branches
+- **WHEN** a query selects `sum(coalesce(flag, 0))` and `sum(iif(amount > 15, flag, 2))`
+- **THEN** the boolean branches read as integers and the measures are typed INT
+
+#### Scenario: Boolean compared with a number
+- **WHEN** a filter is written `flag = 1`
+- **THEN** it keeps the rows whose `flag` is true
+
+#### Scenario: Arithmetic over boolean measures
+- **WHEN** a query by `region` selects `(sum(amount) > 50) + (count(*) > 1)`
+- **THEN** each region returns the integer count of the two conditions it satisfies
+
+### Requirement: Aggregates over all-NULL inputs take the empty value
+A built-in aggregation over a cell whose inputs are all NULL SHALL return its empty value — 0
+for the count family, NULL otherwise — exactly as over a cell with no rows, wherever it is
+evaluated (locally, across a join, in a stage, a window, a partition or an association) and
+whatever its input type (semantics Axiom 4).
+
+#### Scenario: All-NULL boolean sum
+- **WHEN** a query by `region` selects `sum(amount > 15)` and `count(amount > 15)` over a region
+  whose `amount` values are all NULL
+- **THEN** that region returns NULL and 0
+
+#### Scenario: Every location
+- **WHEN** `sum`, `avg`, `min`, `max`, `median`, `count` and `count_distinct` over an all-NULL
+  input are evaluated locally, cross-model, in a later stage, with `window=`, with
+  `partition_by=` and under `to_many_handling: "associate"`
+- **THEN** each returns NULL, except the count family, which returns 0
 
 ### Requirement: Predicates are aggregatable booleans
 A comparison (a time-point comparison included), boolean connective or `IN` / `NOT IN`

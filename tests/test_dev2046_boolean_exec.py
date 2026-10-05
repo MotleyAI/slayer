@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.query import SlayerQuery
 
@@ -107,7 +106,8 @@ class TestExpressionSources:
 
     async def test_comparison_by_region(self, engine) -> None:
         resp = await engine.execute(orders_q(dimensions=["region"], measures=[m("sum(amount > 15)")]))
-        assert by_dim(resp, "region") == {"east": 2, "west": 0}
+        # West's amounts are all NULL: a SUM over no non-NULL input is NULL (Axiom 4).
+        assert by_dim(resp, "region") == {"east": 2, "west": None}
 
     async def test_boolean_expressions(self, engine) -> None:
         resp = await engine.execute(orders_q(measures=[
@@ -245,9 +245,59 @@ class TestGates:
             resp = await engine.execute(orders_q(measures=[m("avg(flag)")]))
             assert _num(single(resp)) == pytest.approx(FLAG_TOTALS["avg"])
 
-    @pytest.mark.parametrize("formula", ["median(flag)", "median(amount > 15)", "stddev_samp(coalesce(flag, false))"])
-    async def test_statistical_over_boolean_rejected_at_binding(self, engine, formula: str) -> None:
-        query = orders_q(measures=[m(formula)])
-        with pytest.raises(SlayerError, match=r"(?i)boolean") as exc:
-            await engine.execute(query, dry_run=True)
-        assert "cannot aggregate a" not in str(exc.value)
+    @pytest.mark.parametrize("formula,expected", [
+        ("median(flag)", 0.5),
+        ("median(amount > 15)", 1.0),
+        ("percentile(flag, p=0.5)", 0.5),
+        ("stddev_samp(coalesce(flag, false))", 0.3 ** 0.5),
+        ("stddev_samp(amount > 15)", (1 / 3) ** 0.5),
+        ("weighted_avg(flag, weight=amount)", 0.5),
+    ])
+    async def test_statistical_over_boolean_reads_the_integer(self, engine, formula: str, expected: float) -> None:
+        resp = await engine.execute(orders_q(measures=[m(formula)]))
+        assert _num(single(resp)) == pytest.approx(expected)
+
+
+class TestLiteralSources:
+    async def test_by_region(self, engine) -> None:
+        resp = await engine.execute(orders_q(dimensions=["region"], measures=[
+            m("sum(True)", "s"), m("avg(True)", "a"), m("max(True)", "mx"), m("count(True)", "c"), m("sum(1 > 2)", "f"),
+        ]))
+        assert by_dim(resp, "region", "s") == {"east": 3, "west": 2}
+        assert {r: _num(v) for r, v in by_dim(resp, "region", "a").items()} == {"east": 1.0, "west": 1.0}
+        assert {r: as_bool(v) for r, v in by_dim(resp, "region", "mx").items()} == {"east": True, "west": True}
+        assert by_dim(resp, "region", "c") == {"east": 3, "west": 2}
+        assert by_dim(resp, "region", "f") == {"east": 0, "west": 0}
+
+
+class TestNumericPositions:
+    """Outside aggregation a boolean is its integer wherever a number is needed."""
+
+    async def test_arithmetic_and_scalars(self, engine) -> None:
+        resp = await engine.execute(orders_q(measures=[
+            m("sum(flag * amount)", "fa"), m("sum((amount > 15) + 1)", "p1"), m("max(round(flag))", "r"),
+            m("sum(coalesce(flag, 0))", "c"), m("sum(iif(amount > 15, flag, 2))", "i"),
+        ]))
+        row = resp.data[0]
+        assert row["orders.fa"] == 30
+        assert row["orders.p1"] == 5
+        assert _num(row["orders.r"]) == 1
+        assert row["orders.c"] == 2
+        assert row["orders.i"] == 7
+
+    async def test_compared_with_a_number(self, engine) -> None:
+        resp = await engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = 1"]))
+        assert single(resp) == 2
+
+    async def test_arithmetic_over_boolean_measures(self, engine) -> None:
+        resp = await engine.execute(orders_q(
+            dimensions=["region"], measures=[m("(sum(amount) > 50) + (count(*) > 1)")],
+        ))
+        assert by_dim(resp, "region") == {"east": 2, "west": None}
+
+
+class TestWeightedAvg:
+    async def test_null_values_skip_their_weight(self, engine) -> None:
+        """Values 10/20/30 weighted 100/100/200; the two NULL-amount rows' weights (200 each) don't count."""
+        resp = await engine.execute(orders_q(measures=[m("weighted_avg(amount, weight=customer_id)")]))
+        assert _num(single(resp)) == pytest.approx(9000 / 400)

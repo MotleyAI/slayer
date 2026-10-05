@@ -113,11 +113,12 @@ from slayer.sql.render.ranked import (
 )
 from slayer.sql.render.aggregates import (
     DISPATCH_STAT,
+    aggregate_input,
     apply_aggregate,
     is_builtin_agg,
     resolve_agg_entry,
 )
-from slayer.sql.render.parse import parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
 from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
@@ -178,8 +179,11 @@ class AggRenderSpec(BaseModel):
 
     column_type: Optional[DataType] = None
 
-    #: The aggregated value's type as the aggregation reads it (BOOLEAN lowers sum/avg/min/max).
+    #: The aggregated value's type as the aggregation reads it (a BOOLEAN is lowered to its integer).
     input_type: Optional[DataType] = None
+
+    #: An expression source's rendered value, never re-parsed from text.
+    value: Optional[Expression] = None
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
@@ -666,9 +670,9 @@ _COMPOUND_VALUE_KEYS = (
 
 
 def _validate_consecutive_periods_input(*, op: str, inner) -> None:
-    """Enforce the ``consecutive_periods`` predicate typing contract: a
-    top-level string-valued scalar call has no truthiness; a boolean-shaped node
-    is legal only at the predicate top level or in an ``iif`` condition."""
+    """Enforce the ``consecutive_periods`` predicate typing contract: a top-level string-valued
+    scalar call has no truthiness, and ``and`` / ``or`` / ``not`` take boolean-shaped operands
+    (a boolean anywhere a number is needed is its integer)."""
     if (
         isinstance(inner, ScalarCallKey)
         and inner.name.lower() in _STRING_VALUED_SCALARS
@@ -678,55 +682,26 @@ def _validate_consecutive_periods_input(*, op: str, inner) -> None:
             f"string has no truthiness. Compare it explicitly (e.g. "
             f"`length(...) > 0`) to form a predicate."
         )
-    _walk_cp_predicate(op=op, key=inner, expect="either")
+    _walk_cp_predicate(op=op, key=inner, connective_operand=False)
 
 
-def _assert_cp_shape(*, op: str, key, expect: str, node_is_bool: bool) -> None:
-    """Enforce the boolean-vs-value expectation at one node; raise on mismatch."""
-    if expect == "bool" and not node_is_bool:
+def _walk_cp_predicate(*, op: str, key, connective_operand: bool) -> None:
+    """Recursively require boolean-shaped operands under ``and`` / ``or`` / ``not``."""
+    if connective_operand and not is_boolean_shaped(key):
         raise ValueError(
             f"{op!r}: 'and' / 'or' / 'not' require boolean-shaped operands (a "
             f"comparison, a null test, IN, or another connective); got "
             f"{type(key).__name__}."
         )
-    if expect == "value" and node_is_bool:
-        raise ValueError(
-            f"{op!r}: a boolean-shaped predicate cannot appear in a value "
-            f"position (arithmetic operand, scalar-call argument, or IN "
-            f"operand); only iif's condition and the top-level predicate accept a "
-            f"boolean. Got {type(key).__name__}."
-        )
-
-
-def _walk_cp_scalar_call(*, op: str, key) -> None:
-    """Recurse into a scalar call: an ``iif`` condition accepts either shape;
-    every remaining compound argument must be value-shaped."""
-    if key.name == "iif" and key.args:
-        _walk_cp_predicate(op=op, key=key.args[0], expect="either")
-        rest = key.args[1:]
-    else:
-        rest = key.args
-    for a in rest:
-        if isinstance(a, _COMPOUND_VALUE_KEYS):
-            _walk_cp_predicate(op=op, key=a, expect="value")
-
-
-def _walk_cp_predicate(*, op: str, key, expect: str) -> None:
-    """Recursively check the boolean-vs-value contract. ``expect`` is 'bool'
-    (must be boolean-shaped), 'value' (must not be), or 'either' (predicate top
-    level / iif condition)."""
-    _assert_cp_shape(
-        op=op, key=key, expect=expect, node_is_bool=is_boolean_shaped(key),
-    )
     if isinstance(key, ArithmeticKey):
-        child_expect = "bool" if key.op in BOOL_CONNECTIVE_OPS else "value"
         for o in key.operands:
-            _walk_cp_predicate(op=op, key=o, expect=child_expect)
+            _walk_cp_predicate(op=op, key=o, connective_operand=key.op in BOOL_CONNECTIVE_OPS)
     elif isinstance(key, ScalarCallKey):
-        _walk_cp_scalar_call(op=op, key=key)
+        for a in key.args:
+            if isinstance(a, _COMPOUND_VALUE_KEYS):
+                _walk_cp_predicate(op=op, key=a, connective_operand=False)
     elif isinstance(key, InKey):
-        for sub in (key.column, *key.values):
-            _walk_cp_predicate(op=op, key=sub, expect="value")
+        _walk_cp_predicate(op=op, key=key.column, connective_operand=False)
 
 
 def _effective_src_filters(*, lowered_filters, plan) -> list:
@@ -1182,7 +1157,9 @@ class SQLGenerator:
         )
 
     def _resolve_value_ast(self, spec: AggRenderSpec) -> Expression:
-        """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified AST."""
+        """The spec's value: its rendered AST, else ``spec.sql`` (or ``spec.name``) resolved."""
+        if spec.value is not None:
+            return spec.value.copy()
         return self._resolve_sql(
             sql=spec.sql,
             name=spec.name,
@@ -1236,10 +1213,13 @@ class SQLGenerator:
                 col_expr=self._resolve_value_ast(spec),
             ), True
 
-        inner = exp.Star() if agg_name == "count" and spec.sql is None else self._spec_value(spec)
+        is_star = agg_name == "count" and spec.sql is None and spec.value is None
+        inner = exp.Star() if is_star else self._spec_value(spec)
 
         if agg_name == "median":
-            return self._build_median(inner), True
+            return self._build_median(
+                aggregate_input(value=inner, aggregation=agg_name, input_type=spec.input_type),
+            ), True
 
         return apply_aggregate(
             entry=entry, value=inner, input_type=spec.input_type, dialect=self._dialect,
@@ -1252,10 +1232,18 @@ class SQLGenerator:
         )
 
     def _spec_value(self, spec: AggRenderSpec) -> Expression:
-        """The spec's row value: its SQL expression, else its column."""
+        """The spec's row value: its rendered AST, else its SQL expression, else its column."""
+        if spec.value is not None:
+            return spec.value.copy()
         if spec.sql:
             return self._resolve_sql(sql=spec.sql, name=spec.name, model_name=spec.model_name, type=spec.column_type)
         return exp.Column(this=exp.to_identifier(spec.name), table=exp.to_identifier(spec.model_name))
+
+    def _aggregated_value(self, spec: AggRenderSpec) -> Expression:
+        """The value the spec's aggregation reads (a boolean input to a numeric aggregation as its integer)."""
+        return aggregate_input(
+            value=self._resolve_value_ast(spec), aggregation=spec.aggregation, input_type=spec.input_type,
+        )
 
     def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
@@ -1274,7 +1262,8 @@ class SQLGenerator:
         }
         # The aggregated column; a source ``Column.filter`` is already baked in.
         bindings[VALUE_PLACEHOLDER] = (
-            exp.Star() if spec.sql is None and not spec.name else self._resolve_value_ast(spec)
+            exp.Star() if spec.sql is None and spec.value is None and not spec.name
+            else self._aggregated_value(spec)
         )
         try:
             return template.render(bindings)
@@ -1294,7 +1283,7 @@ class SQLGenerator:
     def _build_percentile(self, spec: AggRenderSpec) -> Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent)."""
         p = _percentile_literal(self._resolve_agg_param(spec, name="p", agg_name="percentile"))
-        return self._dialect.build_percentile(p=p, col_expr=self._resolve_value_ast(spec))
+        return self._dialect.build_percentile(p=p, col_expr=self._aggregated_value(spec))
 
     def _build_stat_agg(self, spec: AggRenderSpec) -> Expression:
         """Build SQL for the statistical aggregations."""
@@ -1303,11 +1292,11 @@ class SQLGenerator:
             # Resolve other= first so a missing-required-param error outranks the dialect-unsupported one.
             other_expr = self._resolve_agg_param(spec, name="other", agg_name=agg_name)
             return self._dialect.build_covar_2arg(
-                agg_name=agg_name, col_expr=self._resolve_value_ast(spec), other_expr=other_expr,
+                agg_name=agg_name, col_expr=self._aggregated_value(spec), other_expr=other_expr,
             )
         if is_stat_agg1(agg_name):
             return self._dialect.build_stat_agg_1arg(
-                agg_name=agg_name, col_expr=self._resolve_value_ast(spec),
+                agg_name=agg_name, col_expr=self._aggregated_value(spec),
             )
         raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
 
@@ -5517,10 +5506,6 @@ class SQLGenerator:
         ).sql(dialect=self.dialect)
         return wrap_column_filter(value_sql=value_sql, filter_sql=filter_sql)
 
-    def _render_expression_source_sql(self, *, source, scope: ScopeFrame) -> str:
-        """Render an aggregate's row-level expression source through ``scope`` — one resolver for leaves, attached placeholders, derived columns and join registration."""
-        return scope.resolve(source).sql(dialect=self.dialect)
-
     def _joined_paths_in_sql(
         self, *, sql_expr: Expression, source_relation: str, source_model,
         bundle,
@@ -5862,11 +5847,15 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
             )
-            sql_text = self._render_expression_source_sql(source=source, scope=param_scope)
+            # One resolver for leaves, attached placeholders, derived columns and join registration.
+            value = apply_ast_rewrites(
+                tree=param_scope.resolve(source), target_dialect=self._dialect, parse_dialect=self._dialect,
+            )
             formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=expr_leaf,
-                sql=sql_text,
+                sql=None,
+                value=value,
                 aggregation=key.agg,
                 alias=full_alias,
                 model_name=source_relation,
@@ -6094,6 +6083,8 @@ class SQLGenerator:
         return RenderContext(
             scope=scope,
             dialect=self._dialect,
+            # Kept when HAVING drops the scope: booleans read as numbers need declared types.
+            column_type=scope.column_type,
             filters=FilterFacilities(
                 slot_by_key=slot_by_key or {},
                 aliases_by_slot_id=aliases_by_slot_id or {},

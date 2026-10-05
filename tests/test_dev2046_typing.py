@@ -103,6 +103,9 @@ class TestMeasureKeyType:
         ("min(amount > 15)", DataType.BOOLEAN),
         ("count(amount > 15)", DataType.INT),
         ("sum(status in ('ok', 'hold'))", DataType.INT),
+        ("median(flag)", DataType.DOUBLE),
+        ("stddev_samp(amount > 15)", DataType.DOUBLE),
+        ("sum(True)", DataType.INT),
     ])
     def test_boolean_sources(self, text: str, expected: DataType) -> None:
         assert measure_key_type(model=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
@@ -129,11 +132,8 @@ class TestStageMeasureType:
 
 
 class TestBooleanDefaults:
-    def test_avg_in_boolean_default_set(self) -> None:
-        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN] == frozenset({
-            "count", "count_distinct", "count_distinct_approx",
-            "sum", "avg", "min", "max", "first", "last",
-        })
+    def test_boolean_default_set_is_the_numeric_set(self) -> None:
+        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
 
 def _facade_model() -> SlayerModel:

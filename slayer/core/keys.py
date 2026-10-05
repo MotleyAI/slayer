@@ -1166,6 +1166,9 @@ def join_conditional_branch_types(
         return a
     if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
         return DataType.DOUBLE
+    if {a, b} <= _NUMERIC_TYPES | {DataType.BOOLEAN}:
+        # A boolean beside a number is its integer.
+        return b if a is DataType.BOOLEAN else a
     if a in TEMPORAL_TYPES and b in TEMPORAL_TYPES:
         return DataType.TIMESTAMP
     raise ValueError(
@@ -1288,10 +1291,95 @@ def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     return False
 
 
+# Scalars that read every argument as a number.
+_NUMERIC_SCALARS = frozenset({
+    "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power", "abs", "floor", "ceil", "ceiling",
+    "round", "sign", "trunc", "mod",
+})
+# Integer-preserving operators and scalars, for typing an expression built from booleans.
+_INT_OPS = frozenset({"+", "-", "*", "%"})
+_INT_SCALARS = frozenset({"abs", "sign", "round", "floor", "ceil", "ceiling", "trunc", "mod"})
+_ARITHMETIC_OPS = _INT_OPS | {"/"}
+_NULL_TEST_OPS = frozenset({"is", "is not"})
+
+
+def _literal_value(arg: object) -> object:
+    return arg.value if isinstance(arg, LiteralKey) else arg
+
+
+def _is_number_literal(arg: object) -> bool:
+    value = _literal_value(arg)
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _is_int_literal(arg: object) -> bool:
+    return _is_number_literal(arg) and Decimal(str(_literal_value(arg))) % 1 == 0
+
+
+def _known_number(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key`` is certainly a number: a number literal, a numeric column, or arithmetic."""
+    if _is_number_literal(key):
+        return True
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) in _NUMERIC_TYPES
+    return isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS
+
+
+def numeric_boolean_positions(key: object, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+    """Child positions of ``key`` (operands, arguments, an IN column at 0) holding a boolean read as a number."""
+    def booleans(children: Sequence[object], positions: Iterable[int]) -> FrozenSet[int]:
+        return frozenset(
+            i for i in positions if i < len(children) and boolean_valued(children[i], column_type=column_type)
+        )
+
+    if isinstance(key, ArithmeticKey):
+        everywhere = range(len(key.operands))
+        if key.op in _ARITHMETIC_OPS:
+            return booleans(key.operands, everywhere)
+        if key.op in PREDICATE_COMPARISON_OPS and key.op not in _NULL_TEST_OPS and len(key.operands) == 2:
+            found = booleans(key.operands, everywhere)
+            other = [o for i, o in enumerate(key.operands) if i not in found]
+            return found if len(found) == 1 and _known_number(other[0], column_type=column_type) else frozenset()
+        return frozenset()
+    if isinstance(key, InKey):
+        numbers = any(_is_number_literal(v) for v in key.values)
+        return frozenset({0}) if numbers and boolean_valued(key.column, column_type=column_type) else frozenset()
+    if isinstance(key, ScalarCallKey):
+        if key.name in _NUMERIC_SCALARS:
+            return booleans(key.args, range(len(key.args)))
+        if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, column_type=column_type):
+            positions = _BOOLEAN_BRANCH_SCALARS[key.name]
+            return booleans(key.args, range(len(key.args)) if positions is None else positions)
+    return frozenset()
+
+
+def _boolean_int_expression(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """An integer built only from booleans and integer literals (``coalesce(flag, 0)``, ``(a > 1) + 1``)."""
+    if isinstance(key, ArithmeticKey) and key.op in _INT_OPS:
+        children = key.operands
+    elif isinstance(key, ScalarCallKey) and key.name in _INT_SCALARS:
+        children = key.args
+    elif isinstance(key, ScalarCallKey) and key.name in _BOOLEAN_BRANCH_SCALARS:
+        positions = _BOOLEAN_BRANCH_SCALARS[key.name]
+        children = key.args if positions is None else [key.args[i] for i in positions if i < len(key.args)]
+    else:
+        return False
+    values = [c for c in children if not _is_null_arg(c)]
+    leaves_ok = all(
+        _is_int_literal(c) or boolean_valued(c, column_type=column_type)
+        or _boolean_int_expression(c, column_type=column_type)
+        for c in values
+    )
+    return leaves_ok and any(not _is_number_literal(c) for c in values)
+
+
 def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
-    """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, a column's declared type, else ``None``."""
+    """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, INT when built from booleans and
+    integer literals, a column's declared type, else ``None``."""
     if boolean_valued(source, column_type=column_type):
         return DataType.BOOLEAN
+    if _boolean_int_expression(source, column_type=column_type):
+        return DataType.INT
     if isinstance(source, (ColumnKey, ColumnSqlKey)):
         return column_type(source)
     return None

@@ -6,9 +6,8 @@ type-default gates) SHALL NOT apply to multi-token expression operands — the
 expression is a new derived quantity owned by the query author — while global
 validation still applies: the aggregation name must be known, and numeric-only
 aggregations SHALL be rejected when the expression is confidently non-numeric;
-a boolean-valued expression is numeric for exactly the aggregations of the BOOLEAN
-type-default set (per `aggregations/boolean-inputs`); display classification derives
-from the inferred value class, defaulting to plain numeric.
+a boolean-valued expression is numeric (per `aggregations/boolean-inputs`); display
+classification derives from the inferred value class, defaulting to plain numeric.
 
 #### Scenario: Whitelist does not block expressions
 - **WHEN** column `quantity` whitelists only `min` and `max`, and a measure is written `sum(price * quantity)`
@@ -18,10 +17,11 @@ from the inferred value class, defaulting to plain numeric.
 - **WHEN** a measure is written `sum(lower(name))`
 - **THEN** binding fails with a type error rather than failing in the database
 
-#### Scenario: Boolean expression accepted for the boolean default set
-- **WHEN** a measure is written `avg(coalesce(flag, false))`
-- **THEN** binding succeeds and the measure is the share of true rows, while
-  `stddev_samp(coalesce(flag, false))` fails at binding with a type error
+#### Scenario: Boolean expression is numeric
+- **WHEN** a measure is written `avg(coalesce(flag, false))` or
+  `stddev_samp(coalesce(flag, false))`
+- **THEN** binding succeeds and the measures are the share of true rows and the standard
+  deviation of the 0 / 1 values
 
 ### Requirement: Row-level expressions can be aggregated
 The system SHALL accept `agg(<expression>, [args])` where the expression is built

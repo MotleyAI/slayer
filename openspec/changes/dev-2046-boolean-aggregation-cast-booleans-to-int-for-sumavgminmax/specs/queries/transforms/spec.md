@@ -84,12 +84,12 @@ Boolean-shaped SHALL be defined recursively as: a comparison; a null test
 (`is None` / `is not None`); `IN`; or `and` / `or` / `not` whose
 operands are themselves boolean-shaped. A boolean-shaped node SHALL be accepted
 at the predicate top level and in a conditional's condition position (`iif`
-first argument), and SHALL be rejected with a `ValueError` naming the shape when
-it appears in any value position — an arithmetic operand, an argument of any
-other scalar call, or an operand of an `IN` predicate. `and` / `or`
-/ `not` SHALL reject non-boolean-shaped operands the same way. A top-level
-string-family scalar call SHALL be rejected as a predicate (its truthiness is
-undefined).
+first argument), and in a numeric position — an arithmetic operand, a numeric
+scalar-call argument, an operand compared with numbers (an `IN` list included) —
+it SHALL be its integer value (per `aggregations/boolean-inputs`), the input then
+being value-shaped. `and` / `or` / `not` SHALL reject non-boolean-shaped operands
+with a `ValueError` naming the shape. A top-level string-family scalar call SHALL
+be rejected as a predicate (its truthiness is undefined).
 
 #### Scenario: iif condition position accepts a predicate
 
@@ -101,19 +101,22 @@ undefined).
 
 - **WHEN** a query requests
   `consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))`
-- **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
-  shape
+- **THEN** the query executes, each comparison read as its integer, and the
+  streak counts consecutive months where neither comparison is NULL and at least
+  one holds
 
 #### Scenario: Boolean as scalar-call argument rejected
 
 - **WHEN** a query requests `consecutive_periods(coalesce(sum(revenue) > 0, 0))`
-- **THEN** the query fails with a `ValueError` naming the shape
+- **THEN** the query executes, the comparison read as its integer, and the streak
+  counts consecutive months with positive revenue
 
 #### Scenario: Boolean in an IN operand rejected
 
 - **WHEN** a query requests `consecutive_periods((sum(revenue) > 0) in (1, 0))`
-- **THEN** the query fails with a `ValueError` naming the boolean shape, rather
-  than passing the predicate through into the emitted `IN` list
+- **THEN** the comparison is read as its integer inside the `IN` test — never
+  passed through as a bare predicate into the emitted `IN` list — and the streak
+  counts consecutive months whose revenue is non-NULL
 
 #### Scenario: String-family scalar call rejected as predicate
 
@@ -124,5 +127,5 @@ undefined).
 #### Scenario: Null test in a value position rejected
 
 - **WHEN** a query requests `consecutive_periods((sum(hi_rev) is None) + 1)`
-- **THEN** the query fails with a `ValueError` naming the boolean-in-numeric
-  shape, rather than rendering the null test as an arithmetic operand
+- **THEN** the query executes with the null test read as its integer, so every
+  month's value is 1 or 2 and the streak never breaks
