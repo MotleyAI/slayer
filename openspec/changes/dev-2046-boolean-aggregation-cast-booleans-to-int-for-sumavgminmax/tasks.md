@@ -39,7 +39,7 @@
 - [x] 5.2 `docs/concepts/formulas.md` (aggregated-expression grammar): one sentence that comparisons and `in` can be aggregated (`sum(amount > 15)`)
 - [x] 5.3 Drop the nonexistent `BETWEEN` from `consecutive_periods`: the input sentence in `docs/concepts/formulas.md` and the predicate-shape error strings in `slayer/sql/generator.py`; verify 1.14 passes
 - [x] 5.4 Full unit suite (`poetry run pytest -m "not integration"`), integration suite with the CI invocation, `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green
-- [ ] 5.5 Comment on DEV-1970 that it is delivered by DEV-2046's PR and that its `BETWEEN` half is moot (Mode B has no `BETWEEN`; the internal `BetweenKey` was deleted by DEV-1999)
+- [x] 5.5 Comment on DEV-1970 that it is delivered by DEV-2046's PR and that its `BETWEEN` half is moot (Mode B has no `BETWEEN`; the internal `BetweenKey` was deleted by DEV-1999)
 
 ## 6. Plan amendment (user-approved 2026-10-05)
 
@@ -52,5 +52,5 @@
 - [x] 6.7 Implement decisions 3 (value-read lowering for every numeric aggregation), 7, 8, 9; verify 6.1–6.6 pass
 - [x] 6.8 `architecture/semantics.arc42.md` Axiom 4 all-NULL clause + its enforced tag (approved edit)
 - [x] 6.9 Docs: `docs/concepts/models.md` boolean row = numeric set and the sentence says every numeric aggregation; `docs/concepts/formulas.md` one sentence on booleans in arithmetic, and the `consecutive_periods` input sentence drops the value-position rejection
-- [ ] 6.10 Comment on DEV-1972 that expression sources now reach the builders as AST
+- [x] 6.10 Comment on DEV-1972 that expression sources now reach the builders as AST
 - [x] 6.11 `weighted_avg` skips a NULL value's weight and never divides as integers (user-approved 2026-10-05): template fix; re-derive the `weighted_avg` oracles that counted NULL values' weights; `test_parameters_not_masked_by_source_filter` checks the unmasked weight through the custom `wavg`; MODIFIED `models/column-filters` scenario
