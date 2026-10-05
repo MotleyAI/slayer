@@ -134,5 +134,5 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
 - [x] 7.1 Full unit suite `poetry run pytest -m "not integration"` is green.
 - [x] 7.2 Integration with the CI invocation, including the Postgres cases for join keys and `date_range`, is green.
 - [x] 7.3 `poetry run ruff check slayer/ tests/` is clean; `poetry run basedpyright` shows no baseline growth; `la-arch-check` passes.
-- [ ] 7.4 Upgrade-corpus test green. Record in the PR description that the generator was run once against `motley-slayer==0.10.2`.
+- [x] 7.4 Upgrade-corpus test green. Record in the PR description that the generator was run once against `motley-slayer==0.10.2`.
   - `test_datasource_reingests[shop]` is a strict xfail against DEV-2057: re-ingest files a false stale-reference error for `m_rank`, whose query reads the uncached 0.10.x query-backed model `status_rank`. 0.10.2 reports the same error.
