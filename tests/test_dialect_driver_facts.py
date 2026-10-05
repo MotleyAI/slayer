@@ -53,15 +53,9 @@ def test_dialect_declares_driver_facts(ds_type) -> None:
     assert facts == _EXPECTED[ds_type]
 
 
-@pytest.mark.parametrize("ds_type", ["mysql", "mariadb"])
-def test_mysql_family_owns_mariadb_backend(ds_type) -> None:
-    facts = dialect_for_ds_type(ds_type).driver_facts(ds_type)
-    assert facts.url_backends == {"mysql", "mariadb"}
-
-
 def test_unregistered_type_gets_no_fallback_driver_facts() -> None:
     facts = dialect_for_ds_type("foo").driver_facts("foo")
-    assert facts == DriverFacts(url_scheme="foo", url_backends=frozenset({"foo"}))
+    assert facts == DriverFacts(url_scheme="foo")
 
 
 def test_install_extras_exist_in_pyproject() -> None:

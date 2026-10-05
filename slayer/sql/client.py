@@ -55,8 +55,8 @@ def _async_connection_string(connection_string: str, db_type: str | None) -> str
     if facts.async_driver is None:
         return None
     url = make_url(connection_string)
-    backend = url.get_backend_name()
-    if backend not in facts.url_backends:
+    backend = facts.url_backend
+    if url.get_backend_name() != backend:
         return None
     if url.get_dialect(_is_async=True).is_async:
         return connection_string
@@ -204,7 +204,7 @@ def _extract_types_from_cursor(result, db_type: str | None = None) -> dict[str, 
 
     rows = result.fetchall()
     if not rows:
-        return {col: "string" for col in columns}  # empty table — safe default
+        return dict.fromkeys(columns, "string")  # empty table — safe default
     row = rows[0]
     types = {}
     for col, val in zip(columns, row):

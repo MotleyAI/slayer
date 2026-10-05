@@ -44,7 +44,7 @@ def _missing_driver(
 
 def _is_default_driver(facts: DriverFacts, *, url: URL, driver: str | None) -> bool:
     """Whether ``url`` selects SLayer's default driver; ``driver=None`` (none named) judges the backend alone."""
-    if url.get_backend_name() not in facts.url_backends:
+    if url.get_backend_name() != facts.url_backend:
         return False
     scheme_driver = (facts.url_scheme or "").partition("+")[2]
     if driver is None or ("+" not in url.drivername and not scheme_driver):

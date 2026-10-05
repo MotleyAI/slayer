@@ -19,8 +19,6 @@ _URL_TAIL = "u:p%40ss@h:5432/d?sslmode=require"
         ("mysql", f"mysql+aiomysql://{_URL_TAIL}"),
         ("mysql", f"mysql+asyncmy://{_URL_TAIL}"),
         ("mariadb", f"mysql+asyncmy://{_URL_TAIL}"),
-        ("mariadb", f"mariadb+asyncmy://{_URL_TAIL}"),
-        ("mysql", f"mariadb+aiomysql://{_URL_TAIL}"),
     ],
 )
 def test_async_capable_driver_kept_unchanged(db_type, connection_string) -> None:
@@ -37,8 +35,6 @@ def test_async_capable_driver_kept_unchanged(db_type, connection_string) -> None
         ("mysql", f"mysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
         ("mysql", f"mysql+pymysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
         ("mariadb", f"mysql+pymysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
-        ("mariadb", f"mariadb://{_URL_TAIL}", f"mariadb+aiomysql://{_URL_TAIL}"),
-        ("mariadb", f"mariadb+pymysql://{_URL_TAIL}", f"mariadb+aiomysql://{_URL_TAIL}"),
     ],
 )
 def test_plain_or_default_sync_url_moves_to_async_driver(db_type, connection_string, expected) -> None:
@@ -75,15 +71,12 @@ def test_no_async_url(db_type, connection_string) -> None:
         ("postgresql+asyncpg://", True),
         ("mysql+aiomysql://", True),
         ("mysql+asyncmy://", True),
-        ("mariadb+aiomysql://", True),
-        ("mariadb+asyncmy://", True),
         ("postgresql://", False),
         ("postgresql+psycopg2://", False),
         ("postgresql+pg8000://", False),
         ("mysql://", False),
         ("mysql+pymysql://", False),
         ("mysql+mysqldb://", False),
-        ("mariadb+pymysql://", False),
     ],
 )
 def test_sqlalchemy_async_capability_pin(url, is_async) -> None:

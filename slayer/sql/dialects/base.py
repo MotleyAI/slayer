@@ -210,15 +210,19 @@ class ServerProfile(BaseModel):
 
 
 class DriverFacts(BaseModel):
-    """The URL scheme, SQLAlchemy backends, drivers and pip extra one datasource type connects with."""
+    """The URL scheme, drivers and pip extra one datasource type connects with."""
 
     model_config = ConfigDict(frozen=True)
 
     url_scheme: str | None = None
-    url_backends: frozenset[str] = frozenset()
     sync_driver: str | None = None
     async_driver: str | None = None
     install_extra: str | None = None
+
+    @property
+    def url_backend(self) -> str:
+        """The SQLAlchemy backend name of ``url_scheme``."""
+        return (self.url_scheme or "").partition("+")[0]
 
 
 class SqlDialect(BaseModel):
@@ -255,10 +259,9 @@ class SqlDialect(BaseModel):
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
-    # URL scheme (``None`` = datasource type), further SQLAlchemy backends its URLs may use,
-    # sync/async DBAPI drivers, and their pip extra; read through ``driver_facts``.
+    # URL scheme (``None`` = datasource type), sync/async DBAPI drivers, and their pip extra;
+    # read through ``driver_facts``.
     url_scheme: str | None = None
-    url_backend_aliases: frozenset[str] = frozenset()
     sync_driver: str | None = None
     async_driver: str | None = None
     install_extra: str | None = None
@@ -266,11 +269,9 @@ class SqlDialect(BaseModel):
     def driver_facts(self, ds_type: str | None) -> DriverFacts:
         """``ds_type``'s driver facts: this dialect's when it serves ``ds_type``, else only ``ds_type`` as scheme."""
         if ds_type is None or ds_type not in self.ds_type_aliases:
-            return DriverFacts(url_scheme=ds_type, url_backends=frozenset({ds_type} if ds_type else ()))
-        scheme = self.url_scheme or ds_type
+            return DriverFacts(url_scheme=ds_type)
         return DriverFacts(
-            url_scheme=scheme,
-            url_backends=frozenset({scheme.partition("+")[0]}) | self.url_backend_aliases,
+            url_scheme=self.url_scheme or ds_type,
             sync_driver=self.sync_driver,
             async_driver=self.async_driver,
             install_extra=self.install_extra,
