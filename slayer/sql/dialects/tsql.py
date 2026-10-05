@@ -128,6 +128,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True
     log2_native: bool = False
+    integer_avg: bool = True
     max_identifier_bytes: int | None = 128  # sysname is nvarchar(128)
     # Anonymous: sqlglot re-emits a parsed APPROX_COUNT_DISTINCT as its
     # Presto-family APPROX_DISTINCT canonical, which is not a T-SQL function.

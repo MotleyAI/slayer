@@ -72,7 +72,8 @@ input SHALL remain boolean in every non-aggregate position (dimension, row filte
 #### Scenario: Emitted SQL on every dialect
 - **WHEN** SQL is generated for `sum(flag)`, `avg(flag)`, `min(flag)` and `max(flag)` on each
   supported dialect
-- **THEN** each aggregate takes the integer form of `flag` as its input, `min` / `max` convert
+- **THEN** each aggregate takes the integer form of `flag` as its input (T-SQL's `avg` reads it as a
+  float, since its integer `AVG` truncates), `min` / `max` convert
   the aggregate back to the dialect's boolean type, and no aggregate receives the raw boolean
 
 ### Requirement: Boolean aggregation result types and formats

@@ -13,7 +13,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
-from slayer.core.models import Aggregation
+from slayer.core.enums import DataType
+from slayer.core.models import Aggregation, Column
 from slayer.sql.dialects import SQLGLOT_NAMES
 
 from tests._dev2046_fixtures import customers_model, m, orders_model, orders_q
@@ -21,6 +22,7 @@ from tests._engine_helpers import _engine_generate
 
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 BOOLEAN_TYPES = frozenset({exp.DataType.Type.BOOLEAN, exp.DataType.Type.BIT})
+FLOAT_TYPES = frozenset({exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE})
 LOWERED = (exp.Sum, exp.Avg, exp.Min, exp.Max)
 BOOLEAN_SOURCES = ["flag", "big_order", "coalesce(flag, false)", "amount > 15"]
 
@@ -56,7 +58,8 @@ class TestLoweringOnEveryDialect:
     async def test_sum_avg_take_integer_input(self, dialect: str, source: str) -> None:
         tree = await _statement(dialect, f"sum({source})", f"avg({source})")
         for agg in (*_nodes(tree, exp.Sum), *_nodes(tree, exp.Avg)):
-            assert _int_cast(agg.this), f"{agg.sql(dialect=dialect)} takes a raw boolean"
+            read = agg.this.this if dialect == "tsql" and isinstance(agg, exp.Avg) else agg.this
+            assert _int_cast(read), f"{agg.sql(dialect=dialect)} takes a raw boolean"
             parent = agg.parent
             assert not (isinstance(parent, exp.Cast) and parent.to.this in BOOLEAN_TYPES), (
                 f"boolean cast over {agg.sql(dialect=dialect)}"
@@ -82,6 +85,30 @@ class TestLoweringOnEveryDialect:
         having = _nodes(tree, exp.Having)[0]
         for agg in (*_nodes(having, exp.Sum), *_nodes(having, exp.Max)):
             assert _int_cast(agg.this), f"{agg.sql(dialect=dialect)} takes a raw boolean in HAVING"
+
+
+class TestAvgIsFractional:
+    """T-SQL's AVG over integers truncates: there, and only there, its input is read as a float."""
+
+    @pytest.mark.parametrize("source", ["flag", "amount", "amount > 15", "amount - customer_id", "sum(amount)"])
+    @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
+    async def test_float_input_only_where_avg_truncates(self, dialect: str, source: str) -> None:
+        tree = await _statement(dialect, f"avg({source})", dimensions=["region"])
+        for agg in _nodes(tree, exp.Avg):
+            assert _float_cast(agg.this) is (dialect == "tsql"), agg.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("db_type", ["DECIMAL(10, 2)", "FLOAT"])
+    async def test_double_input_unchanged(self, db_type: str) -> None:
+        """An exact decimal keeps its precision; a float needs no conversion."""
+        model = orders_model()
+        model.columns.append(Column(name="price", type=DataType.DOUBLE, db_type=db_type))
+        tree = await _statement("tsql", "avg(price)", model=model)
+        (agg,) = _nodes(tree, exp.Avg)
+        assert not _float_cast(agg.this), agg.sql(dialect="tsql")
+
+
+def _float_cast(node: Expr) -> bool:
+    return isinstance(node, exp.Cast) and node.to.this in FLOAT_TYPES
 
 
 class TestStatisticalBuildersTakeTheInteger:

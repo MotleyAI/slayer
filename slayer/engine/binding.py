@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -1190,12 +1190,12 @@ def _bind_granularity_call(
     return TimeTruncKey(column=column, granularity=granularity)
 
 
-def _bind_agg(
+def _bind_agg_source(
     parsed: AggCall, *,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> AggregateKey:
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> AggregateSource:
     if _source_is_reaggregation(parsed.source, bundle=bundle):
         # Re-aggregation: bind the operand subtree — inner AggCalls
         # become AggregateKeys — so the outer key carries a nested-aggregate
@@ -1206,20 +1206,20 @@ def _bind_agg(
         )
         if isinstance(bound, SqlFragmentKey):
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
-        source = bound
-    elif isinstance(parsed.source, StarSource):
-        source = StarKey()
-    elif (
+        return bound
+    if isinstance(parsed.source, StarSource):
+        return StarKey()
+    if (
         isinstance(parsed.source, DottedRef)
         and parsed.source.parts
         and parsed.source.parts[-1] == "*"
     ):
         # Cross-model star: ``count(customers.*)`` → a StarKey carrying the join
         # path so the planner routes COUNT(*) through the join graph.
-        source = _resolve_dotted_star(
+        return _resolve_dotted_star(
             parsed.source.parts, scope=scope, bundle=bundle,
         )
-    elif isinstance(parsed.source, (Ref, DottedRef)):
+    if isinstance(parsed.source, (Ref, DottedRef)):
         bound_source = _bind(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
         )
@@ -1228,12 +1228,20 @@ def _bind_agg(
                 f"Aggregation source must resolve to a column / star, "
                 f"got {type(bound_source).__name__}."
             )
-        source = bound_source
-    else:
-        # Same-model scalar EXPRESSION source (``sum(amount - cost)``).
-        source = _bind_expression_agg_source(
-            parsed.source, agg=parsed.agg, scope=scope, bundle=bundle,
-        )
+        return bound_source
+    # Same-model scalar EXPRESSION source (``sum(amount - cost)``).
+    return _bind_expression_agg_source(
+        parsed.source, agg=parsed.agg, scope=scope, bundle=bundle,
+    )
+
+
+def _bind_agg(
+    parsed: AggCall, *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> AggregateKey:
+    source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).

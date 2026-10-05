@@ -397,7 +397,7 @@ class LiteralKey(_LeafKey, frozen=True):
 # A re-aggregation's source resolves entirely to attached values, so
 # the source may itself be an ``AggregateKey`` (or a composite of them — carried
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
-_AggregateSource = Union[
+AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
     "InKey", "TimePointCmpKey",
@@ -438,7 +438,7 @@ class AggregateKey(_FrozenKey, frozen=True):
     values (global vs per-group).
     """
 
-    source: _AggregateSource
+    source: AggregateSource
     agg: str
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
@@ -1325,31 +1325,43 @@ def _known_number(key: object, *, column_type: ColumnTypeFn) -> bool:
     return isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS
 
 
+def _boolean_positions(
+    children: Sequence[object], positions: Iterable[int], *, column_type: ColumnTypeFn,
+) -> FrozenSet[int]:
+    return frozenset(i for i in positions if i < len(children) and boolean_valued(children[i], column_type=column_type))
+
+
+def _arithmetic_numeric_booleans(key: ArithmeticKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+    everywhere = range(len(key.operands))
+    if key.op in _ARITHMETIC_OPS:
+        return _boolean_positions(key.operands, everywhere, column_type=column_type)
+    if key.op not in PREDICATE_COMPARISON_OPS or key.op in _NULL_TEST_OPS or len(key.operands) != 2:
+        return frozenset()
+    found = _boolean_positions(key.operands, everywhere, column_type=column_type)
+    other = [o for i, o in enumerate(key.operands) if i not in found]
+    return found if len(found) == 1 and _known_number(other[0], column_type=column_type) else frozenset()
+
+
+def _scalar_numeric_booleans(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+    if key.name in _NUMERIC_SCALARS:
+        return _boolean_positions(key.args, range(len(key.args)), column_type=column_type)
+    if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, column_type=column_type):
+        positions = _BOOLEAN_BRANCH_SCALARS[key.name]
+        return _boolean_positions(
+            key.args, range(len(key.args)) if positions is None else positions, column_type=column_type,
+        )
+    return frozenset()
+
+
 def numeric_boolean_positions(key: object, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
     """Child positions of ``key`` (operands, arguments, an IN column at 0) holding a boolean read as a number."""
-    def booleans(children: Sequence[object], positions: Iterable[int]) -> FrozenSet[int]:
-        return frozenset(
-            i for i in positions if i < len(children) and boolean_valued(children[i], column_type=column_type)
-        )
-
     if isinstance(key, ArithmeticKey):
-        everywhere = range(len(key.operands))
-        if key.op in _ARITHMETIC_OPS:
-            return booleans(key.operands, everywhere)
-        if key.op in PREDICATE_COMPARISON_OPS and key.op not in _NULL_TEST_OPS and len(key.operands) == 2:
-            found = booleans(key.operands, everywhere)
-            other = [o for i, o in enumerate(key.operands) if i not in found]
-            return found if len(found) == 1 and _known_number(other[0], column_type=column_type) else frozenset()
-        return frozenset()
+        return _arithmetic_numeric_booleans(key, column_type=column_type)
     if isinstance(key, InKey):
         numbers = any(_is_number_literal(v) for v in key.values)
         return frozenset({0}) if numbers and boolean_valued(key.column, column_type=column_type) else frozenset()
     if isinstance(key, ScalarCallKey):
-        if key.name in _NUMERIC_SCALARS:
-            return booleans(key.args, range(len(key.args)))
-        if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, column_type=column_type):
-            positions = _BOOLEAN_BRANCH_SCALARS[key.name]
-            return booleans(key.args, range(len(key.args)) if positions is None else positions)
+        return _scalar_numeric_booleans(key, column_type=column_type)
     return frozenset()
 
 

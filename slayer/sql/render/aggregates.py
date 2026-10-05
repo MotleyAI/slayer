@@ -127,13 +127,17 @@ def aggregate_input(*, value: Expression, aggregation: str, input_type: Optional
 def apply_aggregate(
     *, entry: AggEntry, value: Expression, input_type: Optional[DataType], dialect: SqlDialect,
 ) -> Expression:
-    """``entry``'s direct-node aggregate over ``value`` (read via :func:`aggregate_input`); a boolean
-    ``min`` / ``max`` converts the result back to the dialect's boolean."""
+    """``entry``'s direct-node aggregate over ``value`` (read via :func:`aggregate_input`); ``avg`` is fractional
+    on every dialect; a boolean ``min`` / ``max`` converts the result back to the dialect's boolean."""
     if entry.node_class is None:
         raise ValueError(f"Aggregation {entry.name!r} has no SQL node to render.")
     if entry.dispatch == DISPATCH_DISTINCT:
         return entry.node_class(this=exp.Distinct(expressions=[value]))
-    aggregate = entry.node_class(this=aggregate_input(value=value, aggregation=entry.name, input_type=input_type))
+    read = aggregate_input(value=value, aggregation=entry.name, input_type=input_type)
+    # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
+    if entry.name == "avg" and dialect.integer_avg and input_type is not DataType.DOUBLE:
+        read = exp.Cast(this=read, to=exp.DataType.build("FLOAT"))
+    aggregate = entry.node_class(this=read)
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
     if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate

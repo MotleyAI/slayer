@@ -54,3 +54,4 @@
 - [x] 6.9 Docs: `docs/concepts/models.md` boolean row = numeric set and the sentence says every numeric aggregation; `docs/concepts/formulas.md` one sentence on booleans in arithmetic, and the `consecutive_periods` input sentence drops the value-position rejection
 - [x] 6.10 Comment on DEV-1972 that expression sources now reach the builders as AST
 - [x] 6.11 `weighted_avg` skips a NULL value's weight and never divides as integers (user-approved 2026-10-05): template fix; re-derive the `weighted_avg` oracles that counted NULL values' weights; `test_parameters_not_masked_by_source_filter` checks the unmasked weight through the custom `wavg`; MODIFIED `models/column-filters` scenario
+- [x] 6.12 T-SQL avg reads its input as a float (integer AVG truncates): dialect flag in the aggregate-application helper; emission + SQL Server execution tests; re-bless the 10 T-SQL goldens whose AVG reads a non-DOUBLE input, per protocol

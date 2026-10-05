@@ -1565,6 +1565,14 @@ class TestSQLServerBooleanAggregation:
         assert row["orders.c"] == GT15_TOTALS["count"]
         assert bool(row["orders.mx"]) is True
 
+    async def test_avg_is_fractional(self, _sqlserver_boolean_storage) -> None:
+        """T-SQL's AVG over integers truncates; ``avg`` never does."""
+        engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
+        resp = await engine.execute(orders_q(dimensions=["region"], measures=[bool_measure("avg(customer_id)")]))
+        assert {k: float(v) for k, v in by_dim(resp, "region").items()} == pytest.approx({"east": 400 / 3, "west": 200.0})
+        resp = await engine.execute(orders_q(measures=[bool_measure("avg(amount > 15)", "a")]))
+        assert float(resp.data[0]["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
+
     async def test_projected_boolean_measure(self, _sqlserver_boolean_storage) -> None:
         """``sum(amount) > 50`` projects as a BIT value; NULL when the sum is NULL."""
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)

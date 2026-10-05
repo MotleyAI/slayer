@@ -256,6 +256,9 @@ class SqlDialect(BaseModel):
     # native-type preservation.
     exact_decimal_native: bool = True
 
+    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    integer_avg: bool = False
+
     # Conservative universal identifier budget in BYTES; ``None`` = unbounded
     # (fitting hooks become no-ops). Default is the tightest Tier-1 value
     # (Postgres), so a new dialect over-shortens rather than silently truncating.
