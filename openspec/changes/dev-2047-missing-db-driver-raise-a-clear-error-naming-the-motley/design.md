@@ -36,6 +36,9 @@ str | None` (postgres, mysql, clickhouse, sqlserver, snowflake, bigquery; `None`
 `dialect.url_scheme` only when the type is one of that dialect's `ds_type_aliases`; otherwise the
 type itself — so an unknown type (which `dialect_for_ds_type` maps to Postgres) keeps `<type>://`,
 and `None` still raises. The sqlite/duckdb/tsql branches of `get_connection_string` are untouched.
+Every consumer reads these facts through `SqlDialect.driver_facts(ds_type)`, which yields only
+`<type>` as scheme for a type the dialect does not serve, so an unregistered type never inherits the
+fallback's drivers or extra.
 Alternative rejected: a new `_DRIVER_EXTRAS` dict beside the registry — a third hand-synced table.
 
 **D2 — `MissingDriverError(SlayerError, ImportError)`** in `slayer/core/errors.py`, carrying
