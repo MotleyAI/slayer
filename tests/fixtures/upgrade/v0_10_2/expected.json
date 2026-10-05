@@ -1,0 +1,476 @@
+{
+  "cube_by_region": {
+    "data_source": "cube",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "measures": [
+        {
+          "formula": "sum(amount_col)",
+          "name": "rev"
+        }
+      ],
+      "source_model": "orders"
+    },
+    "rows": [
+      {
+        "region": "East",
+        "rev": 130.0
+      },
+      {
+        "region": "North",
+        "rev": 72.0
+      },
+      {
+        "region": "South",
+        "rev": 90.0
+      }
+    ]
+  },
+  "dr_empty": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_empty"
+    },
+    "rows": [
+      {
+        "rev_sum": 292.0
+      }
+    ]
+  },
+  "dr_offset_plus2": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_offset_plus2"
+    },
+    "rows": [
+      {
+        "rev_sum": 77.0
+      }
+    ]
+  },
+  "dr_offset_z": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_offset_z"
+    },
+    "rows": [
+      {
+        "rev_sum": 212.0
+      }
+    ]
+  },
+  "dr_one": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_one"
+    },
+    "rows": [
+      {
+        "rev_sum": 292.0
+      }
+    ]
+  },
+  "dr_slashed": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_slashed"
+    },
+    "rows": [
+      {
+        "rev_sum": 62.0
+      }
+    ]
+  },
+  "dr_three": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "dr_three"
+    },
+    "rows": [
+      {
+        "rev_sum": 292.0
+      }
+    ]
+  },
+  "flt_in": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_in"
+    },
+    "rows": [
+      {
+        "rev_sum": 27.0
+      }
+    ]
+  },
+  "flt_joined": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_joined"
+    },
+    "rows": [
+      {
+        "rev_sum": 127.0
+      }
+    ]
+  },
+  "flt_offset": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_offset"
+    },
+    "rows": [
+      {
+        "rev_sum": 282.0
+      }
+    ]
+  },
+  "flt_range": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_range"
+    },
+    "rows": [
+      {
+        "rev_sum": 102.0
+      }
+    ]
+  },
+  "flt_slashed": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_slashed"
+    },
+    "rows": [
+      {
+        "rev_sum": 227.0
+      }
+    ]
+  },
+  "flt_text": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [],
+      "measures": [
+        {
+          "formula": "sum(rev)",
+          "name": "rev_sum"
+        }
+      ],
+      "source_model": "flt_text"
+    },
+    "rows": [
+      {
+        "rev_sum": 7.0
+      }
+    ]
+  },
+  "lite_sum_n": {
+    "data_source": "lite",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "status"
+      ],
+      "measures": [
+        {
+          "formula": "sum_n(amount)",
+          "name": "rev2"
+        }
+      ],
+      "source_model": "sales"
+    },
+    "rows": [
+      {
+        "rev2": 14.0,
+        "status": "2024/01/01"
+      },
+      {
+        "rev2": 140.0,
+        "status": "new"
+      },
+      {
+        "rev2": 430.0,
+        "status": "ok"
+      }
+    ]
+  },
+  "memory:m_offset": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "measures": [
+        {
+          "formula": "amount:sum",
+          "name": "rev"
+        }
+      ],
+      "source_model": "orders",
+      "time_dimensions": [
+        {
+          "date_range": [
+            "2024-01-01T00:00:00+02:00",
+            "2024-06-30T00:00:00+02:00"
+          ],
+          "dimension": "ordered_at",
+          "granularity": "month"
+        }
+      ]
+    },
+    "rows": [
+      {
+        "ordered_at": "2024-01-01 00:00:00",
+        "rev": 25.0
+      },
+      {
+        "ordered_at": "2024-02-01 00:00:00",
+        "rev": 30.0
+      },
+      {
+        "ordered_at": "2024-03-01 00:00:00",
+        "rev": 7.0
+      },
+      {
+        "ordered_at": "2024-06-01 00:00:00",
+        "rev": 40.0
+      }
+    ]
+  },
+  "memory:m_rank": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "status"
+      ],
+      "measures": [
+        {
+          "formula": "total:sum",
+          "name": "total_sum"
+        }
+      ],
+      "source_model": "status_rank"
+    },
+    "rows": [
+      {
+        "status": "new",
+        "total_sum": 70.0
+      },
+      {
+        "status": "ok",
+        "total_sum": 215.0
+      }
+    ]
+  },
+  "memory:m_rank_order": {
+    "data_source": "shop",
+    "ordered": true,
+    "query": {
+      "dimensions": [
+        "status"
+      ],
+      "limit": 2,
+      "measures": [
+        {
+          "formula": "amount:sum",
+          "name": "rev"
+        }
+      ],
+      "order": [
+        {
+          "column": "rank(amount:sum)",
+          "direction": "asc"
+        }
+      ],
+      "source_model": "orders"
+    },
+    "rows": [
+      {
+        "rev": 215.0,
+        "status": "ok"
+      },
+      {
+        "rev": 70.0,
+        "status": "new"
+      }
+    ]
+  },
+  "shop_by_region": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "measures": [
+        {
+          "formula": "sum(amount)",
+          "name": "rev"
+        }
+      ],
+      "source_model": "orders"
+    },
+    "rows": [
+      {
+        "region": "East",
+        "rev": 130.0
+      },
+      {
+        "region": "North",
+        "rev": 72.0
+      },
+      {
+        "region": "South",
+        "rev": 90.0
+      }
+    ]
+  },
+  "shop_sum_n": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "status"
+      ],
+      "measures": [
+        {
+          "formula": "sum_n(amount)",
+          "name": "rev2"
+        }
+      ],
+      "source_model": "orders"
+    },
+    "rows": [
+      {
+        "rev2": 14.0,
+        "status": "2024/01/01"
+      },
+      {
+        "rev2": 140.0,
+        "status": "new"
+      },
+      {
+        "rev2": 430.0,
+        "status": "ok"
+      }
+    ]
+  },
+  "status_rank": {
+    "data_source": "shop",
+    "ordered": false,
+    "query": {
+      "dimensions": [
+        "status"
+      ],
+      "measures": [
+        {
+          "formula": "sum(total)",
+          "name": "total_sum"
+        }
+      ],
+      "source_model": "status_rank"
+    },
+    "rows": [
+      {
+        "status": "new",
+        "total_sum": 70.0
+      },
+      {
+        "status": "ok",
+        "total_sum": 215.0
+      }
+    ]
+  }
+}

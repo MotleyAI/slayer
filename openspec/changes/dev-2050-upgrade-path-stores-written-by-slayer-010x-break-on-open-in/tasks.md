@@ -2,7 +2,7 @@
 
 Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Linear issue DEV-2050 for the shapes), never current-code constructors, and MUST fail on `main` before implementation. At plan time, 0.10.2 behaviour was reproduced with `uv venv <dir>` + `uv pip install --python <dir> motley-slayer==0.10.2` (served from the local uv cache in the sandbox). The generator then runs under that venv's python and drives 0.10.2's own `YAMLStorage` / `SQLiteStorage` / `SlayerQueryEngine` / `Memory` / `slayer import-cube`.
 
-- [ ] 1.1 Upgrade corpus: `tests/fixtures/upgrade/v0_10_2/generate.py` builds, with real `motley-slayer==0.10.2` in a throwaway `uv` venv:
+- [x] 1.1 Upgrade corpus: `tests/fixtures/upgrade/v0_10_2/generate.py` builds, with real `motley-slayer==0.10.2` in a throwaway `uv` venv:
   - a DuckDB data file;
   - a YAML store and a SQLite store, each containing:
     - an ingested model;
@@ -19,28 +19,28 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
   - with the datasource entry removed: everything loads, and no connection is attempted.
 
   Verify: fails on main.
-- [ ] 1.2 `models/stored-upgrade` — refinement-gate scenarios:
+- [x] 1.2 `models/stored-upgrade` — refinement-gate scenarios:
   - v10 with no datasource entry loads and is written back at v14;
   - v10 with an unreachable Postgres (port 1) loads, with a spy proving refinement and engine creation are never called;
   - v5 with no datasource keeps the "unavailable for type refinement" error;
   - v7 is still refined.
 
   Verify: the v10 cases fail on main.
-- [ ] 1.3 `models/join-keys` — every new or modified scenario:
+- [x] 1.3 `models/join-keys` — every new or modified scenario:
   - source-side hidden column, with the 0.10.2 rows, cast-free `ON` golden SQL on DuckDB/SQLite, write-back, a second load that leaves file bytes unchanged, and re-save passing;
   - target-side hidden column on v10 and v13 targets;
   - a dotted key still fails while its siblings load;
   - a SQLite corrupt-JSON sibling: the others load, exactly one warning.
 
   Postgres no-cast check in an integration test. Existing canonicalisation tests stay green. Verify: the new ones fail on main.
-- [ ] 1.4 `models/stored-upgrade` — rank scenarios:
+- [x] 1.4 `models/stored-upgrade` — rank scenarios:
   - a 0.10.2 query-backed model with a `raw_formula` rank order, executed on the YAML and SQLite backends, ranking descending;
   - a 0.10.2 memory query (YAML `.md` and SQLite);
   - a v13 model with a v5 source query and un-rewritten `raw_formula` comes out at model v14 / query v6, repaired;
   - a v3 memory with a v5 query comes out at memory v4 / query v6, repaired.
 
   Verify: fail on main.
-- [ ] 1.5 `models/stored-upgrade` — `date_range` scenarios:
+- [x] 1.5 `models/stored-upgrade` — `date_range` scenarios:
   - offset bounds return the 0.10.2 rows on DuckDB (+ Postgres integration);
   - slashed bounds;
   - `[]`, 1-element and 3-element ranges give unfiltered rows;
@@ -48,13 +48,13 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
   - a version-less client query with an offset bound or `[]` is still rejected.
 
   Verify: the stored ones fail on main.
-- [ ] 1.6 `models/stored-upgrade` — filter-literal scenarios:
+- [x] 1.6 `models/stored-upgrade` — filter-literal scenarios:
   - `ordered_at >= '…Z'` runs;
-  - reversed operand order, both `BETWEEN` bounds, an all-literal `IN`, and a dotted joined TIMESTAMP are all repaired;
+  - reversed operand order, a two-bound `>= … and <= …` range, an all-literal `IN`, and a dotted joined TIMESTAMP are all repaired;
   - `status = '2024/01/01'` (TEXT) and a mixed `IN` stay verbatim, asserted on the loaded query's filter text.
 
   Verify: the repaired ones fail on main.
-- [ ] 1.7 `models/document-isolation` — every scenario:
+- [x] 1.7 `models/document-isolation` — every scenario:
   - a typed `StoredDocumentLoadError` naming the document, with `__cause__`, for a validation failure and for corrupt YAML/JSON;
   - one unloadable model (expression join key): every other model re-saves, re-ingest succeeds, and the report names the bad model once;
   - one invalid memory: listing returns the rest, and `get_memory` on the bad id raises (YAML + SQLite);
@@ -63,20 +63,20 @@ Every regression test uses raw dicts/YAML in the exact 0.10.x shape (see the Lin
   - population inference and memory entity resolution fail closed with the bad model's error.
 
   Verify: fail on main.
-- [ ] 1.8 `aggregations/formula-templates` — every scenario:
+- [x] 1.8 `aggregations/formula-templates` — every scenario:
   - SQLite `* '{n}'` and DuckDB `* CAST('{n}' AS DOUBLE)` return twice the sum;
   - the model re-saves without "never referenced";
   - `placeholder_names` includes `n` on every dialect;
   - `'{{n}}'` gives the literal `{n}`;
   - braces in a quoted identifier or comment stay inert;
   - `N'{n}'`, `E'{n}'` and dollar-quoted strings raise;
-  - kwarg `n="'a''b\c'"` produces golden SQL on duckdb, postgres, mysql, clickhouse and bigquery;
+  - kwarg `n` set to each dialect's spelling of the `a'b\c` literal produces golden SQL on duckdb, postgres, mysql, clickhouse and bigquery;
   - `'{value}'` and a column default for `'{w}'` raise at save;
   - a column kwarg for a quoted `n` raises at binding;
   - unquoted `{n}` is unchanged.
 
   Reverse `tests/test_dev1934_formula_agg.py::test_string_literal_placeholder_is_inert` into the `'{value}'`-raises test (approved in plan). Verify: fail on main.
-- [ ] 1.9 Codex review of the tests against this change's specs. Fix the valid findings.
+- [x] 1.9 Codex review of the tests against this change's specs. Fix the valid findings.
 
 ## 2. Typed load boundary and isolation helper
 

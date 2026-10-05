@@ -123,7 +123,7 @@ Never a context variable (engine §3.3). The save-time peer checks (`_find_edge_
 - **Offset handling.** Strip rather than convert to UTC: probes showed DuckDB 1.5.2 and Postgres 16 both read `'…02:00:00+05:00'` against a naive TIMESTAMP as `02:00:00`.
 - **Filter repair** runs in the storage load path, because column types are needed.
   - Each stored filter is parsed with sqlglot.
-  - The repair touches only string literals that are direct comparison operands: either operand order, both `BETWEEN` bounds, or every element of an all-literal `IN`.
+  - The repair touches only string literals that are direct comparison operands: either operand order, or every element of an all-literal `IN`.
   - The other operand must be a column resolving to DATE or TIMESTAMP through raw dicts, including dotted join paths. Stage-local names are unresolvable.
   - The rewritten filter is emitted through sqlglot in the stored filter syntax.
 - **`date_range` repair** is a pure dict step in query 5→6.

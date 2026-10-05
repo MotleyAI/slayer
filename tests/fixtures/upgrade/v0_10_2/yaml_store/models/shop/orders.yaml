@@ -1,0 +1,59 @@
+version: 10
+name: orders
+sql_table: orders
+source_kind: table
+query_variables: {}
+data_source: shop
+columns:
+- name: order_id
+  sql: order_id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+  format:
+    type: integer
+- name: customer_id
+  sql: customer_id
+  type: INT
+  primary_key: false
+  unique: false
+  hidden: false
+  format:
+    type: integer
+- name: status
+  sql: status
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: ordered_at
+  sql: ordered_at
+  type: TIMESTAMP
+  primary_key: false
+  unique: false
+  hidden: false
+- name: amount
+  sql: amount
+  type: DOUBLE
+  primary_key: false
+  unique: false
+  hidden: false
+  format:
+    type: float
+measures: []
+aggregations:
+- name: sum_n
+  formula: SUM({value}) * CAST('{n}' AS DOUBLE)
+  params:
+  - name: n
+    sql: '2'
+joins:
+- target_model: customers
+  join_pairs:
+  - - customer_id
+    - id
+  join_type: left
+  cardinality: many_to_one
+filters: []
+hidden: false

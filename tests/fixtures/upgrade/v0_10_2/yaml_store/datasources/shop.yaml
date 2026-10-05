@@ -1,0 +1,4 @@
+version: 2
+name: shop
+type: duckdb
+database: data.duckdb

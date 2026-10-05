@@ -1,9 +1,8 @@
 # Config for the la-* tools (github.com/MotleyAI/living-architecture).
 reviewers:
-  coderabbit: true
   sonar:
-    enabled: true
     project_key: MotleyAI_slayer
+architecture: true
 issue_key_pattern: "DEV-\\d+"
 commands:
   test: poetry run pytest -m "not integration"

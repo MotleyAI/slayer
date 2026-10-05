@@ -1,0 +1,39 @@
+version: 10
+name: sales
+sql_table: sales
+source_kind: table
+query_variables: {}
+data_source: lite
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+  format:
+    type: integer
+- name: status
+  sql: status
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: amount
+  sql: amount
+  type: DOUBLE
+  primary_key: false
+  unique: false
+  hidden: false
+  format:
+    type: float
+measures: []
+aggregations:
+- name: sum_n
+  formula: SUM({value}) * '{n}'
+  params:
+  - name: n
+    sql: '2'
+joins: []
+filters: []
+hidden: false

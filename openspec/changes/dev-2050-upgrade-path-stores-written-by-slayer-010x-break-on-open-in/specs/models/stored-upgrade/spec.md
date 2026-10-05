@@ -104,7 +104,7 @@ A query sent by a client SHALL keep being rejected for these shapes.
 ### Requirement: Stored legacy filter literals are repaired on load
 
 On load of a stored query, a string literal in a stored `filters` entry SHALL be repaired with the same offset and slash rules when both of these hold:
-- It is a direct comparison operand (`=`, `!=`, `<`, `<=`, `>`, `>=`, either operand order, either `BETWEEN` bound, or any element of an all-literal `IN` list).
+- It is a direct comparison operand (`=`, `!=`, `<`, `<=`, `>`, `>=`, either operand order, or any element of an all-literal `IN` list).
 - The other side is a column reference that resolves, through the stored models and their joins, to a DATE or TIMESTAMP column.
 
 A literal whose column cannot be resolved, or that compares a non-temporal column, SHALL be left unchanged.
@@ -116,7 +116,7 @@ A literal whose column cannot be resolved, or that compares a non-temporal colum
 
 #### Scenario: Every operand layout is repaired
 
-- **WHEN** stored filters read `'2024/01/01' <= ordered_at`, `ordered_at BETWEEN '2024-01-01T00:00:00Z' AND '2024-06-30T00:00:00+02:00'`, `ordered_at IN ('2024/01/01', '2024/02/01')` and `customers.signed_up_at >= '2024-01-01T00:00:00Z'` (a joined TIMESTAMP column)
+- **WHEN** stored filters read `'2024/01/01' <= ordered_at`, `ordered_at >= '2024-01-01T00:00:00Z' and ordered_at <= '2024-06-30T00:00:00+02:00'`, `ordered_at IN ('2024/01/01', '2024/02/01')` and `customers.signed_up_at >= '2024-01-01T00:00:00Z'` (a joined TIMESTAMP column)
 - **THEN** every legacy literal in them is repaired and each filter runs
 
 #### Scenario: Non-temporal and unresolvable comparisons stay verbatim

@@ -63,7 +63,7 @@ A non-literal binding SHALL be rejected with a typed template error naming the p
 
 #### Scenario: A quoted string argument cannot escape the literal
 
-- **WHEN** a query passes `n="'a''b\c'"` (a SQL string literal whose value is `a'b\c`) to an aggregation whose formula reads `'{n}'`
+- **WHEN** a query passes for `n` the target dialect's spelling of a SQL string literal whose value is `a'b\c` (`'a''b\c'` on DuckDB and Postgres) to an aggregation whose formula reads `'{n}'`
 - **THEN** the emitted literal's value is exactly `a'b\c`, quoted correctly on quote-doubling dialects (DuckDB, Postgres), backslash-escaping dialects (MySQL, ClickHouse) and BigQuery
 
 #### Scenario: The aggregated value inside quotes is rejected

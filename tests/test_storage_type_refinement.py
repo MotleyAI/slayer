@@ -37,7 +37,7 @@ from slayer.storage.type_refinement import (
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Newest on-disk schema still live-refined on load.
-_NEWEST_REFINED_VERSION = 10
+_NEWEST_REFINED_VERSION = 7
 
 
 # ---------------------------------------------------------------------------
