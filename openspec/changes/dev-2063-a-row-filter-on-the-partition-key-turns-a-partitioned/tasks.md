@@ -10,14 +10,14 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/ir/planned.py`: add `PlannedQuery.grain: Optional[List[SlotId]]`, remove `distinct_dimension_values`; add the pure grain-determination check (design D4) and call it from a model validator recursing into producer plans. Verify: 1.5 validator tests pass.
-- [ ] 2.2 `slayer/engine/compile/stages.py`: compute the grain list once from `public_projection[:n_dims + n_tds]` (deduplicated, `None` when raw rows); pass it to `PlannedQuery`, to `_emit_stage_schema` (replacing `n_grain_positions`) and to `stage_slots`; replace `_has_grouping` with `grain is not None`; `_frame_bound_columns` reads the grain's `TimeTruncKey` members; `_producer_grain_slot_ids` returns `set(producer_plan.grain or ())`. Verify: 1.3, 1.4, 1.6 pass.
-- [ ] 2.3 `slayer/engine/compile/staging.py`: `stage_slots` / `_compute_needs_column` take the grain instead of `distinct_dimension_values`; `_attach_join_keys` skips `"row"` attaches. Verify: 1.1, 1.2 pass.
-- [ ] 2.4 `slayer/sql/generator.py`: `distinct_dimension_values` reads → `grain is not None`; `_ranked_emission_from_kernel`, `_windowed_emission_from_kernel` and `_transform_grain_slot_ids` read `planned_query.grain`; the render-time plan check runs the D4 invariant recursively next to `_assert_stages_assigned`. Verify: 1.5 bypass test passes; every golden-SQL suite byte-identical (any delta value-preserving and recorded via `ALLOWED_DELTAS` with a reason).
-- [ ] 2.5 Grep for any remaining reader of `PlannedQuery.distinct_dimension_values` or re-derivation of the grain from hidden / projected ROW slots (`slayer/`, `tests/`) and route it through `grain`. Verify: grep clean.
+- [x] 2.1 `slayer/ir/planned.py`: add `PlannedQuery.grain: Optional[List[SlotId]]`, remove `distinct_dimension_values`; add the pure grain-determination check (design D4) and call it from a model validator recursing into producer plans. Verify: 1.5 validator tests pass.
+- [x] 2.2 `slayer/engine/compile/stages.py`: compute the grain list once from `public_projection[:n_dims + n_tds]` (deduplicated, `None` when raw rows); pass it to `PlannedQuery`, to `_emit_stage_schema` (replacing `n_grain_positions`) and to `stage_slots`; replace `_has_grouping` with `grain is not None`; `_frame_bound_columns` reads the grain's `TimeTruncKey` members; `_producer_grain_slot_ids` returns `set(producer_plan.grain or ())`. Verify: 1.3, 1.4, 1.6 pass.
+- [x] 2.3 `slayer/engine/compile/staging.py`: `stage_slots` / `_compute_needs_column` take the grain instead of `distinct_dimension_values`; `_attach_join_keys` skips `"row"` attaches. Verify: 1.1, 1.2 pass.
+- [x] 2.4 `slayer/sql/generator.py`: `distinct_dimension_values` reads → `grain is not None`; `_ranked_emission_from_kernel`, `_windowed_emission_from_kernel` and `_transform_grain_slot_ids` read `planned_query.grain`; the render-time plan check runs the D4 invariant recursively next to `_assert_stages_assigned`. Verify: 1.5 bypass test passes; every golden-SQL suite byte-identical (any delta value-preserving and recorded via `ALLOWED_DELTAS` with a reason).
+- [x] 2.5 Grep for any remaining reader of `PlannedQuery.distinct_dimension_values` or re-derivation of the grain from hidden / projected ROW slots (`slayer/`, `tests/`) and route it through `grain`. Verify: grep clean.
 
 ## 3. Gates
 
-- [ ] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
-- [ ] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` all clean.
+- [x] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
+- [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` all clean.
 - [ ] 3.3 Propose (per-change approval, never applied unasked) `[enforced: test:tests/test_dev2063_grain_guarantee.py]` tags on `architecture/semantics.arc42.md` Axiom 12 and `architecture/sql.arc42.md` P12.

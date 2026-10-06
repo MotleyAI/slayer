@@ -16,7 +16,9 @@ from slayer.core.format import NumberFormat
 from slayer.core.granularity import Granularity
 from slayer.core.keys import (
     CLOCK_FUNCTIONS,
+    SLOT_COMPOSITE_KINDS,
     AggregateKey,
+    LiteralKey,
     Phase,
     ScalarCallKey,
     TransformKey,
@@ -60,6 +62,7 @@ __all__ = [
     "emitted_plans",
     "is_spliced",
     "plan_has_semi_join_filters",
+    "validate_grain_determination",
 ]
 
 
@@ -469,7 +472,8 @@ class PlannedQuery(BaseModel):
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None
-    distinct_dimension_values: bool = True
+    # Dimension / time-dimension position slots in order; ``None`` iff raw-row mode.
+    grain: Optional[List[SlotId]] = Field(default_factory=list)
     # Time-dim columns where an explicit bound is a FRAME bound, not a population filter.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
@@ -536,6 +540,53 @@ class PlannedQuery(BaseModel):
         every producer plan (D7)."""
         _validate_stage_order(self)
         return self
+
+    @model_validator(mode="after")
+    def _grain_determination_invariant(self) -> "PlannedQuery":
+        """No ``_base`` column of a grouped plan widens its grain (recursive)."""
+        validate_grain_determination(self)
+        return self
+
+
+def validate_grain_determination(pq: "PlannedQuery") -> None:
+    """In a grouped plan every BASE ROW column is grain-determined; recurses into producers."""
+    if pq.grain is not None:
+        _check_grain_determined(pq)
+    for attach in pq.regroup_attach_plans:
+        validate_grain_determination(attach.producer_plan)
+
+
+def _check_grain_determined(pq: "PlannedQuery") -> None:
+    slots = _own_slots(pq)
+    grain_ids = set(pq.grain or ())
+    determined: Dict[ValueKey, bool] = {s.key: True for s in slots if s.id in grain_ids}
+    row_attach_hosts: Dict[ValueKey, List[ValueKey]] = {
+        sub.placeholder: [host for host, _ in attach.join_pairs]
+        for attach in pq.regroup_attach_plans if attach.attach_phase == "row"
+        for sub in attach.substitutions
+    }
+
+    def is_determined(key: ValueKey) -> bool:
+        if key not in determined:
+            determined[key] = False  # cycle guard
+            if isinstance(key, LiteralKey):
+                determined[key] = True
+            elif key in row_attach_hosts:
+                determined[key] = all(is_determined(h) for h in row_attach_hosts[key])
+            elif isinstance(key, SLOT_COMPOSITE_KINDS):
+                determined[key] = all(is_determined(c) for c in key.children())
+        return determined[key]
+
+    for slot in slots:
+        if (
+            slot.needs_column and slot.phase is Phase.ROW
+            and slot.stage is not None and slot.stage.kind is StageKind.BASE
+            and not is_determined(slot.key)
+        ):
+            raise MaterialisationStageError(
+                f"plan on {pq.source_relation!r} projects row value {slot.id!r} from "
+                f"_base that its grain does not determine; it would widen the grain.",
+            )
 
 
 def _own_slots(pq: "PlannedQuery") -> List[ValueSlot]:

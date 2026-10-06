@@ -484,7 +484,8 @@ class TestFlavorBMixedCaseQuoting:
         sql = await _engine_generate(
             query=query, model=accounts, extra_models=[cluster],
         )
-        assert "LEFT JOIN" in sql and " ON " in sql
+        assert "LEFT JOIN" in sql
+        assert " ON " in sql
         assert '"CLSTR_PIN"' in _norm(sql)
 
     async def test_bare_mixed_case_dimension_quoted(self) -> None:
@@ -666,7 +667,8 @@ class TestMixedCaseHelperUnit:
         tree = sqlglot.parse_one("CASE WHEN accounts.StateFlag = 'x' THEN 1 ELSE 0 END")
         out = tree.transform(gen._quote_mixed_case_identifiers).sql(dialect="postgres")
         assert '"StateFlag"' in out
-        assert "accounts" in out and '"accounts"' not in out  # lowercase qualifier untouched
+        assert "accounts" in out
+        assert '"accounts"' not in out  # lowercase qualifier untouched
 
     def test_quote_mixed_case_idempotent_and_skips_prequoted(self) -> None:
         gen = SQLGenerator(dialect="postgres")

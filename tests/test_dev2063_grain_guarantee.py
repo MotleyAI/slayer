@@ -262,7 +262,7 @@ def _stage_error(build: Callable[[], object]) -> str:
         build()
     err = ei.value
     if isinstance(err, ValidationError):
-        err = err.errors()[0]["ctx"]["error"]
+        err = err.errors()[0].get("ctx", {}).get("error")
     assert isinstance(err, MaterialisationStageError), repr(err)
     return str(err)
 
@@ -358,8 +358,9 @@ class TestRenderTimeInvariant:
     def test_model_copy_bypass_is_refused_at_render(self) -> None:
         pq = _plan(dimensions=["region"], measures=[REVENUE])
         bad = pq.model_copy(update={"row_slots": [*pq.row_slots, _hidden("h", _CITY)]})
+        bundle = _bundle()
         with pytest.raises(MaterialisationStageError):
-            generate_from_planned(planned_query=bad, bundle=_bundle(), dialect="duckdb")
+            generate_from_planned(planned_query=bad, bundle=bundle, dialect="duckdb")
 
     def test_model_copy_bypass_in_a_producer_is_refused_at_render(self) -> None:
         pq = _plan(dimensions=[_band("customer_id", 50)], measures=[REVENUE])
@@ -370,5 +371,6 @@ class TestRenderTimeInvariant:
         bad = pq.model_copy(update={
             "regroup_attach_plans": [attach.model_copy(update={"producer_plan": bad_producer})],
         })
+        bundle = _bundle()
         with pytest.raises(MaterialisationStageError):
-            generate_from_planned(planned_query=bad, bundle=_bundle(), dialect="duckdb")
+            generate_from_planned(planned_query=bad, bundle=bundle, dialect="duckdb")
