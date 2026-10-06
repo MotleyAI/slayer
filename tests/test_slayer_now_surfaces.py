@@ -41,7 +41,7 @@ async def _mcp_query_ids(server) -> set[int]:
 
 async def test_mcp_query_tool_honours_pin(monkeypatch, ev_storage) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
-    server = create_mcp_server(storage=ev_storage)
+    server: Any = create_mcp_server(storage=ev_storage)
     try:
         assert await _mcp_query_ids(server) == PINNED_WINDOW
     finally:

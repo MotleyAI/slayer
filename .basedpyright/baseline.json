@@ -1754,24 +1754,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 22,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 38,
                     "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAssignmentType",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 38,
                     "lineCount": 1
                 }
             }

@@ -25,6 +25,7 @@ from slayer.async_utils import run_sync
 from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.policy import SessionPolicy
+from slayer.core.time_points import SLAYER_NOW
 from slayer.embeddings.client import SLAYER_EMBEDDING_MODEL_ENV
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.mcp.server import create_mcp_server
@@ -173,7 +174,7 @@ def compute_truth(db_path: Path, probes: List[Probe]) -> Dict[Tuple[str, str], L
 
 async def fill_store(storage: YAMLStorage, db_path: Path, setup: str) -> SlayerQueryEngine:
     """Register the datasource and save the probe models, as far as ``setup`` asks."""
-    engine = SlayerQueryEngine(storage=storage, clock=lambda: NOW)
+    engine = SlayerQueryEngine(storage=storage)
     try:
         if setup != "empty":
             await storage.save_datasource(
@@ -196,7 +197,7 @@ async def build_engines(
     storage = YAMLStorage(base_dir=str(store))
     engine = await fill_store(storage=storage, db_path=db_path, setup="models")
     by_policy = {
-        name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec), clock=lambda: NOW)
+        name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec))
         for name, spec in policies.items()
     }
     return engine, by_policy
@@ -503,6 +504,8 @@ def main() -> int:
     # Search runs on its offline channels only: no embedding provider, so results don't depend on one.
     os.environ[SLAYER_EMBEDDING_MODEL_ENV] = "openai/text-embedding-3-small"
     os.environ.pop("OPENAI_API_KEY", None)
+    # Every engine (direct and MCP) resolves "now" to the pin.
+    os.environ[SLAYER_NOW] = NOW.isoformat()
 
     probes, policies = load_probes(ROOT / "probes.yaml")
     probes = [

@@ -82,8 +82,9 @@ async def test_falsey_explicit_clock_wins(monkeypatch) -> None:
 @pytest.mark.parametrize("value", ["2025-07-15T12:00:00Z", "2025-07-15T12:00:00+02:00"], ids=["Z", "offset"])
 def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
+    storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
-        SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
+        SlayerQueryEngine(storage=storage)
     msg = str(exc.value)
     assert "SLAYER_NOW" in msg
     assert value in msg
@@ -92,8 +93,9 @@ def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) ->
 
 def test_unparseable_value_rejected_at_build(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
+    storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
-        SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
+        SlayerQueryEngine(storage=storage)
     assert "SLAYER_NOW" in str(exc.value)
     assert "yesterday-ish" in str(exc.value)
 

@@ -8,17 +8,17 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 Add `host_clock()` to `slayer/core/time_points.py` per design Decision 1 — verify 1.1 passes
-- [ ] 2.2 `SlayerQueryEngine.__init__`: `clock: Optional[...] = None`, `clock if clock is not None else host_clock()` — verify 1.2 passes
-- [ ] 2.3 `create_mcp_server` / `create_app`: build the engine before seeding and ingestion — verify 1.3 and 1.4 pass
-- [ ] 2.4 `slayer.cli.main()`: validate via `host_clock()` before dispatch; `SlayerError` → stderr + exit 1 — verify 1.5 passes
-- [ ] 2.5 `query` tool docstring (`slayer/mcp/server.py`, "the host clock") gains "(pinned by `SLAYER_NOW` when set)" — verify `tests/test_time_points_mcp_docs.py` still passes
-- [ ] 2.6 `examples/comparisons/slayer/run_slayer.py`: set `SLAYER_NOW` from `NOW` in `main()`, drop both `clock=lambda: NOW` — verify `poetry run python examples/comparisons/slayer/run_slayer.py` shows no new FAIL vs. the pre-change run (record both summaries)
+- [x] 2.1 Add `host_clock()` to `slayer/core/time_points.py` per design Decision 1 — verify 1.1 passes
+- [x] 2.2 `SlayerQueryEngine.__init__`: `clock: Optional[...] = None`, `clock if clock is not None else host_clock()` — verify 1.2 passes
+- [x] 2.3 `create_mcp_server` / `create_app`: build the engine before seeding and ingestion — verify 1.3 and 1.4 pass
+- [x] 2.4 `slayer.cli.main()`: validate via `host_clock()` before dispatch; `SlayerError` → stderr + exit 1 — verify 1.5 passes
+- [x] 2.5 `query` tool docstring (`slayer/mcp/server.py`, "the host clock") gains "(pinned by `SLAYER_NOW` when set)" — verify `tests/test_time_points_mcp_docs.py` still passes
+- [x] 2.6 `examples/comparisons/slayer/run_slayer.py`: set `SLAYER_NOW` from `NOW` in `main()`, drop both `clock=lambda: NOW` — verify `poetry run python examples/comparisons/slayer/run_slayer.py` shows no new FAIL vs. the pre-change run (record both summaries)
 
 ## 3. Docs
 
-- [ ] 3.1 One sentence each: `docs/concepts/time.md` ("now" paragraph), `docs/interfaces/cli.md` (environment paragraph), `docs/reference/mcp.md` — verify `grep -rn SLAYER_NOW docs/` hits all three
+- [x] 3.1 One sentence each: `docs/concepts/time.md` ("now" paragraph), `docs/interfaces/cli.md` (environment paragraph), `docs/reference/mcp.md` — verify `grep -rn SLAYER_NOW docs/` hits all three
 
 ## 4. Gates
 
-- [ ] 4.1 `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` — all green
+- [x] 4.1 `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` — all green

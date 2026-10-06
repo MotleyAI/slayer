@@ -243,6 +243,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
 ) -> FastAPI:
+    # Built first: an invalid SLAYER_NOW must fail before any side effect.
+    engine = SlayerQueryEngine(storage=storage)
     # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
@@ -256,7 +258,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         )
     app = FastAPI(title="SLayer", version=_slayer_version())
-    engine = SlayerQueryEngine(storage=storage)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
     # does NOT receive `ingest_on_startup` — orchestration happens once,

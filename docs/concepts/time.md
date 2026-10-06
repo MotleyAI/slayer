@@ -29,7 +29,7 @@ Relative tokens are periods computed from "now", matched case-insensitively. `<u
 | `N <units> ago`, `N <units> from now` — the single unit N steps away | `3 months ago` = `[2026-06-01, 2026-07-01)` |
 | `week to date`, `month to date`, `quarter to date`, `year to date` | `year to date` = `[2026-01-01, 2026-09-30)` |
 
-"Now" is the SLayer host's local wall-clock time, read once per execution, so every stage of a multi-stage query sees the same instant; a new day's bounds are new SQL, so a cached result never crosses days. SQL-side `now()` / `current_date()` read the *database* clock instead.
+"Now" is the SLayer host's local wall-clock time, read once per execution, so every stage of a multi-stage query sees the same instant; a new day's bounds are new SQL, so a cached result never crosses days. SQL-side `now()` / `current_date()` read the *database* clock instead. Setting `SLAYER_NOW` to a naive ISO-8601 datetime or date (`2025-07-15T12:00:00`, `2025-07-15` = midnight) pins "now" for every engine built without an explicit `clock=`; a timezone-aware or unparseable value fails at startup.
 
 ### Comparisons
 

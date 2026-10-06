@@ -27,6 +27,8 @@ claude mcp add slayer -- uvx --from 'motley-slayer[postgres]' slayer mcp --inges
 
 `--ingest-on-startup` runs idempotent auto-ingestion across every configured datasource before the stdio channel opens, so models are available on the agent's first tool call. Drop it (or set `SLAYER_INGEST_ON_STARTUP=0`) to defer ingestion to a manual `ingest_datasource_models` call.
 
+Set `SLAYER_NOW` (e.g. `2025-07-15T12:00:00`) in the server's environment to pin the "now" that relative time filters like `'last 3 months'` resolve against, for reproducible answers over a fixed dataset.
+
 Replace `postgres` with your database driver (see [full list](../configuration/datasources.md#database-drivers)), or use `motley-slayer[all]` for all supported databases. SQLite and MCP work out of the box with the base install.
 
 See the [Getting Started guide](../getting-started/mcp.md) for full setup instructions including SSE/remote and permanent install options.
