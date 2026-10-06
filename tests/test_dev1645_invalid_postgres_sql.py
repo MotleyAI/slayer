@@ -1,4 +1,4 @@
-"""DEV-1645: SLayer compiler must not emit invalid Postgres SQL.
+"""SLayer compiler must not emit invalid Postgres SQL.
 
 Two defect classes, both valid-on-SQLite / invalid-on-Postgres:
 
@@ -235,8 +235,7 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_unprojected_joined_column_resolves_host_rooted(
         self,
     ) -> None:
-        """DEV-1645 rejected an unprojected multi-hop joined ORDER BY because it
-        could not bind to any FROM table. DEV-1747 D2 gives it a binding: a
+        """An unprojected multi-hop joined ORDER BY binds to no FROM table; a
         HOST-rooted CTE computes the per-group extreme over the crossed join and
         the outer query orders on that CTE's column, so nothing is unbound."""
         orders, joined = _orders_customers_regions()
@@ -297,10 +296,9 @@ class TestFlavorAOrderByUnprojected:
     async def test_orderby_joined_column_resolves_in_first_last_ranked_scope(
         self,
     ) -> None:
-        """The first/last path. DEV-1835: the ranked value desugars into its own
-        ``_cm_`` producer CTE; the joined sort key still cannot be a bare
-        reference against it, so it resolves through the projected ``_base``
-        scope — a valid reference, never a bare unbound one."""
+        """The first/last path: the ranked value is its own ``_cm_`` producer, and
+        the joined sort key takes the same host MAX wrap as beside ``sum`` —
+        never a ``_base`` GROUP BY key, which would split the one-row result."""
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
@@ -311,8 +309,10 @@ class TestFlavorAOrderByUnprojected:
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
-        assert "_cm_" in sql, sql  # DEV-1835: ranked value under uniform _cm_ scope
-        assert 'ORDER BY "orders.customers.regions.name"' in sql, sql
+        assert "_cm_" in sql, sql
+        assert "MAX(customers__regions.name)" in sql, sql
+        assert '"orders.customers.regions.name_max_host" DESC' in sql, sql
+        assert "GROUP BY customers__regions.name" not in sql, sql
 
 
 # ============================================================================
@@ -321,10 +321,6 @@ class TestFlavorAOrderByUnprojected:
 
 class TestFlavorAJoinedOrderByResolves:
     """Ordering by an unprojected JOINED column in a GROUPED query.
-
-    DEV-1645 rejected every unprojected joined / cross-model ORDER BY. DEV-1703
-    Phase 1 narrowed that (raw-rows split emission; a grouped LOCAL column's
-    hidden wrap), and DEV-1747 D2 closed the remainder.
 
     These three cases were ``xfail(strict=True)`` aspiring to a BARE split
     reference, ``ORDER BY customers__regions.name``. That aspiration was wrong
@@ -488,7 +484,8 @@ class TestFlavorBMixedCaseQuoting:
         sql = await _engine_generate(
             query=query, model=accounts, extra_models=[cluster],
         )
-        assert "LEFT JOIN" in sql and " ON " in sql
+        assert "LEFT JOIN" in sql
+        assert " ON " in sql
         assert '"CLSTR_PIN"' in _norm(sql)
 
     async def test_bare_mixed_case_dimension_quoted(self) -> None:
@@ -515,7 +512,7 @@ class TestFlavorBMixedCaseQuoting:
     async def test_first_last_ranked_mixed_case_dimension_quoted(self) -> None:
         """The first/last ranked-subquery path references group-by dimensions by
         bare name against the model.* subquery output; a mixed-case dimension
-        must be quoted there (DEV-1645, Codex review of PR #224)."""
+        must be quoted there."""
         model = SlayerModel(
             name="events",
             sql_table="public.events",
@@ -670,7 +667,8 @@ class TestMixedCaseHelperUnit:
         tree = sqlglot.parse_one("CASE WHEN accounts.StateFlag = 'x' THEN 1 ELSE 0 END")
         out = tree.transform(gen._quote_mixed_case_identifiers).sql(dialect="postgres")
         assert '"StateFlag"' in out
-        assert "accounts" in out and '"accounts"' not in out  # lowercase qualifier untouched
+        assert "accounts" in out
+        assert '"accounts"' not in out  # lowercase qualifier untouched
 
     def test_quote_mixed_case_idempotent_and_skips_prequoted(self) -> None:
         gen = SQLGenerator(dialect="postgres")

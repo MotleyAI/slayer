@@ -95,6 +95,7 @@ flowchart TD
 12. **Attach is cardinality-neutral**: attaching a producer never changes the
     host row count or any other column's value.
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
+    [enforced: test:tests/test_dev2063_grain_guarantee.py]
 13. **Rendered SQL executes verbatim**: `client.py` hands every statement to the
     DBAPI unchanged through one door (`exec_driver_sql`, no parameters);
     SQLAlchemy `text()` never touches rendered SQL — `:name` is never a bind

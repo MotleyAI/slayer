@@ -406,8 +406,7 @@ def _regroup_answer_slot_id(
 
 
 def _producer_grain_slot_ids(producer_plan) -> set:
-    projected = set(producer_plan.projection)
-    return {slot.id for slot in producer_plan.row_slots if slot.id in projected}
+    return set(producer_plan.grain or ())
 
 
 def _assert_attach_covers_producer_grain(
@@ -3957,6 +3956,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     row_slots, agg_slots, combined_slots = _bucket_slots(
         projection.registry.slots,
     )
+    grain: Optional[List[SlotId]] = (
+        list(dict.fromkeys(projection.public_projection[:n_dims + n_tds]))
+        if distinct_dimension_values else None
+    )
 
     # Raw-rows mode: any aggregate-phase slot came from a filter or order item, which the flag forbids.
     if distinct_dimension_values is False and agg_slots:
@@ -3977,9 +3980,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     )
 
     # Classify each ORDER BY target not a declared/public slot: it resolves like a filter ref (aggregate → hidden slot; grouped row column → hidden min/max wrap; transform/composite → hidden outer wrap).
-    _has_grouping = bool(agg_slots) or (
-        bool(n_dims or n_tds) and distinct_dimension_values
-    )
     # ORDER BY targets rewritten to a hidden wrap, keyed by (key, DIRECTION) since ``a ASC, a DESC`` needs MIN(a) and MAX(a).
     order_key_remap: Dict[Tuple[ValueKey, str], ValueKey] = {}
     # Host-grain / crossing wraps synthesized as late producers, and the slots they answer.
@@ -3999,7 +3999,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             # A combined regroup placeholder resolves via its producer, not a hidden MIN/MAX.
             continue
         if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            if not _has_grouping:
+            if grain is None:
                 continue  # raw-rows query -> split emission, no wrap needed
             path = _row_key_path(okey)
             # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
@@ -4189,9 +4189,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
-        stage_name=query.name, projection=projection,
-        n_grain_positions=n_dims + n_tds,
-        distinct_dimension_values=distinct_dimension_values,
+        stage_name=query.name, projection=projection, grain=grain,
         root=render_source_model, models_by_name=bundle.models_by_name,
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
@@ -4199,8 +4197,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         scope=scope,
     )
 
-    # Frame-bound column set: raw columns of this stage's non-hidden time dimensions.
-    frame_bound_columns = _frame_bound_columns(row_slots=row_slots)
+    frame_bound_columns = _frame_bound_columns(grain=grain, registry=projection.registry)
 
     # A COMBINED regroup attach is an isolated aggregate (value in the producer CTE, never _base) → still an empty-base spine.
     regroup_combined_slot_ids: set = set()
@@ -4240,7 +4237,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         masks=masks,
         order=order_entries,
         projection=projection.public_projection,
-        distinct_dimension_values=distinct_dimension_values,
+        grain=grain,
     )
 
     _assert_no_inline_kernel_aggregates(
@@ -4264,7 +4261,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
-        distinct_dimension_values=distinct_dimension_values,
+        grain=grain,
         frame_bound_columns=frame_bound_columns,
         filter_reachability=filter_reachability,
         empty_base_plan=empty_base_plan,
@@ -4319,19 +4316,10 @@ def _plan_empty_base_grain(
     return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids, host_gated=host_gated)
 
 
-def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:
-    """Raw column keys of the stage's NON-HIDDEN time dimensions — an explicit bound on one is a FRAME bound (hidden TimeTruncKey slots excluded)."""
-    out: List[ValueKey] = []
-    seen: set = set()
-    for rs in row_slots:
-        if rs.hidden or not isinstance(rs.key, TimeTruncKey):
-            continue
-        col = rs.key.column
-        if col in seen:
-            continue
-        seen.add(col)
-        out.append(col)
-    return out
+def _frame_bound_columns(*, grain: Optional[List[SlotId]], registry) -> List[ValueKey]:
+    """Raw columns of the grain's time dimensions — an explicit bound on one is a FRAME bound."""
+    keys = (registry.get(sid).key for sid in grain or ())
+    return list(dict.fromkeys(k.column for k in keys if isinstance(k, TimeTruncKey)))
 
 
 def _plan_src_row_filters(
@@ -4476,20 +4464,18 @@ def _emit_stage_schema(
     *,
     stage_name: Optional[str],
     projection,
-    n_grain_positions: int,
-    distinct_dimension_values: bool,
+    grain: Optional[List[SlotId]],
     root: Optional[SlayerModel],
     models_by_name: Dict[str, SlayerModel],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
     scope: ModelScope | StageSchema | None = None,
 ) -> StageSchema:
-    """``public_projection[:n_grain_positions]`` are the declared dimension / time-dimension occurrences."""
+    """Each grain slot's first public column names the schema grain; ``None`` in raw-row mode."""
     columns: List[StageColumn] = []
     alias_idx: Dict[str, int] = {}
-    grain: List[str] = []
-    grain_sids: set = set()
-    for pos, sid in enumerate(projection.public_projection):
+    flat_by_sid: Dict[SlotId, str] = {}
+    for sid in projection.public_projection:
         slot = projection.registry.get(sid)
         if slot.hidden:
             continue
@@ -4510,12 +4496,10 @@ def _emit_stage_schema(
                 models_by_name=models_by_name, upstream=upstream,
             ),
         ))
-        if pos < n_grain_positions and sid not in grain_sids:
-            grain_sids.add(sid)
-            grain.append(flat)
+        flat_by_sid.setdefault(sid, flat)
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", columns=columns,
-        grain=grain if distinct_dimension_values else None,
+        grain=None if grain is None else [flat_by_sid[sid] for sid in grain],
         default_time_dimension=_surviving_default(projection=projection, columns=columns, root=root),
     )
 

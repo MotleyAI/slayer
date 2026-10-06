@@ -203,7 +203,8 @@ is the coercion from coarser to finer.
     result row per combination of dimension values among its row-filtered rows
     (raw-row mode is the one documented exception; spec: `queries/semantics` ›
     Grain guarantee)
-    [enforced: test:tests/test_distinct_dimension_values.py]; it may be named
+    [enforced: test:tests/test_distinct_dimension_values.py]
+    [enforced: test:tests/test_dev2063_grain_guarantee.py]; it may be named
     explicitly, may be any dataset, is reported back, and defaults to the
     smallest dataset determining every queried dimension — inferred from
     dimensions and row-level filters only, never measures; spine dimensions

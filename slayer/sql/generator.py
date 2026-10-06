@@ -64,6 +64,7 @@ from slayer.ir.planned import (
     is_spliced,
     plan_has_semi_join_filters,
     regroup_producer_identity,
+    validate_grain_determination,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
@@ -231,18 +232,18 @@ def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmissio
         )
     agg_slot = planned_query.aggregate_slots[0]
     bucket_sid = kernel.bucket_slot_id
+    key_by_id = {s.id: s.key for s in planned_query.row_slots}
     dims: List[str] = []
     other_tds: List[str] = []
-    for rs in planned_query.row_slots:
-        if rs.hidden or rs.id == bucket_sid:
+    for sid in planned_query.grain or ():
+        if sid == bucket_sid:
             continue
-        if isinstance(rs.key, TimeTruncKey):
-            other_tds.append(rs.id)
+        if isinstance(key_by_id[sid], TimeTruncKey):
+            other_tds.append(sid)
         else:
-            dims.append(rs.id)
+            dims.append(sid)
     grain = [*dims, bucket_sid, *other_tds]
-    visible_row_ids = {s.id for s in planned_query.row_slots if not s.hidden}
-    if set(grain) != visible_row_ids or set(planned_query.projection) != {
+    if set(grain) != set(planned_query.grain or ()) or set(planned_query.projection) != {
         *grain, agg_slot.id,
     }:
         raise RuntimeError(
@@ -296,10 +297,10 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
             "ranked aggregate; synthesis and rendering disagree."
         )
     agg_slot = planned_query.aggregate_slots[0]
+    key_by_id = {s.id: s.key for s in planned_query.row_slots}
     grain = [
-        RankedGrainMember(host_slot_id=s.id, ranked_key=s.key)
-        for s in planned_query.row_slots
-        if not s.hidden
+        RankedGrainMember(host_slot_id=sid, ranked_key=key_by_id[sid])
+        for sid in planned_query.grain or ()
     ]
     if list(planned_query.projection) != [
         *[m.host_slot_id for m in grain], agg_slot.id,
@@ -1419,8 +1420,9 @@ class SQLGenerator:
         # One hoisted gate: above the kernel-body / combined-attaches early
         # returns so every render path raises the same shape error.
         self._validate_transform_input_shapes(planned_query=planned_query)
-        # Belt against a model_copy that bypassed the plan-time staging validator.
+        # Belts against a model_copy that bypassed the plan-time validators.
         self._assert_stages_assigned(planned_query=planned_query)
+        validate_grain_determination(planned_query)
 
         if (
             as_cte_body
@@ -1492,9 +1494,9 @@ class SQLGenerator:
             base_select = base_select.where(cond)
 
         # dim-only dedup emits GROUP BY before LIMIT so unique dim tuples aren't dropped past row N;
-        # distinct_dimension_values=False opts out.
+        # raw-row mode opts out.
         dim_only_dedup = (
-            planned_query.distinct_dimension_values
+            planned_query.grain is not None
             and bool(group_by_keys)
             and not has_aggregation
         )
@@ -3568,7 +3570,7 @@ class SQLGenerator:
             ):
                 base_select = base_select.where(cond)
             base_dim_only_dedup = (
-                planned_query.distinct_dimension_values
+                planned_query.grain is not None
                 and bool(base_group_by)
                 and not base_has_agg
             )
@@ -4528,7 +4530,7 @@ class SQLGenerator:
 
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
-        """The transform auto-grain: every projected row dimension, and every time dimension off the axis's column."""
+        """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's column."""
         axis_column = axis.column if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
@@ -4537,7 +4539,7 @@ class SQLGenerator:
             for sub in plan.substitutions
         }
         return [
-            sid for sid in planned_query.projection
+            sid for sid in planned_query.grain or ()
             if (slot := slots_by_id.get(sid)) is not None and slot.phase == Phase.ROW
             and slot.key not in combined_placeholders
             and SQLGenerator._in_transform_grain(slot=slot, axis_column=axis_column)
