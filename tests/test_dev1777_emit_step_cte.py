@@ -3,7 +3,7 @@ transform-chain step-CTE sites (window / unmaterialised-POST, in the host and
 cross-model chains). These pin the shell directly and deterministically:
 
 * the multi-slot-in-one-batch body, pinned in caller-supplied slot order;
-* the render-before-mutate ordering invariant a later same-step slot relies on;
+* a step's own aliases publish after its SELECT, so siblings never read each other;
 * block D (F2 unmaterialised-POST), which no real query reaches — it errors
   earlier in ``_render_outer_composite`` — so it has no golden pin; the shell it
   would use is pinned here, and block C (F1 unmaterialised-POST) covers the same
@@ -16,6 +16,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.keys import (
@@ -97,12 +98,12 @@ def test_multi_slot_one_batch_preserves_caller_order() -> None:
     assert sql.index('"orders.a"') < sql.index('"orders.b"')
 
 
-def test_render_runs_before_alias_map_mutation_per_slot() -> None:
+def test_step_aliases_publish_after_its_select() -> None:
     gen = _gen()
     avail: dict = {}
     observed: list[dict] = []
 
-    def render(_slot_obj) -> exp.Expression:
+    def render(_slot_obj) -> Expression:
         observed.append(dict(avail))  # snapshot at render time
         return exp.column("v", quoted=True)
 
@@ -119,8 +120,8 @@ def test_render_runs_before_alias_map_mutation_per_slot() -> None:
     )
     # A's own alias is not yet in the map when A renders.
     assert "A" not in observed[0]
-    # B's render sees A (materialised after A's render) but not itself.
-    assert "A" in observed[1]
+    # B's render sees neither: a step's own aliases publish after its SELECT.
+    assert "A" not in observed[1]
     assert "B" not in observed[1]
 
 
@@ -133,7 +134,7 @@ def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
     avail: dict = {}
     calls: list = []
 
-    def render(slot_obj) -> exp.Expression:
+    def render(slot_obj) -> Expression:
         calls.append(slot_obj)
         return exp.column("v", quoted=True)
 
@@ -196,7 +197,7 @@ def test_typed_slot_is_cast_wrapped() -> None:
         available_alias_by_slot_id={},
         source_relation="orders",
         slot_entries=[("sid", _slot("s", type_=DataType.DOUBLE))],
-        render=lambda s: exp.func("ABS", exp.column("v", quoted=True)),
+        render=lambda s: exp.Abs(this=exp.column("v", quoted=True)),
     )
     assert "CAST" in ctes[-1].query.sql(dialect="postgres").upper()
 
