@@ -23,6 +23,7 @@ from collections import deque
 from importlib.util import find_spec
 from typing import IO, TYPE_CHECKING
 
+import duckdb
 from pydantic import BaseModel, Field
 
 from slayer.async_utils import run_sync
@@ -36,7 +37,9 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.engine.ingestion import ingest_datasource
 from slayer.storage.base import StorageBackend, storage_base_dir
+from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
     import duckdb
@@ -768,8 +771,6 @@ def build_jaffle_shop(
     even when the DB was built days or weeks earlier. ``stream`` is forwarded
     to ``generate_data`` so jafgen's Rich progress bars stay visible.
     """
-    import duckdb
-
     if os.path.exists(db_path) and not force:
         conn = duckdb.connect(db_path)
         try:
@@ -840,12 +841,11 @@ def ensure_demo_datasource(
     # raise on multi-datasource storages). Enrichment still runs so demos
     # set up by older versions gain labels/measures on next startup.
     existing_model_names = set(run_sync(storage.list_models(data_source=name)))
+    stored = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=name)))}
     if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
         jaffle_models = []
         for t in TABLE_NAMES:
-            if t not in existing_model_names:
-                continue
-            model = run_sync(storage.get_model(name=t, data_source=name))
+            model = stored.get(t)
             if model is None:
                 continue
             if assume_yes and apply_demo_enrichment(model):
@@ -853,15 +853,11 @@ def ensure_demo_datasource(
             jaffle_models.append(model)
         return ds, jaffle_models, db_built
 
-    from slayer.engine.ingestion import ingest_datasource
-
     models = ingest_datasource(datasource=ds)
     written: list[SlayerModel] = []
     for model in models:
         apply_demo_enrichment(model)
-        existing_model: SlayerModel | None = run_sync(
-            storage.get_model(name=model.name, data_source=name)
-        )
+        existing_model = stored.get(model.name)
         if existing_model is not None and not assume_yes:
             written.append(existing_model)
             continue

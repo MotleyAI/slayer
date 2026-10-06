@@ -68,6 +68,7 @@ from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
@@ -665,16 +666,8 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
 
-        all_names = await storage.list_models(data_source=datasource_name)
-        matched: list[SlayerModel] = []
-        for n in all_names:
-            try:
-                m = await storage.get_model(n, data_source=datasource_name)
-            except Exception:
-                logger.warning("Failed to load model '%s', skipping", n, exc_info=True)
-                continue
-            if m is not None and not m.hidden:
-                matched.append(m)
+        loaded = DocumentLoadFailures().skip(await storage.load_models(data_source=datasource_name))
+        matched = [m for m in loaded if not m.hidden]
         matched.extend(await storage.builtin_models(datasource_name))
         matched.sort(key=lambda m: m.name)
 
@@ -753,13 +746,10 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         except AmbiguousModelError as exc:
             return _ambiguous_with_mcp_hint(exc)
         if model is None:
-            identities = await storage._list_all_model_identities()
-            available = []
-            for ds_name, n in identities:
-                m = await storage.get_model(n, data_source=ds_name)
-                if m is not None and not m.hidden:
-                    available.append(f"{ds_name}.{n}")
-            available.sort()
+            available = sorted(
+                f"{m.data_source}.{m.name}"
+                for m in DocumentLoadFailures().skip(await storage.load_models()) if not m.hidden
+            )
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
         return await render_model_inspection(
             model=model,
@@ -1646,11 +1636,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
-            models_in_ds: list[SlayerModel] = []
-            for model_name in await storage.list_models(data_source=name):
-                m = await storage.get_model(model_name, data_source=name)
-                if m is not None:
-                    models_in_ds.append(m)
+            models_in_ds = DocumentLoadFailures().skip(await storage.load_models(data_source=name))
             try:
                 await search_service.refresh_datasource(
                     name=name,

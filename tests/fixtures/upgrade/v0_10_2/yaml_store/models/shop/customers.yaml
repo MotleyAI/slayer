@@ -1,0 +1,38 @@
+version: 10
+name: customers
+sql_table: customers
+source_kind: table
+query_variables: {}
+data_source: shop
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  unique: false
+  hidden: false
+  format:
+    type: integer
+- name: name
+  sql: name
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: region
+  sql: region
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: signed_up_at
+  sql: signed_up_at
+  type: TIMESTAMP
+  primary_key: false
+  unique: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

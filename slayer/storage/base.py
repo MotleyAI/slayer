@@ -6,6 +6,7 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterable
@@ -19,6 +20,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
     ReservedModelNameError,
+    StoredDocumentLoadError,
     UnknownGranularityError,
 )
 from slayer.engine.column_dependency import validate_derived_columns
@@ -26,6 +28,7 @@ from slayer.core.join_walker import edges_between
 from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
+    _validate_column_name,
     is_base_column_sql,
     physical_column_sql,
 )
@@ -37,6 +40,8 @@ from slayer.memories.models import (
     _validate_memory_id_charset,
 )
 from slayer.storage import migrations as _mig
+from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_model_dict,
     extract_dunder_chains,
@@ -53,8 +58,14 @@ from slayer.storage.type_refinement import (
 
 
 _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
-# Live type refinement repairs pre-v11 schemas only; later bumps are dict-only.
-_LIVE_REFINEMENT_BELOW_VERSION = 11
+# v8 is the first version written only by ingest that refined both DOUBLE and SQLite INT
+# columns; older documents are refined against the live schema on load.
+_LIVE_REFINEMENT_BELOW_VERSION = 8
+_MODEL_LOAD_CONCURRENCY = 8
+_MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
+# Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
+_RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
+    "_RAW_PASS", default=None)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -117,6 +128,53 @@ def canonical_join_pairs(*, pairs: Any, source_columns: Any, target_columns: Any
         if isinstance(p, list) and len(p) == 2 else p
         for p in pairs
     ]
+
+
+def _undeclared_key(*, key: Any, columns: list) -> bool:
+    """A valid column name that no column of ``columns`` declares or spells physically."""
+    if not isinstance(key, str):
+        return False
+    try:
+        _validate_column_name(key, "join key")
+    except ValueError:
+        return False
+    return not any(
+        isinstance(c, dict) and isinstance(c.get("name"), str) and (
+            c["name"] == key
+            or (is_base_column_sql(c.get("sql")) and physical_column_sql(sql=c.get("sql"), name=c["name"]) == key)
+        )
+        for c in columns
+    )
+
+
+def _stored_type(*, key: Any, columns: Any) -> str | None:
+    """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
+    if not isinstance(columns, list):
+        return None
+    col = next((c for c in columns if isinstance(c, dict) and c.get("name") == key), None)
+    try:
+        return DataType(col["type"]).value if col is not None and "type" in col else None
+    except ValueError:
+        return None
+
+
+def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
+    pairs = join.get("join_pairs") if isinstance(join, dict) else None
+    return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
+
+
+def _incoming_keys(*, sibling: dict, target: str, target_columns: list) -> list[tuple[Any, str | None]]:
+    """``target``-side keys of ``sibling``'s joins into ``target``, each typed like its source key."""
+    joins = sibling.get("joins")
+    out: list[tuple[Any, str | None]] = []
+    for join in joins if isinstance(joins, list) else []:
+        if not isinstance(join, dict) or join.get("target_model") != target:
+            continue
+        canonical = {**join, "join_pairs": canonical_join_pairs(
+            pairs=join.get("join_pairs"), source_columns=sibling.get("columns"), target_columns=target_columns,
+        )}
+        out.extend((tgt, _stored_type(key=src, columns=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
+    return out
 
 
 def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: Any):
@@ -359,7 +417,7 @@ class StorageBackend(ABC):
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True,
+        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
         """Persist a model: reserved-name and case-collision rejection, then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips all of it. Backends must NOT override this."""
         if _validate:
@@ -367,12 +425,16 @@ class StorageBackend(ABC):
                 raise ReservedModelNameError(name=model.name)
             if self._ids_collide_as_filenames:
                 await self._check_model_identity_collision(model)
-            await validate_derived_columns(model=model, storage=self)
-            await self._validate_join_edges(model)
+            # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
+            loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
+            peers = {m.name: m for m in (failures or DocumentLoadFailures()).skip((loaded, unloaded))}
+            validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+            self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
             await self._validate_aggregations(model)
             await self._validate_column_granularities(model)
             _validate_default_time_dimension(model)
         await self._save_model_impl(model)
+        self._forget_raw(data_source=model.data_source, name=model.name)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -397,12 +459,12 @@ class StorageBackend(ABC):
                 where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
 
-    async def _validate_join_edges(self, model: SlayerModel) -> None:
-        """Save-time join validation: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
-        clash = await self._find_edge_named(
-            name=model.name, data_source=model.data_source,
-            exclude_model=model.name,
-        )
+    @staticmethod
+    def _validate_join_edges(
+        model: SlayerModel, *, peers: dict[str, SlayerModel], identities: list[tuple[str, str]],
+    ) -> None:
+        """Save-time join validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
+        clash = next((n for n, p in sorted(peers.items()) if any(j.name == model.name for j in p.joins)), None)
         if clash is not None:
             raise ValueError(
                 f"Model name '{model.name}' collides with the join name "
@@ -413,44 +475,13 @@ class StorageBackend(ABC):
         if not model.joins:
             return
         names = _checked_join_names(model)
-        identities = await self._list_all_model_identities()
-        ds_model_names = _checked_join_name_namespace(
-            model=model, names=names, identities=identities,
-        )
-        peers = await self._load_join_peers(
-            model, names=names, ds_model_names=ds_model_names,
-        )
+        _checked_join_name_namespace(model=model, names=names, identities=identities)
+        # Join targets always; every peer when a named edge must be checked against incident edges.
+        if not names:
+            targets = {j.target_model for j in model.joins}
+            peers = {n: p for n, p in peers.items() if n in targets}
         _check_edges_against_peers(model=model, peers=peers)
         _warn_unnamed_parallel_edges(model=model, peers=peers)
-
-    async def _load_join_peers(
-        self, model: SlayerModel, *, names: list[str], ds_model_names: set[str],
-    ) -> dict[str, SlayerModel]:
-        """Load peer models only where needed: join targets always, all peers only when a named edge must be checked against incident edges."""
-        peers: dict[str, SlayerModel] = {}
-        wanted = {j.target_model for j in model.joins}
-        if names:
-            wanted = {n for n in ds_model_names if n != model.name}
-        for peer_name in sorted(wanted):
-            if peer_name == model.name or peer_name in peers:
-                continue
-            peer = await self.get_model(peer_name, data_source=model.data_source)
-            if peer is not None:
-                peers[peer.name] = peer
-        return peers
-
-    async def _find_edge_named(
-        self, *, name: str, data_source: str, exclude_model: str,
-    ) -> str | None:
-        """The datasource model declaring a join named ``name``, or ``None``."""
-        identities = await self._list_all_model_identities()
-        for ds, peer_name in identities:
-            if ds != data_source or peer_name == exclude_model:
-                continue
-            peer = await self.get_model(peer_name, data_source=data_source)
-            if peer is not None and any(j.name == name for j in peer.joins):
-                return peer_name
-        return None
 
     async def _check_model_identity_collision(self, model: SlayerModel) -> None:
         """Reject a model whose ``data_source`` or ``name`` case-collides with an existing one (both are YAML filename components)."""
@@ -476,17 +507,44 @@ class StorageBackend(ABC):
                 data_source=model.data_source,
             )
 
-    async def builtin_models(self, data_source: str, *, detailed: bool = False) -> list[SlayerModel]:
+    async def builtin_models(
+        self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
+    ) -> list[SlayerModel]:
         """The datasource's built-in models (the time spine, unless a stored model shadows it);
         ``detailed`` describes its wiring, else its description points at ``inspect``. Empty for an unknown datasource."""
         if await self.get_datasource(data_source) is None:
             return []
-        if await self.get_model(TIME_SPINE_MODEL, data_source=data_source) is not None:
+        if (data_source, TIME_SPINE_MODEL) in await self._list_all_model_identities():
             return []
         if not detailed:
             return [spine_model(data_source=data_source)]
-        peers = [m for n in await self.list_models(data_source) if (m := await self.get_model(n, data_source=data_source))]
+        peers = (failures or DocumentLoadFailures()).skip(await self.load_models(data_source=data_source))
         return [spine_model(data_source=data_source, wired=peers)]
+
+    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerModel]:
+        """Every stored model (of ``data_source`` when given, bar ``exclude``), and the ones that failed to load."""
+        sem = asyncio.Semaphore(_MODEL_LOAD_CONCURRENCY)
+
+        async def _load(ds: str, name: str) -> SlayerModel | StoredDocumentLoadError | None:
+            async with sem:
+                try:
+                    return await self.get_model(name, data_source=ds)
+                except StoredDocumentLoadError as exc:
+                    return exc
+
+        token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
+        try:
+            loaded = await asyncio.gather(*(
+                _load(ds, name) for ds, name in await self._list_all_model_identities()
+                if (data_source is None or ds == data_source) and name != exclude
+            ))
+        finally:
+            if token is not None:
+                _RAW_PASS.reset(token)
+        return (
+            [m for m in loaded if isinstance(m, SlayerModel)],
+            [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
+        )
 
     async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
         """``get_model``, falling back to a built-in model of the datasource (the only one when unnamed)."""
@@ -520,6 +578,23 @@ class StorageBackend(ABC):
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
+    async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
+        """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
+        memo = _RAW_PASS.get()
+        if memo is None:
+            return await self._load_raw_model_dict(name=name, data_source=data_source)
+        read = memo.get((self, data_source, name))
+        if read is None:
+            read = memo[(self, data_source, name)] = asyncio.ensure_future(
+                self._load_raw_model_dict(name=name, data_source=data_source))
+        return await asyncio.shield(read)  # one waiter's cancellation must not fail the others
+
+    def _forget_raw(self, *, data_source: str, name: str) -> None:
+        """Drop ``(data_source, name)`` from the enclosing pass's raw reads after a write to it."""
+        memo = _RAW_PASS.get()
+        if memo is not None:
+            memo.pop((self, data_source, name), None)
+
     async def delete_model(
         self,
         name: str,
@@ -534,6 +609,7 @@ class StorageBackend(ABC):
             data_source=resolved_data_source, name=resolved_name,
         )
         if deleted:
+            self._forget_raw(data_source=resolved_data_source, name=resolved_name)
             canonical = f"{resolved_data_source}.{resolved_name}"
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=canonical,
@@ -651,6 +727,8 @@ class StorageBackend(ABC):
                 name=name, data=data, data_source=data_source,
             )
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
+            await self._declare_join_keys(name=name, data=data, data_source=data_source)
+            await self._repair_source_query_filters(data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_joins(
                 name=name, data=data, data_source=data_source,
@@ -675,13 +753,113 @@ class StorageBackend(ABC):
         for join in joins:
             if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
                 continue
-            peer = await self._load_raw_model_dict(
+            peer = await self._cached_raw_model_dict(
                 name=join["target_model"], data_source=data_source,
             )
             join["join_pairs"] = canonical_join_pairs(
                 pairs=join.get("join_pairs"), source_columns=data.get("columns"),
                 target_columns=peer.get("columns") if isinstance(peer, dict) else None,
             )
+
+    async def _declare_join_keys(self, *, name: str, data: dict, data_source: str) -> None:
+        """Declare each join key naming no column of this table- or SQL-backed document as its hidden base column:
+        source keys from its own joins, target keys from its siblings' joins into it. Typed like the opposite key."""
+        columns = data.get("columns")
+        if data.get("source_queries") or not isinstance(columns, list):
+            return
+        keys = await self._outgoing_keys(joins=data.get("joins"), data_source=data_source)
+        keys += await self._sibling_keys_into(name=name, columns=columns, data_source=data_source)
+        for key, key_type in keys:
+            if _undeclared_key(key=key, columns=columns):
+                columns.append({"name": key, "hidden": True, **({"type": key_type} if key_type else {})})
+
+    async def _outgoing_keys(self, *, joins: Any, data_source: str) -> list[tuple[Any, str | None]]:
+        """Source-side keys of ``joins``, each typed like its target key."""
+        keys: list[tuple[Any, str | None]] = []
+        for join in joins if isinstance(joins, list) else []:
+            target = join.get("target_model") if isinstance(join, dict) else None
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
+            keys.extend((src, _stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
+        return keys
+
+    async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
+        """Target-side keys of every same-datasource sibling's joins into ``name``."""
+        keys: list[tuple[Any, str | None]] = []
+        for ds, sibling_name in await self._list_all_model_identities():
+            if ds != data_source or sibling_name == name:
+                continue
+            sibling = await self._cached_raw_model_dict(name=sibling_name, data_source=ds)
+            if sibling is not None:
+                keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
+        return keys
+
+    async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
+        queries = data.get("source_queries")
+        if not isinstance(queries, list):
+            return
+        stage_names = frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str))
+        for query in queries:
+            await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
+
+    async def _repair_query_filters(
+        self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
+    ) -> None:
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column."""
+        filters = query.get("filters") if isinstance(query, dict) else None
+        if not isinstance(filters, list):
+            return
+        found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
+        if not any(found):
+            return
+        host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
+        if host is None:
+            return
+        for i, pairs in enumerate(found):
+            if pairs is None:
+                continue
+            temporal = [
+                literal for literal, column in pairs
+                if await self._stored_column_type(host=host, parts=[p.name for p in column.parts])
+                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+            ]
+            if temporal:
+                filters[i] = repaired_filter(filters[i], temporal)
+
+    async def _query_host(
+        self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
+    ) -> tuple[dict, str] | None:
+        """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
+        if isinstance(source, dict) and isinstance(source.get("columns"), list):
+            return source, str(source.get("data_source") or data_source)
+        name = source.get("source_name") if isinstance(source, dict) else source
+        if not isinstance(name, str) or name in stage_names:
+            return None
+        if data_source is None:
+            try:
+                identity = await self.resolve_model_identity(name)
+            except AmbiguousModelError:
+                return None
+            data_source = identity[0] if identity is not None else None
+        raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
+        return (raw, data_source) if isinstance(raw, dict) and data_source else None
+
+    async def _stored_column_type(self, *, host: tuple[dict, str], parts: list[str]) -> str | None:
+        """The stored type of the column ``parts`` names from ``host``, walking its stored joins."""
+        current, data_source = host
+        quals, leaf = parts[:-1], parts[-1]
+        if quals and quals[0] == current.get("name"):
+            quals = quals[1:]
+        for hop in quals:
+            joins = current.get("joins")
+            joins = [j for j in joins if isinstance(j, dict)] if isinstance(joins, list) else []
+            target = next((j.get("target_model") for j in joins if j.get("name") == hop), None) or next(
+                (hop for j in joins if not j.get("name") and j.get("target_model") == hop), None)
+            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            if peer is None:
+                return None
+            current = peer
+        return _stored_type(key=leaf, columns=current.get("columns"))
 
     async def _dedup_exact_inverse_joins(
         self, *, name: str, data: dict, data_source: str,
@@ -712,7 +890,7 @@ class StorageBackend(ABC):
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
-            cache[peer_name] = await self._load_raw_model_dict(
+            cache[peer_name] = await self._cached_raw_model_dict(
                 name=peer_name, data_source=data_source,
             )
         counterpart = _stored_counterpart(
@@ -779,7 +957,7 @@ class StorageBackend(ABC):
             if i == len(chain) - 1:
                 return True
             if hop not in cache:
-                cache[hop] = await self._load_raw_model_dict(
+                cache[hop] = await self._cached_raw_model_dict(
                     name=hop, data_source=data_source,
                 )
             current = cache[hop]
@@ -920,8 +1098,17 @@ class StorageBackend(ABC):
     @abstractmethod
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
-        """Every ``Memory`` whose entity set intersects ``entities``; ``None`` returns all rows, ``[]`` returns ``[]``."""
+    ) -> Loaded[Memory]:
+        """Every ``Memory`` whose entity set intersects ``entities`` (``None`` = all rows, ``[]`` = none), and the rows that failed to load."""
+
+    async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
+        """Decode, repair and validate one stored memory inside its load boundary."""
+        with stored_document_boundary(kind="memory", name=memory_id):
+            data = _mig.stamp_stored(decode())
+            # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
+            if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
+                await self._repair_query_filters(query=data.get("query"), data_source=None)
+            return Memory.model_validate(data)
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:
@@ -944,7 +1131,7 @@ class StorageBackend(ABC):
         if id is not None:
             _validate_memory_id_charset(id)
             if self._ids_collide_as_filenames:
-                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                ids = await self._memory_ids()
                 collide = _find_case_colliding_id(candidate=id, existing=ids)
                 if collide is not None:
                     raise IdCollisionError(
@@ -977,10 +1164,19 @@ class StorageBackend(ABC):
             raise MemoryNotFoundError(memory_id)
         return row
 
-    async def list_memories(
-        self, *, entities: list[str] | None = None
-    ) -> list[Memory]:
+    async def _memory_ids(self) -> list[str]:
+        """Every stored memory id, loadable or not."""
+        memories, errors = await self._list_memories_rows(entities=None)
+        return [m.id for m in memories] + [e.name for e in errors]
+
+    async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
+        """The memories ``list_memories`` returns, and the ones that failed to load."""
         return await self._list_memories_rows(entities=entities)
+
+    async def list_memories(
+        self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
+    ) -> list[Memory]:
+        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):
@@ -1001,7 +1197,7 @@ class StorageBackend(ABC):
         if not canonical_id:
             return 0
         is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
-        memories = await self._list_memories_rows(entities=None)
+        memories = await self.list_memories()
         rewritten = 0
         for memory in memories:
             if not self._memory_has_cascade_candidate(

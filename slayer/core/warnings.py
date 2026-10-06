@@ -184,6 +184,24 @@ class WholePeriodsNonNestingWarningPayload(SlayerWarning):
         )
 
 
+def _single_line(text: str) -> str:
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+class UnloadableDocumentWarning(SlayerWarning):
+    """A stored model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
+
+    kind: Literal["unloadable_document"] = "unloadable_document"
+    document_kind: Literal["model", "memory"]
+    data_source: Optional[str] = None
+    name: str
+    cause: str
+
+    def human_message(self) -> str:
+        document = f"{self.data_source}.{self.name}" if self.data_source is not None else f"memory:{self.name}"
+        return _single_line(f"skipped stored {self.document_kind} {document!r}, which cannot be loaded: {self.cause}")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -196,6 +214,7 @@ AnySlayerWarning = Annotated[
         ResponseTruncationWarning,
         StatementTimeoutSkippedWarning,
         WholePeriodsNonNestingWarningPayload,
+        UnloadableDocumentWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -216,6 +235,17 @@ class SlayerWholePeriodsWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``WholePeriodsNonNestingWarningPayload`` — one wording on both channels."""
 
     def __init__(self, payload: WholePeriodsNonNestingWarningPayload) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerUnloadableDocumentWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``UnloadableDocumentWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: UnloadableDocumentWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

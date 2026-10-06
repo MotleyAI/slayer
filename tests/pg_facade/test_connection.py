@@ -6,6 +6,7 @@ Driven over an in-memory asyncio stream pair with a fake storage + engine.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import struct
 import time
 import types
@@ -16,7 +17,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.pg_facade import protocol as proto
-from slayer.pg_facade.connection import PgConnection
+from slayer.pg_facade.connection import (
+    PgConnection,
+    _engine_error_fields,
+    _iter_param_placeholders,
+    _PreparedStatement,
+)
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
 
 
@@ -59,6 +65,9 @@ class _FakeStorage:
             if m.name == name:
                 return m
         return None
+
+    async def load_models(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
 
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         schema = self._schema_by_ds.get(datasource)
@@ -623,7 +632,6 @@ def test_engine_error_fields_walks_exception_chain() -> None:
     """Unit: ``_engine_error_fields`` finds a driver SQLSTATE through
     ``.orig`` / ``__cause__`` / ``__context__`` and returns its message;
     accepts both ``sqlstate`` and ``pgcode`` attributes; is cycle-safe."""
-    from slayer.pg_facade.connection import _engine_error_fields
 
     # via .orig
     assert _engine_error_fields(
@@ -796,7 +804,6 @@ async def test_binary_int8_wire() -> None:
 
 
 async def test_binary_date_wire() -> None:
-    import datetime as dt
 
     raw = await _binary_value_bytes(
         "SELECT order_date FROM orders", [{"orders.order_date": dt.date(2000, 1, 2)}],
@@ -805,7 +812,6 @@ async def test_binary_date_wire() -> None:
 
 
 async def test_binary_timestamp_wire() -> None:
-    import datetime as dt
 
     raw = await _binary_value_bytes(
         "SELECT ordered_at FROM orders",
@@ -938,7 +944,6 @@ async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
 class TestIterParamPlaceholders:
     @staticmethod
     def _placeholders(sql: str) -> List[Tuple[int, int, int]]:
-        from slayer.pg_facade.connection import _iter_param_placeholders
         return list(_iter_param_placeholders(sql))
 
     def test_plain_placeholder(self) -> None:
@@ -1008,7 +1013,6 @@ class TestIterParamPlaceholders:
     def test_substitute_params_preserves_literal_dollar(self) -> None:
         # End-to-end: the literal ``$1`` inside the quoted string must NOT
         # be substituted; only the real placeholder gets bound.
-        from slayer.pg_facade.connection import _PreparedStatement
         conn = PgConnection.__new__(PgConnection)
         stmt = _PreparedStatement(
             sql="WHERE note = '$1' AND status = $1",

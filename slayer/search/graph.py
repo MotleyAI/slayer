@@ -45,6 +45,7 @@ from pydantic import BaseModel
 
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -425,7 +426,7 @@ def _insert_mentions_edges(
             )
 
 
-async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
+async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures | None = None) -> tuple[Any, Any]:
     """Build an ephemeral in-memory LadybugDB graph from ``storage``.
 
     Returns ``(db, conn)``. Hidden models and hidden columns are excluded.
@@ -439,15 +440,13 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
     _create_schema(conn)
 
     datasource_names = await storage.list_datasources()
-    identities = await storage._list_all_model_identities()
+    failures = failures or DocumentLoadFailures()
+    visible_models: dict = {
+        f"{m.data_source}.{m.name}": m
+        for m in failures.skip(await storage.load_models()) if not m.hidden
+    }
 
-    visible_models: dict = {}
-    for ds, model_name in identities:
-        model = await storage.get_model(model_name, data_source=ds)
-        if model is not None and not model.hidden:
-            visible_models[f"{ds}.{model_name}"] = model
-
-    memories = await storage.list_memories(entities=None)
+    memories = await storage.list_memories(entities=None, failures=failures)
 
     # DEV-1549: load datasource descriptions so the graph schema can
     # expose `Datasource.description` for cypher_filter queries.
@@ -526,7 +525,9 @@ def clear_cache() -> None:
     _locks.clear()
 
 
-async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
+async def _get_or_rebuild(
+    storage: StorageBackend, *, failures: DocumentLoadFailures | None = None,
+) -> tuple[Any, Any]:
     """Return cached (db, conn) if the fingerprint matches; else rebuild."""
     key = _storage_key(storage)
 
@@ -548,7 +549,7 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
             return cached.db, cached.conn
 
         old = _cache.get(key)
-        db, conn = await build_graph(storage)
+        db, conn = await build_graph(storage, failures=failures)
         if old is not None:
             _close_entry(old)
         _cache[key] = _GraphCache(
@@ -562,6 +563,8 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
 async def get_filtered_ids(
     cypher: str,
     storage: StorageBackend,
+    *,
+    failures: DocumentLoadFailures | None = None,
 ) -> frozenset[str]:
     """Execute a Cypher query against the storage graph and return the
     frozenset of id strings from the result's ``id`` column.
@@ -575,7 +578,7 @@ async def get_filtered_ids(
             "install with: pip install motley-slayer[advanced_search]"
         )
     _validate_cypher(cypher)
-    _db, conn = await _get_or_rebuild(storage)
+    _db, conn = await _get_or_rebuild(storage, failures=failures)
     try:
         result = conn.execute(cypher)
         col_names: list[str] = result.get_column_names()

@@ -199,11 +199,10 @@ class TestFormulaExecution:
 
 
 class TestPlaceholderRecognition:
-    async def test_string_literal_placeholder_is_inert(self) -> None:
+    async def test_quoted_value_placeholder_is_rejected(self) -> None:
         lbl = Aggregation(name="lbl", formula="MAX(CASE WHEN {value} > 0 THEN '{value}' END)")
-        sql = await _sql("price:lbl", aggs=(lbl,))
-        assert "WHEN orders.price > 0 THEN '{value}'" in " ".join(sql.split())
-        assert "'orders.price'" not in sql
+        with pytest.raises(SqlTemplateError, match=r"\{value\}"):
+            await _sql("price:lbl", aggs=(lbl,))
 
     async def test_whitespace_inside_braces(self) -> None:
         spaced = Aggregation(name="s1", formula="SUM({ value })")

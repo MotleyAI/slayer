@@ -59,6 +59,7 @@ from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path, resolve_storage
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.type_refinement import (
     has_refineable_columns,
     has_sqlite_widenable_columns,
@@ -1698,16 +1699,8 @@ def _collect_cardinality_report(args, engine):
 def _collect_all_models(args, storage) -> list:
     """Every model in the requested datasource scope (for join-safety audit)."""
     ds_names = [args.datasource] if args.datasource else run_sync(storage.list_datasources())
-    models: list = []
-    for ds in ds_names:
-        for nm in run_sync(storage.list_models(data_source=ds)):
-            try:
-                m = run_sync(storage.get_model(nm, data_source=ds))
-            except Exception:  # noqa: BLE001 — a broken model must not abort the audit
-                continue
-            if m is not None:
-                models.append(m)
-    return models
+    failures = DocumentLoadFailures()
+    return [m for ds in ds_names for m in failures.skip(run_sync(storage.load_models(data_source=ds)))]
 
 
 def _collect_join_safety_findings(args, storage) -> list:
@@ -2029,11 +2022,12 @@ def _models_list(storage, args) -> None:
     if not names and not builtins:
         print("No models found.")
         return
+    models = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models()))}
     for name in names:
-        model = run_sync(storage.get_model(name))
-        if model and model.hidden:
+        model = models.get(name)
+        if model is None or model.hidden:
             continue
-        desc = f"  — {model.description}" if model and model.description else ""
+        desc = f"  — {model.description}" if model.description else ""
         print(f"{name}{desc}")
     for model in builtins:
         print(f"{model.name}  — {model.description}")

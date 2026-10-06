@@ -1,0 +1,23 @@
+version: 10
+name: flt_text
+source_queries:
+- version: 4
+  source_model: orders
+  measures:
+  - formula: amount:sum
+    name: rev
+  dimensions:
+  - name: status
+  filters:
+  - status = '2024/01/01'
+  whole_periods_only: false
+  distinct_dimension_values: true
+  to_many_handling: broadcast
+query_variables: {}
+data_source: shop
+columns: []
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

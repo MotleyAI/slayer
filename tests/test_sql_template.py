@@ -55,15 +55,16 @@ class TestPrecedence:
 
 
 class TestInertTokens:
-    def test_string_literal_is_inert(self) -> None:
+    def test_quoted_value_placeholder_raises(self) -> None:
         t = SqlTemplate(text="MAX(CASE WHEN {value} > 0 THEN '{value}' END)", dialect="postgres")
-        out = t.render({"value": _col("amount")}).sql(dialect="postgres")
-        assert out == "MAX(CASE WHEN t.amount > 0 THEN '{value}' END)"
+        bindings = {"value": _col("amount")}
+        with pytest.raises(SqlTemplateError):
+            t.render(bindings)
 
-    def test_escaped_quote_string_is_inert(self) -> None:
+    def test_escaped_quote_string_splices_literal(self) -> None:
         t = SqlTemplate(text="SUM({value}) + LENGTH('it''s {x}')", dialect="postgres")
-        out = t.render({"value": _col("a")}).sql(dialect="postgres")
-        assert "'it''s {x}'" in out
+        out = t.render({"value": _col("a"), "x": exp.Literal.string("y")}).sql(dialect="postgres")
+        assert "LENGTH('it''s y')" in out
         assert out.startswith("SUM(t.a)")
 
     def test_quoted_identifier_is_inert(self) -> None:
@@ -192,7 +193,7 @@ class TestPlaceholderNames:
     @pytest.mark.parametrize(("text", "dialect", "names"), [
         ("SUM({value}) * { scale }", "postgres", {"value", "scale"}),
         ("SUM({value}) * {scale} // 2", "duckdb", {"value", "scale"}),
-        ("MAX(CASE WHEN {value} > 0 THEN '{label}' END)", "postgres", {"value"}),
+        ("MAX(CASE WHEN {value} > 0 THEN '{label}' END)", "postgres", {"value", "label"}),
         ("SUM(`{foo}`) + {value}", "mysql", {"value"}),
         ("SUM(`{foo}`) + {value}", "postgres", {"foo", "value"}),
         ("SUM([{bar}]) + {value}", "tsql", {"value"}),

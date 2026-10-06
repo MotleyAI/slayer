@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
 
 import sqlglot
 
@@ -35,10 +34,6 @@ from slayer.sql.column_expansion import (
     resolve_ref_target,
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
-
-if TYPE_CHECKING:
-    from slayer.storage.base import StorageBackend
-
 
 # The walk only inspects ``exp.Column`` identifier shape, so sqlglot's default
 # dialect keeps it independent of the model's runtime datasource dialect.
@@ -246,36 +241,6 @@ def _detect_cycle_dfs(
     )
 
 
-async def _prefetch_reachable_models(
-    *,
-    model: SlayerModel,
-    storage: "StorageBackend",
-) -> tuple[dict[str, SlayerModel], frozenset[str]]:
-    """The datasource's models keyed by name (including ``model``) — the
-    bidirectional closure, so refs may cross edges declared on either side. Second
-    element: KNOWN names that failed to load, whose reverse joins can't be proved absent."""
-    out: dict[str, SlayerModel] = {model.name: model}
-    try:
-        names = await storage.list_models(model.data_source)
-    except Exception:
-        names = [j.target_model for j in model.joins]
-    unloaded: set[str] = set()
-    for name in names:
-        if name in out:
-            continue
-        try:
-            target = await storage.get_model(
-                name, data_source=model.data_source,
-            )
-        except Exception:
-            target = None
-        if target is not None:
-            out[name] = target
-        else:
-            unloaded.add(name)
-    return out, frozenset(unloaded)
-
-
 def _hop_path(*, quals, host: SlayerModel) -> tuple[str, ...]:
     """A reference's join-hop tokens with ``host``'s own name stripped; empty = host-local."""
     q = list(quals)
@@ -380,18 +345,18 @@ def _check_reference_arity(
         )
 
 
-async def validate_derived_columns(
+def validate_derived_columns(
     *,
     model: SlayerModel,
-    storage: "StorageBackend",
+    peers: dict[str, SlayerModel],
+    unloaded: frozenset[str],
 ) -> None:
     """Reject ``model``'s ill-formed derived columns at save time: the arity gate
     (:func:`_check_reference_arity`) then a :class:`ColumnCycleError` if any derived
-    column on ``model`` or a reachable same-datasource model cycles. Best-effort;
-    the compile-time / query-time guards remain authoritative."""
-    reachable, known_but_unloaded = await _prefetch_reachable_models(
-        model=model, storage=storage,
-    )
+    column on ``model`` or a same-datasource peer cycles. ``unloaded`` names peers that
+    failed to load, whose reverse joins can't be proved absent. Best-effort; the
+    compile-time / query-time guards remain authoritative."""
+    reachable = {**peers, model.name: model}
     _check_reference_arity(model=model, reachable=reachable)
     # Iterate roots in a deterministic order so the reported cycle is
     # stable across runs.
@@ -404,7 +369,7 @@ async def validate_derived_columns(
             roots.append((entity_name, col.name))
     for root in roots:
         cycle = _detect_cycle_dfs(
-            start=root, reachable=reachable, known_but_unloaded=known_but_unloaded,
+            start=root, reachable=reachable, known_but_unloaded=unloaded,
         )
         if cycle is not None:
             raise ColumnCycleError(cycle=cycle)

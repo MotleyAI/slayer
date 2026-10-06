@@ -1,0 +1,40 @@
+version: 10
+name: orders
+sql_table: orders
+query_variables: {}
+data_source: cube
+columns:
+- name: order_id
+  type: DOUBLE
+  primary_key: true
+  unique: false
+  hidden: false
+- name: status
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: ordered_at
+  type: TIMESTAMP
+  primary_key: false
+  unique: false
+  hidden: false
+- name: amount_col
+  sql: amount
+  type: DOUBLE
+  primary_key: false
+  unique: false
+  hidden: false
+measures:
+- formula: amount_col:sum
+  name: amount
+aggregations: []
+joins:
+- target_model: customers
+  join_pairs:
+  - - customer_id
+    - id
+  join_type: left
+  cardinality: many_to_one
+filters: []
+hidden: false

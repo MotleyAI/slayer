@@ -62,6 +62,9 @@ class _FakeStorage:
                 return m
         return None
 
+    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+        return [m for m in self._by_ds.get(data_source or "", []) if m.name != exclude], []
+
 
 class _FakeEngine:
     """Returns a fixed response — enough for LIMIT-0 schema derivation."""

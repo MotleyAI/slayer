@@ -1,0 +1,21 @@
+version: 10
+name: customers
+sql_table: customers
+query_variables: {}
+data_source: cube
+columns:
+- name: name
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+- name: region
+  type: TEXT
+  primary_key: false
+  unique: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

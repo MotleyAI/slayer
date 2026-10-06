@@ -13,6 +13,7 @@ import os
 import sqlite3
 from typing import Any
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
@@ -21,6 +22,7 @@ from slayer.storage.base import (
     _validate_path_component,
     _write_sample_fields,
 )
+from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
@@ -285,21 +287,24 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
         if not raw:
             return None
-        data = json.loads(raw)
-        return await self._migrate_and_refine_on_load(
-            name=name, data=data, data_source=data_source,
-        )
+        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+            return await self._migrate_and_refine_on_load(
+                name=name, data=json.loads(raw), data_source=data_source,
+            )
 
     async def _load_raw_model_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
         """Read the stored JSON verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
-        rewrite. Returns ``None`` when the row is absent or not a mapping."""
+        rewrite. Returns ``None`` when the row is absent, corrupt or not a mapping."""
         raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
         if not raw:
             return None
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
         return data if isinstance(data, dict) else None
 
     async def _delete_model_row(
@@ -360,6 +365,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             column_name=column_name, sampled=sampled,
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
+        self._forget_raw(data_source=data_source, name=model_name)
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
@@ -565,34 +571,40 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
         raw = await asyncio.to_thread(self._get_memory_sync, memory_id)
-        return Memory.model_validate(stamp_stored(json.loads(raw))) if raw else None
+        return await self._memory_from_stored(memory_id=memory_id, decode=lambda: json.loads(raw)) if raw else None
 
     def _list_memories_sync(
         self, entities: list[str] | None
-    ) -> list[str]:
+    ) -> list[tuple[str, str]]:
         with transaction(self.db_path) as conn:
             if entities is None:
                 rows = conn.execute(
-                    "SELECT data FROM memories ORDER BY id"
+                    "SELECT id, data FROM memories ORDER BY id"
                 ).fetchall()
             elif not entities:
                 return []
             else:
                 placeholders = ",".join("?" * len(entities))
                 rows = conn.execute(
-                    f"SELECT DISTINCT m.data FROM memories m "
+                    f"SELECT DISTINCT m.id, m.data FROM memories m "
                     f"JOIN memory_entities me ON me.memory_id = m.id "
                     f"WHERE me.entity IN ({placeholders}) "
                     f"ORDER BY m.id",
                     tuple(entities),
                 ).fetchall()
-        return [r[0] for r in rows]
+        return [(r[0], r[1]) for r in rows]
 
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
-        raws = await asyncio.to_thread(self._list_memories_sync, entities)
-        return [Memory.model_validate(stamp_stored(json.loads(r))) for r in raws]
+    ) -> Loaded[Memory]:
+        memories: list[Memory] = []
+        errors: list[StoredDocumentLoadError] = []
+        for memory_id, raw in await asyncio.to_thread(self._list_memories_sync, entities):
+            try:
+                memories.append(await self._memory_from_stored(memory_id=memory_id, decode=lambda r=raw: json.loads(r)))
+            except StoredDocumentLoadError as exc:
+                errors.append(exc)
+        return memories, errors
 
     def _delete_memory_sync(self, memory_id: str) -> bool:
         with transaction(self.db_path) as conn:

@@ -1,4 +1,4 @@
-"""SlayerModel v13 / SlayerQuery v5 / Memory v3: a stored bare ``rank(`` / ``dense_rank(`` keeps its descending order.
+"""SlayerModel v13 / SlayerQuery v5 / Memory v3 (re-applied at v14 / v6 / v4): a stored bare ``rank(`` / ``dense_rank(`` keeps its descending order.
 
 Stored-only steps: a fresh payload's bare call stays bare and fails with the missing-direction error.
 """
@@ -103,12 +103,12 @@ def _rewrite_order(item: Any) -> Any:
     if not isinstance(item, dict):
         return _rewrite_str(item)
     if "column" in item or "direction" in item:
-        return _rewrite_key(item, "column")
+        # An expression sort key persists as a placeholder column plus its ``raw_formula``.
+        return _rewrite_key(_rewrite_key(item, "column"), "raw_formula")
     return {_rewrite_str(k): v for k, v in item.items()}
 
 
-@register_migration(entity="SlayerModel", source_version=12, stored_only=True)
-def _model_v12_to_v13(data: dict) -> dict:
+def rewrite_model_ranks(data: dict) -> dict:
     """Fill ``direction='desc'`` into measure formulas; mark nested stored queries as stored."""
     if isinstance(data.get("measures"), list):
         data["measures"] = [_rewrite_key(m, "formula") for m in data["measures"]]
@@ -117,8 +117,7 @@ def _model_v12_to_v13(data: dict) -> dict:
     return data
 
 
-@register_migration(entity="SlayerQuery", source_version=4, stored_only=True)
-def _query_v4_to_v5(data: dict) -> dict:
+def rewrite_query_ranks(data: dict) -> dict:
     """Fill ``direction='desc'`` into every Mode-B field; mark an inline model as stored."""
     for field, rewrite in (
         ("measures", _rewrite_measure), ("filters", _rewrite_str), ("dimensions", _rewrite_dimension),
@@ -137,9 +136,13 @@ def _query_v4_to_v5(data: dict) -> dict:
     return data
 
 
-@register_migration(entity="Memory", source_version=2, stored_only=True)
-def _memory_v2_to_v3(data: dict) -> dict:
+def stamp_memory_query(data: dict) -> dict:
     """Mark the bundled query as stored."""
     if isinstance(data.get("query"), dict):
         data["query"] = stamp_stored(data["query"])
     return data
+
+
+register_migration(entity="SlayerModel", source_version=12, stored_only=True)(rewrite_model_ranks)
+register_migration(entity="SlayerQuery", source_version=4, stored_only=True)(rewrite_query_ranks)
+register_migration(entity="Memory", source_version=2, stored_only=True)(stamp_memory_query)

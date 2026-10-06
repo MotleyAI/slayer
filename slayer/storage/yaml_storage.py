@@ -34,6 +34,7 @@ try:  # POSIX-only; Windows users get the no-op fallback.
 except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
@@ -42,6 +43,7 @@ from slayer.storage.base import (
     _validate_path_component,
     _write_sample_fields,
 )
+from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
@@ -83,8 +85,8 @@ def _memory_to_md(memory: Memory) -> str:
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
 
 
-def _md_to_memory(memory_id: str, text: str) -> Memory:
-    """Inverse of :func:`_memory_to_md`. Splits only the FIRST frontmatter
+def _md_to_memory_dict(memory_id: str, text: str) -> dict[str, Any]:
+    """Inverse of :func:`_memory_to_md`, as the raw stored dict. Splits only the FIRST frontmatter
     block, so a learning body that itself contains a ``---`` line survives.
     ``id`` is injected from the filename (single source of truth)."""
     if text.startswith(_MD_FENCE):
@@ -94,9 +96,9 @@ def _md_to_memory(memory_id: str, text: str) -> Memory:
             data = dict(fm) if isinstance(fm, dict) else {}
             data["id"] = memory_id
             data["learning"] = body
-            return Memory.model_validate(stamp_stored(data))
+            return data
     # No frontmatter fence: whole text is the learning body.
-    return Memory.model_validate(stamp_stored({"id": memory_id, "learning": text}))
+    return {"id": memory_id, "learning": text}
 
 
 def _stat_key(path: str) -> tuple[int, int, int]:
@@ -402,20 +404,22 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return cached[1].model_copy(deep=True)
         try:
             with open(path) as f:
-                data = yaml.safe_load(f)
+                text = f.read()
         except FileNotFoundError:  # deleted between the stat and the open
             self._model_cache.pop(path, None)
             return None
-        except yaml.YAMLError as exc:
-            # e.g. a file truncated mid-write by a full disk.
-            raise ValueError(
-                f"Model {name!r} in datasource {data_source!r}: invalid YAML in "
-                f"{path} — {exc}. Delete the file and re-run `slayer ingest` to "
-                f"recreate it."
-            ) from exc
-        model = await self._migrate_and_refine_on_load(
-            name=name, data=data, data_source=data_source,
-        )
+        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+            try:
+                data = yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                # e.g. a file truncated mid-write by a full disk.
+                raise ValueError(
+                    f"invalid YAML in {path} — {exc}. Delete the file and re-run "
+                    f"`slayer ingest` to recreate it."
+                ) from exc
+            model = await self._migrate_and_refine_on_load(
+                name=name, data=data, data_source=data_source,
+            )
         # Admit only a stable read. A legacy migration write-back rewrites the
         # file, so its first load is (correctly) not cached — the next load
         # reads the now-current file and caches it normally.
@@ -469,6 +473,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"on model {model_name!r} in datasource {data_source!r}."
             )
         _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=model_name)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -650,6 +655,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
+        return await self._read_memory_file(memory_id)
+
+    async def _read_memory_file(self, memory_id: str) -> Memory | None:
         # Lock-free read: writes are atomic (temp + os.replace), so a reader
         # always sees a complete old-or-new file. A concurrent delete between
         # the check and the open surfaces as FileNotFoundError → treat as
@@ -663,29 +671,34 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         try:
             with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                return _md_to_memory(memory_id, f.read())
+                text = f.read()
         except FileNotFoundError:
             return None
+        return await self._memory_from_stored(memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, text))
+
+    async def _memory_ids(self) -> list[str]:
+        return self._memory_ids_on_disk()
 
     async def _list_memories_rows(
         self, *, entities: list[str] | None
-    ) -> list[Memory]:
+    ) -> Loaded[Memory]:
         memories: list[Memory] = []
+        errors: list[StoredDocumentLoadError] = []
         for mid in self._memory_ids_on_disk():
-            path = self._memory_md_path(mid)
             try:
-                with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                    memories.append(_md_to_memory(mid, f.read()))
-            except FileNotFoundError:
-                # Deleted between listdir and open (lock-free read) — skip.
+                memory = await self._read_memory_file(mid)
+            except StoredDocumentLoadError as exc:
+                errors.append(exc)
                 continue
+            if memory is not None:  # None: deleted between listdir and open (lock-free read)
+                memories.append(memory)
         # Deterministic order for the tantivy num_threads=1 doc-id tiebreak
         # and the search "newest" fallback (which re-sorts by recency anyway).
         memories.sort(key=lambda m: (m.created_at, m.id))
         if entities is None:
-            return memories
+            return memories, errors
         wanted = set(entities)
-        return [m for m in memories if wanted & set(m.entities)]
+        return [m for m in memories if wanted & set(m.entities)], errors
 
     async def _delete_memory_row(self, memory_id: str) -> bool:
         with self._memories_file_lock():

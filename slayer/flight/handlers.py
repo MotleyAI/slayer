@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import decimal
 import logging
-from collections import defaultdict
 
 import pyarrow as pa
+import slayer as _slayer
 import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
@@ -36,6 +36,7 @@ from slayer.flight.translator import (
 )
 from slayer.flight.types import datatype_to_arrow
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
@@ -186,15 +187,12 @@ class FlightHandlers:
 
     def _fetch_models_by_datasource(self) -> dict[str, list[SlayerModel]]:
         async def fetch() -> dict[str, list[SlayerModel]]:
-            datasources = await self._storage.list_datasources()
-            out: dict[str, list[SlayerModel]] = defaultdict(list)
-            for ds in datasources:
-                model_names = await self._storage.list_models(data_source=ds)
-                for name in model_names:
-                    model = await self._storage.get_model(name=name, data_source=ds)
-                    if model is not None:
-                        out[ds].append(model)
-            return dict(out)
+            failures = DocumentLoadFailures()
+            out: dict[str, list[SlayerModel]] = {}
+            for ds in await self._storage.list_datasources():
+                if models := failures.skip(await self._storage.load_models(data_source=ds)):
+                    out[ds] = models
+            return out
 
         return run_sync(fetch())
 
@@ -262,7 +260,6 @@ class FlightHandlers:
         return pa.Table.from_pylist(rows, schema=_SCHEMA_GET_XDBC_TYPE_INFO)
 
     def handle_get_sql_info(self) -> pa.Table:
-        import slayer as _slayer
         # SqlInfo enum values come straight from the FlightSql.proto spec.
         # We expose the minimum the spec recommends.
         rows = [

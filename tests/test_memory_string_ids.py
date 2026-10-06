@@ -246,7 +246,7 @@ class TestMemoryV1ToV2Migration:
         }
         m = Memory.model_validate(v1)
         assert m.id == "42"
-        assert m.version == 3
+        assert m.version == 4
 
     def test_v1_no_version_assumed_v1(self) -> None:
         # No version field → treated as v1; migrator stringifies.
@@ -257,7 +257,7 @@ class TestMemoryV1ToV2Migration:
         }
         m = Memory.model_validate(legacy)
         assert m.id == "7"
-        assert m.version == 3
+        assert m.version == 4
 
     async def test_v2_save_round_trip(
         self, storage: StorageBackend,
@@ -268,7 +268,7 @@ class TestMemoryV1ToV2Migration:
         )
         loaded = await storage.get_memory(m.id)
         assert loaded.id == "kb.policy"
-        assert loaded.version == 3
+        assert loaded.version == 4
 
     def test_duplicate_int_string_rows_same_content_normalized(self) -> None:
         """The v2 migrator deduplicates rows that exist under both int and

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
 
@@ -20,14 +20,13 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
 import slayer.engine.bundle_builder
 
-
-if TYPE_CHECKING:
-    from slayer.storage.base import StorageBackend
 
 
 class TestBidirectionalReachability:
@@ -155,6 +154,11 @@ class TestPeerLoadsAreConcurrent:
             async def list_models(self, ds: str) -> list[str]:
                 return list(peers)
 
+            async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+                return [("db", name) for name in peers]
+
+            load_models = StorageBackend.load_models
+
             async def get_model(self, name: str, data_source=None) -> SlayerModel:
                 self.in_flight += 1
                 self.max_in_flight = max(self.max_in_flight, self.in_flight)
@@ -166,6 +170,7 @@ class TestPeerLoadsAreConcurrent:
         out = await slayer.engine.bundle_builder._collect_referenced_models(
             source_model=root, named_queries={},
             storage=cast("StorageBackend", storage), data_source="db",
+            failures=DocumentLoadFailures(),
         )
         assert out[0] is root
         assert storage.max_in_flight > 1, "peer loads ran sequentially"

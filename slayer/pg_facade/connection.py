@@ -20,7 +20,7 @@ import re
 import struct
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple, cast
 
 import sqlglot
 import sqlglot.errors
@@ -30,6 +30,8 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
+from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -559,22 +561,16 @@ class PgConnection:
             self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
+        storage = cast(StorageBackend, self._storage)
         models_by_datasource: dict[str, list[SlayerModel]] = {}
         schema_by_datasource: dict[str, str] = {}
-        for datasource in await self._storage.list_datasources():
-            names = await self._storage.list_models(data_source=datasource)
-            models = [
-                model
-                for name in names
-                if (model := await self._storage.get_model(
-                    name=name, data_source=datasource,
-                )) is not None
-            ]
-            models_by_datasource[datasource] = models
-            config = await self._storage.get_datasource(datasource)
+        failures = DocumentLoadFailures()
+        for datasource in await storage.list_datasources():
+            models_by_datasource[datasource] = failures.skip(await storage.load_models(data_source=datasource))
+            config = await storage.get_datasource(datasource)
             if config is not None and config.postgres_schema:
                 schema_by_datasource[datasource] = config.postgres_schema
-        priority = await self._storage.get_datasource_priority()
+        priority = await storage.get_datasource_priority()
         return build_catalog_grouped_by_schema(
             models_by_datasource=models_by_datasource,
             schema_by_datasource=schema_by_datasource,

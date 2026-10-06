@@ -44,6 +44,7 @@ from slayer.search.retrievers import (
 )
 from slayer.search.rrf import rrf_fuse
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 
 logger = logging.getLogger(__name__)
@@ -406,20 +407,13 @@ def _memory_id_cypher_filter_warnings(
 
 
 async def _lookup_bare_datasource_canonical(
-    *, ds: str, storage: StorageBackend,
+    *, ds: str, storage: StorageBackend, failures: DocumentLoadFailures,
 ) -> LookupResult:
     """Render a bare ``<ds>`` canonical, re-checking it still exists."""
     known = await storage.list_datasources()
     if ds not in known:
         return LookupMissing()
-    identities = await storage._list_all_model_identities()
-    models: list[SlayerModel] = []
-    for ident_ds, name in identities:
-        if ident_ds != ds:
-            continue
-        m = await storage.get_model(name, data_source=ident_ds)
-        if m is not None:
-            models.append(m)
+    models = failures.skip(await storage.load_models(data_source=ds))
     cfg = await storage.get_datasource(ds)
     ds_description = cfg.description if cfg is not None else None
     pair = render_datasource_pair(
@@ -461,6 +455,7 @@ async def _lookup_named_entity(
     canonical: str,
     storage: StorageBackend,
     corpus: Corpus | None,
+    failures: DocumentLoadFailures | None = None,
 ) -> LookupResult:
     """Resolve a canonical to its ``(kind, text, description)`` for named-entity surfacing."""
     if corpus is not None:
@@ -474,7 +469,7 @@ async def _lookup_named_entity(
     segments = canonical.split(".")
     if len(segments) == 1:
         return await _lookup_bare_datasource_canonical(
-            ds=segments[0], storage=storage,
+            ds=segments[0], storage=storage, failures=failures or DocumentLoadFailures(),
         )
     return await _lookup_model_or_leaf_canonical(
         canonical=canonical,
@@ -612,7 +607,7 @@ class SearchService:
 
     # --- Read side ---
 
-    async def search(  # NOSONAR(S3776) — single orchestrator entry point; stages are linear and named
+    async def search(
         self,
         *,
         entities: list[str] | None = None,
@@ -622,6 +617,26 @@ class SearchService:
         cypher_filter: str | None = None,
         max_results: int = 10,
         compact: bool = True,
+    ) -> SearchResponse:
+        failures = DocumentLoadFailures()
+        response = await self._search(
+            entities=entities, query=query, question=question, datasource=datasource,
+            cypher_filter=cypher_filter, max_results=max_results, compact=compact, failures=failures,
+        )
+        skipped = [w.human_message() for w in failures.warnings]
+        return response.model_copy(update={"warnings": _dedup([*response.warnings, *skipped])}) if skipped else response
+
+    async def _search(  # NOSONAR(S3776) — single orchestrator entry point; stages are linear and named
+        self,
+        *,
+        entities: list[str] | None,
+        query: SlayerQuery | dict | None,
+        question: str | None,
+        datasource: str | None,
+        cypher_filter: str | None,
+        max_results: int,
+        compact: bool,
+        failures: DocumentLoadFailures,
     ) -> SearchResponse:
         if max_results < 1:
             raise ValueError(
@@ -641,6 +656,7 @@ class SearchService:
             cypher_filter=cypher_filter,
             canonical_input_entities=canonical_input_entities,
             warnings=warnings,
+            failures=failures,
         )
         if early is not None:
             return early
@@ -660,12 +676,13 @@ class SearchService:
                 max_results=max_results,
                 warnings=warnings,
                 compact=compact,
+                failures=failures,
             )
 
         # Datasource filter precedes cypher narrowing so each dropped ref gets the right warning.
         datasource_filtered_memories: list[Memory] = (
             _filter_memories_by_datasource(
-                memories=await self._storage.list_memories(entities=None),
+                memories=await self._storage.list_memories(entities=None, failures=failures),
                 datasource=datasource,
             )
         )
@@ -685,13 +702,13 @@ class SearchService:
             all_memories = datasource_filtered_memories
 
         valid_canonicals = await self._valid_canonical_set(
-            all_memories=all_memories, datasource=datasource,
+            all_memories=all_memories, datasource=datasource, failures=failures,
         )
 
         corpus: Corpus | None = None
         if question_active:
             all_models, datasources, datasource_descriptions = (
-                await self._collect_index_corpus(datasource=datasource)
+                await self._collect_index_corpus(datasource=datasource, failures=failures)
             )
             corpus = build_in_memory_corpus(
                 memories=all_memories,
@@ -715,6 +732,7 @@ class SearchService:
             canonical_input_entities=canonical_input_entities,
             datasource=datasource,
             corpus=corpus,
+            failures=failures,
             candidate_ids=candidate_ids,
         )
         warnings = _dedup(warnings + entity_surfacing_warnings)
@@ -807,6 +825,7 @@ class SearchService:
         cypher_filter: str | None,
         canonical_input_entities: list[str],
         warnings: list[str],
+        failures: DocumentLoadFailures,
     ) -> tuple[
         frozenset[str] | None,
         set[str] | None,
@@ -821,7 +840,7 @@ class SearchService:
             return None, None, None
         if _search_graph.is_available():
             candidate_ids = await _search_graph.get_filtered_ids(
-                cypher=cypher_filter, storage=self._storage,
+                cypher=cypher_filter, storage=self._storage, failures=failures,
             )
             if not candidate_ids:
                 early_warnings = _dedup(
@@ -844,6 +863,7 @@ class SearchService:
         canonical_input_entities: list[str],
         datasource: str | None,
         corpus: Corpus | None,
+        failures: DocumentLoadFailures,
         candidate_ids: frozenset[str] | None = None,
     ) -> tuple[list[str], dict[str, tuple[str, str, str | None]], list[str]]:
         """Surface each user-named canonical as itself: ``(entity_ranking, named_kind_text, warnings)``.
@@ -871,7 +891,7 @@ class SearchService:
                 )
                 continue
             result = await _lookup_named_entity(
-                canonical=canonical, storage=self._storage, corpus=corpus,
+                canonical=canonical, storage=self._storage, corpus=corpus, failures=failures,
             )
             if isinstance(result, LookupHidden):
                 warnings.append(
@@ -994,6 +1014,7 @@ class SearchService:
         warnings: list[str],
         datasource: str | None = None,
         candidate_ids: frozenset[str] | None = None,
+        failures: DocumentLoadFailures,
         kind_filter: set[str] | None = None,
         compact: bool = True,
     ) -> SearchResponse:
@@ -1003,7 +1024,7 @@ class SearchService:
             "newest memories by recency."
         )
         recency_memories = _filter_memories_by_datasource(
-            memories=await self._storage.list_memories(entities=None),
+            memories=await self._storage.list_memories(entities=None, failures=failures),
             datasource=datasource,
         )
         had_candidates_pre_filter = bool(recency_memories)
@@ -1027,7 +1048,7 @@ class SearchService:
             )
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         valid_canonicals = await self._valid_canonical_set(
-            all_memories=recency_memories, datasource=datasource,
+            all_memories=recency_memories, datasource=datasource, failures=failures,
         )
         hits: list[SearchHit] = []
         for m in recency_memories:
@@ -1061,6 +1082,7 @@ class SearchService:
         *,
         all_memories: list[Memory],
         datasource: str | None,
+        failures: DocumentLoadFailures,
     ) -> set:
         canonicals: set = set()
         canonicals.update(
@@ -1068,7 +1090,7 @@ class SearchService:
         )
         canonicals.update(
             await self._collect_model_subtree_canonicals(
-                datasource=datasource,
+                datasource=datasource, failures=failures,
             )
         )
         canonicals.update(_collect_memory_canonicals(all_memories))
@@ -1083,17 +1105,14 @@ class SearchService:
         return set(names)
 
     async def _collect_model_subtree_canonicals(
-        self, *, datasource: str | None,
+        self, *, datasource: str | None, failures: DocumentLoadFailures,
     ) -> set:
-        out: set = set()
-        identities = await self._storage._list_all_model_identities()
-        for ds, name in identities:
-            if datasource is not None and ds != datasource:
-                continue
-            out.add(f"{ds}.{name}")
-            model = await self._storage.get_model(name, data_source=ds)
-            if model is None:
-                continue
+        out: set = {
+            f"{ds}.{name}" for ds, name in await self._storage._list_all_model_identities()
+            if datasource is None or ds == datasource
+        }
+        for model in failures.skip(await self._storage.load_models(data_source=datasource)):
+            ds, name = model.data_source, model.name
             for column in model.columns:
                 out.add(f"{ds}.{name}.{column.name}")
             for measure in model.measures:
@@ -1160,20 +1179,14 @@ class SearchService:
     async def _collect_index_corpus(
         self,
         *,
+        failures: DocumentLoadFailures,
         datasource: str | None = None,
     ) -> tuple[list[SlayerModel], list[str], dict[str, str | None]]:
         """Return ``(models, datasources, {ds_name: description})`` for the corpus build."""
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
-        models: list[SlayerModel] = []
-        identities = await self._storage._list_all_model_identities()
-        for ds, name in identities:
-            if datasource is not None and ds != datasource:
-                continue
-            m = await self._storage.get_model(name, data_source=ds)
-            if m is not None:
-                models.append(m)
+        models = failures.skip(await self._storage.load_models(data_source=datasource))
         for ds_name in datasources:
             models.extend(await self._storage.builtin_models(ds_name))
         descriptions: dict[str, str | None] = {}

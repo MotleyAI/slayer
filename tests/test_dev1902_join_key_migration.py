@@ -175,10 +175,10 @@ class TestLeftAlone:
 
     async def test_unmatched_entry_fails_while_siblings_load(self, seed: Seeder):
         storage = await seed([
-            _orders(joins=[_join("customers", [["nope", "id"]])]),
+            _orders(joins=[_join("customers", [["orders.nope", "id"]])]),
             _customers()])
         with pytest.raises(ValueError) as exc:
             await storage.get_model("orders", data_source="ds")
-        assert "key 'nope'" in str(exc.value)
-        assert "declare" in str(exc.value).lower()
+        assert "'orders.nope'" in str(exc.value)
+        assert "must not contain '.'" in str(exc.value)
         assert await storage.get_model("customers", data_source="ds") is not None

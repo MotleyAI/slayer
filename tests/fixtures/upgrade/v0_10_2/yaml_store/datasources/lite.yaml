@@ -1,0 +1,4 @@
+version: 2
+name: lite
+type: sqlite
+database: data.sqlite

@@ -288,7 +288,7 @@ class QueryTypeError(SlayerError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
-def _rebuild_query_type_error(cls: "type[QueryTypeError]", args: tuple, state: dict) -> QueryTypeError:
+def _rebuild_query_type_error(cls: "type[SlayerError]", args: tuple, state: dict) -> SlayerError:
     """Unpickle without re-running the keyword-only constructor."""
     exc = cls.__new__(cls)
     Exception.__init__(exc, *args)
@@ -984,6 +984,27 @@ class LegacyDunderAliasError(SlayerError, ValueError):
             f"'__'-delimited split-alias form is no longer accepted; write the "
             f"join path with dots instead: '{self.dotted}'."
         )
+
+
+class StoredDocumentLoadError(SlayerError, ValueError):
+    """One stored model or memory could not be loaded; the original failure is ``__cause__``."""
+
+    def __init__(self, *, kind: str, name: str, data_source: str | None, cause: BaseException) -> None:
+        self.kind = kind
+        self.name = name
+        self.data_source = data_source
+        self.cause_text = str(cause)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"{self.document}: {cause}",
+        ))
+
+    @property
+    def document(self) -> str:
+        """``<data_source>.<name>`` for a model, ``memory:<id>`` for a memory."""
+        return f"{self.data_source}.{self.name}" if self.data_source is not None else f"memory:{self.name}"
+
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
 class QueryBackedCycleError(SlayerError, ValueError):

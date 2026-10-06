@@ -25,6 +25,7 @@ from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
@@ -412,18 +413,12 @@ def _source_type_for(model: SlayerModel) -> str:
     return "unknown"
 
 
-async def load_visible_models(storage: StorageBackend, ds_name: str | None) -> list[SlayerModel]:
-    """Visible, name-sorted models of one datasource; unloadable models are skipped."""
-    models: list[SlayerModel] = []
-    for name in await storage.list_models(data_source=ds_name):
-        try:
-            m = await storage.get_model(name, data_source=ds_name)
-        except Exception:  # noqa: BLE001 — one bad model must not sink the DS
-            continue
-        if m is not None and not m.hidden:
-            models.append(m)
-    models.sort(key=lambda m: m.name)
-    return models
+async def load_visible_models(
+    storage: StorageBackend, ds_name: str, *, failures: DocumentLoadFailures | None = None,
+) -> list[SlayerModel]:
+    """Visible, name-sorted models of one datasource; unloadable models are skipped with a warning."""
+    loaded = (failures or DocumentLoadFailures()).skip(await storage.load_models(data_source=ds_name))
+    return sorted((m for m in loaded if not m.hidden), key=lambda m: m.name)
 
 
 def saved_queries_index(
@@ -519,24 +514,11 @@ def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
 
 
 async def _oriented_hops(
-    model: SlayerModel, storage: StorageBackend
+    model: SlayerModel, storage: StorageBackend, *, failures: DocumentLoadFailures,
 ) -> list[OrientedJoin]:
     """Declared outgoing plus peer-declared incoming hops, oriented from ``model``; unloadable peers skipped."""
-    models_by_name: dict[str, SlayerModel] = {model.name: model}
-    try:
-        peer_names = await storage.list_models(model.data_source)
-    except Exception:  # best-effort — fall back to declared joins only
-        peer_names = []
-    for nm in peer_names:
-        if nm in models_by_name:
-            continue
-        try:
-            peer = await storage.get_model(nm, data_source=model.data_source)
-        except Exception:
-            peer = None
-        if peer is not None:
-            models_by_name[nm] = peer
-    return neighbors(model=model, models_by_name=models_by_name)
+    peers = failures.skip(await storage.load_models(data_source=model.data_source, exclude=model.name))
+    return neighbors(model=model, models_by_name={**{m.name: m for m in peers}, model.name: model})
 
 
 async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
@@ -560,6 +542,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         raise ValueError(
             f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
         )
+    failures = DocumentLoadFailures()
     if descriptions_max_chars is not None and descriptions_max_chars < 0:
         raise ValueError(
             f"descriptions_max_chars must be >= 0, got {descriptions_max_chars}."
@@ -727,7 +710,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Aggregations ({len(model.aggregations)} — names only)\n\n{csv}"
         )
 
-    hops = await _oriented_hops(model, storage)
+    hops = await _oriented_hops(model, storage, failures=failures)
     if "joins" in included_set:
         join_rows: list[dict[str, Any]] = []
         for h in hops:
@@ -831,7 +814,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         wanted.extend(
             f"{ds}.{model.name}.{a.name}" for a in model.aggregations
         )
-        candidates = await storage.list_memories(entities=wanted)
+        candidates = await storage.list_memories(entities=wanted, failures=failures)
         relevant_learnings = [m for m in candidates if m.query is None]
         if relevant_learnings:
             lines = [f"## Learnings ({len(relevant_learnings)})", ""]
@@ -853,7 +836,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
 
     saved_queries: list[dict[str, Any]] = []
     if "saved_queries" in included_set:
-        peers = await load_visible_models(storage, model.data_source)
+        peers = await load_visible_models(storage, model.data_source, failures=failures)
         saved_queries = saved_queries_index(peers, max_chars=descriptions_max_chars).get(model.name, [])
         if saved_queries:
             out_sections.append(_saved_queries_markdown(saved_queries))
