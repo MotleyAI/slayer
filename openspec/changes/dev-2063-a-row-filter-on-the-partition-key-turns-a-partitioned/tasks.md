@@ -20,4 +20,4 @@
 
 - [x] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
 - [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` all clean.
-- [ ] 3.3 Propose (per-change approval, never applied unasked) `[enforced: test:tests/test_dev2063_grain_guarantee.py]` tags on `architecture/semantics.arc42.md` Axiom 12 and `architecture/sql.arc42.md` P12.
+- [x] 3.3 Propose (per-change approval, never applied unasked) `[enforced: test:tests/test_dev2063_grain_guarantee.py]` tags on `architecture/semantics.arc42.md` Axiom 12 and `architecture/sql.arc42.md` P12.
