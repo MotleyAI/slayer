@@ -132,6 +132,18 @@ async def test_selected_larger_expression_alongside_its_transform(exec_engine, r
     _assert_cells_equal(by_month(both, "c"), by_month(alone_c, "c"))
 
 
+@pytest.mark.parametrize("measure", [AOV, "sum(amount)"])
+async def test_change_and_change_pct_in_one_step(exec_engine, measure) -> None:
+    # change_pct contains change's composite; siblings of one step never read each other's alias.
+    ch, cp = f"change(({measure}))", f"change_pct(({measure}))"
+    both = await _run(exec_engine, monthly_q(m(ch, "ch"), m(cp, "cp")))
+    alone_cp = await _run(exec_engine, monthly_q(m(cp, "cp")))
+    _assert_cells_equal(by_month(both, "cp"), by_month(alone_cp, "cp"))
+    if measure == AOV:
+        _assert_cells_equal(by_month(both, "ch"), _LOCAL_CONSUMER_VALUES["change"])
+        _assert_cells_equal(by_month(both, "cp"), _LOCAL_CONSUMER_VALUES["change_pct"])
+
+
 #: (filter threshold on cumsum(ratio), months it keeps) — cumsum local 20/30/60, cross 8/10/28.
 _FILTER_CASES = {"local": (25, {FEB, MAR}), "cross": (9, {FEB, MAR})}
 

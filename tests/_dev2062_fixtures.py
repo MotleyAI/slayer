@@ -78,7 +78,7 @@ def dev2062_models(*, data_source: str = "test") -> List[SlayerModel]:
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-DATE_RANGE = ["2025-01-01", "2025-12-31"]
+DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
 DATE_FILTER = "order_date >= '2025-01-01'"
 
 
@@ -91,7 +91,7 @@ def orders_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(*, date_range: Optional[List[str]] = None) -> List[TimeDimension]:
+def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDimension]:
     return [TimeDimension(
         dimension=ColumnRef(name="order_date"), granularity=TimeGranularity.MONTH, date_range=date_range,
     )]

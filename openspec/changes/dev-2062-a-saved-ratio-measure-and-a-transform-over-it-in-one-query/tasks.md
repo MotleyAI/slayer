@@ -9,8 +9,8 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `render_value_key` alias mode: read any key whose slot is available (`available_alias_by_slot_id` / `value_by_slot_id`) by its slot; unavailable alias-slotted kinds raise; composites and literals render structurally — verify 1.1 passes
-- [ ] 2.2 Retire `AliasFacilities.composite_alias_slot_ids` and `SQLGenerator._dimension_composite_slot_ids` and their call sites — verify no references remain (LSP find-references) and computed-dimension tests stay green
-- [ ] 2.3 `_render_window_transform_sql`: one `render_value_key(key.input, alias ctx)` call for every input shape; remove the composite branch and the `transform input not materialised` branch — verify 1.2, 1.3, 1.5 pass
-- [ ] 2.4 Record the golden baselines for 1.4 after confirming executed values in 1.3 are unchanged — verify 1.4 passes
-- [ ] 2.5 Full unit suite (`poetry run pytest -m "not integration"`), integration suite (CI invocation), `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green; any shifted golden SQL re-blessed only after its executed values are confirmed unchanged
+- [x] 2.1 `render_value_key` alias mode: read any key whose slot is available (`available_alias_by_slot_id` / `value_by_slot_id`) by its slot; unavailable alias-slotted kinds raise; composites and literals render structurally — verify 1.1 passes
+- [x] 2.2 Retire `AliasFacilities.composite_alias_slot_ids` and `SQLGenerator._dimension_composite_slot_ids` and their call sites — verify no references remain (LSP find-references) and computed-dimension tests stay green
+- [x] 2.3 `_render_window_transform_sql`: one `render_value_key(key.input, alias ctx)` call for every input shape; remove the composite branch and the `transform input not materialised` branch — verify 1.2, 1.3, 1.5 pass
+- [x] 2.4 Record the golden baselines for 1.4 after confirming executed values in 1.3 are unchanged — verify 1.4 passes
+- [x] 2.5 Full unit suite (`poetry run pytest -m "not integration"`), integration suite (CI invocation), `ruff check`, `basedpyright` (no new errors), `la-arch-check` — all green; any shifted golden SQL re-blessed only after its executed values are confirmed unchanged

@@ -7,6 +7,7 @@ from typing import Optional
 
 import pytest
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import RenderContextMissingFacilityError
@@ -49,7 +50,7 @@ def _ctx(
     )
 
 
-def _emit(node: exp.Expression) -> str:
+def _emit(node: Expression) -> str:
     return node.sql(dialect="postgres")
 
 
@@ -85,13 +86,15 @@ def test_unavailable_interned_composite_renders_structurally() -> None:
         available=_OPERAND_ALIASES,
     )
     out = _emit(render_value_key(key=_RATIO, ctx=ctx))
-    assert '"orders.amount_sum"' in out and '"orders._count"' in out, out
+    assert '"orders.amount_sum"' in out, out
+    assert '"orders._count"' in out, out
 
 
 def test_unslotted_composite_renders_structurally() -> None:
     ctx = _ctx(slots={_SUM: "s_sum", _COUNT: "s_count"}, available=_OPERAND_ALIASES)
     out = _emit(render_value_key(key=_RATIO, ctx=ctx))
-    assert '"orders.amount_sum"' in out and '"orders._count"' in out, out
+    assert '"orders.amount_sum"' in out, out
+    assert '"orders._count"' in out, out
 
 
 _SLOTTED = {
@@ -105,8 +108,9 @@ _SLOTTED = {
 @pytest.mark.parametrize("label", sorted(_SLOTTED))
 def test_unavailable_slotted_kind_still_raises(label) -> None:
     key = _SLOTTED[label]
+    ctx = _ctx(slots={key: "s1"})
     with pytest.raises(RenderContextMissingFacilityError):
-        render_value_key(key=key, ctx=_ctx(slots={key: "s1"}))
+        render_value_key(key=key, ctx=ctx)
 
 
 def test_unslotted_literal_renders_as_literal() -> None:
