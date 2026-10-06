@@ -127,7 +127,6 @@ from slayer.sql.render.value_expr import (
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
-    _ALIAS_SLOTTED_KINDS as _ALIAS_SLOTTED_RENDER_KINDS,
     _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
@@ -974,31 +973,20 @@ class SQLGenerator:
             placeholder_types=self._placeholder_types(),
         )
 
-    def _alias_render_ctx(
-        self, *, slot_id_by_key, available_alias_by_slot_id,
-        composite_alias_slot_ids: Optional[Set[str]] = None,
-    ):
+    def _current_column_types(self) -> Optional[ColumnTypeFn]:
+        """The active ``generate()`` call's column types; ``None`` outside one (untyped)."""
+        return self._gen_column_types[-1] if self._gen_column_types else None
+
+    def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
         """RenderContext carrying only the plain slot-alias facilities."""
         return RenderContext(
             dialect=self._dialect,
-            column_type=self._gen_column_types[-1],
+            column_type=self._current_column_types(),
             aliases=AliasFacilities(
                 slot_id_by_key=slot_id_by_key,
                 available_alias_by_slot_id=available_alias_by_slot_id,
-                composite_alias_slot_ids=composite_alias_slot_ids or set(),
             ),
         )
-
-    @staticmethod
-    def _dimension_composite_slot_ids(planned_query) -> Set[str]:
-        """Computed-dimension slots keyed by a composite: post-aggregation scopes
-        must reference their grouped alias, never re-render the expression."""
-        return {
-            s.id
-            for name in ("row_slots", "aggregate_slots", "combined_expression_slots")
-            for s in getattr(planned_query, name, None) or []
-            if s.is_dimension and not isinstance(s.key, _ALIAS_SLOTTED_RENDER_KINDS)
-        }
 
     def _outer_wrapper_render_ctx(
         self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
@@ -1006,7 +994,7 @@ class SQLGenerator:
         """RenderContext for the outer-wrapper composite/filter render pass."""
         return RenderContext(
             dialect=self._dialect,
-            column_type=self._gen_column_types[-1],
+            column_type=self._current_column_types(),
             aliases=self._outer_wrapper_alias_facilities(
                 slot_by_key=slot_by_key,
                 cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
@@ -1739,6 +1727,8 @@ class SQLGenerator:
         prev_cte = chain_tail
         carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         step_parts: List[Expr] = [exp.column(a, quoted=True) for a in carry_aliases]
+        # Siblings render against prev_cte only: a step's own aliases publish after its SELECT.
+        published: List[Tuple[str, str]] = []
         for map_key, slot in slot_entries:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
@@ -1748,8 +1738,10 @@ class SQLGenerator:
             for alias in names:
                 full_alias = f"{source_relation}.{alias}"
                 step_parts.append(rendered.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
-                available_alias_by_slot_id.setdefault(map_key, full_alias)
+                published.append((map_key, full_alias))
+        for map_key, full_alias in published:
+            aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
+            available_alias_by_slot_id.setdefault(map_key, full_alias)
         ctes.append(CteEntry(
             name=step_name,
             query=exp.Select().select(*step_parts).from_(prev_cte),
@@ -4579,32 +4571,13 @@ class SQLGenerator:
                 f"got {type(key).__name__}",
             )
 
-        # A composite transform input renders inline against operands' already-materialised aliases; the Kahn readiness
-        # check guarantees they're in a prior CTE.
-
-        if isinstance(key.input, SLOT_COMPOSITE_KINDS):
-            # A composite input that IS a projected computed dimension reads its
-            # grouped alias, never re-renders the expression over base columns.
-            measure = render_value_key(
-                key=key.input,
-                ctx=self._alias_render_ctx(
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                    composite_alias_slot_ids=(
-                        self._dimension_composite_slot_ids(planned_query)
-                    ),
-                ),
-            )
-        else:
-            input_sid = slot_id_by_key.get(key.input)
-            if input_sid is None or input_sid not in available_alias_by_slot_id:
-                raise RuntimeError(
-                    f"transform input not materialised: slot id={slot.id!r}, "
-                    f"op={key.op!r}, input_key={key.input!r}.",
-                )
-            measure = exp.column(
-                available_alias_by_slot_id[input_sid], quoted=True,
-            )
+        measure = render_value_key(
+            key=key.input,
+            ctx=self._alias_render_ctx(
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
+        )
 
         time_col: Optional[Expression] = None
         if key.time_key is not None:
@@ -4779,9 +4752,6 @@ class SQLGenerator:
                 ctx=self._alias_render_ctx(
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
-                    composite_alias_slot_ids=(
-                        self._dimension_composite_slot_ids(planned_query)
-                    ),
                 ),
             )
             out.append(_grouped(rendered))

@@ -4,7 +4,7 @@ rather than by call site so one key can't render two ways. Column-like leaves an
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -68,8 +68,8 @@ _HAVING_PLACEHOLDER = "__having_ref__"
 
 
 def _wrap_cast_for_type(
-    expr: exp.Expression, dt: Optional[DataType],
-) -> exp.Expression:
+    expr: Expression, dt: Optional[DataType],
+) -> Expression:
     """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
     ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate). Idempotent."""
     if dt is None or dt == DataType.TEXT or dt.is_opaque:
@@ -110,7 +110,7 @@ class FilterFacilities(BaseModel):
     slot_by_key: Dict[Any, Any] = Field(default_factory=dict)
     aliases_by_slot_id: Dict[str, List[str]] = Field(default_factory=dict)
     agg_builder: Optional[
-        Callable[[AggregateKey, Optional[Any], str], exp.Expression]
+        Callable[[AggregateKey, Optional[Any], str], Expression]
     ] = None
     cast_column_sql: bool = False
     paren_comparison_operands: bool = True
@@ -121,7 +121,7 @@ class CompositeFacilities(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    agg_builder: Optional[Callable[[AggregateKey], exp.Expression]] = None
+    agg_builder: Optional[Callable[[AggregateKey], Expression]] = None
     rn_suffix_map: Optional[Dict[str, str]] = None
     default_time_col: Optional[str] = None
     filtered_rn_map: Optional[Dict[str, str]] = None
@@ -132,20 +132,15 @@ class CompositeFacilities(BaseModel):
 
 
 class AliasFacilities(BaseModel):
-    """The aliases an earlier scope projected; its presence switches the five slotted kinds to
-    ALIAS-EXCLUSIVE resolution (rebuilding from source in an alias-only CTE is wrong SQL). An
-    absent slot RAISES; ``table_by_slot_id`` carries the qualifier.
-
-    ``composite_alias_slot_ids``: composite-keyed slots (computed
-    dimensions) whose keys ALSO resolve by alias — re-rendering one inline at a
-    post-aggregation scope would re-evaluate it at the wrong grain."""
+    """The aliases an earlier scope projected; its presence makes every available slot read by
+    its slot and switches the five slotted kinds to ALIAS-EXCLUSIVE resolution (an absent slot
+    RAISES). ``table_by_slot_id`` carries the qualifier."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
-    composite_alias_slot_ids: Set[str] = Field(default_factory=set)
     #: Attached-producer slots: their value expression (empty value applied) wins over the alias.
     value_by_slot_id: Dict[str, Expression] = Field(default_factory=dict)
 
@@ -192,12 +187,12 @@ def _require_scope(ctx: RenderContext, key: Any) -> ScopeFrame:
 _COMPARISON_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">="})
 
 
-def _paren_if_binary(node: exp.Expression) -> exp.Expression:
+def _paren_if_binary(node: Expression) -> Expression:
     """Wrap an ``exp.Binary`` operand in ``(...)`` (self-delimiting); other nodes pass through."""
     return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
 
-def _render_via_alias(key: ValueKey, ctx: RenderContext) -> exp.Expression:
+def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
     """Alias-exclusive resolution: the materialised alias for ``key`` (table-qualified when
     the facility carries a qualifier); an unmaterialised slot RAISES."""
     facilities = ctx.aliases
@@ -229,9 +224,18 @@ _ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
 )
 
 
+def _slot_available(key: ValueKey, facilities: AliasFacilities) -> bool:
+    """Whether ``key``'s slot is a column (or attached value) of the current relation."""
+    slot_id = facilities.slot_id_by_key.get(key)
+    return slot_id is not None and (
+        slot_id in facilities.value_by_slot_id
+        or slot_id in facilities.available_alias_by_slot_id
+    )
+
+
 def _render_filter_aggregate(
     key: AggregateKey, ctx: RenderContext,
-) -> exp.Expression:
+) -> Expression:
     """The HAVING seam: recover the aggregate's base-SELECT alias (or placeholder) and hand it to ``_build_agg``, rendered as an expression so HAVING works where SELECT aliases are rejected."""
     filters = ctx.filters
     assert filters is not None and filters.agg_builder is not None  # caller-guarded
@@ -244,7 +248,7 @@ def _render_filter_aggregate(
     return filters.agg_builder(key, slot, having_full_alias)
 
 
-def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
+def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> Expression:
     """Dispatch an ``AggregateKey``: filter HAVING seam, then composite builder, then built-in."""
     if ctx.filters is not None and ctx.filters.agg_builder is not None:
         return _render_filter_aggregate(key, ctx)
@@ -258,7 +262,7 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
 
 def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
     key: AggregateKey, ctx: RenderContext,
-) -> exp.Expression:
+) -> Expression:
     """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-model stars) refuses."""
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
@@ -305,7 +309,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"Aggregation {key.agg!r} cannot take ``*`` as its source; "
                 f"only 'count' is defined over a bare star.",
             )
-        inner: exp.Expression = exp.Star()
+        inner: Expression = exp.Star()
     elif isinstance(key.source, (AggregateKey, TransformKey)):
         # A nested-aggregate / transform source (re-aggregation) desugars before render.
         raise RenderContextMissingFacilityError(
@@ -327,19 +331,11 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
 
 def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed ValueKey union; each branch IS that type's render contract, and splitting them is exactly the fragmentation this module removes.
     *, key: ValueKey, ctx: RenderContext,
-) -> exp.Expression:
+) -> Expression:
     """Render ``key`` to sqlglot AST in ``ctx``."""
-    # ALIAS-EXCLUSIVE mode: intercepted before every scope branch so a miss RAISES.
-    if ctx.aliases is not None and isinstance(key, _ALIAS_SLOTTED_KINDS):
-        return _render_via_alias(key, ctx)
-    # A composite dimension slot (computed dim) resolves by its grouped alias:
-    # re-rendering it inline at a post-aggregation scope re-evaluates the
-    # expression at the wrong grain.
-    if (
-        ctx.aliases is not None
-        and ctx.aliases.composite_alias_slot_ids
-        and ctx.aliases.slot_id_by_key.get(key)
-        in ctx.aliases.composite_alias_slot_ids
+    # ALIAS mode: any available slot reads by its slot; an unavailable slotted kind RAISES.
+    if ctx.aliases is not None and (
+        _slot_available(key, ctx.aliases) or isinstance(key, _ALIAS_SLOTTED_KINDS)
     ):
         return _render_via_alias(key, ctx)
     # Aggregate internals render through their builder's own scope, never here.

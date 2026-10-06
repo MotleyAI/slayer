@@ -60,10 +60,17 @@ CM_PARTITIONED_MEASURES = {
 CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_MEASURES)
 MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
 
+#: A local ratio composite and a transform over it.
+RATIO_MEASURES = {
+    "ratio": "amount:sum / *:count",
+    "ratio_cumsum": "cumsum(amount:sum / *:count)",
+}
+TD_RATIO = frozenset({"ratio_cumsum"})
+
 #: The full measure pool: every attach family + every transform op + the
-#: cross-model partitioned operands.
+#: cross-model partitioned operands + the ratio composites.
 MEASURE_POOL = {
-    **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES,
+    **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES, **RATIO_MEASURES,
 }
 
 #: Law-local dimension families: the DEV-1837 set plus the grain carrying the
@@ -86,7 +93,7 @@ _MEASURE_ABBREV = {
     "wm": "wm", "rk": "rk", "cm": "cm", "time_shift": "ts", "lag": "lg",
     "lead": "ld", "change": "ch", "change_pct": "cp", "cumsum": "cs",
     "consecutive_periods": "sp", "rank": "rn", "cm_part": "cmp",
-    "cm_last": "cml",
+    "cm_last": "cml", "ratio": "ra", "ratio_cumsum": "rac",
 }
 
 #: Explicit semantic grain of the broadcast-attach operands (grain-union law):
@@ -147,7 +154,8 @@ class LawShape(BaseModel):
     @property
     def with_month(self) -> bool:
         return any(
-            k in TD_ATTACH or k in TD_TRANSFORM_OPS for k in self.measure_keys
+            k in TD_ATTACH or k in TD_TRANSFORM_OPS or k in TD_RATIO
+            for k in self.measure_keys
         )
 
     def __str__(self) -> str:
@@ -178,8 +186,9 @@ def _forced_family(keys: Sequence[str]) -> Optional[str]:
 
 def sample_shapes() -> Tuple[LawShape, ...]:
     """Deterministic covering core (every family, measure, and filter; ≥1
-    cross-model, ≥1 windowed), then seeded random fill to ``N_SHAPES``. A
-    measure with a required family (cm_part / cm_last) forces its shape there."""
+    cross-model, ≥1 windowed, the ratio beside its transform), then seeded random
+    fill to ``N_SHAPES``. A measure with a required family (cm_part / cm_last)
+    forces its shape there."""
     rng = random.Random(LAW_SEED)
     families = tuple(LAW_DIM_FAMILY_DIMS)
     measures = tuple(MEASURE_POOL)
@@ -189,6 +198,7 @@ def sample_shapes() -> Tuple[LawShape, ...]:
         keys = measures[start:start + 3]
         family = _forced_family(keys) or families[idx % len(families)]
         cores.append((family, keys, ftags[idx % len(ftags)]))
+    cores.append(("col", tuple(RATIO_MEASURES), "f0"))
     covered = {family for family, _, _ in cores}
     for j, family in enumerate(families):
         if family not in covered:

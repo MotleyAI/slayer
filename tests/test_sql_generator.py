@@ -1761,9 +1761,9 @@ class TestFields:
             filters=["rev_change < 0"],
         )
         sql = await _generate(generator, query, orders_model)
-        # The post-phase filter is the final select's WHERE; the change(revenue:sum) measure is inlined (revenue_sum minus its time-shift) into the predicate, not referenced by alias.
+        # The post-phase filter is the final select's WHERE; it reads the selected change measure by its alias.
         assert "< 0" in post_filter_where(sql)
-        assert '"orders.revenue_sum" - "orders._time_shift_inner" < 0' in sql
+        assert '"orders.rev_change" < 0' in post_filter_where(sql)
 
     async def test_inline_transform_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Transform expressions in filters should be auto-extracted as hidden fields."""
@@ -1790,8 +1790,8 @@ class TestFields:
         )
         sql = await _generate(generator, query, orders_model)
         assert "'completed'" in sql
-        # Post-filter should be in the outer wrapper. The computed change measure is inlined into the predicate (revenue_sum minus its time-shift) rather than referenced by the ``rev_change`` alias.
-        assert '"orders.revenue_sum" - "orders._time_shift_inner" > 0' in sql
+        # Post-filter should be in the outer wrapper and reads the selected change measure by its alias.
+        assert '"orders.rev_change" > 0' in post_filter_where(sql)
         assert "> 0" in post_filter_where(sql)
         assert "'completed'" not in post_filter_where(sql)
 
