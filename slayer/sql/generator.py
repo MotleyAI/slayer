@@ -64,6 +64,7 @@ from slayer.ir.planned import (
     is_spliced,
     plan_has_semi_join_filters,
     regroup_producer_identity,
+    validate_grain_determination,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
@@ -126,7 +127,6 @@ from slayer.sql.render.value_expr import (
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
-    _ALIAS_SLOTTED_KINDS as _ALIAS_SLOTTED_RENDER_KINDS,
     _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
@@ -232,18 +232,18 @@ def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmissio
         )
     agg_slot = planned_query.aggregate_slots[0]
     bucket_sid = kernel.bucket_slot_id
+    key_by_id = {s.id: s.key for s in planned_query.row_slots}
     dims: List[str] = []
     other_tds: List[str] = []
-    for rs in planned_query.row_slots:
-        if rs.hidden or rs.id == bucket_sid:
+    for sid in planned_query.grain or ():
+        if sid == bucket_sid:
             continue
-        if isinstance(rs.key, TimeTruncKey):
-            other_tds.append(rs.id)
+        if isinstance(key_by_id[sid], TimeTruncKey):
+            other_tds.append(sid)
         else:
-            dims.append(rs.id)
+            dims.append(sid)
     grain = [*dims, bucket_sid, *other_tds]
-    visible_row_ids = {s.id for s in planned_query.row_slots if not s.hidden}
-    if set(grain) != visible_row_ids or set(planned_query.projection) != {
+    if set(grain) != set(planned_query.grain or ()) or set(planned_query.projection) != {
         *grain, agg_slot.id,
     }:
         raise RuntimeError(
@@ -297,10 +297,10 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
             "ranked aggregate; synthesis and rendering disagree."
         )
     agg_slot = planned_query.aggregate_slots[0]
+    key_by_id = {s.id: s.key for s in planned_query.row_slots}
     grain = [
-        RankedGrainMember(host_slot_id=s.id, ranked_key=s.key)
-        for s in planned_query.row_slots
-        if not s.hidden
+        RankedGrainMember(host_slot_id=sid, ranked_key=key_by_id[sid])
+        for sid in planned_query.grain or ()
     ]
     if list(planned_query.projection) != [
         *[m.host_slot_id for m in grain], agg_slot.id,
@@ -973,31 +973,20 @@ class SQLGenerator:
             placeholder_types=self._placeholder_types(),
         )
 
-    def _alias_render_ctx(
-        self, *, slot_id_by_key, available_alias_by_slot_id,
-        composite_alias_slot_ids: Optional[Set[str]] = None,
-    ):
+    def _current_column_types(self) -> Optional[ColumnTypeFn]:
+        """The active ``generate()`` call's column types; ``None`` outside one (untyped)."""
+        return self._gen_column_types[-1] if self._gen_column_types else None
+
+    def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
         """RenderContext carrying only the plain slot-alias facilities."""
         return RenderContext(
             dialect=self._dialect,
-            column_type=self._gen_column_types[-1],
+            column_type=self._current_column_types(),
             aliases=AliasFacilities(
                 slot_id_by_key=slot_id_by_key,
                 available_alias_by_slot_id=available_alias_by_slot_id,
-                composite_alias_slot_ids=composite_alias_slot_ids or set(),
             ),
         )
-
-    @staticmethod
-    def _dimension_composite_slot_ids(planned_query) -> Set[str]:
-        """Computed-dimension slots keyed by a composite: post-aggregation scopes
-        must reference their grouped alias, never re-render the expression."""
-        return {
-            s.id
-            for name in ("row_slots", "aggregate_slots", "combined_expression_slots")
-            for s in getattr(planned_query, name, None) or []
-            if s.is_dimension and not isinstance(s.key, _ALIAS_SLOTTED_RENDER_KINDS)
-        }
 
     def _outer_wrapper_render_ctx(
         self, *, slot_by_key, cross_model_agg_slot_to_cm, aliases_by_slot_id,
@@ -1005,7 +994,7 @@ class SQLGenerator:
         """RenderContext for the outer-wrapper composite/filter render pass."""
         return RenderContext(
             dialect=self._dialect,
-            column_type=self._gen_column_types[-1],
+            column_type=self._current_column_types(),
             aliases=self._outer_wrapper_alias_facilities(
                 slot_by_key=slot_by_key,
                 cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
@@ -1431,8 +1420,9 @@ class SQLGenerator:
         # One hoisted gate: above the kernel-body / combined-attaches early
         # returns so every render path raises the same shape error.
         self._validate_transform_input_shapes(planned_query=planned_query)
-        # Belt against a model_copy that bypassed the plan-time staging validator.
+        # Belts against a model_copy that bypassed the plan-time validators.
         self._assert_stages_assigned(planned_query=planned_query)
+        validate_grain_determination(planned_query)
 
         if (
             as_cte_body
@@ -1504,9 +1494,9 @@ class SQLGenerator:
             base_select = base_select.where(cond)
 
         # dim-only dedup emits GROUP BY before LIMIT so unique dim tuples aren't dropped past row N;
-        # distinct_dimension_values=False opts out.
+        # raw-row mode opts out.
         dim_only_dedup = (
-            planned_query.distinct_dimension_values
+            planned_query.grain is not None
             and bool(group_by_keys)
             and not has_aggregation
         )
@@ -1737,6 +1727,8 @@ class SQLGenerator:
         prev_cte = chain_tail
         carry_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         step_parts: List[Expr] = [exp.column(a, quoted=True) for a in carry_aliases]
+        # Siblings render against prev_cte only: a step's own aliases publish after its SELECT.
+        published: List[Tuple[str, str]] = []
         for map_key, slot in slot_entries:
             names = list(slot.public_aliases) or [slot.declared_name]
             rendered = render(slot)
@@ -1746,8 +1738,10 @@ class SQLGenerator:
             for alias in names:
                 full_alias = f"{source_relation}.{alias}"
                 step_parts.append(rendered.as_(full_alias, quoted=True))
-                aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
-                available_alias_by_slot_id.setdefault(map_key, full_alias)
+                published.append((map_key, full_alias))
+        for map_key, full_alias in published:
+            aliases_by_slot_id.setdefault(map_key, []).append(full_alias)
+            available_alias_by_slot_id.setdefault(map_key, full_alias)
         ctes.append(CteEntry(
             name=step_name,
             query=exp.Select().select(*step_parts).from_(prev_cte),
@@ -3576,7 +3570,7 @@ class SQLGenerator:
             ):
                 base_select = base_select.where(cond)
             base_dim_only_dedup = (
-                planned_query.distinct_dimension_values
+                planned_query.grain is not None
                 and bool(base_group_by)
                 and not base_has_agg
             )
@@ -4536,7 +4530,7 @@ class SQLGenerator:
 
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
-        """The transform auto-grain: every projected row dimension, and every time dimension off the axis's column."""
+        """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's column."""
         axis_column = axis.column if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
@@ -4545,7 +4539,7 @@ class SQLGenerator:
             for sub in plan.substitutions
         }
         return [
-            sid for sid in planned_query.projection
+            sid for sid in planned_query.grain or ()
             if (slot := slots_by_id.get(sid)) is not None and slot.phase == Phase.ROW
             and slot.key not in combined_placeholders
             and SQLGenerator._in_transform_grain(slot=slot, axis_column=axis_column)
@@ -4577,32 +4571,13 @@ class SQLGenerator:
                 f"got {type(key).__name__}",
             )
 
-        # A composite transform input renders inline against operands' already-materialised aliases; the Kahn readiness
-        # check guarantees they're in a prior CTE.
-
-        if isinstance(key.input, SLOT_COMPOSITE_KINDS):
-            # A composite input that IS a projected computed dimension reads its
-            # grouped alias, never re-renders the expression over base columns.
-            measure = render_value_key(
-                key=key.input,
-                ctx=self._alias_render_ctx(
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                    composite_alias_slot_ids=(
-                        self._dimension_composite_slot_ids(planned_query)
-                    ),
-                ),
-            )
-        else:
-            input_sid = slot_id_by_key.get(key.input)
-            if input_sid is None or input_sid not in available_alias_by_slot_id:
-                raise RuntimeError(
-                    f"transform input not materialised: slot id={slot.id!r}, "
-                    f"op={key.op!r}, input_key={key.input!r}.",
-                )
-            measure = exp.column(
-                available_alias_by_slot_id[input_sid], quoted=True,
-            )
+        measure = render_value_key(
+            key=key.input,
+            ctx=self._alias_render_ctx(
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ),
+        )
 
         time_col: Optional[Expression] = None
         if key.time_key is not None:
@@ -4777,9 +4752,6 @@ class SQLGenerator:
                 ctx=self._alias_render_ctx(
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
-                    composite_alias_slot_ids=(
-                        self._dimension_composite_slot_ids(planned_query)
-                    ),
                 ),
             )
             out.append(_grouped(rendered))

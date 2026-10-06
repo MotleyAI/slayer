@@ -188,7 +188,7 @@ def stage_slots(
     masks: List[MaskEntry],
     order: List[OrderEntry],
     projection: List[SlotId],
-    distinct_dimension_values: bool = True,
+    grain: Optional[List[SlotId]],
 ) -> Tuple[List[ValueSlot], List[ValueSlot], List[ValueSlot]]:
     """Return the three slot lists with ``stage`` / ``needs_column`` / ``series``
     assigned. Producer bodies are staged separately; this pass classifies only
@@ -208,7 +208,7 @@ def stage_slots(
         all_slots=all_slots, by_key=by_key, by_id=by_id, stages=stages,
         masks=masks, order=order, projection=projection,
         attach_plans=regroup_attach_plans,
-        distinct_dimension_values=distinct_dimension_values,
+        grain=grain,
     )
 
     return (
@@ -305,12 +305,13 @@ def _attach_join_keys(
     *,
     by_key: Dict[ValueKey, ValueSlot],
 ) -> Set[SlotId]:
-    """An attach joins back on host-side grain keys, which must be columns of
-    _base. join_pairs is (host_key, producer_slot_id): the host key is in this
-    plan's coordinates; the slot id belongs to the producer plan, not here."""
+    """A combined / shifted attach joins after _base on host keys, which must be
+    columns of _base; a row attach joins inside _base's FROM and needs none."""
     needs: Set[SlotId] = set()
     for attach in attach_plans:
-        for host_key, _producer_slot_id in attach.join_pairs:
+        if attach.attach_phase == "row":
+            continue
+        for host_key, _ in attach.join_pairs:
             host_slot = by_key.get(host_key)
             if host_slot is not None:
                 needs.add(host_slot.id)
@@ -343,16 +344,14 @@ def _compute_needs_column(
     order: List[OrderEntry],
     projection: List[SlotId],
     attach_plans: List[RegroupAttachPlan],
-    distinct_dimension_values: bool,
+    grain: Optional[List[SlotId]],
 ) -> Set[SlotId]:
     """Slot ids that must be projected as a column of their own relation (D4)."""
     needs: Set[SlotId] = set(projection)
     needs |= _later_stage_reads(all_slots, by_key=by_key, stages=stages)
     needs |= _measure_mask_deps(masks, by_id=by_id, by_key=by_key)
     needs |= _attach_join_keys(attach_plans, by_key=by_key)
-    # A raw-rows query (distinct_dimension_values=False) has no grouping, so its
-    # row-column order targets resolve inline via split emission, never as a
-    # hidden column.
-    if distinct_dimension_values:
+    # Raw rows: row-column order targets resolve inline via split emission.
+    if grain is not None:
         needs |= _grouped_order_targets(order, stages=stages)
     return needs

@@ -69,7 +69,9 @@ Raw-row mode (`distinct_dimension_values=false`) is the documented exception and
 returns one row per population row. A row-level filter that reaches the population root
 only across a non-determining path SHALL NOT multiply the population's rows, whatever the
 conjunct's boolean shape: raw-row mode returns each population row passing the restriction
-exactly once.
+exactly once. A value the query evaluates only for a filter, an order key or an attached
+aggregate's join SHALL NOT change the result's grain: it never adds a row, splits a
+dimension combination, or repeats one.
 
 #### Scenario: One row per dimension combination
 - **WHEN** an aggregating query groups by dimensions whose value combinations repeat
@@ -82,6 +84,29 @@ exactly once.
   customer has two `ok` orders
 - **THEN** by executed values the result has one row per customer with at least one `ok`
   order (five rows on the reference dataset), never one row per matching order
+
+#### Scenario: A filter on a computed dimension's partition key keeps the dimension's grain
+- **WHEN** a query rooted at `orders` selects the computed dimension
+  `case when sum(amount, partition_by=customer_id) > 50 then 'high' else 'other' end`
+  and the measure `sum(amount)`, with a row filter that reads `customer_id`
+  (`customer_id is not null`, or `customer_id + 0 > 0`), over customers whose order totals
+  are 90, 70 and 50
+- **THEN** by executed values the result has exactly one row per band (`high` 160,
+  `other` 50), the filter removing rows before every aggregation, never one row per customer
+
+#### Scenario: A filter on a joined partition key keeps the dimension's grain
+- **WHEN** the computed dimension partitions by a joined column (`customers.tier` or
+  `customers.regions.name`), a row filter reads that column, and one band covers rows of
+  two distinct values of it
+- **THEN** by executed values the band appears in exactly one row, never once per value of
+  the partition key
+
+#### Scenario: An order key beside a ranked measure keeps the query's grain
+- **WHEN** a grouped query declares a `first` or `last` measure (e.g.
+  `amount:last(ordered_at)`) and orders by a column that is not a dimension, local
+  (`city`) or joined (`customers.regions.name`)
+- **THEN** by executed values the result has exactly one row per dimension combination
+  (one row when the query has no dimensions), never one row per value of the order key
 
 ### Requirement: Grain-union broadcasting
 When aggregates at different grains combine in one expression, the expression's grain
@@ -305,7 +330,9 @@ filters, or order entries the query contains. Adding or removing a projected mea
 SHALL NOT change the row set or any other column's values. A measure-typed filter
 masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
 select and order rows without changing any cell's values. A multi-measure query SHALL
-return, cell by cell, the same values as its single-measure splits.
+return, cell by cell, the same values as its single-measure splits. Selecting an
+expression as a measure SHALL NOT make any other measure, filter or order entry that
+contains it fail.
 
 #### Scenario: Adding a measure changes nothing else
 - **WHEN** any supported query runs with and without one additional measure
@@ -318,6 +345,31 @@ return, cell by cell, the same values as its single-measure splits.
 #### Scenario: A query equals its single-measure splits
 - **WHEN** a two-measure query and its two single-measure counterparts run
 - **THEN** each measure's values match cell by cell across the runs
+
+#### Scenario: A saved ratio measure alongside a transform over it
+- **WHEN** a query rooted at `orders` with a month time dimension (with a `date_range`,
+  and again with a plain date filter instead) selects the saved measure
+  `aov = sum(amount) / count(*)` and `cumsum(aov)`, and again with the inline formulas
+  `sum(amount) / count(*)` and `cumsum(sum(amount) / count(*))`
+- **THEN** every run returns the monthly ratio and its running sum, by hand-computed
+  executed values on SQLite and DuckDB, equal cell by cell to the two single-measure runs
+
+#### Scenario: A selected composite alongside any consumer that contains it
+- **WHEN** a query selects a composite measure (a ratio of local aggregates, and a ratio
+  with a cross-model aggregate operand) together with one consumer containing it — each of
+  `cumsum`, `lag`, `lead`, `change`, `change_pct`, `consecutive_periods` and a rank-family
+  transform over it; an arithmetic composite combining it with a transform; a transform
+  over a larger expression containing it; a measure-typed filter on a transform of it; an
+  ORDER BY on a transform of it
+- **THEN** the query executes on SQLite and DuckDB with no internal error, every measure
+  equals its single-measure run cell by cell, the filter and the order entry select and
+  order exactly the rows they do without the composite selected, and no internal
+  placeholder appears in the generated SQL
+
+#### Scenario: Generated SQL for a reused composite is pinned across dialects
+- **WHEN** a selected composite is reused by a measure-typed filter, and by an order-only
+  composite, and the queries are rendered for PostgreSQL and T-SQL
+- **THEN** the generated SQL matches recorded golden baselines
 
 ### Requirement: Loud degradation
 Whenever partition semantics is unavailable — an implicit attribution-loss broadcast,
