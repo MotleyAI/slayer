@@ -67,7 +67,7 @@ An engine built without an explicit clock SHALL read the environment variable `S
 
 #### Scenario: A pinned datetime drives relative tokens
 
-- **WHEN** `SLAYER_NOW=2025-07-15T12:00:00`, an engine is built without a clock, and a query filters `ordered_at >= 'last 3 months'` over rows dated 2025-03-31, 2025-04-01, 2025-06-30 and 2025-07-01
+- **WHEN** `SLAYER_NOW=2025-07-15T12:00:00`, an engine is built without a clock, and a query filters `ordered_at = 'last 3 months'` over rows dated 2025-03-31, 2025-04-01, 2025-06-30 and 2025-07-01
 - **THEN** exactly the 2025-04-01 and 2025-06-30 rows are returned, by executed values on SQLite
 
 #### Scenario: A date-only value pins midnight

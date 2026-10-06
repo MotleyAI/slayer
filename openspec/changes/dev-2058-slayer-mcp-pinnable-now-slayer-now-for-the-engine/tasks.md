@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests stage — each must fail before implementation)
 
-- [ ] 1.1 `host_clock` parsing: naive datetime pins; date-only → midnight; unset / empty / whitespace → host clock; `Z` and `+02:00` rejected and unparseable rejected, each with a `SlayerError` naming `SLAYER_NOW` and the value — verify via `poetry run pytest` on the new test file (monkeypatch env only)
-- [ ] 1.2 Engine scenarios on in-process SQLite: pinned `last 3 months` rows; explicit `clock=` wins (also with an invalid `SLAYER_NOW`, and with a falsey callable clock); read at construction (change env after build; a second engine sees the new value); `whole_periods_only` default upper bound equals the explicit-clock result
-- [ ] 1.3 MCP: `create_mcp_server` under `SLAYER_NOW` → `server.call_tool("query", …)` with `'last 3 months'` returns the pinned-window rows; invalid value raises before the seeding and ingestion seams are reached (assert via monkeypatched `seed_help_memories` / `ingest_all_datasources_idempotent`)
-- [ ] 1.4 REST: `create_app` under `SLAYER_NOW` → `POST /query` returns the pinned-window rows and the embedded MCP server's engine carries the same pin; invalid value raises before seeding / ingestion
-- [ ] 1.5 CLI: invalid `SLAYER_NOW` with `slayer mcp --demo` and `slayer serve --demo` exits non-zero naming `SLAYER_NOW` on stderr, and the demo seam (`ensure_demo_datasource`) is never called
+- [x] 1.1 `host_clock` parsing: naive datetime pins; date-only → midnight; unset / empty / whitespace → host clock; `Z` and `+02:00` rejected and unparseable rejected, each with a `SlayerError` naming `SLAYER_NOW` and the value — verify via `poetry run pytest` on the new test file (monkeypatch env only)
+- [x] 1.2 Engine scenarios on in-process SQLite: pinned `last 3 months` rows; explicit `clock=` wins (also with an invalid `SLAYER_NOW`, and with a falsey callable clock); read at construction (change env after build; a second engine sees the new value); `whole_periods_only` default upper bound equals the explicit-clock result
+- [x] 1.3 MCP: `create_mcp_server` under `SLAYER_NOW` → `server.call_tool("query", …)` with `'last 3 months'` returns the pinned-window rows; invalid value raises before the seeding and ingestion seams are reached (assert via monkeypatched `seed_help_memories` / `ingest_all_datasources_idempotent`)
+- [x] 1.4 REST: `create_app` under `SLAYER_NOW` → `POST /query` returns the pinned-window rows and the embedded MCP server's engine carries the same pin; invalid value raises before seeding / ingestion
+- [x] 1.5 CLI: invalid `SLAYER_NOW` with `slayer mcp --demo` and `slayer serve --demo` exits non-zero naming `SLAYER_NOW` on stderr, and the demo seam (`ensure_demo_datasource`) is never called
 
 ## 2. Implementation
 
