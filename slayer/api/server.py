@@ -420,6 +420,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.get(
         "/models/{name}",
         responses={
+            404: {"description": "Model not found."},
             409: {
                 "description": (
                     "Model name resolves to multiple datasources. Pass "
@@ -482,6 +483,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/models/{name}",
         responses={
+            404: {"description": "Model not found."},
             409: {
                 "description": (
                     "Model name resolves to multiple datasources. Pass "
@@ -543,7 +545,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             result.append(entry)
         return result
 
-    @app.get("/datasources/{name}")
+    @app.get(
+        "/datasources/{name}",
+        responses={404: {"description": "Datasource not found."}},
+    )
     async def get_datasource(name: str) -> dict[str, Any]:
         ds = await storage.get_datasource(name)
         if ds is None:
@@ -568,7 +573,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": datasource.name}
 
-    @app.delete("/datasources/{name}")
+    @app.delete(
+        "/datasources/{name}",
+        responses={404: {"description": "Datasource not found."}},
+    )
     async def delete_datasource(name: str) -> dict[str, Any]:
         deleted = await storage.delete_datasource(name)
         if not deleted:
