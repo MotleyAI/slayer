@@ -2635,6 +2635,7 @@ class SlayerQueryEngine:
         assert schema is not None
         expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
+            stage=schema.display_name,
             source_relation=root_planned.source_relation,
             inner=rendered.statement,
             expected_columns=expected,

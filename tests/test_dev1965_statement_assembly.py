@@ -287,7 +287,7 @@ def _qb_stage() -> SlayerQuery:
 class TestQueryBackedWrap:
     def test_wrapper_takes_an_ast_inner_statement(self) -> None:
         params = inspect.signature(build_flat_rename_wrapper).parameters
-        assert set(params) == {"source_relation", "inner", "expected_columns", "dialect"}
+        assert set(params) == {"stage", "source_relation", "inner", "expected_columns", "dialect"}
 
     @pytest.mark.parametrize(("ds_type", "dialect", "limit"),
                              [("bigquery", "bigquery", 300), ("mssql", "tsql", 128)])

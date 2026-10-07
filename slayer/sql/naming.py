@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
@@ -11,7 +11,16 @@ from sqlglot import exp
 
 from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.keys import StarKey, source_anchor_path
+from slayer.core.keys import (
+    ColumnKey,
+    ColumnSqlKey,
+    Phase,
+    StarKey,
+    TimeTruncKey,
+    column_leaf,
+    column_path,
+    source_anchor_path,
+)
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -28,6 +37,7 @@ from slayer.sql.naming_bijection import (  # noqa: F401
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
     from slayer.core.keys import AggregateKey
+    from slayer.ir.planned import ValueSlot
 
 # Minted names are unquoted, so these dialects collide names differing only in case;
 # fold key is ``str.lower()`` (``casefold`` over-equates ``ß``→``ss``).
@@ -157,6 +167,54 @@ def time_trunc_result_key(
     base = result_key(source_relation=source_relation, path=path, leaf=leaf)
     suffix = f".{granularity}"
     return f"{base}{suffix}" if declared_name.endswith(suffix) else base
+
+
+def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]:
+    """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
+    if slot.phase != Phase.ROW:
+        return None
+    key = slot.key
+    if isinstance(key, ColumnKey):
+        path, leaf = key.path, key.leaf
+    elif isinstance(key, ColumnSqlKey):
+        path, leaf = key.path, key.column_name
+    elif isinstance(key, TimeTruncKey):
+        path, leaf = column_path(key.column), column_leaf(key.column)
+    else:
+        return None
+    return (path, leaf) if path else None
+
+
+def slot_result_key(*, slot: "ValueSlot", alias: str, source_relation: str) -> str:
+    """Result key of one projected ``alias`` of ``slot``: a user-chosen alias keys by itself,
+    any other alias of a joined ROW slot by its canonical path."""
+    joined = None if alias in slot.explicit_aliases else _joined_row_path(slot)
+    if joined is None:
+        return result_key_from_alias(source_relation=source_relation, alias=alias)
+    path, leaf = joined
+    if isinstance(slot.key, TimeTruncKey):
+        return time_trunc_result_key(
+            source_relation=source_relation, path=path, leaf=leaf,
+            granularity=slot.key.granularity, declared_name=slot.declared_name,
+        )
+    return result_key(source_relation=source_relation, path=path, leaf=leaf)
+
+
+def pick_slot_alias(*, slot: "ValueSlot", alias_index: Dict[str, int]) -> str:
+    """The alias of ``slot``'s next projection occurrence, advancing ``alias_index``."""
+    idx = alias_index.setdefault(slot.id, 0)
+    alias_index[slot.id] = idx + 1
+    return slot.public_aliases[idx] if idx < len(slot.public_aliases) else slot.declared_name
+
+
+def next_slot_result_key(
+    *, slot: "ValueSlot", alias_index: Dict[str, int], source_relation: str,
+) -> str:
+    """:func:`slot_result_key` of ``slot``'s next projection occurrence."""
+    return slot_result_key(
+        slot=slot, alias=pick_slot_alias(slot=slot, alias_index=alias_index),
+        source_relation=source_relation,
+    )
 
 
 def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
