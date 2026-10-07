@@ -1,11 +1,11 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Create `tests/test_joined_path_dimension_names.py` (no issue number in the name), parametrized over SQLite + DuckDB via `tests/_dev1739_fixtures.py` `make_exec_engine`; values hand-computed from that fixture (by customer 90/70/50, by region 160/50, RegN/RegS); verify it collects.
-- [ ] 1.2 Must-fail-today scenarios: named one-hop single query (`orders.region_id`, plus response `attributes` keys ⊆ `columns`); named one-hop stage; named two-hop stage; downstream `sum(revenue)` by `rid`; query-backed model (`SlayerModel(source_queries=...)`); unnamed computed path single + stage; plain + named over one path, interleaved with `status`, single + stage (column order asserted). Verify each fails on the unfixed code.
-- [ ] 1.3 Controls (pass today): plain dotted dimension in a stage read as `customers__region_id`; local rename `cust`; order by / filter by `rid`; name collision `{"name": "region", "expression": "customers.regions.name"}` raises the computed-dimension name-collision error.
-- [ ] 1.4 Parity law over every query in 1.2–1.3 (dry-run): `projection_result_keys(root_planned)` equals, in order, the rendered SQL's outer aliases after the dialect's `decode_result_keys`.
-- [ ] 1.5 Stage-schema assertions: for named and unnamed joined paths, each `StageColumn` has `name == sql_alias ==` the flat name and `public_alias ==` the relation-stripped dotted result key.
-- [ ] 1.6 Unit test: `build_flat_rename_wrapper` with a mismatched expected schema and `stage="cr"`, `source_relation="orders"` raises a message naming `stage 'cr'` and not `stage 'orders'`.
+- [x] 1.1 Create `tests/test_joined_path_dimension_names.py` (no issue number in the name), parametrized over SQLite + DuckDB via `tests/_dev1739_fixtures.py` `make_exec_engine`; values hand-computed from that fixture (by customer 90/70/50, by region 160/50, RegN/RegS); verify it collects.
+- [x] 1.2 Must-fail-today scenarios: named one-hop single query (`orders.region_id`, plus response `attributes` keys ⊆ `columns`); named one-hop stage; named two-hop stage; downstream `sum(revenue)` by `rid`; query-backed model (`SlayerModel(source_queries=...)`); unnamed computed path single + stage; plain + named over one path, interleaved with `status`, single + stage (column order asserted). Verify each fails on the unfixed code.
+- [x] 1.3 Controls (pass today): plain dotted dimension in a stage read as `customers__region_id`; local rename `cust`; order by / filter by `rid`; name collision `{"name": "region", "expression": "customers.regions.name"}` raises the computed-dimension name-collision error.
+- [x] 1.4 Parity law over every query in 1.2–1.3 (dry-run): `projection_result_keys(root_planned)` equals, in order, the rendered SQL's outer aliases after the dialect's `decode_result_keys`.
+- [x] 1.5 Stage-schema assertions: for named and unnamed joined paths, each `StageColumn` has `name == sql_alias ==` the flat name and `public_alias ==` the relation-stripped dotted result key.
+- [x] 1.6 Unit test: `build_flat_rename_wrapper` with a mismatched expected schema and `stage="cr"`, `source_relation="orders"` raises a message naming `stage 'cr'` and not `stage 'orders'`.
 
 ## 2. Implementation (pr-implement)
 
