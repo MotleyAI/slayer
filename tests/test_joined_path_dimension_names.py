@@ -20,7 +20,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.response_meta import expected_columns_from_sql, projection_result_keys
 from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from tests._dev1739_fixtures import make_exec_engine
+from tests._dev1739_fixtures import customers_model, make_exec_engine
 
 REVENUE = {"formula": "sum(amount)", "name": "revenue"}
 REGION_ID = {"name": "region_id", "expression": "customers.region_id"}
@@ -105,12 +105,18 @@ async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
 
 class TestNamedJoinedPathSingleQuery:
     async def test_named_one_hop_keys_by_name(self, exec_engine) -> None:
+        customers = customers_model()
+        customers.columns = [
+            c.model_copy(update={"label": "Region"}) if c.name == "region_id" else c
+            for c in customers.columns
+        ]
+        await exec_engine.save_model(customers)
         resp = await exec_engine.execute(SINGLE_NAMED_ONE_HOP)
         assert resp.columns == ["orders.region_id", "orders.revenue"]
         assert _rows(resp, "orders.region_id", "orders.revenue") == [(1, 160.0), (2, 50.0)]
         attribute_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
         assert attribute_keys <= set(resp.columns)
-        assert "orders.region_id" in resp.attributes.dimensions
+        assert resp.attributes.dimensions["orders.region_id"].label == "Region"
 
     async def test_order_by_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(SINGLE_ORDER_BY_NAME)

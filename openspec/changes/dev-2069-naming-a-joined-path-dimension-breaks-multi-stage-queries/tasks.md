@@ -9,10 +9,10 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 Add `slot_result_key` / `slot_result_keys` to `slayer/sql/naming.py` per design D1; verify 1.4 for unnamed paths stays green.
-- [ ] 2.2 Route `_full_alias_for_slot` through `slot_result_key` (alias via `_pick_alias_for_planned_slot`); verify 1.2 single-query scenarios pass.
+- [x] 2.1 Add `slot_result_key` / `slot_result_keys` to `slayer/sql/naming.py` per design D1; verify 1.4 for unnamed paths stays green. (As built: no `slot_result_keys` — every consumer walks occurrences; `pick_slot_alias` / `next_slot_result_key` added instead.)
+- [x] 2.2 Route `_full_alias_for_slot` through `slot_result_key` (alias via `_pick_alias_for_planned_slot`); verify 1.2 single-query scenarios pass. (As built: `_pick_alias_for_planned_slot` moved to `naming.pick_slot_alias`.)
 - [x] 2.3 Delete `response_meta._slot_result_keys`; `projection_result_keys` and the attribute loop walk `root_planned.projection` occurrences with a per-slot alias index and call `slot_result_key`; drop the "mirror" docstring; verify 1.4.
 - [x] 2.4 `_emit_stage_schema` derives `name` / `sql_alias` / `public_alias` from `slot_result_key` (design D3); replace the regroup `_flat` with `flat_name(..., strip_relation=relation)`; verify 1.2 stage scenarios and 1.5 pass.
 - [x] 2.5 `build_flat_rename_wrapper` gains required `stage: str` for its message; callers pass `stage_schema.display_name` (stage chaining, virtual-model wrap) or the producer CTE name (regroup); verify 1.6.
 - [x] 2.6 Docs, one sentence each in `docs/concepts/queries.md`: "Expression dimensions" — the name keys the result even for a bare joined path; replace the stale renamed cross-model measure key claim (~line 390) with `<model>.<name>`.
-- [ ] 2.7 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check`; all green.
+- [x] 2.7 Full non-integration suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check`; all green.
