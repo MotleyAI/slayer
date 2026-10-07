@@ -255,10 +255,6 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     return False
 
 
-class RollupGraphError(Exception):
-    """Raised when the FK reference graph contains cycles."""
-
-    pass
 
 
 # --- FK graph utilities ---
@@ -333,31 +329,36 @@ def _build_fk_graph(
     return dict(graph)
 
 
-def _check_acyclic(graph: dict[str, set[str]]) -> None:
-    """Check that FK graph is a DAG. Raises RollupGraphError if cycles found."""
+def _break_cycles(graph: dict[str, set[str]]) -> list[tuple[str, str]]:
+    """Drop the back-edges that close FK cycles (in place); returns the dropped edges.
+
+    DFS over nodes and neighbors in sorted order, so the same schema always
+    keeps the same spanning edges. Every edge not on a cycle is preserved,
+    which lets rollup proceed instead of being skipped for the whole schema.
+    """
     visited: set[str] = set()
     rec_stack: set[str] = set()
-
-    def dfs(node: str, path: list[str]) -> None:
-        visited.add(node)
-        rec_stack.add(node)
-        path.append(node)
-        for neighbor in graph.get(node, set()):
-            if neighbor not in visited:
-                dfs(neighbor, path)
-            elif neighbor in rec_stack:
-                cycle_start = path.index(neighbor)
-                cycle = path[cycle_start:] + [neighbor]
-                raise RollupGraphError(f"Foreign key graph contains a cycle: {' -> '.join(cycle)}")
-        path.pop()
-        rec_stack.remove(node)
+    dropped: list[tuple[str, str]] = []
 
     all_nodes: set[str] = set(graph.keys())
     for neighbors in graph.values():
         all_nodes.update(neighbors)
-    for node in all_nodes:
+
+    def dfs(node: str) -> None:
+        visited.add(node)
+        rec_stack.add(node)
+        for neighbor in sorted(graph.get(node, set())):
+            if neighbor in rec_stack:
+                graph[node].discard(neighbor)
+                dropped.append((node, neighbor))
+            elif neighbor not in visited:
+                dfs(neighbor)
+        rec_stack.remove(node)
+
+    for node in sorted(all_nodes):
         if node not in visited:
-            dfs(node, [])
+            dfs(node)
+    return dropped
 
 
 def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[str]:
@@ -1148,7 +1149,6 @@ def _build_one_model(
     ref: SchemaRef,
     data_source: str,
     fk_graph: dict[str, set[str]],
-    has_cycles: bool,
     fk_columns_by_table: dict[str, set[str]],
     table_set: set[str],
     model_name_by_table: dict[str, str] | None = None,
@@ -1160,9 +1160,7 @@ def _build_one_model(
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     """
     schema_token = ref.token
-    referenced = (
-        set() if has_cycles else _compute_transitive_closure(fk_graph, obj.name)
-    )
+    referenced = _compute_transitive_closure(fk_graph, obj.name)
     sql_table = ref.qualify(obj.name)
 
     model_joins = None
@@ -1287,12 +1285,13 @@ def _scan_one_schema(
         inspector=inspector, table_names=obj_names, schema=schema_token,
         schema_name=ref.name,
     )
-    has_cycles = False
-    try:
-        _check_acyclic(fk_graph)
-    except RollupGraphError as e:
-        logger.warning(f"FK graph has cycles, skipping rollup: {e}")
-        has_cycles = True
+    dropped_edges = _break_cycles(fk_graph)
+    if dropped_edges:
+        logger.warning(
+            "FK graph has cycles; dropped %d back-edge(s) to keep rollup: %s",
+            len(dropped_edges),
+            ", ".join(f"{src} -> {dst}" for src, dst in dropped_edges),
+        )
     fk_columns_by_table = _collect_fk_columns(
         inspector=inspector, table_names=obj_names, schema=schema_token
     )
@@ -1313,7 +1312,6 @@ def _scan_one_schema(
                     ref=ref,
                     data_source=data_source,
                     fk_graph=fk_graph,
-                    has_cycles=has_cycles,
                     fk_columns_by_table=fk_columns_by_table,
                     table_set=table_set,
                     model_name_by_table=name_by_object,
