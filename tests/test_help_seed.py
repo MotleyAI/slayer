@@ -4,8 +4,10 @@ isolation (empty entities), retrieval/surfacing, MCP wiring, CLI seeding."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import tempfile
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import (
     DEFAULT_HELP_CONTEXT,
     HELP_TOPICS,
+    RETIRED_HELP_IDS,
     HelpTopic,
     load_help_topics,
     merge_help_topics,
@@ -32,6 +35,18 @@ EXPECTED_HELP_IDS = (
     "help.intro",
     "help.models",
     "help.workflow",
+    "help.aggregations",
+    "help.transforms",
+    "help.time",
+    "help.joins",
+    "help.queries",
+)
+REUSED_HELP_IDS = (
+    "help.aggregations",
+    "help.transforms",
+    "help.time",
+    "help.joins",
+    "help.queries",
 )
 
 
@@ -85,8 +100,16 @@ class TestHelpTopicsContent:
 
     def test_intro_lists_deepdive_ids(self) -> None:
         intro = next(t for t in HELP_TOPICS if t.id == "help.intro")
-        assert "memory:help.models" in intro.learning
-        assert "memory:help.workflow" in intro.learning
+        for hid in EXPECTED_HELP_IDS[1:]:
+            assert f"memory:{hid}" in intro.learning, hid
+
+    def test_workflow_carries_the_query_discipline(self) -> None:
+        workflow = next(t for t in HELP_TOPICS if t.id == "help.workflow").learning.lower()
+        for phrase in ("qualifier", "sampled values", "one variable at a time"):
+            assert phrase in workflow, phrase
+
+    def test_reused_ids_are_no_longer_retired(self) -> None:
+        assert set(RETIRED_HELP_IDS) == {"help.formulas", "help.filters", "help.extending"}
 
 
 # --- seeding ---
@@ -97,11 +120,11 @@ class TestSeeding:
         # A warm store still carrying a retired built-in body loses it on seed;
         # host-namespaced help ids are never touched.
         await storage.save_memory(
-            id="help.joins", learning="stale retired body", entities=[],
+            id="help.filters", learning="stale retired body", entities=[],
         )
         await storage.save_memory(id="help.motley.x", learning="host", entities=[])
         await seed_help_memories(storage)
-        assert await storage.get_memory_row("help.joins") is None
+        assert await storage.get_memory_row("help.filters") is None
         assert await storage.get_memory_row("help.motley.x") is not None
 
     async def test_fresh_seed_writes_all_topics(self, storage: YAMLStorage) -> None:
@@ -113,6 +136,17 @@ class TestSeeding:
             assert mem.entities == []  # never pollutes Learnings
             assert mem.query is None
             assert mem.description
+
+    async def test_reused_ids_get_current_bodies_and_keep_them(self, storage: YAMLStorage) -> None:
+        for hid in REUSED_HELP_IDS:
+            await storage.save_memory(id=hid, learning=f"stale {hid} body", entities=[])
+        await seed_help_memories(storage)
+        current = {t.id: t.learning for t in HELP_TOPICS}
+        for hid in REUSED_HELP_IDS:
+            assert (await storage.get_memory(hid)).learning == current[hid]
+        assert await seed_help_memories(storage) == 0
+        for hid in REUSED_HELP_IDS:
+            assert (await storage.get_memory(hid)).learning == current[hid]
 
     async def test_second_seed_is_noop(self, storage: YAMLStorage) -> None:
         await seed_help_memories(storage)
@@ -265,6 +299,19 @@ class TestMcpWiring:
         instr = server.instructions or ""
         assert "memory:help.intro" in instr
         assert "help()" not in instr
+
+    async def test_every_help_reference_names_a_seeded_topic(
+        self, storage: YAMLStorage
+    ) -> None:
+        from slayer.mcp.server import create_mcp_server
+
+        server = create_mcp_server(storage=storage, _seed_help=False)
+        texts = [server.instructions or ""]
+        for tool in await server.list_tools():
+            texts.extend([tool.description or "", json.dumps(tool.inputSchema)])
+        refs = set(re.findall(r"memory:(help(?:\.\w+)+)", "\n".join(texts)))
+        assert refs, "no help reference advertised"
+        assert refs <= set(EXPECTED_HELP_IDS)
 
     async def test_create_mcp_server_seeds(
         self, storage: YAMLStorage
