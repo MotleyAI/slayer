@@ -24,6 +24,7 @@ from sqlalchemy.dialects.mssql import (
     TIMESTAMP as MSSQL_TIMESTAMP,
     TINYINT,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSON as PG_JSON
 from sqlalchemy.dialects.postgresql import JSONB
@@ -617,6 +618,29 @@ class TestSaTypeToDataTypeIntDouble:
         # sa.TIMESTAMP, so without the isinstance guard it would incorrectly
         # land on DataType.TIMESTAMP.
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+
+
+class TestSaTypeToDataTypeUuidJsonb:
+    """UUID and JSONB are comparable and work as TEXT; mapping them keeps
+    every Postgres ingest from logging an unmapped-type warning. Generic
+    JSON stays in ``_OPAQUE_SA_TYPE_NAMES`` on purpose."""
+
+    @pytest.mark.parametrize("sa_type", [
+        sa.Uuid(),
+        postgresql.UUID(),
+        postgresql.JSONB(),
+    ])
+    def test_maps_to_text(self, sa_type) -> None:
+        assert _sa_type_to_data_type(sa_type) is DataType.TEXT
+
+    def test_json_stays_opaque(self) -> None:
+        assert _sa_type_to_data_type(sa.JSON()) is DataType.UNKNOWN
+
+    def test_no_unmapped_warning_logged(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="slayer.engine.ingestion"):
+            _sa_type_to_data_type(postgresql.UUID())
+            _sa_type_to_data_type(postgresql.JSONB())
+        assert "Unrecognized SQLAlchemy type" not in caplog.text
 
 
 class TestUnmappedTypeBecomesOpaque:

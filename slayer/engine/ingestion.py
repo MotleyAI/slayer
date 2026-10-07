@@ -146,6 +146,9 @@ _SA_TYPE_MAP = {
     "NVARCHAR": DataType.TEXT,
     "NCHAR": DataType.TEXT,
     "NTEXT": DataType.TEXT,
+    # Comparable types that work as TEXT (generic JSON stays opaque above).
+    "UUID": DataType.TEXT,
+    "JSONB": DataType.TEXT,
     "MONEY": DataType.DOUBLE,
     "SMALLMONEY": DataType.DOUBLE,
     # SQL Server rowversion — 8-byte binary counter, not temporal
