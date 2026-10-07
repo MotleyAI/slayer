@@ -8,6 +8,8 @@ All commands accept a `--storage` flag to specify where models and datasources a
 
 The `SLAYER_INGEST_ON_STARTUP` environment variable mirrors the `--ingest-on-startup` flag on `slayer serve` / `slayer mcp` — truthy values (`1`, `true`, `yes`, case-insensitive) enable boot-time idempotent auto-ingestion across every configured datasource. See [Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
 
+The `SLAYER_NOW` environment variable pins the "now" that relative time points resolve against (see [Time](../concepts/time.md#relative-tokens)); every command validates it first and exits non-zero on an invalid value.
+
 ## Commands
 
 ### `slayer serve`

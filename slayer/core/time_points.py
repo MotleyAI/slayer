@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date, datetime, timedelta
 from types import MappingProxyType
-from typing import Literal, Mapping, Optional
+from typing import Callable, Literal, Mapping, Optional
 
 from pydantic import BaseModel
 
 from slayer.core.enums import GRANULARITY_NAMES, UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
+from slayer.core.errors import SlayerError
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_key, granularity_parts, is_sub_day
 
 # A datasource's custom granularities by ``granularity_key``.
@@ -46,6 +48,26 @@ class Period(BaseModel, frozen=True):
 
 
 TimePoint = Instant | Period
+
+SLAYER_NOW = "SLAYER_NOW"
+
+
+def host_clock() -> Callable[[], datetime]:
+    """The default engine clock: pinned to ``SLAYER_NOW`` (naive ISO-8601) when set, else ``datetime.now``."""
+    raw = os.environ.get(SLAYER_NOW, "").strip()
+    if not raw:
+        return datetime.now
+    try:
+        pinned = datetime.fromisoformat(raw)
+    except ValueError:
+        raise SlayerError(
+            f"{SLAYER_NOW}={raw!r} is not an ISO-8601 datetime or date (e.g. '2025-07-15T12:00:00')."
+        ) from None
+    if pinned.tzinfo is not None:
+        raise SlayerError(
+            f"{SLAYER_NOW}={raw!r} carries a timezone; a naive wall-clock datetime is required."
+        )
+    return lambda: pinned
 
 
 class _Relative(BaseModel, frozen=True):

@@ -5,6 +5,7 @@ import logging
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from collections.abc import Sequence
 from typing import Any
 
 import sqlalchemy as sa
@@ -406,6 +407,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ingest_on_startup: bool = False,
     _seed_help: bool = True,
 ):
+    # Built first: an invalid SLAYER_NOW must fail before any side effect.
+    engine = SlayerQueryEngine(storage=storage)
     # Seed conceptual-help memories (idempotent; _seed_help=False when
     # create_app already seeds). Best-effort — never abort the build on a
     # seed failure, and skip for metadata-only (non-StorageBackend) builds.
@@ -440,7 +443,6 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         ),
     )
     _set_server_version(mcp)
-    engine = SlayerQueryEngine(storage=storage)
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
@@ -551,7 +553,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         is a time point: an instant ``'2025-03-01 10:00:00'`` compares as written; a period is a
         half-open range — ``'2025'``, ``'2025-Q1'``, ``'2025-03'``, ``'2025-W05'`` (ISO week),
         ``'2025-03-01'`` (a date-only string means the whole day), or a relative token read from
-        the host clock: ``'today'``, ``'this|last|next month'`` (any granularity), ``'last 7 days'``
+        the host clock (pinned by ``SLAYER_NOW`` when set): ``'today'``, ``'this|last|next month'`` (any granularity), ``'last 7 days'``
         (excludes the current day), ``'3 months ago'``, ``'year to date'``. ``ts >= P`` starts at
         P, ``ts <= P`` ends with P, ``ts = P`` / ``ts in '2025-Q1'`` is inside P. A time
         dimension's ``date_range`` is one period (``"last month"``) or ``[lower, upper]`` with
@@ -1500,9 +1502,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         if not models and not save_errors:
             lines.append("No tables found to ingest.")
-            schemas = _get_schemas(ds)
-            if schemas:
-                lines.append(f"Available schemas: {', '.join(schemas)}")
+            available = _get_schemas(ds)
+            if available:
+                lines.append(f"Available schemas: {', '.join(available)}")
         elif models:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
@@ -2149,7 +2151,7 @@ def _cap_rows(result: SlayerResponse, *, hint: str) -> None:
     ]
 
 
-def _cap_leaf(query: "SlayerQuery | dict"):
+def _cap_leaf(query: "SlayerQuery | dict") -> "tuple[SlayerQuery | dict, bool]":
     """Push ``limit = cap + 1`` into one query object with no limit; returns
     ``(query_or_capped, capped)`` and never mutates the caller's input."""
     limit = query.limit if isinstance(query, SlayerQuery) else query.get("limit")
@@ -2164,8 +2166,8 @@ def _cap_leaf(query: "SlayerQuery | dict"):
 
 
 def _apply_mcp_row_cap(
-    query: "str | SlayerQuery | list[SlayerQuery]",
-):
+    query: "str | SlayerQuery | dict | Sequence[SlayerQuery | dict]",
+) -> "tuple[str | SlayerQuery | dict | list[SlayerQuery | dict], bool, str]":
     """Push the default row cap into the root query when the caller set no limit.
 
     Returns ``(query_to_execute, capped, hint)``. A run-by-name string is opaque,
@@ -2178,10 +2180,11 @@ def _apply_mcp_row_cap(
     if isinstance(query, (SlayerQuery, dict)):
         capped_query, capped = _cap_leaf(query)
         return capped_query, capped, _CAP_HINT
-    if isinstance(query, list) and query:
-        capped_root, capped = _cap_leaf(query[-1])
-        return [*query[:-1], capped_root], capped, _NESTED_CAP_HINT
-    return query, False, _CAP_HINT
+    stages = list(query)
+    if stages:
+        capped_root, capped = _cap_leaf(stages[-1])
+        return [*stages[:-1], capped_root], capped, _NESTED_CAP_HINT
+    return stages, False, _CAP_HINT
 
 
 def _csv_warning_comments(result: SlayerResponse) -> str:

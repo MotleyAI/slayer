@@ -68,6 +68,7 @@ from slayer.engine.population import (
     spine_datasource,
     to_one_reachable,
 )
+from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
 from slayer.core.scope import StageDisplay, collect_stale_spellings
 from slayer.core.warnings import (
@@ -668,11 +669,11 @@ class SlayerQueryEngine:
         *,
         policy: Optional[SessionPolicy] = None,
         cache_config: Optional[CacheConfig] = None,
-        clock: Callable[[], datetime] = datetime.now,
+        clock: Optional[Callable[[], datetime]] = None,
     ):
         self.storage = storage
         # Read once per execution; relative time points resolve against it.
-        self._clock = clock
+        self._clock = clock if clock is not None else host_clock()
         # Per-engine, opt-in query result cache (defaults to cache-indefinitely).
         self._cache = QueryCache(config=cache_config or CacheConfig())
         # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.

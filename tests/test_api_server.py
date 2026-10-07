@@ -723,6 +723,19 @@ class TestOpenAPI400Documentation:
         responses = spec["paths"]["/datasources/priority"]["put"]["responses"]
         assert "400" in responses
 
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/models/{name}", "get"),
+            ("/models/{name}", "delete"),
+            ("/datasources/{name}", "get"),
+            ("/datasources/{name}", "delete"),
+        ],
+    )
+    def test_not_found_routes_document_404(self, client: TestClient, path: str, method: str) -> None:
+        spec = client.get("/openapi.json").json()
+        assert "404" in spec["paths"][path][method]["responses"]
+
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
         self, client: TestClient, storage: YAMLStorage, monkeypatch
     ) -> None:

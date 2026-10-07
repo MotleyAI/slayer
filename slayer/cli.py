@@ -22,6 +22,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.recommend import render_recommendation_markdown
+from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
@@ -957,6 +958,12 @@ examples:
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
     args = parser.parse_args()
+
+    try:
+        host_clock()  # Validates SLAYER_NOW before any command's side effects.
+    except SlayerError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.command == "serve":
         _run_serve(args)
