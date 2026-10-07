@@ -32,10 +32,11 @@ from slayer.core.keys import (
 from slayer.core.join_walker import model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
+from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
     "aggregated_type",

@@ -3,20 +3,30 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.time_spine import TIME_SPINE_MODEL
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.keys import StarKey, source_anchor_path
+from slayer.core.keys import (
+    AggregateKey,
+    ColumnKey,
+    ColumnSqlKey,
+    StarKey,
+    TransformKey,
+    ValueKey,
+    source_anchor_path,
+)
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
+    auto_name_from_expression,
     canonical_agg_name,
-    expression_source_leaf,
+    key_display,
     partition_by_suffix,
 )
 from slayer.sql._identifier_fit import fit_identifier
@@ -25,9 +35,6 @@ from slayer.sql.naming_bijection import (  # noqa: F401
     decode_alias,
     encode_alias,
 )
-
-if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
-    from slayer.core.keys import AggregateKey
 
 # Minted names are unquoted, so these dialects collide names differing only in case;
 # fold key is ``str.lower()`` (``casefold`` over-equates ``ß``→``ss``).
@@ -216,6 +223,22 @@ AggAliasProfile = Literal[
 _PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_formula")
 
 
+def _strip_anchor(key: ValueKey, anchor: Tuple[str, ...]) -> ValueKey:
+    """``key`` with ``anchor`` removed from its row-level column paths; attached constituents untouched."""
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return key
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return key.model_copy(update={"path": key.path[len(anchor):]})
+    return key.map_children(lambda child: _strip_anchor(child, anchor))
+
+
+def expression_source_leaf(source: ValueKey) -> str:
+    """Result-key leaf of an expression aggregate source: its formula text relative to its home path."""
+    anchor = source_anchor_path(source)
+    rendered = _strip_anchor(source, anchor) if anchor else source
+    return auto_name_from_expression(key_display(rendered))
+
+
 def _alias_param(value) -> str:
     """A parameter's alias token; a boolean spells itself, never as ``1``."""
     if isinstance(value, bool):
@@ -253,25 +276,17 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         key.source, "column_name", None,
     )
     if leaf is None and isinstance(key.source, EXPRESSION_SOURCE_KINDS):
-        # Expression source: derived leaf via the shared sanitizer
-        # (``sum(amount - cost)`` → ``amount_cost``), then the ordinary
-        # canonical/parametric/partition machinery below applies unchanged.
         leaf = expression_source_leaf(key.source)
 
     if profile in ("cross_model_cte", "cte_schema"):
-        measure_name: Optional[str] = leaf or "*"
-    elif profile == "declared_name":
-        if is_star:
-            measure_name = "*"
-        elif leaf is None:
-            # Explicit placeholder, NOT the star form, so it stays distinguishable.
-            return f"_agg_{key.agg}"
-        else:
-            measure_name = leaf
-    else:  # stage_formula
-        measure_name = "*" if is_star else leaf
-        if measure_name is None:
-            return None
+        measure_name: str = leaf or "*"
+    elif is_star:
+        measure_name = "*"
+    elif leaf is None:
+        # declared_name: explicit placeholder, NOT the star form; stage_formula declines.
+        return f"_agg_{key.agg}" if profile == "declared_name" else None
+    else:
+        measure_name = leaf
 
     canonical = canonical_agg_name(
         measure_name=measure_name,
@@ -306,7 +321,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
 # Case-folding dialects reach the wrong physical object unless mixed-case is quoted.
 
 
-def maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
+def maybe_quote_ident(ident: Optional[Expression]) -> None:
     """Set ``quoted=True`` in place on an unquoted ``Identifier`` with an uppercase letter."""
     if (
         isinstance(ident, exp.Identifier)
@@ -316,7 +331,7 @@ def maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
         ident.set("quoted", True)
 
 
-def quote_mixed_case_identifiers(node: exp.Expression) -> exp.Expression:
+def quote_mixed_case_identifiers(node: Expression) -> Expression:
     """Quote mixed-case DB identifiers (``.transform`` callback): a ``Column``'s name leaf and a ``Table``'s physical parts only. Idempotent."""
     if isinstance(node, exp.Column):
         maybe_quote_ident(node.this)

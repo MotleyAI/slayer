@@ -52,7 +52,7 @@ Wherever a number is needed — an arithmetic operand, a math function's argumen
 **Naming.** The result key derives from the expression via the same sanitizer
 used for computed dimensions: `sum(amount - cost)` on `orders` →
 `orders.amount_cost_sum`, formatting-insensitively (`sum(amount-cost)` is the
-same key). Very long expressions fold to a stable-hash key. An explicit
+same key). Every operand is named by its formula text — date comparisons, nested aggregates and transforms included — and operands on a joined model are spelled from the expression's home, which the key already carries (`sum(customers.spend - 1)` on `orders` → `orders.customers.spend_1_sum`). Very long expressions fold to a stable-hash key. An explicit
 `name` overrides the derived key; two *different* expressions whose derived
 keys collide (`sum(amount - cost)` and `sum(amount + cost)`) fail with a
 duplicate-key error asking for a rename.

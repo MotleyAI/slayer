@@ -172,9 +172,11 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
 # --------------------------------------------------------------------------- #
 async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> None:
     eq, ne = "sum(iif(ordered_at == '2024-02', 1, 0))", "sum(iif(ordered_at != '2024-02', 1, 0))"
+    query = q(measures=[eq, ne])
     with pytest.raises(NameCollisionError, match="(?s)Rename") as exc:
-        await engine.execute(q(measures=[eq, ne]))
-    assert eq in str(exc.value) and ne in str(exc.value)
+        await engine.execute(query)
+    assert eq in str(exc.value)
+    assert ne in str(exc.value)
 
 
 def _outer_over_inner(*, locus: Literal["target", "host"]) -> AggregateKey:
@@ -296,5 +298,6 @@ class TestExpressionSourceLeaf:
         assert expression_source_leaf(source) == "amount_0_0000001"
 
     def test_unknown_key_kind_fails_closed(self) -> None:
+        alien = _AlienKey()
         with pytest.raises(TypeError):
-            expression_source_leaf(_AlienKey())
+            expression_source_leaf(alien)  # pyright: ignore[reportArgumentType]  # deliberately invalid kind

@@ -15,13 +15,13 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/sql/naming.py`: add `expression_source_leaf(source)` = `auto_name_from_expression` over the home-relative rendering (design D2: rebase row-level leaves by `source_anchor_path`, stop at `AggregateKey`/`TransformKey`, render with `key_display`). Delete `_value_key_display`, `_arithmetic_key_display` and `expression_source_leaf` from `slayer/core/refs.py`; drop "never identity" from `key_display`'s docstring. Verify: 1.11, 1.12 pass.
-- [ ] 2.2 `slayer/core/refs.py`: `EXPRESSION_SOURCE_KINDS` gains `TimePointCmpKey`; `slayer/engine/binding.py`: delete `_BOUND_EXPRESSION_SOURCE_KINDS`, read the shared tuple. Verify: 1.4 passes.
-- [ ] 2.3 Repoint callers (`slayer/sql/generator.py`, `slayer/engine/key_metadata.py`, `slayer/engine/response_meta.py`, `naming.canonical_aggregate_alias`) to `naming.expression_source_leaf`. Verify: grep shows no other definition / import; 1.2–1.10 pass.
-- [ ] 2.4 Re-bless the `source_columnkey…` aliases in `tests/golden/dev1859_sql_baseline.json` and any other pin of a pathed expression leaf the suite surfaces; every other golden byte-identical. Verify: golden suites green; diff limited to those aliases.
-- [ ] 2.5 Docs: one sentence in `docs/concepts/formulas.md` › Naming (every operand kind named by its text; pathed operands spelled from the expression's home). Verify: sentence present.
+- [x] 2.1 `slayer/sql/naming.py`: add `expression_source_leaf(source)` = `auto_name_from_expression` over the home-relative rendering (design D2: rebase row-level leaves by `source_anchor_path`, stop at `AggregateKey`/`TransformKey`, render with `key_display`). Delete `_value_key_display`, `_arithmetic_key_display` and `expression_source_leaf` from `slayer/core/refs.py`; drop "never identity" from `key_display`'s docstring. Verify: 1.11, 1.12 pass.
+- [x] 2.2 `slayer/core/refs.py`: `EXPRESSION_SOURCE_KINDS` gains `TimePointCmpKey`; `slayer/engine/binding.py`: delete `_BOUND_EXPRESSION_SOURCE_KINDS`, read the shared tuple. Verify: 1.4 passes.
+- [x] 2.3 Repoint callers (`slayer/sql/generator.py`, `slayer/engine/key_metadata.py`, `slayer/engine/response_meta.py`, `naming.canonical_aggregate_alias`) to `naming.expression_source_leaf`. Verify: grep shows no other definition / import; 1.2–1.10 pass.
+- [x] 2.4 Re-bless the `source_columnkey…` aliases in `tests/golden/dev1859_sql_baseline.json` and any other pin of a pathed expression leaf the suite surfaces; every other golden byte-identical. Verify: golden suites green; diff limited to those aliases.
+- [x] 2.5 Docs: one sentence in `docs/concepts/formulas.md` › Naming (every operand kind named by its text; pathed operands spelled from the expression's home). Verify: sentence present.
 
 ## 3. Gates
 
-- [ ] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
-- [ ] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` clean.
+- [x] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
+- [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` clean.

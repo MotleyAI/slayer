@@ -1009,10 +1009,6 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
-# Expression sources at bind: a time-point comparison is lowered by the checker before planning.
-_BOUND_EXPRESSION_SOURCE_KINDS = (*EXPRESSION_SOURCE_KINDS, TimePointCmpKey)
-
-
 def _bind_partition_keys(
     value, *,
     scope: ModelScope | StageSchema,
@@ -1052,7 +1048,7 @@ def _bind_expression_agg_source(
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
     expression (a column, star, or arithmetic/scalar/predicate composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(bound, _BOUND_EXPRESSION_SOURCE_KINDS):
+    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
         raise _not_an_aggregation_source(bound, agg=agg)
     return bound
 
@@ -1280,7 +1276,7 @@ def _bind_agg(
     # column (the ranked kernel can't rank an expression), and numeric-only
     # aggregations are rejected when the expression is confidently non-numeric
     # (per-column gates don't apply).
-    if isinstance(source, _BOUND_EXPRESSION_SOURCE_KINDS):
+    if isinstance(source, EXPRESSION_SOURCE_KINDS):
         if effective_agg in ("first", "last"):
             raise ValueError(
                 f"Aggregation {effective_agg!r} is not supported over an "

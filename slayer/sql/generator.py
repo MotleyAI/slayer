@@ -43,10 +43,7 @@ from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
-from slayer.core.refs import (
-    EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS,
-    expression_source_leaf,
-)
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.column_expansion import (
     is_trivial_base,
@@ -77,6 +74,7 @@ from slayer.sql.naming import (
     canonical_aggregate_alias,
     cte_name_from_alias,
     dialect_folds_case,
+    expression_source_leaf,
     maybe_quote_ident,
     quote_mixed_case_identifiers,
     result_key,
@@ -1999,6 +1997,7 @@ class SQLGenerator:
             if isinstance(
                 key.source, (ColumnSqlKey, *_EXPRESSION_SOURCE_KINDS),
             ) or source_anchor_path(key.source):
+                assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
                 scope.resolve(key.source)
 
         def _resolve_kwargs(key) -> None:
@@ -5815,6 +5814,7 @@ class SQLGenerator:
             # expression to SQL text; every dispatch kind downstream
             # (simple / distinct / percentile / dialect hook / formula
             # ``{value}``) receives it exactly like a derived-column body.
+            assert not isinstance(source, TimePointCmpKey)  # lowered by the checker before planning
             expr_leaf = expression_source_leaf(source)
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=expr_leaf,
