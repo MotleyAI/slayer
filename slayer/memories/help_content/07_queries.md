@@ -36,14 +36,15 @@ result again; line up two differently grouped results by a shared key.
 
 A query with dimensions only returns distinct combinations; set
 `distinct_dimension_values: false` for raw rows (no measures allowed). Without a
-`limit`, the MCP response stops at 20 rows with a notice; use `limit` for top N,
-never to trim a list.
+`limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
+`limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 
 ## Variables
 
 `{name}` placeholders in conditions, formulas and `date_range` bounds take values from
-the tool's `variables` argument, a stage's own `variables`, or the saved model's
-defaults, in that order of precedence.
+the tool's `variables` argument, a stage's own `variables`, the outer query's
+`variables` (when a saved query-backed model is its `source_model`), or the saved
+model's defaults, in that order of precedence.
 
 ## Debugging
 

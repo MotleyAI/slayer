@@ -475,7 +475,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         variables: Annotated[dict[str, Any] | None, Field(
             description=(
                 "Values for {placeholder}s in conditions, formulas, date_range bounds and model SQL; "
-                "override a stage's own variables and the saved model's defaults."
+                "override a stage's own variables, an outer query's variables and the saved model's defaults."
             ),
         )] = None,
         refine: Annotated[QueryRefinement | None, Field(
@@ -483,7 +483,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         show_sql: Annotated[bool, Field(description="Include the generated SQL in the response.")] = False,
         dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
-        explain: Annotated[bool, Field(description="Run EXPLAIN ANALYZE and return the query plan.")] = False,
+        explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
     ) -> str:
         """Run a SLayer query: describe the result you want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins.
@@ -626,7 +626,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         compact: Annotated[bool, Field(
             description=(
                 "Default true: the description only for column / measure / aggregation / datasource / "
-                "memory (help.* topics always return their full body), a schema skeleton without "
+                "memory (never shortens a help.* topic), a schema skeleton without "
                 "database calls for a model. False: the full render."
             ),
         )] = True,
@@ -645,7 +645,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.
 
-        Before using a column as a filter, projection, group-by or join key, inspect it and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a column by its name alone.
+        Before using a column as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a column by its name alone.
 
         Collection: omit `reference` with entity_type "model" (every model, grouped by datasource) or "datasource".
         Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.

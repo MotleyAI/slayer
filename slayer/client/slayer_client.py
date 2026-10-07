@@ -275,7 +275,7 @@ class SlayerClient:
     async def explain(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
     ) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE on a query (same input union)."""
+        """Run the database's EXPLAIN on a query (same input union)."""
         return await self.query(query=query, refine=refine, variables=variables, explain=True)
 
     async def list_models(self, data_source: str | None = None) -> list[str]:
@@ -537,7 +537,7 @@ class SlayerClient:
     def explain_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
     ) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE synchronously (same input union)."""
+        """Run the database's EXPLAIN synchronously (same input union)."""
         return self.query_sync(query=query, refine=refine, variables=variables, explain=True)
 
     def inspect_sync(

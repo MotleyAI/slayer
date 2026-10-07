@@ -1244,9 +1244,9 @@ class SlayerQuery(BaseModel):
     limit: int | None = Field(
         default=None,
         description=(
-            "Max rows to return. Use only for top-N / 'the single most X' "
-            "requests — never to trim a plain list (an uncapped MCP response "
-            "is truncated at 20 rows with an explicit notice)."
+            "Max rows to return: the top N, or a limit covering a list longer than "
+            "the 20 rows an uncapped MCP response returns (with a notice). Never "
+            "use it to cut a list asked for in full."
         ),
     )
     offset: int | None = Field(default=None, description="Rows to skip.")

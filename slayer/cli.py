@@ -271,7 +271,7 @@ examples:
         help="Output format (default: table)",
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
-    query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument("--explain", action="store_true", help="Run the database's EXPLAIN on the query")
     query_parser.add_argument(
         "--refine",
         default=None,

@@ -210,7 +210,7 @@ result = engine.execute(query=query)
 #
 # client.query() returns SlayerResponse with all fields above
 # client.sql(query) returns just the generated SQL string
-# client.explain(query) returns SlayerResponse with EXPLAIN ANALYZE output
+# client.explain(query) returns SlayerResponse with the database's EXPLAIN output
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```

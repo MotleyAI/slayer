@@ -16,7 +16,7 @@ aggregates of joined models and aggregates of aggregates. The syntax is on the
    name it explicitly when the question implies a different row set. A query
    rooted at `orders` enriched from `customers` omits customers with no orders;
    rooted at `customers` it keeps them.
-2. **Check a column before trusting it.** `inspect` it and read `Description:` and
+2. **Check a column before trusting it.** `inspect` it with `compact=false` and read `Description:` and
    `Sample values:` — if the sampled values are all NULL or not what the name
    suggests, it's the wrong column.
 3. **Count rows with `count(*)`**, never by counting a primary-key column.

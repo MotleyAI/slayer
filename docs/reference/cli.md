@@ -79,7 +79,7 @@ slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
-| `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 
 ### `slayer ingest`
@@ -368,7 +368,7 @@ slayer inspect --type datasource    # collection: all datasources
 |------|----------|-------------|
 | `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
-| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory (a `help.*` memory always returns its full body), and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
+| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (model only) Sample-data rows. Ignored with a warning for other kinds. |
 | `--show-sql` | No | (model only) Include generated SQL. No-op for column/measure/aggregation; warned for datasource/memory. |

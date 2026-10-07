@@ -27,7 +27,7 @@ results by hand or in code.
 ## Filter literals
 
 Build every `==` / `in` / `like` condition on a text column from that column's
-sampled values (inspect it), never a guessed spelling; samples are a top-N snapshot,
+sampled values (inspect it with `compact=false`), never a guessed spelling; samples are a top-N snapshot,
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.
 Compare case- and whitespace-insensitively in the condition only, never on a projected,

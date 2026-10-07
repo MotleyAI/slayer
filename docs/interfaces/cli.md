@@ -92,7 +92,7 @@ The positional argument is interpreted as:
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
-| `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 | `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
 | `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
@@ -280,8 +280,8 @@ slayer memory forget kb.returns.null-handling
 ### Conceptual help
 
 SLayer's conceptual help ships as a predefined set of **help memories**
-(`memory:help.intro` … `memory:help.queries`) — read them with `inspect` (a `help.*`
-memory always returns its full body, compact or not), or find the relevant one with
+(`memory:help.intro` … `memory:help.queries`) — read them with `inspect` (`--no-compact`
+is not needed: compact never shortens a `help.*` memory), or find the relevant one with
 `search`:
 
 ```bash
