@@ -32,6 +32,7 @@ from slayer.inspect.model_render import (
     render_model_skeleton,
     saved_queries_index,
 )
+from slayer.memories.help_seed import HELP_ID_PREFIX
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
     collect_model_entity_pairs,
@@ -483,6 +484,8 @@ class InspectService:
                 f"No memory with id '{memory_id}' found "
                 f"(reference '{reference}')."
             ))
+        # Help topics are read for their body, so ``compact`` never trims them.
+        compact = compact and not mem.id.startswith(HELP_ID_PREFIX)
 
         description = (
             mem.description

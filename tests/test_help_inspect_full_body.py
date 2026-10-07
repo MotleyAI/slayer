@@ -10,6 +10,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -141,9 +142,9 @@ def _assert_full_bodies(out: str, *, fmt: str, ids: list[str]) -> None:
 @pytest.mark.parametrize(("fmt", "ids"), _SHAPES)
 async def test_mcp_inspect_tool_returns_full_help_body(storage: YAMLStorage, fmt: str, ids: list[str]) -> None:
     server = create_mcp_server(storage=storage, _seed_help=False)
-    blocks, _ = await server.call_tool(
+    blocks, _ = cast(Any, await server.call_tool(
         name="inspect", arguments={"reference": _reference(ids), "entity_type": "memory", "format": fmt},
-    )
+    ))
     _assert_full_bodies(blocks[0].text, fmt=fmt, ids=ids)
 
 

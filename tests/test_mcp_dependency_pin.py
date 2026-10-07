@@ -5,9 +5,10 @@ from __future__ import annotations
 import pathlib
 import sys
 import tomllib
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
@@ -21,7 +22,7 @@ VERIFIED_1X = "1.29.0"
 FIRST_BREAKING_MAJOR = "2.0.0"
 
 # Every branch of the import error must offer the same remedy.
-REMEDY = "mcp>=1.0,<2"
+REMEDY = "mcp>=1.19,<2"
 # The old text, which sent users round the loop that reproduced the failure.
 OBSOLETE_REMEDY = "Reinstall SLayer"
 
@@ -63,8 +64,6 @@ class TestMcpDependencyPin:
 
     def test_installed_mcp_is_1_x(self) -> None:
         """The resolved environment, not just the declaration, is on 1.x."""
-        from importlib.metadata import version
-
         installed = Version(version("mcp"))
         assert installed.major == 1
         assert installed in _mcp_specifier()
@@ -82,8 +81,6 @@ class TestFastMcpImportError:
         monkeypatch.setattr("slayer.mcp.server._pkg_version", lambda _name: version)
 
     def test_returns_fastmcp_when_available(self) -> None:
-        from mcp.server.fastmcp import FastMCP
-
         assert _import_fastmcp() is FastMCP
 
     def test_wrong_major_message_names_version_and_remedy(

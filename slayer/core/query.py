@@ -610,7 +610,7 @@ def coerce_declared_list_variables(
 
 
 class ColumnRef(BaseModel):
-    """A column reference: bare name or dotted join path (``customers.regions.name``); a short form (``regions.name``) auto-routes when exactly one route exists."""
+    """A column reference: bare name or dotted join path."""
     name: str
     model: str | None = None
     label: str | None = None
@@ -649,7 +649,7 @@ class ColumnRef(BaseModel):
 
 
 class ComputedDimension(BaseModel):
-    """A dimension computed by an ``expression``; an aggregation inside must carry ``partition_by=`` to fix its grain. Best given an explicit ``name``."""
+    """A dimension computed from an ``expression``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -785,7 +785,7 @@ def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, 
 
 
 class TimeDimension(BaseModel):
-    """Group-by on ``dimension`` truncated to ``granularity``; optional ``date_range``: one time point or a ``[lower, upper]`` pair (either may be null)."""
+    """A time-bucketed group-by: ``dimension`` truncated to ``granularity``."""
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
         validation_alias=AliasChoices("dimension", "column"),
     )
@@ -794,6 +794,15 @@ class TimeDimension(BaseModel):
     )
     date_range: Annotated[list[str | None] | None, BeforeValidator(_coerce_date_range)] = Field(
         default=None, json_schema_extra=_advertise_string_date_range,
+        description=(
+            'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
+            "with either bound null (one-sided). change, change_pct, time_shift and window= "
+            "aggregates read rows before the range by themselves, so each month of 2025 with its "
+            'change vs the previous month is just "2025": never widen the range and drop rows '
+            "afterwards. cumsum starts at the range start; for a running total since the first "
+            "row, accumulate in an inner stage without date_range and filter the time in an "
+            "outer stage."
+        ),
     )
     label: str | None = None
 
@@ -826,7 +835,7 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
 
 
 class OrderItem(BaseModel):
-    """A sort key: ``column`` is a result column name or an expression string; ``direction`` asc|desc."""
+    """A sort key."""
     # extra="forbid": reject stray keys so a mixed canonical+shorthand item
     # raises instead of silently dropping the extra key.
     model_config = ConfigDict(extra="forbid")
@@ -1066,25 +1075,63 @@ class SlayerQuery(BaseModel):
     name: str | None = Field(
         default=None,
         description=(
-            "Stage name in a multi-stage list; other stages reference it as "
-            "their source_model."
+            "Stage name. In a list of query objects every entry but the last carries a name, and "
+            "later stages use it as their source_model. Use stages to re-query a whole result: "
+            "filter after a window or rank, or aggregate another query's rows. An outer stage sees "
+            "the inner result's columns with dotted paths flattened to __: an inner dimension "
+            "customers.region_id is customers__region_id outside; a measure keeps its name. More: "
+            'inspect(reference=["memory:help.queries"], entity_type="memory").'
         ),
     )
     source_model: SourceSpec | None = Field(
         default=None,
         description=(
-            "The query's population: a saved model name, an inline ModelExtension "
-            '({"source_name": ..., plus optional "columns"/"measures"/"joins"}), '
-            "or a full inline model. Omit to infer the smallest model determining "
-            "every queried dimension, time dimension, and row-level filter column (the "
-            "choice is reported in response metadata)."
+            "The population: every row of this model appears in the result unless a condition "
+            "removes it, so root the query at the model whose rows the answer lists. A saved "
+            'model or stage name, an inline extension {"source_name": ..., "columns" / "measures" '
+            '/ "joins": [...]} adding per-query columns, or a full inline model. Rooted at '
+            "regions, the measures count(customers.orders.id) and "
+            "{\"formula\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
+            '"name": "orders_2025"} list every region, including those without orders (a count '
+            "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
+            "Omit to infer the smallest model determining every dimension and row-level "
+            "condition column (the choice is reported in the response)."
         ),
     )
     measures: MeasuresField = Field(
         default=None,
         description=(
-            "Values to return: aggregation-expression formulas (see the query tool "
-            "description). A bare name references a saved model measure."
+            'Values to return: formula strings or {"formula": ..., "name": ...} (name sets the '
+            "result key; a bare name references a saved model measure). Formulas combine "
+            "aggregations with arithmetic.\n"
+            "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
+            "avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.\n"
+            "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
+            "spell its keys exactly like the query's dimensions (a joined column by its dotted "
+            "path; its bare name fails). Share of group: "
+            "sum(amount) / sum(amount, partition_by=customers.region_id); share of the grand "
+            "total: sum(amount) / sum(amount, partition_by=[]).\n"
+            "- window= turns any aggregation into a trailing time window ending at each time "
+            "bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): "
+            "count_distinct(customer_id, window='90d').\n"
+            "- Nesting aggregates per-group values: "
+            "avg(sum(amount, partition_by=[customers.region_id, customers.name]), "
+            "partition_by=[customers.region_id]) averages the per-customer totals in each region.\n"
+            "- Transforms wrap an aggregate; all but the rank family need a time dimension: "
+            "cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) "
+            "period-over-period delta / ratio; time_shift(sum(amount), -1) the previous "
+            "bucket's value ('year' as a third argument for year-over-year); lag(x, n) / "
+            "lead(x, n) n rows back / ahead; rank(x, direction='desc') / "
+            "dense_rank(x, direction='asc') with direction required and partition_by= to rank "
+            "within groups; ntile(x, n=4) buckets, lowest first; "
+            "consecutive_periods(sum(amount) > 0) trailing run length.\n"
+            "- A joined model's aggregate such as sum(customers.credit) from orders is computed "
+            "over that model's own rows, each customer once. Sliced by a dimension it cannot "
+            "be attributed to (an order's status), it repeats its total on every row with a "
+            "warning; to_many_handling='associate' splits it per group.\n"
+            "More (every aggregation, empty-input values, nesting and transform rules): "
+            'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
+            'entity_type="memory").'
         ),
     )
 
@@ -1130,9 +1177,14 @@ class SlayerQuery(BaseModel):
     dimensions: DimensionsField = Field(
         default=None,
         description=(
-            "Group-by columns — names / dotted paths, or computed expressions "
-            '({"expression": ..., "name": ...}); one result row per distinct '
-            "value combination."
+            "Group-by columns, one result row per distinct combination: names, dotted paths to "
+            'joined columns (customers.regions.name), or computed {"expression": ..., "name": '
+            "...}. A granularity call buckets a timestamp like a time_dimensions entry: "
+            "month(created_at); granularities are second, minute, hour, day, week, week_sunday, "
+            "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
+            "computed dimension needs partition_by= to fix its grain: "
+            "{\"expression\": \"iif(sum(amount, partition_by=customers.name) > 150, 'high', "
+            "'low')\", \"name\": \"spend_band\"}."
         ),
     )
     time_dimensions: list[TimeDimension] | None = Field(
@@ -1154,9 +1206,23 @@ class SlayerQuery(BaseModel):
     filters: list[str] | None = Field(
         default=None,
         description=(
-            "Condition strings, AND-ed; each routes automatically to WHERE / "
-            "HAVING / post-aggregation. May contain aggregations, transforms, "
-            "and {variable} placeholders."
+            "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
+            "filtering (HAVING) or filtering after transforms. Operators: == != < <= > >=, in, "
+            "like, is null / is not null, and / or / not; build text literals from the column's "
+            "sampled values.\n"
+            "- Aggregates and transforms filter too, by formula or by a measure's name: "
+            "sum(amount) > 100; top N per group: "
+            "rank(sum(amount), partition_by=customers.region_id, direction='desc') <= 1.\n"
+            "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
+            "orders.\n"
+            "- Time points: a string compared with a date/time column is a half-open period: "
+            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
+            "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
+            "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
+            "order_date in '2025-Q1' is inside it.\n"
+            "- {variable} placeholders take values from variables.\n"
+            'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
+            'entity_type="memory").'
         ),
     )
     variables: dict[str, Any] | None = Field(
@@ -1169,8 +1235,10 @@ class SlayerQuery(BaseModel):
     order: OrderField = Field(
         default=None,
         description=(
-            "Sort keys; column is a result column name or an "
-            "aggregation-bearing expression string."
+            'Sort keys, [{"column": ..., "direction": "asc" | "desc"}]. column is a result '
+            "column name or any aggregate or transform expression, displayed or not: with "
+            'measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by '
+            "an amount it does not return. Add limit for the top N."
         ),
     )
     limit: int | None = Field(
@@ -1336,7 +1404,10 @@ class SlayerQuery(BaseModel):
 def _refinement_field(name: str) -> Any:
     """``SlayerQuery``'s field ``name`` with a ``None`` default (supplied-ness is ``model_fields_set``)."""
     info = SlayerQuery.model_fields[name]
-    return Field(default=None, description=info.description, json_schema_extra=info.json_schema_extra)
+    return Field(
+        default=None, description=f"Same syntax as the query object's {name}.",
+        json_schema_extra=info.json_schema_extra,
+    )
 
 
 _NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values", "to_many_handling")

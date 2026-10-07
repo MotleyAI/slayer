@@ -32,8 +32,9 @@ def _customers(*extra_columns: str) -> SlayerModel:
 
 async def _suggestion(measures: list[Any], *extra_columns: str) -> str:
     query = SlayerQuery.model_validate({"source_model": "customers", "measures": measures})
+    model = _customers(*extra_columns)
     with pytest.raises(MeasureNameCollidesWithColumnError) as ei:
-        await _engine_generate(query=query, model=_customers(*extra_columns), dialect="duckdb", validate=False)
+        await _engine_generate(query=query, model=model, dialect="duckdb", validate=False)
     exc = ei.value
     assert exc.suggestion
     assert str(exc).splitlines()[-1] == f"  suggestion: {exc.suggestion}"

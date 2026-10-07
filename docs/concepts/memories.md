@@ -24,6 +24,8 @@ buckets. The split is implicit at save time: pass an entity list to
 `save_memory` to record a learning; pass a `SlayerQuery` and the
 memory carries that query.
 
+SLayer also seeds its conceptual help as memories (`help.intro`, `help.models`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.joins`, `help.queries`), which `inspect` always returns in full, whatever `compact` is.
+
 ## The canonical entity form
 
 Every persisted entity is exactly one of:

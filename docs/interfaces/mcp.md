@@ -44,6 +44,8 @@ slayer serve --ingest-on-startup
 
 For container / systemd contexts where the CLI command isn't easy to modify, set `SLAYER_INGEST_ON_STARTUP=1` in the process environment — same effect as the flag.
 
+`--always-load-query` (or `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`) on `slayer mcp` / `slayer serve` marks the `query` tool with Claude Code's `anthropic/alwaysLoad` flag, so its description and schema stay loaded instead of being deferred behind tool search.
+
 Then, in a separate terminal, register the remote endpoint with your agent:
 
 ```bash
@@ -159,14 +161,20 @@ memories** seeded into storage on server startup. Read the entry point with
 deep-dive topics, each of which you inspect the same way. `search(question="…")`
 also surfaces the relevant topic. The server instructions point new agents at
 `memory:help.intro`.
+A `help.*` memory always returns its full body from `inspect`, whatever `compact` is.
 
 Available topics and what they cover (content lives in `slayer/memories/help_content/*.md`, seeded as `memory:help.<topic>`):
 
 | Topic id | Covers |
 |----------|--------|
-| `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query language itself is documented on the `query` tool and its schema) |
+| `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query syntax itself is on the `query` tool's schema fields) |
 | `memory:help.models` | Authoring [models](../concepts/models.md): columns, saved measures, custom aggregations, joins, model filters, `default_time_dimension`, hidden models, result column naming, query-backed models |
-| `memory:help.workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
+| `memory:help.workflow` | Query method, filter literals, verifying a result, common-error decoder, connecting a database |
+| `memory:help.aggregations` | Every aggregation, empty-input values, `partition_by`, `window`, nesting |
+| `memory:help.transforms` | Every transform, the time axis, ranking |
+| `memory:help.time` | Time points, `date_range` and look-back, running totals, granularities, gaps |
+| `memory:help.joins` | Dotted paths, choosing the root, joined aggregates (broadcast vs associate), anti-joins |
+| `memory:help.queries` | Query shapes, stages and their column names, raw rows, variables, debugging |
 
 ## Typical Agent Workflows
 

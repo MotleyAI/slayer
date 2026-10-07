@@ -22,7 +22,7 @@ from tests._mcp_idiom_fixtures import EXAMPLE_OWNERS
 
 DESCRIPTION_BUDGET = 2048
 # The query schema ships with every request; set from the size measured after the rewrite + ~10%.
-QUERY_SCHEMA_BUDGET = 0
+QUERY_SCHEMA_BUDGET = 28_000
 FIVE_TOPICS = {"help.aggregations", "help.transforms", "help.time", "help.joins", "help.queries"}
 
 #: Distinctive guidance phrase → its one owning ($defs model, field) in the query schema.
@@ -162,8 +162,9 @@ def test_instructions_come_from_the_module_constant() -> None:
 
 def test_over_budget_instructions_fail_the_build(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(server_mod, "SERVER_INSTRUCTIONS", "x" * (DESCRIPTION_BUDGET + 1))
+    storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(ValueError, match="instructions"):
-        create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
+        create_mcp_server(storage=storage, _seed_help=False)
 
 
 # --------------------------------------------------------------------------- #
