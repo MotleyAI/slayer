@@ -16,6 +16,7 @@ from sqlglot import exp
 
 from slayer.core.errors import NameCollisionError
 from slayer.core.models import SlayerModel
+from slayer.engine import query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.response_meta import expected_columns_from_sql, projection_result_keys
 from slayer.sql.dialects import get_dialect
@@ -277,3 +278,16 @@ def test_flat_rename_wrapper_error_names_the_stage() -> None:
             expected_columns=["region_id"], dialect="duckdb",
         )
     assert "stage 'orders'" not in str(info.value)
+
+
+async def test_query_backed_mismatch_names_the_model(exec_engine, monkeypatch) -> None:
+    def _mismatching(**kwargs: Any) -> exp.Select:
+        return build_flat_rename_wrapper(**{**kwargs, "expected_columns": ["bogus"]})
+
+    monkeypatch.setattr(query_engine_module, "build_flat_rename_wrapper", _mismatching)
+    model = SlayerModel.model_validate({
+        "name": "cr",
+        "source_queries": [{"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}],
+    })
+    with pytest.raises(ValueError, match="stage 'cr'"):
+        await exec_engine._expand_query_backed_model(model=model)
