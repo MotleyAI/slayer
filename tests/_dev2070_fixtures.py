@@ -124,12 +124,13 @@ def seed_duckdb(db_path: str) -> None:
 
 async def make_exec_engine(
     dialect: str, *, clock: Optional[Callable[[], datetime]] = None,
+    models: Optional[List[SlayerModel]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture (or a pinned-clock engine)."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev2070_models(), clock=clock,
+        dialect=dialect, seed=seed, models=models or dev2070_models(), clock=clock,
     ) as (engine, _):
         yield engine

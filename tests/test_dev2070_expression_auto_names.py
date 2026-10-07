@@ -23,7 +23,7 @@ from slayer.core.refs import auto_name_from_expression, key_display
 from slayer.engine.compile.projection import ValueRegistry
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
-from tests._dev2070_fixtures import make_exec_engine
+from tests._dev2070_fixtures import dev2070_models, make_exec_engine
 
 _CLOCK_2024_03 = datetime(2024, 3, 20, 12, 0)
 _CLOCK_2025_02 = datetime(2025, 2, 15, 12, 0)
@@ -261,6 +261,23 @@ async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, valu
     outer = SlayerQuery.model_validate({"source_model": "s", "dimensions": [flat_dim], "measures": [f"max({flat_key})"]})
     resp = await engine.execute([inner, outer])
     assert {r[f"s.{flat_dim}"]: r[f"s.{flat_key}_max"] for r in resp.data} == values
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+@pytest.mark.parametrize("spelling", ["buyer__spend_1_sum", "customers__spend_1_sum"])
+async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, spelling) -> None:
+    models = dev2070_models()
+    models[0].joins[0].name = "buyer"
+    inner = SlayerQuery.model_validate({
+        "source_model": "orders", "name": "s",
+        "dimensions": ["buyer.regions.name"], "measures": ["sum(buyer.spend - 1)"],
+    })
+    outer = SlayerQuery.model_validate({
+        "source_model": "s", "dimensions": ["buyer__regions__name"], "measures": [f"max({spelling})"],
+    })
+    async for e in make_exec_engine(dialect, models=models):
+        resp = await e.execute([inner, outer])
+        assert by(resp, dim="s.buyer__regions__name", key="s.buyer__spend_1_sum_max") == {"north": 148, "south": 199}
 
 
 # --------------------------------------------------------------------------- #
