@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_leaf, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import (
@@ -77,11 +77,10 @@ from slayer.sql.naming import (
     canonical_aggregate_alias,
     cte_name_from_alias,
     dialect_folds_case,
+    flat_name,
     maybe_quote_ident,
+    next_slot_result_key,
     quote_mixed_case_identifiers,
-    result_key,
-    result_key_from_alias,
-    time_trunc_result_key,
 )
 from slayer.sql.render.cte_assembly import (
     CteEntry,
@@ -4230,14 +4229,11 @@ class SQLGenerator:
                     + list(producer.combined_expression_slots)
                 )
             }
-            # Flatten each producer output column to a dot-free name.
             def _flat(slot) -> str:
-                dotted = self._full_alias_for_slot(
-                    slot=slot, source_relation=relation, alias_index={},
+                return flat_name(
+                    self._full_alias_for_slot(slot=slot, source_relation=relation, alias_index={}),
+                    strip_relation=relation,
                 )
-                prefix = f"{relation}."
-                stripped = dotted[len(prefix):] if dotted.startswith(prefix) else dotted
-                return stripped.replace(".", "__")
 
             self._gen_split_consumers.append(cte_name)
             try:
@@ -4255,7 +4251,7 @@ class SQLGenerator:
                 if sid in sub_slots
             ]
             wrapped = build_flat_rename_wrapper(
-                source_relation=relation, inner=producer_body,
+                stage=cte_name, source_relation=relation, inner=producer_body,
                 expected_columns=expected, dialect=self.dialect,
             )
             for h in producer_hoisted:
@@ -4305,33 +4301,9 @@ class SQLGenerator:
         alias_index: Dict[str, int],
     ) -> str:
         """Build the SQL public alias for one ``ValueSlot``."""
-
-        if slot.phase == Phase.ROW:
-            key = slot.key
-            path: Tuple[str, ...] = ()
-            leaf: Optional[str] = None
-            if isinstance(key, ColumnKey):
-                path, leaf = key.path, key.leaf
-            elif isinstance(key, ColumnSqlKey):
-                path, leaf = key.path, key.column_name
-            elif isinstance(key, TimeTruncKey):
-                path, leaf = column_path(key.column), column_leaf(key.column)
-            if path and leaf is not None:
-                if isinstance(key, TimeTruncKey):
-                    return time_trunc_result_key(
-                        source_relation=source_relation, path=path, leaf=leaf,
-                        granularity=key.granularity, declared_name=slot.declared_name,
-                    )
-                return result_key(
-                    source_relation=source_relation, path=path, leaf=leaf,
-                )
-        if slot.public_aliases:
-            alias = self._pick_alias_for_planned_slot(
-                slot=slot, alias_index=alias_index,
-            )
-        else:
-            alias = slot.declared_name
-        return result_key_from_alias(source_relation=source_relation, alias=alias)
+        return next_slot_result_key(
+            slot=slot, alias_index=alias_index, source_relation=source_relation,
+        )
 
     def _collect_joined_paths_for_base(
         self,
@@ -5175,17 +5147,6 @@ class SQLGenerator:
             aliases_by_slot_id.setdefault(slot.id, []).append(oa)
             available_alias_by_slot_id.setdefault(slot.id, oa)
         return cp_value_cte_name
-
-    @staticmethod
-    def _pick_alias_for_planned_slot(*, slot, alias_index: dict) -> str:
-        """Pick the next alias for a slot in projection order."""
-        idx = alias_index.setdefault(slot.id, 0)
-        if idx < len(slot.public_aliases):
-            alias = slot.public_aliases[idx]
-        else:
-            alias = slot.declared_name
-        alias_index[slot.id] = idx + 1
-        return alias
 
     def _mode_a_scope(
         self, *, source_model, source_relation: str, bundle,
@@ -6509,6 +6470,7 @@ def _build_planned_stages_ast(
         stage_entries.append(CteEntry(
             name=relation,
             query=build_flat_rename_wrapper(
+                stage=planned.stage_schema.display_name,
                 source_relation=planned.source_relation,
                 inner=body,
                 expected_columns=[c.name for c in planned.stage_schema.columns],

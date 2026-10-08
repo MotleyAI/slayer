@@ -61,7 +61,9 @@ grouped. A bare-string entry that is not a valid identifier / dotted path is
 also parsed as an expression (`"round(amount)"`), auto-named from its text —
 name it to control the result key (`model.<name>`). A name that collides with an
 existing column or measure is rejected. The name is resolvable from `filters`
-and `order`.
+and `order`. The name keys the result even when the expression is a bare joined
+path: `{"expression": "customers.region_id", "name": "region_id"}` returns
+`orders.region_id`, and a downstream stage reads it as `region_id`.
 
 #### Grouping by an expression over an aggregate
 
@@ -387,7 +389,7 @@ Filters can reference names of computed measures — transforms and arithmetic e
 
 When a query measure is renamed via `{"formula": "agg(col)", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw aggregation formula `agg(col)` OR the user alias `alias`. Both resolve to the user alias, and an aggregation filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the aggregation filter would otherwise be ambiguous).
 
-Renaming also works for *cross-model* aggregated measures (`{"formula": "sum(customers.revenue)", "name": "cust_rev"}`). Only the canonical leaf of the dotted path swaps to the user name; the hop path is preserved — same dot-syntax shape every other multi-hop caller-facing key uses. The result-column key becomes `orders.customers.cust_rev` (one-hop) or `orders.customers.regions.region_pop` (multi-hop). In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `max(cust_rev)` (or `max(region_pop)`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw aggregation form (`"sum(customers.revenue) > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
+Renaming also works for *cross-model* aggregated measures (`{"formula": "sum(customers.revenue)", "name": "cust_rev"}`). The result-column key is `<model>.<name>` (`orders.cust_rev`), however many hops the measure crosses. In any *downstream* stage of a multi-stage query list, the column is exposed under the BARE user name — type `max(cust_rev)` (or `max(region_pop)`) in stage 2 to consume the value, not the dotted hop-path form. Filters referencing a renamed cross-model measure in the SAME stage resolve in both forms — the bare user alias (`filters=["cust_rev > 100"]`) and the raw aggregation form (`"sum(customers.revenue) > 100"`) — and restrict the result rows on the attached value, as does ORDER BY via the bare user alias (`order=[{"column": "cust_rev"}]`).
 
 ```json
 {
