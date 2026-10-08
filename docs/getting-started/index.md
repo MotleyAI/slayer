@@ -24,8 +24,9 @@ SLayer works with most SQL databases. The base install includes SQLite support (
 | PostgreSQL | `motley-slayer[postgres]` | Fully tested |
 | MySQL / MariaDB | `motley-slayer[mysql]` | Fully tested |
 | ClickHouse | `motley-slayer[clickhouse]` | Fully tested |
+| Trino | `motley-slayer[trino]` | Fully tested |
 | DuckDB | included | Fully tested |
-| Snowflake, BigQuery, Redshift, Trino, Databricks, MS SQL, Oracle | Covered by sqlglot | SQL generation tested |
+| Snowflake, BigQuery, Redshift, Databricks, MS SQL, Oracle | Covered by sqlglot | SQL generation tested |
 
 DuckDB ships by default rather than behind an extra: the bundled
 `slayer datasources create demo` datasource and the SQL API both

@@ -1,17 +1,27 @@
 name: Integration - MySQL
 
-# DEV-1564: per-dialect CI for MySQL — runs both the testcontainers-based
-# pytest suite and the verify.py end-to-end check. Path-gated so it only
-# fires on changes that could affect MySQL output (the dialect file, the
-# shared SQL generator + dialect base, the MySQL example, or this file).
+# Per-dialect CI for MySQL — the testcontainers pytest suite and the
+# verify.py end-to-end check. Path-gated to the MySQL files plus the shared
+# code the suite exercises.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - 'slayer/sql/dialects/mysql.py'
+      - 'slayer/sql/client.py'
+      - 'slayer/sql/engine_factory.py'
+      - 'slayer/core/models.py'
+      - 'slayer/sql/dialects/__init__.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/dialects/drivers.py'
       - 'slayer/sql/generator.py'
+      - 'tests/_*.py'
+      - 'tests/integration/_*.py'
+      - 'examples/seed.py'
+      - 'examples/verify_common.py'
+      - 'pyproject.toml'
+      - 'poetry.lock'
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'
       - '.github/workflows/integration-mysql.yml'
@@ -20,8 +30,19 @@ on:
     branches: [main]
     paths:
       - 'slayer/sql/dialects/mysql.py'
+      - 'slayer/sql/client.py'
+      - 'slayer/sql/engine_factory.py'
+      - 'slayer/core/models.py'
+      - 'slayer/sql/dialects/__init__.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/dialects/drivers.py'
       - 'slayer/sql/generator.py'
+      - 'tests/_*.py'
+      - 'tests/integration/_*.py'
+      - 'examples/seed.py'
+      - 'examples/verify_common.py'
+      - 'pyproject.toml'
+      - 'poetry.lock'
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'
       - '.github/workflows/integration-mysql.yml'
@@ -39,7 +60,7 @@ jobs:
           python-version: "3.11"
 
       - name: Verify testcontainers[mysql] extra is importable
-        # DEV-1564: surface a missing extra as a CI failure rather than as a
+        # Surface a missing extra as a CI failure rather than as a
         # silent `importorskip` skip — the suite's value is gone if the dep
         # is absent.
         run: poetry run python -c "import testcontainers.mysql"

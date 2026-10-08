@@ -229,7 +229,8 @@ def test_sub_day_gap_uses_second_date_diff(dialect, unit: TimeGranularity) -> No
     sql = _diff(dialect, unit)
     trunc = unit.value.upper()
     assert f"DATE_DIFF('SECOND', DATE_TRUNC('{trunc}', A), DATE_TRUNC('{trunc}', B))" in sql, sql
-    assert "TO_UNIXTIME" not in sql and "EPOCH" not in sql, sql
+    assert "TO_UNIXTIME" not in sql, sql
+    assert "EPOCH" not in sql, sql
 
 
 @_family
@@ -239,6 +240,26 @@ def test_sub_day_gap_of_dates_promotes_operands(dialect) -> None:
         "DATE_DIFF('SECOND', DATE_TRUNC('HOUR', CAST(A AS TIMESTAMP)), DATE_TRUNC('HOUR', CAST(B AS TIMESTAMP)))"
         in sql
     ), sql
+
+
+# ---------------------------------------------------------------------------
+# Integer sequences (time spines): no recursive CTE
+# ---------------------------------------------------------------------------
+
+
+@_family
+def test_integer_sequence_unnests_one_sequence(dialect) -> None:
+    sql = _sql(dialect, dialect.build_integer_sequence(size=10_000))
+    assert sql == "SELECT i FROM UNNEST(SEQUENCE(0, 9999)) AS _seq(i)"
+
+
+@_family
+def test_integer_sequence_past_the_cap_crosses_two(dialect) -> None:
+    sql = _sql(dialect, dialect.build_integer_sequence(size=25_001))
+    assert sql == (
+        "SELECT _hi.i * 10000 + _lo.i AS i FROM UNNEST(SEQUENCE(0, 2)) AS _hi(i) "
+        "CROSS JOIN UNNEST(SEQUENCE(0, 9999)) AS _lo(i) WHERE _hi.i * 10000 + _lo.i < 25001"
+    )
 
 
 # ---------------------------------------------------------------------------

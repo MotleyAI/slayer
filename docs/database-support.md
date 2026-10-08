@@ -19,6 +19,7 @@ against the live service in CI when they are.
 | **MySQL** | `tests/integration/test_integration_mysql.py` (`testcontainers[mysql]`) | `examples/mysql/` |
 | **ClickHouse** | `tests/integration/test_integration_clickhouse.py` (`testcontainers[clickhouse]`) | `examples/clickhouse/` |
 | **SQL Server** | `tests/integration/test_integration_sqlserver.py` (`testcontainers`, `msodbcsql18` + `unixodbc-dev` on the runner) | `examples/sqlserver/` |
+| **Trino** | `tests/integration/test_integration_trino.py` (`testcontainers[trino]`, `memory` catalog) | `examples/trino/` |
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
 | **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
@@ -41,8 +42,7 @@ in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
 Unit tests for SQL generation; no live-instance verification.
 
-Redshift, Trino/Presto (Athena uses the Presto dialect), Databricks/Spark,
-Oracle.
+Redshift, Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle.
 
 ## Identifier length limits
 
@@ -77,6 +77,7 @@ because no standard syntax works everywhere:
 | Snowflake | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. `LOG10` native; no native `LOG2` (falls through to `LOG(2, x)`). |
 | MySQL | **no** | **no** | yes | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
 | SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
+| Trino | yes (approximate) | yes (approximate) | yes | yes | sqlglot emits `APPROX_PERCENTILE(x, p)` — see "Trino caveats" below. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
 | BigQuery | **no** | **no** | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
 
 ### `count_distinct_approx` by dialect
@@ -198,7 +199,7 @@ Other T-SQL specifics surfaced by the dialect:
   `INTERVAL` literal.
 - Bracketed `[ident]` quoting — `<model>.<column>` SLayer aliases get
   mangled to `<model>___<column>` at emit and decoded back on result-row
-  keys (mirror of the BigQuery `___` mangling; see DEV-1571).
+  keys (mirror of the BigQuery `___` mangling).
 - Native `LOG10`, no native `LOG2` (`log2(x)` falls through to the
   canonical 2-arg `LOG(2, x)` form).
 
@@ -226,6 +227,25 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 - **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
   canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
   statistical functions are native.
+
+### Trino caveats
+
+The live suite runs against the `memory` catalog in a `trinodb/trino` container.
+Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
+
+- **Approximate `median` / `percentile`.** Both emit `APPROX_PERCENTILE(x, p)`,
+  so results are approximate; define a custom `Aggregation` if you need an exact value.
+- **No FK introspection.** Trino connectors expose no foreign keys, so
+  auto-ingestion discovers no joins; hand-declare `ModelJoin`s. Table and column
+  comments are imported.
+- **Statement timeout.** SLayer sends the timeout as the `query_max_run_time`
+  session property with the query itself and restores your own value afterwards.
+- **`timestamp with time zone`** ingests as `TIMESTAMP`, and truncation follows the
+  client session's time zone.
+- **HTTPS.** SLayer connects over HTTPS whenever the URL carries credentials
+  (a password, `access_token`, `cert` + `key`, or `externalAuthentication`);
+  `?http_scheme=http` or `?http_scheme=https` overrides. The HTTPS path is
+  unit-tested only — the live suite runs without TLS.
 
 ### BigQuery caveats
 

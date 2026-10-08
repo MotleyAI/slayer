@@ -13,29 +13,29 @@
 
 ## 2. Dialect
 
-- [ ] 2.1 New `slayer/sql/dialects/trino.py`: `PrestoFamilyDialect` (grammar fixes D1 + shared scalar config) and `TrinoDialect` (sqlglot name / ds type `trino`, `url_scheme="trino"`, `install_extra="trino"`); `_tier2.py` drops `TrinoDialect`, `PrestoDialect(PrestoFamilyDialect)` keeps name + aliases, docstring updated; `__init__.py` imports from `trino.py`; verify 1.1–1.3
-- [ ] 2.2 Timeout hooks (design D3); verify 1.4
-- [ ] 2.3 `build_engine` HTTPS selection (design D4); verify 1.5
-- [ ] 2.4 Fix any further divergence the live suite surfaces in these classes (grammar → family base, server/driver → `TrinoDialect`); any that cannot be fixed there → STOP and ask
+- [x] 2.1 New `slayer/sql/dialects/trino.py`: `PrestoFamilyDialect` (grammar fixes D1 + shared scalar config) and `TrinoDialect` (sqlglot name / ds type `trino`, `url_scheme="trino"`, `install_extra="trino"`); `_tier2.py` drops `TrinoDialect`, `PrestoDialect(PrestoFamilyDialect)` keeps name + aliases, docstring updated; `__init__.py` imports from `trino.py`; verify 1.1–1.3
+- [x] 2.2 Timeout hooks (design D3); verify 1.4
+- [x] 2.3 `build_engine` HTTPS selection (design D4); verify 1.5
+- [x] 2.4 Fix any further divergence the live suite surfaces in these classes (grammar → family base, server/driver → `TrinoDialect`); any that cannot be fixed there → STOP and ask
 
 ## 3. Dependencies
 
-- [ ] 3.1 `pyproject.toml`: optional `trino` dependency (floor = oldest release supporting SQLAlchemy 2 and the `_client_session` properties — check before pinning), `trino` extra, add to `all`, `testcontainers` extras + `trino`; `poetry lock`; verify `poetry install -E all` and `import testcontainers.trino`
+- [x] 3.1 `pyproject.toml`: optional `trino` dependency (floor 0.340: passes URL credentials through undecoded and gates HTTP auth on `allow_insecure_auth`), `trino` extra, add to `all`, `testcontainers` extras + `trino`; `poetry lock`; verify `poetry install -E all` and `import testcontainers.trino`
 
 ## 4. Live suite + CI
 
-- [ ] 4.1 Make 1.6–1.10 pass against a local Docker Trino with the CI invocation for the Trino file
-- [ ] 4.2 New `.github/workflows/integration-trino.yml` (pytest job asserting `import testcontainers.trino`, verify-example job) gated on Trino paths plus the shared code per design D6; widen the MySQL, ClickHouse and SQL Server workflow gates the same way; `ci.yml` always-on integration job and both CLAUDE.md integration commands gain `--ignore=tests/integration/test_integration_trino.py`; verify with `actionlint` if available, else YAML parse
+- [x] 4.1 Make 1.6–1.10 pass against a local Docker Trino with the CI invocation for the Trino file
+- [x] 4.2 New `.github/workflows/integration-trino.yml` (pytest job asserting `import testcontainers.trino`, verify-example job) gated on Trino paths plus the shared code per design D6; widen the MySQL, ClickHouse and SQL Server workflow gates the same way; `ci.yml` always-on integration job and both CLAUDE.md integration commands gain `--ignore=tests/integration/test_integration_trino.py`; verify with `actionlint` if available, else YAML parse
 
 ## 5. Example
 
-- [ ] 5.1 `examples/seed.py` Trino CREATE variant (VARCHAR, DECIMAL(10,2), no PK/FK; typed temporal inserts); new `examples/trino/` (docker-compose with `trinodb/trino:483` + healthcheck, `seed`, `slayer`; `start.sh` ingesting `database='memory/default'`; `slayer_data/`; README noting the ephemeral `memory` catalog); `verify.py` via `verify_common`: common checks, 4 models no rollup, column types, stddev/var, corr/covar, cardinality invariant, median/percentile results are seeded quantities with p25 ≤ median ≤ p75; verify by running the compose stack + `verify.py` locally
+- [x] 5.1 `examples/seed.py` Trino CREATE variant (VARCHAR, DECIMAL(10,2), no PK/FK; typed temporal inserts); new `examples/trino/` (docker-compose with `trinodb/trino:483` + healthcheck, `seed`, `slayer`; `start.sh` ingesting `database='memory/default'`; `slayer_data/`; README noting the ephemeral `memory` catalog); `verify.py` via `verify_common`: common checks, 4 models no rollup, column types, stddev/var, corr/covar, cardinality invariant, median/percentile results are seeded quantities with p25 ≤ median ≤ p75; verify by running the compose stack + `verify.py` locally
 
 ## 6. Docs
 
-- [ ] 6.1 `docs/database-support.md`: Trino row in the Tier 1 table; Tier 2 list "Redshift, Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle"; Trino row in the aggregation table; "Trino caveats" section (approximate median/percentile + custom aggregation for exact, no FK discovery, `query_max_run_time` timeout, `timestamp with time zone` follows the client session zone, `database: <catalog>/<schema>`, HTTPS when credentials + `?http_scheme=` override, HTTPS unit-tested only)
-- [ ] 6.2 `docs/getting-started/index.md` Trino row (`motley-slayer[trino]`, fully tested); `docs/configuration/datasources.md` Trino Tier-1 driver row (`trino://user@host:8080/catalog/schema`), Tier-2 row presto/athena only, timeout sentence; no new pages (else add to `zensical.toml` nav)
+- [x] 6.1 `docs/database-support.md`: Trino row in the Tier 1 table; Tier 2 list "Redshift, Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle"; Trino row in the aggregation table; "Trino caveats" section (approximate median/percentile + custom aggregation for exact, no FK discovery, `query_max_run_time` timeout, `timestamp with time zone` follows the client session zone, `database: <catalog>/<schema>`, HTTPS when credentials + `?http_scheme=` override, HTTPS unit-tested only)
+- [x] 6.2 `docs/getting-started/index.md` Trino row (`motley-slayer[trino]`, fully tested); `docs/configuration/datasources.md` Trino Tier-1 driver row (`trino://user@host:8080/catalog/schema`), Tier-2 row presto/athena only, timeout sentence; no new pages (else add to `zensical.toml` nav)
 
 ## 7. Gate
 
-- [ ] 7.1 `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, the Trino live suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `poetry run la-arch-check` all green
+- [x] 7.1 `poetry run pytest -m "not integration"`, the CI integration invocation from CLAUDE.md, the Trino live suite, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `poetry run la-arch-check` all green
