@@ -562,10 +562,12 @@ def check_measure_dedupe_collision(
         )
 
 
-def check_measure_name_collision(*, name: Optional[str], model: str) -> None:
+def check_measure_name_collision(
+    *, name: Optional[str], model: str, suggestion: Optional[str] = None,
+) -> None:
     """A public measure name shadowing a source column raises."""
     if name is not None:
-        raise MeasureNameCollidesWithColumnError(name=name, model=model)
+        raise MeasureNameCollidesWithColumnError(name=name, model=model, suggestion=suggestion)
 
 
 def check_canonical_alias_shadows_column(

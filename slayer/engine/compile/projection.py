@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Optional
+from collections import Counter
+from typing import AbstractSet, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,11 +45,22 @@ __all__ = [
     "ProjectionPlanner",
     "ValueRegistry",
     "filter_referenced_slot_ids",
+    "free_measure_name",
 ]
 
 # Hoisted from the two signatures below: a paren inside a keyword-only default
 # string breaks rope's patchedast (dr-refactor), so keep the literal here.
 _HOST_FALLBACK_NAME = "(host)"
+
+
+def free_measure_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
+    """``canonical`` when free, else the first free ``<declared>_<n>`` from n = 2."""
+    if canonical and canonical != declared and canonical not in taken:
+        return canonical
+    n = 2
+    while f"{declared}_{n}" in taken:
+        n += 1
+    return f"{declared}_{n}"
 
 
 # ValueRegistry
@@ -93,6 +105,8 @@ class ValueRegistry:
         # Every alias name already taken (public names + each slot's declared_name);
         # hidden slots are uniquified against it so no alias maps to two expressions.
         self._taken_names: set = set()
+        # Multiset of reserved names, so a collision suggestion can discount the colliding measure's own.
+        self._reserved: Counter[str] = Counter()
 
     def _next_id(self) -> SlotId:
         self._counter += 1
@@ -103,6 +117,20 @@ class ValueRegistry:
         for name in names:
             if name:
                 self._taken_names.add(name)
+                self._reserved[name] += 1
+
+    def _collision_suggestion(
+        self, *, declared_name: str, public_name: Optional[str], canonical_alias: Optional[str],
+    ) -> str:
+        """``rename it, e.g. to '<free name>'`` — free of source columns and every other name in the query."""
+        own = Counter(n for n in (declared_name, public_name, canonical_alias) if n)
+        taken = (
+            self._source_columns
+            | (self._taken_names - self._reserved.keys())
+            | (self._reserved - own).keys()
+        )
+        free = free_measure_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
+        return f"rename it, e.g. to {free!r}"
 
     def _unique_hidden_name(self, declared_name: str) -> str:
         """``declared_name`` suffixed ``_2``/``_3``/… if taken — structural hidden names collide by construction (``cumsum(a)+cumsum(b)`` both ``_cumsum_inner``)."""
@@ -147,15 +175,19 @@ class ValueRegistry:
         is_pathed_projection = (
             isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
         )
+        collides = (
+            public_name is not None
+            and public_name in self._source_columns
+            and not is_self_named_dimension
+            and not is_unnamed_star_agg
+            and not is_pathed_projection
+        )
         check_measure_name_collision(
-            name=public_name if (
-                public_name is not None
-                and public_name in self._source_columns
-                and not is_self_named_dimension
-                and not is_unnamed_star_agg
-                and not is_pathed_projection
-            ) else None,
+            name=public_name if collides else None,
             model=self._host_model_name,
+            suggestion=self._collision_suggestion(
+                declared_name=declared_name, public_name=public_name, canonical_alias=canonical_alias,
+            ) if collides else None,
         )
         check_canonical_alias_shadows_column(
             formula=declared_name,

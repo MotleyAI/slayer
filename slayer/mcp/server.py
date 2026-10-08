@@ -5,10 +5,12 @@ import logging
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from inspect import cleandoc
+from typing import Annotated, Any
 
 import sqlalchemy as sa
+from pydantic import Field
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__
@@ -74,7 +76,7 @@ from slayer.storage.document_loading import DocumentLoadFailures
 logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
-_UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
+_UNSET: Any = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
 # Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
 _MCP_ROW_CAP = 20
@@ -84,9 +86,32 @@ _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
-    "Install a supported version: pip install 'mcp>=1.0,<2' "
+    "Install a supported version: pip install 'mcp>=1.19,<2' "
     "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
 )
+
+# Claude Code's default cap on each tool description and on the server instructions.
+MAX_TOOL_DESCRIPTION_CHARS = 2048
+
+SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
+One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it.
+The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
+Typical workflow: search(question='...') → inspect the model → query.
+To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
+
+_ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+
+
+def _check_budget(*, what: str, text: str) -> None:
+    if len(text) > MAX_TOOL_DESCRIPTION_CHARS:
+        raise ValueError(f"{what} is {len(text)} chars, over the {MAX_TOOL_DESCRIPTION_CHARS}-char budget.")
+
+
+def _agent_description(fn: Callable[..., Any]) -> str:
+    """``fn``'s dedented docstring, checked against the description budget."""
+    text = cleandoc(fn.__doc__ or "")
+    _check_budget(what=f"MCP tool {fn.__name__!r} description", text=text)
+    return text
 
 
 def _mcp_major(version_str: str) -> int | None:
@@ -405,8 +430,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
+    always_load_query: bool = False,
     _seed_help: bool = True,
 ):
+    _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage)
     # Seed conceptual-help memories (idempotent; _seed_help=False when
@@ -429,170 +456,50 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
-    mcp = FastMCP(
-        "SLayer",
-        instructions=(
-            """SLayer is a semantic layer for querying databases. Instead of writing SQL, describe what data you want using measures, dimensions, and filters.
-SLayer queries allow you to do multistage aggregations, arithmetic, time shifts and much more right inside the query, including across multiple models (SLayer writes the joins for you).
-Before assuming you can't express certain logic (like aggregations of aggregations, or different grains in the same query) in SLayer,
-MAKE SURE to inspect(reference='memory:help.intro', entity_type='memory') for an overview of what it can do.
-DO NOT fall back on manipulating the raw data yourself unless you've read the help and are SURE SLayer can't do it.
-Use search(question='...') to find relevant concepts, models, and saved learnings.
-Typical workflow: inspect(reference='memory:help.intro', entity_type='memory') → search → inspect → query.
-To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
-        ),
-    )
+    mcp = FastMCP("SLayer", instructions=SERVER_INSTRUCTIONS)
     _set_server_version(mcp)
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
 
-    @mcp.tool()
+    def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """``mcp.tool`` with the budgeted docstring as the description."""
+        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(fn)
+
+    @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
-        query: str | SlayerQuery | list[SlayerQuery],
-        variables: dict[str, Any] | None = None,
-        refine: QueryRefinement | None = None,
-        show_sql: bool = False,
-        dry_run: bool = False,
-        explain: bool = False,
-        format: str = "markdown",
+        query: Annotated[str | SlayerQuery | list[SlayerQuery], Field(
+            description="A query object, a list of query objects (stages), or a saved query-backed model's name.",
+        )],
+        variables: Annotated[dict[str, Any] | None, Field(
+            description=(
+                "Values for {placeholder}s in conditions, formulas, date_range bounds and model SQL; "
+                "override a stage's own variables, an outer query's variables and the saved model's defaults."
+            ),
+        )] = None,
+        refine: Annotated[QueryRefinement | None, Field(
+            description="Saved-model-name form only: clauses merged into the saved query's final stage.",
+        )] = None,
+        show_sql: Annotated[bool, Field(description="Include the generated SQL in the response.")] = False,
+        dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
+        explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
+        format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
     ) -> str:
-        """Query data from a semantic model. Call inspect(reference="<datasource>.<model>", entity_type="model") first to see available columns and measures, and ``search`` (with the entities you plan to use and/or a free-text question) to surface saved learnings and example queries before finalizing a query.
+        """Run a SLayer query: describe the result you want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins.
 
-        The ``query`` argument takes one of three forms:
+        One query can usually produce the whole answer. Prefer that to running several queries and combining rows yourself or in Python. A single query can:
+        - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
+        - rank, keep the top N per group, and sort by values it does not display;
+        - compute period-over-period change, running totals and trailing windows (90 days, 3 months); these look back before date_range by themselves;
+        - aggregate fields of joined models over their own rows, without double counting;
+        - nest aggregates (the average of per-city totals) and chain stages.
 
-        - **Model name** (string) — run a query-backed saved model by name, e.g. ``"monthly_revenue"``
-          (honors ``variables``; every other setting comes from the stored query).
-          ``refine`` merges extra dimensions, measures, filters, order or limit into the saved query's
-          final stage, e.g. ``query(query="monthly_revenue", refine={"dimensions": ["region"]})``.
-        - **Query object** (dict) — a single query; per-field documentation is on the SlayerQuery schema.
-        - **Multi-stage list** (list of query objects) — a DAG of stages. Every entry except the last
-          MUST carry a ``name``; the last entry is the root whose rows are returned. Stages reference
-          one another by that name — as a ``source_model`` or via a join in an inline ModelExtension —
-          and the engine orders them topologically. An inner stage's result columns become plain
-          columns of the outer stage (dotted paths flatten: ``stores.name`` -> ``stores__name``); a
-          stage may reference only what its own source defines or what a prior stage projected —
-          define before you reference. Use stages when a whole result set must be re-queried,
-          joined, or reused; single-query nesting and computed dimensions already cover
-          re-aggregation.
+        The syntax is in the descriptions of the query object's fields: measures, filters, order, time_dimensions[].date_range, source_model and dimensions. Full reference: inspect(reference=["memory:help.aggregations", "memory:help.transforms", "memory:help.time", "memory:help.joins", "memory:help.queries"], entity_type="memory").
 
-        Expressions — one language, used in measures, computed dimensions, filters, and order. The
-        same expression returns its value as a measure, groups by it as a computed dimension, masks
-        as a filter (routed automatically to WHERE / HAVING / post-aggregation), and sorts in order.
+        `query` is a query object, a list of them (stages: all but the last carry a name; later stages use earlier ones as source_model), or a saved query-backed model's name (optionally with `refine`).
 
-        - Aggregations are function calls over a column or a same-model scalar expression:
-          ``count(*)``, ``sum(total)``, ``sum(amount - cost)``, ``percentile(price, p=0.95)``.
-          Available: sum, avg, min, max, count,
-          count_distinct, count_distinct_approx, median, percentile(x, p=),
-          weighted_avg(x, weight=col), stddev_samp, stddev_pop, var_samp, var_pop,
-          corr(x, other=col), covar_samp(x, other=col), covar_pop(x, other=col),
-          first(x[, time_col]) / last(x[, time_col]) (earliest/latest record's value per group),
-          plus model-defined custom aggregations. Write count_distinct(x), never count(distinct x).
-        - Every aggregation also takes ``window='90d'`` (compact duration) for a trailing time
-          window over the source rows ending at each output bucket, when the query has a time
-          dimension; first/last pick within the interval. Any aggregate over no rows (an empty
-          interval, a parent with no children across a join) is 0 for counts else NULL.
-          A window adds no dialect support — an aggregation a dialect cannot emit (e.g. median or
-          percentile on MySQL / SQL Server) stays unavailable windowed too.
-        - All aggregations support ``partition_by=`` (bare names: ``partition_by=region``,
-          ``partition_by=[region, city]``, ``partition_by=[]`` for the grand total), computing the
-          aggregate at that coarser grain; the result is broadcast over the missing dimensions.
-        - Combine aggregations with arithmetic and transforms — missing dimensions broadcast on
-          both sides. E.g. with dimensions ["city", "region"], the measure
-          {"formula": "sum(total) / sum(total, partition_by=region)", "name": "share_of_region"}
-          is each city's share of its region's total.
-        - Aggregations nest: "avg(sum(total, partition_by=[region, city]), partition_by=[region])"
-          averages the per-city totals within each region. The top-level partition_by must be a
-          subset of the query's dimensions; inner aggregations' partition_by need not be. An
-          outer aggregation's parameters must be determined by the operand's grain — a cell
-          value at that grain, e.g. weight=count(id, partition_by=[region, city]), or a column
-          that grain fixes; any other row column is a typed error.
-        - Transforms wrap aggregated expressions: cumsum(x); change(x) / change_pct(x)
-          (period-over-period delta / % change — calendar-aware and partition-safe, prefer these
-          for growth); time_shift(x, -1[, 'year']) (the shifted value itself, for custom
-          arithmetic); lag(x, n) / lead(x, n) (row-position shift, NULL at edges); first(x) /
-          last(x) (broadcast the earliest/latest bucket's value); consecutive_periods(predicate)
-          (trailing run length; the predicate may be row-level, e.g. status = 'paid');
-          rank(x, direction='desc') / dense_rank(x, direction='asc') (direction is required:
-          'desc' ranks the highest value 1, 'asc' the lowest), percent_rank(x), ntile(x, n=N)
-          (always ascending: bucket 1 / 0.0 is the lowest) (rank family — optional partition_by=,
-          no time dimension needed; a NULL value ranks NULL). All other transforms require a
-          time_dimensions entry.
-          Transforms nest in either order (change(cumsum(x))). Not supported: a row-level column
-          mixed into a composite or nested input of time_shift / change / change_pct, or mixed
-          with another aggregation's value inside one aggregation source.
-        - Cross-model: reference any joined model's field as ``model_name.field_name`` (or a
-          longer dotted path) and the engine figures out the join paths, avoiding fan-outs and
-          chasm traps — each aggregation computes over its own model's rows exactly once;
-          ambiguous routes error naming the candidates, and result keys use the full routed path.
-          An aggregation sliced by a dimension not attributable to it broadcasts its value with a
-          warning — see ``to_many_handling`` to attribute or error instead.
-
-        Method — decompose the question into blocks first: every qualifier, projected column,
-        filter, grouping, unit, rounding, and ordering hint is one block, and each must map to a
-        named column/measure/filter/dimension. Never drop a qualifier because no entity matched —
-        search for it, else encode it as an expression or an inline ModelExtension column;
-        reference already-encoded quantities by name rather than re-deriving their logic. Pin
-        explicitly rather than guessing: which aggregation ("typical" is not automatically avg vs
-        median), the grouping column and raw-vs-standardized labels, each aggregate's scope (all
-        rows vs a filtered subset), sort column + direction + tie-break, NULL handling, units and
-        rounding, exact numeric constants. "How many / count of" -> a scalar count(*); "which /
-        list / show" -> the rows. Project exactly the columns the question names — no extras,
-        none missing.
-
-        Filter literals — build every ==/in/like predicate on a text column from that column's
-        sampled values (inspect it), never a guessed spelling; samples are a top-N snapshot, so
-        when a needed literal is absent verify it (e.g. a distinct-values query) rather than
-        assume either way. Compare case/whitespace-insensitively in the FILTER
-        position only, never on a projected, grouped, or join-key column; abbreviations that
-        case-folding can't unify go in the IN-set. Apply only the transformations
-        (TRIM/ROUND/CAST/dedup) the question or a governing definition requires.
-
-        Time points — a string compared with a DATE/TIMESTAMP expression or a ``gran(col)`` call
-        is a time point: an instant ``'2025-03-01 10:00:00'`` compares as written; a period is a
-        half-open range — ``'2025'``, ``'2025-Q1'``, ``'2025-03'``, ``'2025-W05'`` (ISO week),
-        ``'2025-03-01'`` (a date-only string means the whole day), or a relative token read from
-        the host clock (pinned by ``SLAYER_NOW`` when set): ``'today'``, ``'this|last|next month'`` (any granularity), ``'last 7 days'``
-        (excludes the current day), ``'3 months ago'``, ``'year to date'``. ``ts >= P`` starts at
-        P, ``ts <= P`` ends with P, ``ts = P`` / ``ts in '2025-Q1'`` is inside P. A time
-        dimension's ``date_range`` is one period (``"last month"``) or ``[lower, upper]`` with
-        either bound null (one-sided).
-
-        Verify — run the exact final query and read the result (show_sql=true when unsure): row
-        count plausible; no dimension-only GROUP BY when you wanted per-record rows
-        (distinct_dimension_values: false); sort column + direction as asked; each aggregate's
-        scope right; NULL behavior intended; string values carry the expected casing. On a wrong
-        result, change ONE variable at a time — two changes per attempt make the outcome
-        uninterpretable.
-
-        Query-object fields taking the functional time-granularity form
-        ``gran(col)`` — ``gran`` one of second, minute, hour, day, week,
-        week_sunday, month, quarter, year, or a datasource's custom granularity:
-            dimensions: group-by columns; a granularity call such as
-                ``month(created_at)`` buckets that timestamp, equivalent to a
-                ``time_dimensions`` entry (and orderable as ``month(created_at)``).
-            time_dimensions: time-bucketed group-bys — ``{"dimension": ...,
-                "granularity": ...}`` dicts, or the string form ``month(created_at)``.
-            main_time_dimension: which time dimension time-ordered transforms key off.
-
-        Top-level arguments (siblings of ``query``, NOT fields inside it):
-            variables: Values for {placeholder} substitutions in filters, measure / dimension /
-                order formulas, date_range bounds and model SQL; result names keep the template. Also
-                settable per query object; precedence: runtime (top-level) > named-stage >
-                outer-query > model.query_variables.
-            refine: Model-name form only — clauses (dimensions, time_dimensions, measures, filters,
-                order, limit, offset, main_time_dimension, whole_periods_only,
-                distinct_dimension_values, to_many_handling) merged into the saved query's final stage.
-            show_sql: When true, include the generated SQL in the response for debugging.
-            dry_run: When true, generate and return the SQL without executing it.
-            explain: When true, run EXPLAIN ANALYZE and return the query plan.
-            format: Output format — "markdown" (default, compact) | "json" | "csv". Case-insensitive.
-
-        Without an explicit ``limit`` the response is capped at 20 rows with a truncation notice.
-
-        Example: query(query={"source_model": "orders", "dimensions": ["status"],
-        "measures": [{"formula": "count(*)"}], "filters": ["status == 'completed'"]})
+        First inspect the model and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.
         """
         try:
             fmt = format.lower().strip()
@@ -630,30 +537,15 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     # Model discovery
 
-    @mcp.tool()
+    @tool()
     async def models_summary(
-        datasource_name: str,
-        format: str = "markdown",
-        compact: bool = True,
+        datasource_name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
+        format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
+        compact: Annotated[bool, Field(
+            description="Default true: per model its name, description, column count, measure names and join targets. False adds the full column and measure tables.",
+        )] = True,
     ) -> str:
-        """Brief summary of all (non-hidden) models in a datasource.
-
-        Compact-by-default rendering. Under ``compact=True``
-        each model section emits its name, description, the column count
-        (``Columns: N``), the comma-separated measure NAMES
-        (``Measures: a, b, c``) and the ``Joins to:`` list — no
-        per-column table, no per-measure formula block. Pass
-        ``compact=False`` to restore the verbose markdown / JSON shape
-        with full column and measure payloads.
-
-        Args:
-            datasource_name: Name of the datasource (from list_datasources).
-            format: Output format — "markdown" (default, compact and
-                LLM-friendly) or "json" (structured array of model summaries).
-                Case-insensitive.
-            compact: Default True — drop per-column / per-measure detail.
-                Set False to surface the full per-model tables.
-        """
+        """Brief summary of every non-hidden model in a datasource."""
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             raise ValueError(
@@ -682,67 +574,18 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             compact=compact,
         )
 
-    @mcp.tool()
+    @tool()
     async def inspect_model(
-        model_name: str,
-        num_rows: int = 3,
-        show_sql: bool = False,
-        format: str = "markdown",
-        sections: list[str] | None = None,
-        descriptions_max_chars: int | None = None,
-        data_source: str | None = None,
-        compact: bool = True,
+        model_name: Annotated[str, Field(description="Model name.")],
+        num_rows: Annotated[int, Field(description="Sample rows.")] = 3,
+        show_sql: Annotated[bool, Field(description="Include generated SQL.")] = False,
+        format: Annotated[str, Field(description='"markdown" or "json".')] = "markdown",
+        sections: Annotated[list[str] | None, Field(description="Sections to render; default all.")] = None,
+        descriptions_max_chars: Annotated[int | None, Field(description="Truncate descriptions to this length.")] = None,
+        data_source: Annotated[str | None, Field(description="The model's datasource.")] = None,
+        compact: Annotated[bool, Field(description="Compact rendering.")] = True,
     ) -> str:
-        """DEPRECATED: use the ``inspect`` tool. Return a complete-yet-compact view of a semantic model.
-
-        Always emitted (regardless of ``sections``): model header + description,
-        metadata bullets (data_source, sql_table, default_time_dimension,
-        hidden, row_count), backing-query structure for query-backed models,
-        and — when ``show_sql=True`` — the custom SQL block, model-level
-        filters, and the cached backing-query SQL.
-
-        Section-gated parts (subset selectable via ``sections``):
-
-        - ``columns`` — unified row-level columns table with a ``sampled``
-          column (distinct values for string/boolean, ``min .. max`` for
-          number/date/time, or ``top20 ... (N distinct)`` for high-
-          cardinality categoricals).
-        - ``measures`` — named-formula library.
-        - ``aggregations`` — custom aggregation definitions. The ``formula``
-          column and the ``sql`` field of each ``params[]`` entry are gated
-          by ``show_sql``.
-        - ``joins`` — join definitions.
-        - ``samples`` — live sample-data query (``COUNT(*)`` plus one
-          aggregation per column).
-        - ``learnings`` — learning-only memories whose canonical entities
-          reference this model.
-
-        When a section is omitted from ``sections``: ``columns``, ``measures``,
-        ``aggregations`` and ``joins`` collapse to a one-line backticked CSV
-        of names; ``samples`` and ``learnings`` are dropped entirely.
-        A footer at the end of the response lists what was trimmed and how
-        to fetch more.
-
-        Args:
-            model_name: Name of the model to inspect.
-            num_rows: Max sample-data rows (default: 3).
-            show_sql: When true, include the generated SQL for the sample-data
-                query, the custom SQL block, model-level filters, the cached
-                backing-query SQL, and aggregation formulas/param SQL.
-            format: Output format — ``"markdown"`` (default) or ``"json"``.
-                Case-insensitive.
-            sections: Subset of ``["columns", "measures", "aggregations",
-                "joins", "samples", "learnings", "saved_queries"]``. Default (``None``
-                or empty list) renders all seven. Unknown names are ignored
-                with a warning line at the end of the response. A non-empty
-                list of *only* unknown names resolves to no sections (not
-                all seven) — "all sections" is reserved for ``None``/``[]`` so
-                a typo can't silently trigger the full expensive payload.
-            descriptions_max_chars: When set, every description field (model,
-                column, measure, aggregation) longer than this is truncated
-                with a ``... [truncated]`` suffix. Must be ``>= 0``. ``None``
-                (default) means no truncation.
-        """
+        """DEPRECATED: use `inspect` with entity_type="model"."""
         try:
             model = await storage.get_model_or_builtin(model_name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -765,78 +608,48 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             compact=compact,
         )
 
-    @mcp.tool()
+    @tool()
     async def inspect(
-        entity_type: str,
-        reference: str | list[str] | None = None,
-        compact: bool = True,
-        format: str = "markdown",
-        num_rows: int = 3,
-        show_sql: bool = False,
-        sections: list[str] | None = None,
-        descriptions_max_chars: int | None = None,
+        entity_type: Annotated[str, Field(
+            description=(
+                "Required: datasource, model, column, measure, aggregation or memory. Asserts the "
+                "resolved kind and disambiguates a name shared by, e.g., a column and an aggregation."
+            ),
+        )],
+        reference: Annotated[str | list[str] | None, Field(
+            description=(
+                "One reference, a list of same-kind references (batch), or omitted for the collection. "
+                "Canonical (mydb, mydb.orders, mydb.orders.amount), a bare name, a join path "
+                "(orders.customers.region), or memory:<id>."
+            ),
+        )] = None,
+        compact: Annotated[bool, Field(
+            description=(
+                "Default true: the description only for column / measure / aggregation / datasource / "
+                "memory (never shortens a help.* topic), a schema skeleton without "
+                "database calls for a model. False: the full render."
+            ),
+        )] = True,
+        format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
+        num_rows: Annotated[int, Field(description="Sample rows for a model; ignored for other kinds.")] = 3,
+        show_sql: Annotated[bool, Field(description="Include generated SQL for a model; ignored for other kinds.")] = False,
+        sections: Annotated[list[str] | None, Field(
+            description=(
+                "Model sections to render: columns, measures, aggregations, joins, samples, learnings, "
+                "saved_queries; default all. Ignored for other kinds."
+            ),
+        )] = None,
+        descriptions_max_chars: Annotated[int | None, Field(
+            description="Truncate every description, and a memory's body, to this many characters.",
+        )] = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind, a homogeneous
-        BATCH when ``reference`` is a list — or the whole COLLECTION at a kind
-        when ``reference`` is omitted / ``None``.
+        """Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.
 
-        A clean point-lookup: no fusion / ranking / cypher, and no bundled
-        memories. Use ``search`` instead when you want an entity surfaced *in
-        context* (with related memories and ranked neighbours).
+        Before using a column as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a column by its name alone.
 
-        Before using a column as a filter, projection, group-by, or join
-        key, inspect it and read its ``Description:`` (the schema author's
-        intent) and ``Sample values:`` (the stored literal forms — a top-N
-        sample, indicative rather than exhaustive; build text predicates
-        from these, never a guessed spelling). Never pick a column from its
-        name alone.
-
-        Collection: omit ``reference`` (or pass ``None`` / ``[]``)
-        to list a whole kind. ``entity_type="model"`` lists all models grouped
-        by datasource (compact=True: one terse line per model; compact=False:
-        the full per-model tables). ``entity_type="datasource"`` lists all
-        datasources. Only ``model`` / ``datasource`` support the collection
-        view; other kinds raise. This subsumes ``models_summary`` /
-        ``list_datasources``.
-
-        Batch: pass a ``list`` of references that all share the one
-        ``entity_type``. Returns one rendered block per id, in input order,
-        each echoing its resolved canonical id (a ``## <canonical>`` header in
-        markdown; a JSON array under ``format="json"``). Per-id resolution
-        errors are isolated — one bad id does not sink the batch (in JSON it
-        becomes a ``{"reference": ..., "error": ...}`` element). A single
-        ``str`` keeps its byte-for-byte single output; a one-element list is
-        still batch-framed.
-
-        Args:
-            reference: The entity reference, or a list of references (batch).
-                Accepts canonical forms (``mydb``, ``mydb.orders``,
-                ``mydb.orders.amount``), bare names, join paths
-                (``orders.customers.region`` → resolved to the owning model),
-                and ``memory:<id>`` for memories. Normalised via the shared
-                resolver; the normalised canonical id is echoed in the JSON
-                shape.
-            entity_type: REQUIRED. One of ``datasource``, ``model``,
-                ``column``, ``measure``, ``aggregation``, ``memory``.
-                Disambiguates the 3-part canonical collision (a name
-                shared by, e.g., a column and an aggregation) and asserts
-                the resolved kind — a mismatch returns a detailed error.
-            compact: When true (default): description-only for
-                column/measure/aggregation/datasource/memory; for
-                ``entity_type="model"`` a cheap schema skeleton (column /
-                measure / aggregation names + join targets, zero DB calls).
-                False returns the full render (and, for the datasource kind,
-                a per-model skeleton for each visible model).
-            format: ``"markdown"`` (default) or ``"json"``.
-            num_rows: Sample-data rows for ``entity_type="model"``. Ignored
-                (with a warning) for other kinds.
-            show_sql: Include generated SQL for ``entity_type="model"``.
-                Ignored (with a warning) for datasource/memory; a silent
-                no-op for column/measure/aggregation.
-            sections: Section subset for ``entity_type="model"``. Ignored
-                (with a warning) for other kinds.
-            descriptions_max_chars: Truncate description fields to this many
-                characters. Applies to every kind.
+        Collection: omit `reference` with entity_type "model" (every model, grouped by datasource) or "datasource".
+        Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.
+        Help: reference "memory:help.intro" (entity_type "memory") for the overview; batch several help topics in one call.
         """
         return await InspectService(storage=storage, engine=engine).inspect(
             reference=reference,
@@ -851,70 +664,52 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     # Model creation and editing
 
-    @mcp.tool()
+    @tool()
     async def create_model(
-        name: str,
-        sql_table: str | None = None,
-        sql: str | None = None,
-        data_source: str | None = None,
-        description: str | None = None,
-        columns: list[dict[str, Any]] | None = None,
-        measures: list[dict[str, Any]] | None = None,
-        aggregations: list[dict[str, Any]] | None = None,
-        query: Any | None = None,
-        variables: dict[str, Any] | None = None,
+        name: Annotated[str, Field(description="Unique model name (lowercase, underscores).")],
+        sql_table: Annotated[str | None, Field(description='Database table, e.g. "public.orders".')] = None,
+        sql: Annotated[str | None, Field(description="A SQL query as the model's source, instead of sql_table.")] = None,
+        data_source: Annotated[str | None, Field(description="Datasource name (from list_datasources).")] = None,
+        description: Annotated[str | None, Field(description="What one row of this model represents.")] = None,
+        columns: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Column definitions: {"name", "sql", "type"} with type string, number, time, date or '
+                "boolean; optional primary_key, unique (single-column uniqueness other than the "
+                "primary key), allowed_aggregations, filter (a condition masking the column's value "
+                "inside aggregates), granularity (only for a column truly bucketed at that grain), "
+                "label, description, hidden, meta."
+            ),
+        )] = None,
+        measures: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Saved formulas, {"name": "aov", "formula": "sum(revenue) / count(*)"} plus optional '
+                'label, description, meta; queries reference them by bare name ({"formula": "aov"}).'
+            ),
+        )] = None,
+        aggregations: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Custom aggregations, {"name": "sum_sq", "formula": "SUM({value} * {value})", '
+                '"params": [{"name": "weight", "sql": "quantity"}], "description": ...}; the formula '
+                "is SQL with {value} for the aggregated column."
+            ),
+        )] = None,
+        query: Annotated[Any | None, Field(
+            description=(
+                "A query object or list of stages; makes the model query-backed. Excludes sql_table, "
+                "sql, columns, measures and aggregations."
+            ),
+        )] = None,
+        variables: Annotated[dict[str, Any] | None, Field(
+            description="Default values for {var} placeholders in the backing query.",
+        )] = None,
     ) -> str:
-        """Create a new semantic model, either from a database table or from a query.
+        """Create a semantic model from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the model becomes query-backed and its columns come from the result).
 
-        Host a column/measure on the model whose row grain is 1:1 with what
-        it describes — not merely one where its input columns live. Choose
-        join keys by column ``Description`` (author intent); on ties take the
-        shortest declared join path (long chains through lookup/log tables
-        fan out rows). Encode definitions in dependency order, referencing
-        already-defined entities by name rather than re-deriving them inline;
-        in row-level SQL parenthesise weighted sums in comparisons
-        (``(a*w1 + b*w2) > t``).
+        Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        **From a table or sql query** (provide sql_table or sql):
-            create_model(name="orders", sql_table="public.orders", data_source="mydb",
-                         columns=[...], measures=[...])
+        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "number"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
 
-        **From a query** (provide query):
-            create_model(name="monthly_summary", query={"source_model": "orders",
-                         "measures": ["count(*)", "sum(amount)"],
-                         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
-            Columns are auto-introspected from the query result.
-
-        Args:
-            name: Unique model name (lowercase, underscores).
-            sql_table: Database table name, e.g. "public.orders".
-            sql: Alternative to sql_table — a custom SQL expression for the model's source.
-            data_source: Name of the datasource (from list_datasources).
-            description: What this model represents.
-            columns: List of column definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
-                Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
-                ``unique`` (single-column uniqueness that is not the PK; a sole
-                ``primary_key`` already implies it), ``allowed_aggregations`` (whitelist), ``filter``
-                (CASE WHEN inside aggregation), ``granularity`` (a temporal column's
-                declared time bucket, e.g. ``"month"`` — only when it is truly bucketed
-                at that grain), ``label``, ``description``, ``hidden``, ``meta``.
-            measures: List of named formula definitions on the model. Each:
-                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
-                 "description": "...", "meta": {...}}.
-                Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
-                ``meta`` is an optional opaque dict for caller bookkeeping
-                (e.g. linking the formula back to a source identifier).
-            aggregations: Custom aggregations on the model. Each:
-                {"name": "sum_sq", "formula": "SUM({value} * {value})",
-                 "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
-                The formula must parse as SQL; queries use it as ``sum_sq(column)``.
-            query: A SLayer query dict (or list of stage dicts for a multi-stage backing
-                query). When provided, the query is saved as the model's ``source_queries``
-                and the model becomes query-backed. Mutually exclusive with sql_table, sql,
-                columns, measures, and aggregations.
-            variables: Default values for ``{var}`` placeholders in the backing query.
-                Saved as ``query_variables`` on the model. Only meaningful when ``query``
-                is provided.
+        A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
         """
         if query is not None:
             table_params = {
@@ -1017,106 +812,78 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins"}
 
-    @mcp.tool()
+    @tool()
     async def edit_model(
-        model_name: str,  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
-        description: str | None = None,
-        data_source: str | None = None,
-        new_data_source: str | None = None,
-        default_time_dimension: str | None = None,
-        sql_table: str | None = None,
-        sql: str | None = None,
-        source_queries: list[dict[str, Any]] | None = None,
-        query_variables: Any = _UNSET,
-        hidden: bool | None = None,
-        columns: list[dict[str, Any]] | None = None,
-        measures: list[dict[str, Any]] | None = None,
-        aggregations: list[dict[str, Any]] | None = None,
-        joins: list[dict[str, Any]] | None = None,
-        add_filters: list[str] | None = None,
-        remove_filters: list[str] | None = None,
-        remove: dict[str, list[str]] | None = None,
-        meta: dict[str, Any] | None = _UNSET,
+        model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+        description: Annotated[str | None, Field(description="New model description.")] = None,
+        data_source: Annotated[str | None, Field(
+            description="The model's datasource; required when the name exists in several datasources.",
+        )] = None,
+        new_data_source: Annotated[str | None, Field(description="Move the model to another datasource (rare).")] = None,
+        default_time_dimension: Annotated[str | None, Field(
+            description="A date/time column: the default time axis for transforms.",
+        )] = None,
+        sql_table: Annotated[str | None, Field(description="Database table; clears sql and source_queries.")] = None,
+        sql: Annotated[str | None, Field(description="SQL query as the source; clears sql_table and source_queries.")] = None,
+        source_queries: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                "Replace the backing query with these stages (all but the last carry a name); makes the "
+                "model query-backed, clears sql_table and sql, and refreshes the cached columns."
+            ),
+        )] = None,
+        query_variables: Annotated[Any, Field(
+            description="Replace the backing query's default {var} values; null clears them.",
+        )] = _UNSET,
+        hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
+        columns: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
+                '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
+                '"label", "granularity"}; type string, number, time, date or boolean; unique marks '
+                "single-column uniqueness other than the primary key (used for join cardinality); set "
+                "granularity only for a column truly bucketed at that grain (null clears it)."
+            ),
+        )] = None,
+        measures: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Saved formulas to upsert by name, {"name": "aov", "formula": "sum(revenue) / '
+                'count(*)"} plus optional label, description, meta; queries use them by bare name.'
+            ),
+        )] = None,
+        aggregations: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Custom aggregations to upsert by name, {"name", "formula" (SQL with {value} and '
+                '{param} placeholders), "params": [{"name", "sql"}], "description", "meta"}.'
+            ),
+        )] = None,
+        joins: Annotated[list[dict[str, Any]] | None, Field(
+            description=(
+                'Joins to upsert by target_model, {"target_model": "customers", "join_pairs": '
+                '[["customer_id", "id"]], "cardinality": "many_to_one", "description", "meta"}. '
+                "Keys name columns by name; a composite key is one join with several pairs. "
+                "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
+                "source->target) is descriptive only; omit it when unknown."
+            ),
+        )] = None,
+        add_filters: Annotated[list[str] | None, Field(
+            description='SQL conditions always applied to the model, e.g. ["deleted_at IS NULL"].',
+        )] = None,
+        remove_filters: Annotated[list[str] | None, Field(description="Model filters to remove (exact text).")] = None,
+        remove: Annotated[dict[str, list[str]] | None, Field(
+            description=(
+                'Entities to delete before the upserts: {"columns": [...], "measures": [...], '
+                '"aggregations": [...], "joins": [target_model, ...]}.'
+            ),
+        )] = None,
+        meta: Annotated[dict[str, Any] | None, Field(
+            description="JSON metadata replacing the model's meta; null clears it.",
+        )] = _UNSET,
     ) -> str:
-        """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
-        manage filters, and remove entities.
+        """Edit an existing model in one call: metadata, upserts of columns / measures / aggregations / joins (by name; only the given fields change), model filters, and removals (applied first).
 
-        Host a column/measure on the model whose row grain is 1:1 with what
-        it describes — not merely one where its input columns live. Choose
-        join keys by column ``Description`` (author intent); on ties take the
-        shortest declared join path (long chains through lookup/log tables
-        fan out rows). Encode definitions in dependency order, referencing
-        already-defined entities by name rather than re-deriving them inline;
-        in row-level SQL parenthesise weighted sums in comparisons
-        (``(a*w1 + b*w2) > t``).
+        Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Args:
-            model_name: Name of the model to edit.
-            description: New model description.
-            data_source: Lookup key — the datasource the model belongs to.
-                Required when the same name exists in multiple datasources
-                (otherwise the priority list / single-match rules apply).
-            new_data_source: Move the model to a different datasource (rare;
-                renames its storage location). Pass ``None`` (default) to
-                leave the data_source unchanged.
-            default_time_dimension: Default time dimension (a column of type date/time) for
-                time-dependent transforms.
-            sql_table: Database table name. Setting this clears ``sql`` and ``source_queries``.
-            sql: Custom SQL expression for the model source. Setting this clears ``sql_table`` and ``source_queries``.
-            source_queries: Replace the model's backing query with this list of stages.
-                Each stage is a SlayerQuery dict; non-final stages must have a ``name``.
-                Setting this clears ``sql_table`` and ``sql``, makes the model query-backed,
-                and refreshes the cached ``columns`` and ``backing_query_sql``.
-            query_variables: Replace the model's default ``{var}`` placeholder values for
-                its backing query. Pass null/None to clear. Only meaningful for
-                query-backed models.
-            hidden: Whether this model is hidden from discovery.
-            meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
-            columns: Columns to create or update (upsert by name). Each dict:
-                {"name": "col", "type": "string", "sql": "col", "description": "...",
-                 "primary_key": false, "unique": false, "hidden": false,
-                 "allowed_aggregations": ["sum", "avg"],
-                 "filter": "status = 'active'", "label": "...", "granularity": "month"}.
-                ``granularity`` is a temporal column's declared time bucket (set it only
-                when the values are truly bucketed at that grain; ``null`` clears it).
-                If a column with this name exists, only the provided fields are updated.
-                Types: string, number, time, date, boolean.
-                ``unique`` marks single-column uniqueness that is not the primary key
-                (a sole ``primary_key`` already implies it); it is used to infer join
-                cardinality.
-            measures: Named formula measures to create or update (upsert by name). Each dict:
-                {"name": "aov", "formula": "sum(revenue) / count(*)", "label": "...",
-                 "description": "...", "meta": {...}}.
-                Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
-                ``meta`` is an optional opaque dict for caller bookkeeping.
-            aggregations: Aggregations to create or update (upsert by name). Each dict:
-                {"name": "weighted_avg", "formula": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
-                 "params": [{"name": "weight", "sql": "quantity"}], "description": "...",
-                 "meta": {...}}.
-                ``meta`` is an optional opaque dict for caller bookkeeping.
-            joins: Joins to create or update (upsert by target_model). Each dict:
-                {"target_model": "customers", "join_pairs": [["customer_id", "id"]],
-                 "cardinality": "many_to_one", "description": "...", "meta": {...}}.
-                Keys name declared base columns by column name (not their ``sql``).
-                A composite key is one join with several ``join_pairs`` entries, not
-                one join per column. ``cardinality`` is the join's arity read
-                source->target, one of ``one_to_one`` / ``one_to_many`` /
-                ``many_to_one`` / ``many_to_many``; omit it when undetermined. It is
-                descriptive metadata only — it changes neither ``join_type`` nor
-                query results.
-            add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
-            remove_filters: SQL filter strings to remove (exact match).
-            remove: Named entities to delete, keyed by type:
-                {"columns": ["col_name"], "measures": ["measure_name"],
-                 "aggregations": ["agg_name"], "joins": ["target_model_name"]}.
-                Removals are processed before upserts.
-
-        Example — update a column and add a named measure:
-            edit_model(model_name="orders",
-                       columns=[{"name": "status", "type": "string"}],
-                       measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}])
-        Example — remove a measure:
-            edit_model(model_name="orders", remove={"measures": ["old_metric"]})
+        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "string"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
         """
         try:
             model = await storage.get_model(model_name, data_source=data_source)
@@ -1387,40 +1154,39 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     # Datasource management
 
-    @mcp.tool()
+    @tool()
     async def create_datasource(
-        name: str,
-        type: str,
-        host: str | None = None,
-        port: int | None = None,
-        database: str | None = None,
-        username: str | None = None,
-        password: str | None = None,
-        connection_string: str | None = None,
-        schema_name: str | None = None,
-        schemas: str = "",
-        all_schemas: bool = False,
-        auto_ingest: bool = True,
-        granularities: list[CustomGranularity] | None = None,
+        name: Annotated[str, Field(description="Unique datasource name.")],
+        type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
+        host: Annotated[str | None, Field(description="Database host (default localhost).")] = None,
+        port: Annotated[int | None, Field(description="Database port, e.g. 5432.")] = None,
+        database: Annotated[str | None, Field(description="Database name.")] = None,
+        username: Annotated[str | None, Field(description="Database user; ${ENV_VAR} is resolved.")] = None,
+        password: Annotated[str | None, Field(description="Database password; ${ENV_VAR} is resolved.")] = None,
+        connection_string: Annotated[str | None, Field(
+            description="Full connection string instead of the individual fields.",
+        )] = None,
+        schema_name: Annotated[str | None, Field(
+            description="Default schema, also the single schema auto-ingested.",
+        )] = None,
+        schemas: Annotated[str, Field(
+            description="Comma-separated schemas to ingest; excludes schema_name and all_schemas.",
+        )] = "",
+        all_schemas: Annotated[bool, Field(
+            description="Ingest every non-system schema; excludes schema_name and schemas.",
+        )] = False,
+        auto_ingest: Annotated[bool, Field(description="Create models from the schema (default true).")] = True,
+        granularities: Annotated[list[CustomGranularity] | None, Field(
+            description=(
+                "Custom time granularities, each {name, base, multiple, origin}: buckets start at "
+                'origin + k * multiple * base, e.g. {name: "fiscal_year", base: "year", origin: '
+                '"2000-04-01"}; usable wherever a built-in granularity is.'
+            ),
+        )] = None,
     ) -> str:
-        """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} syntax in credentials to reference environment variables.
+        """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} in credentials to read environment variables.
 
-        Args:
-            name: Unique datasource name.
-            type: Database type — postgres, mysql, sqlite, bigquery, or snowflake.
-            host: Database host (default: localhost).
-            port: Database port (e.g. 5432 for Postgres).
-            database: Database name.
-            username: Database username.
-            password: Database password.
-            connection_string: Full connection string as alternative to individual fields.
-            schema_name: Default schema name. Also used as the single schema for auto-ingestion.
-            schemas: Comma-separated schemas to ingest. Mutually exclusive with schema_name / all_schemas.
-            all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
-            auto_ingest: Automatically ingest models from the database schema (default: true). Set to false to skip.
-            granularities: Custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k × multiple × base (e.g. {name: "fiscal_year", base: "year", origin: "2000-04-01"}); usable wherever a built-in granularity is.
-
-        Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="pass")
+        Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="${DB_PASSWORD}")
         """
 
         schemas_list = [s.strip() for s in schemas.split(",") if s.strip()] or None
@@ -1518,7 +1284,7 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         return "\n".join(lines)
 
-    @mcp.tool()
+    @tool()
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
@@ -1533,24 +1299,17 @@ To connect a new database: create_datasource → describe_datasource (verify + l
                 pairs.append((name, None))
         return render_datasource_list(pairs=pairs, fmt="markdown")
 
-    @mcp.tool()
+    @tool()
     async def describe_datasource(
-        name: str,
-        list_tables: bool = True,
-        schema_name: str = "",
+        name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
+        list_tables: Annotated[bool, Field(description="Also list the tables of schema_name (default true).")] = True,
+        schema_name: Annotated[str, Field(
+            description='Schema whose tables to list, e.g. "public"; empty is the default schema.',
+        )] = "",
     ) -> str:
         """Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.
 
-        Use this after create_datasource to verify the connection and explore
-        what's queryable before calling ingest_datasource_models.
-
-        Args:
-            name: Datasource name (from list_datasources).
-            list_tables: If True (default), append a list of tables from the
-                schema named by ``schema_name`` (or the dialect's default
-                schema when empty).
-            schema_name: Database schema to list tables from (e.g. "public").
-                Empty uses the dialect default. Ignored when list_tables=False.
+        Use it after create_datasource to verify the connection and see what is queryable before ingest_datasource_models.
         """
         try:
             ds = await storage.get_datasource(name)
@@ -1603,19 +1362,18 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
         return "\n".join(lines)
 
-    @mcp.tool()
+    @tool()
     async def edit_datasource(
-        name: str,
-        description: str | None = None,
-        granularities: list[CustomGranularity] | None = None,
+        name: Annotated[str, Field(description="Datasource to update.")],
+        description: Annotated[str | None, Field(description="New datasource description.")] = None,
+        granularities: Annotated[list[CustomGranularity] | None, Field(
+            description=(
+                "Replace the custom time granularities, each {name, base, multiple, origin}: buckets "
+                "start at origin + k * multiple * base."
+            ),
+        )] = None,
     ) -> str:
-        """Update a datasource's metadata.
-
-        Args:
-            name: Datasource name to update.
-            description: New description for the datasource.
-            granularities: Replace the custom time granularities: each {name, base, multiple, origin}, buckets starting at origin + k × multiple × base.
-        """
+        """Update a datasource's metadata."""
         ds = await storage.get_datasource(name)
         if ds is None:
             return f"Datasource '{name}' not found."
@@ -1659,16 +1417,14 @@ To connect a new database: create_datasource → describe_datasource (verify + l
 
     # Delete operations
 
-    @mcp.tool()
-    async def delete_model(name: str, data_source: str | None = None) -> str:
-        """Delete a semantic model.
-
-        Args:
-            name: Model name to delete.
-            data_source: Datasource the model belongs to. Required when the
-                same name exists in multiple datasources (otherwise the
-                priority list / single-match rules apply).
-        """
+    @tool()
+    async def delete_model(
+        name: Annotated[str, Field(description="Model to delete.")],
+        data_source: Annotated[str | None, Field(
+            description="The model's datasource; required when the name exists in several datasources.",
+        )] = None,
+    ) -> str:
+        """Delete a semantic model."""
         try:
             deleted = await storage.delete_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -1677,19 +1433,13 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             return f"Model '{name}' deleted."
         return f"Model '{name}' not found."
 
-    @mcp.tool()
-    async def validate_models(data_source: str | None = None) -> str:
-        """Diff persisted SLayer models against the live database schema(s).
+    @tool()
+    async def validate_models(
+        data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
+    ) -> str:
+        """Diff stored models against the live database schemas.
 
-        Returns a JSON-serialized list of pending delete operations
-        (column drops, measure drops, join drops, filter removals, whole
-        models) needed to keep stored models valid against the current
-        live state. Read-only — does not modify storage.
-
-        Args:
-            data_source: Datasource name to validate. When omitted, every
-                datasource is validated concurrently and results are
-                concatenated.
+        Returns, as JSON, the deletes (columns, measures, joins, filters, whole models) needed to keep the stored models valid. Read-only.
         """
         if data_source is not None:
             # Fail loudly on an unknown name — an empty result is otherwise
@@ -1705,44 +1455,27 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
-    @mcp.tool()
+    @tool()
     async def recommend_root_model(
-        items: list[str], data_source: str | None = None,
-        root_hint: str | None = None, format: str = "markdown"  # noqa: A002
+        items: Annotated[list[str], Field(
+            description="Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved measure's bare name, ...",
+        )],
+        data_source: Annotated[str | None, Field(
+            description="Datasource scope; omitted, names resolve via the datasource priority list.",
+        )] = None,
+        root_hint: Annotated[str | None, Field(
+            description=(
+                "Intended root (model or <data_source>.<model>); honoured when it reaches every item, "
+                "else the automatic pick is used with a warning."
+            ),
+        )] = None,
+        format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",  # noqa: A002
     ) -> str:
-        """Recommend the root model (query ``source_model``) for a set of
-        ``model.column`` / ``model.metric`` items, and give each item's
-        join-qualified reference path from that root.
+        """Recommend the root model (a query's source_model) for a set of model.column / measure items, with each item's reference path from that root, ready to drop into the query (a joined column comes back as customers.regions.name, a root-owned one as status; aggregations are kept).
 
-        Introspects the join graph and picks the model from which every
-        requested item is reachable (LEFT joins are directional; INNER
-        joins traverse both ways), minimizing total join hops. The returned
-        paths are ready to drop into a query whose ``source_model`` is the
-        recommended root — e.g. a joined column comes back as
-        ``customers.regions.name`` and a root-owned one as ``status``;
-        aggregations (``sum(revenue)``) are preserved.
+        The root is the model from which every item is reachable with the fewest join hops. When none reaches everything, root_model is null and coverage lists the best partial roots for a multi-stage query.
 
-        When no single model reaches everything, ``root_model`` is null and
-        ``coverage`` lists the best partial roots so you can split the
-        request into a multi-stage query.
-
-        Call this once your item list is final, not as a schema browser —
-        explore with ``search`` / ``inspect`` first.
-
-        Args:
-            items: entity references (``orders.revenue``, ``customers.name``,
-                ``sum(orders.revenue)``, bare ``aov`` for a saved metric...).
-            data_source: optional datasource scope; when omitted, names
-                resolve via the datasource-priority list. All items must
-                resolve to a single datasource.
-            root_hint: optional intended root — a bare model name or
-                ``<data_source>.<model>`` within the resolved datasource.
-                Honored when it reaches every item (overriding the min-hops
-                pick, so you can force a bridge model that owns none of the
-                items); otherwise the auto-pick is used and a warning
-                explains why. Resolved after the datasource is determined,
-                so it cannot pick the datasource.
-            format: ``"markdown"`` (default) or ``"json"``.
+        Call it once the item list is final; explore with search / inspect first.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
@@ -1763,40 +1496,30 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             return json.dumps(rec.model_dump(mode="json"), indent=2)
         return render_recommendation_markdown(rec)
 
-    @mcp.tool()
-    async def delete_datasource(name: str) -> str:
-        """Delete a datasource configuration.
-
-        Args:
-            name: Datasource name to delete.
-        """
+    @tool()
+    async def delete_datasource(name: Annotated[str, Field(description="Datasource to delete.")]) -> str:
+        """Delete a datasource configuration."""
         if await storage.delete_datasource(name):
             return f"Datasource '{name}' deleted."
         return f"Datasource '{name}' not found."
 
     # Ingestion
 
-    @mcp.tool()
+    @tool()
     async def ingest_datasource_models(
-        datasource_name: str,
-        include_tables: str = "",
-        schema_name: str = "",
-        schemas: str = "",
-        all_schemas: bool = False,
+        datasource_name: Annotated[str, Field(description="An existing datasource (from list_datasources).")],
+        include_tables: Annotated[str, Field(description="Comma-separated tables to ingest; empty for all.")] = "",
+        schema_name: Annotated[str, Field(description='One schema, e.g. "public"; empty is the default schema.')] = "",
+        schemas: Annotated[str, Field(
+            description="Comma-separated schemas; excludes schema_name and all_schemas.",
+        )] = "",
+        all_schemas: Annotated[bool, Field(
+            description="Every non-system schema; excludes schema_name and schemas.",
+        )] = False,
     ) -> str:
-        """Auto-discover tables in a database and create / additively update semantic models from them.
+        """Discover a database's tables and create or additively update models from them.
 
-        Idempotent: re-runs are additive only. New columns and joins
-        are appended to existing models; existing column / join definitions
-        are never overwritten. After the additive pass, returns the pending
-        ``validate_models`` deletes alongside the additions.
-
-        Args:
-            datasource_name: Name of an existing datasource (from list_datasources).
-            include_tables: Comma-separated list of table names to include. If empty, all tables are ingested.
-            schema_name: A single database schema to inspect (e.g. "public"). Empty uses the default schema.
-            schemas: Comma-separated schemas to inspect. Mutually exclusive with schema_name / all_schemas.
-            all_schemas: Ingest every non-system schema. Mutually exclusive with schema_name / schemas.
+        Idempotent and additive: new columns and joins are appended; existing definitions are never overwritten. Also returns the pending validate_models deletes.
         """
 
         ds = await storage.get_datasource(datasource_name)
@@ -1832,22 +1555,13 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             result, schema_name=schema_name, ds=ds
         )
 
-    @mcp.tool()
-    async def set_datasource_priority(priority: list[str]) -> str:
-        """Configure how SLayer disambiguates bare model names that exist in
-        multiple datasources.
-
-        When two datasources both define a model named ``users``, calling
-        ``edit_model("users")`` (no ``data_source=``) is ambiguous. SLayer
-        walks this priority list and picks the first datasource that has
-        the requested name. If none of the candidates appear in the list,
-        an ``AmbiguousModelError`` is raised.
-
-        Args:
-            priority: Datasource names, most-preferred first. Each entry
-                must already exist (run ``list_datasources`` first). Pass
-                an empty list to clear the priority.
-        """
+    @tool()
+    async def set_datasource_priority(
+        priority: Annotated[list[str], Field(
+            description="Existing datasource names, most preferred first; an empty list clears it.",
+        )],
+    ) -> str:
+        """Set how a bare model name that exists in several datasources resolves: the first datasource in this list that has it wins; otherwise the name is ambiguous and errors."""
         try:
             await storage.set_datasource_priority(list(priority))
         except ValueError as exc:
@@ -1856,10 +1570,9 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             return "Datasource priority cleared."
         return f"Datasource priority set: {list(priority)}."
 
-    @mcp.tool()
+    @tool()
     async def get_datasource_priority() -> str:
-        """Return the configured datasource priority list (most-preferred
-        first), or ``[]`` if none is set."""
+        """Return the datasource priority list (most preferred first), or [] when none is set."""
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
 
@@ -1876,71 +1589,33 @@ To connect a new database: create_datasource → describe_datasource (verify + l
         prefix = f"{type(exc).__name__}: "
         return f"Error: {exc}" if str(exc).startswith(prefix) else f"Error: {prefix}{exc}"
 
-    @mcp.tool()
+    @tool()
     async def save_memory(
-        learning: str,
-        linked_entities: Any,
-        id: str | None = None,  # noqa: A002 — MCP arg name
-        description: str | None = None,
+        learning: Annotated[str, Field(description="The note text; required, non-empty.")],
+        linked_entities: Annotated[Any, Field(
+            description=(
+                "A list of entity references (resolved to <datasource>.<model>[.<leaf>]; memory:<id> "
+                "links another memory), or a query object whose entities are extracted and which is "
+                "stored as an example query."
+            ),
+        )],
+        id: Annotated[str | None, Field(  # noqa: A002 — MCP arg name
+            description=(
+                'Stable memory id such as "kb.policy.42" (no : / ? # or whitespace); an existing id '
+                "is overwritten. Omit to allocate one."
+            ),
+        )] = None,
+        description: Annotated[str | None, Field(
+            description="One-line preview (at most 500 chars) shown by search and compact inspect.",
+        )] = None,
     ) -> str:
-        """Save an agent memory: a free-form note plus the SLayer
-        entities it concerns.
+        """Save an agent memory: a free-form note plus the SLayer entities it concerns.
 
-        ``linked_entities`` accepts either:
-
-        * a list of entity reference strings — each item is resolved to
-          the canonical ``<datasource>.<model>[.<leaf>]`` form. Bare
-          names use the datasource priority list; ambiguous bare-column
-          matches are rejected. ``memory:<id>`` is also valid here
-          (cross-memory references; the target memory must exist).
-        * a ``SlayerQuery`` (dict) — entities are auto-extracted from
-          ``source_model``, ``dimensions``, ``time_dimensions``,
-          ``measures``, and ``filters``; resolution warnings are
-          non-fatal. The query itself is stored alongside the
-          learning, so the memory surfaces in ``search``'s
-          ``example_queries`` list (vs the ``memories`` list for
-          entity-list memories).
-
-        ``id`` is an optional canonical memory id. Omit to
-        auto-allocate a monotonic int-shaped id (``"1"``, ``"2"``, ...);
-        supply a string for a stable user-controlled id
-        (``"kb.policy.42"``). Charset excludes ``:``, ``/``, ``?``,
-        ``#``, whitespace. Duplicate id → unconditional upsert,
-        ``created_at`` preserved.
-
-        Returns the assigned ``memory_id`` (string), the canonical
-        entities stored, and any non-fatal warnings.
-
-        Cascade-on-delete: when a model / datasource / measure is
-        deleted, every ``memory:<id>`` and ``<ds>.<model>[.<leaf>]``
-        reference under it is automatically stripped from every other
-        memory's ``entities`` list. Memories with zero entities after
-        the strip are kept (the learning text stands alone).
-
-        Search is lenient: stale entity tags in saved memories are
-        filtered out at retrieval time rather than raising.
-
-        Args:
-            learning: The note text. Required, non-empty.
-            linked_entities: List of entity strings, or an inline
-                ``SlayerQuery`` payload.
-            id: Optional canonical memory id (see above).
+        With a list of entity references the memory appears among search's memories; with a query object it appears among search's example queries. Returns the memory_id, the canonical entities stored and any warnings. Deleting a model, datasource or measure strips references to it from every memory; the note itself is kept.
 
         Examples:
-            save_memory(
-                learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-                linked_entities=["orders.is_returned"],
-            )
-
-            save_memory(
-                learning="Paid revenue by status",
-                linked_entities={
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "filters": ["status = 'paid'"],
-                },
-                id="kb.paid-revenue",
-            )
+        save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
+        save_memory(learning="Paid revenue by status", linked_entities={"source_model": "orders", "measures": [{"formula": "sum(amount)"}], "filters": ["status = 'paid'"]}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(
@@ -1957,22 +1632,11 @@ To connect a new database: create_datasource → describe_datasource (verify + l
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
-    @mcp.tool()
-    async def forget_memory(id: Any) -> str:  # noqa: A002 — MCP arg name
-        """Delete a memory by id.
-
-        Cascades: every other memory's ``memory:<id>`` reference to
-        this id is automatically stripped from its ``entities`` list.
-
-        Args:
-            id: The ``memory_id`` returned by ``save_memory``. Accepts
-                strings (the canonical form, including user-supplied
-                ``"kb.policy"``-style ids) as well as legacy ints
-                (coerced to their decimal string form).
-
-        Raises a friendly error if the id is invalid or the memory does
-        not exist.
-        """
+    @tool()
+    async def forget_memory(
+        id: Annotated[Any, Field(description="The memory_id returned by save_memory (a legacy int is accepted).")],  # noqa: A002 — MCP arg name
+    ) -> str:
+        """Delete a memory by id; other memories' memory:<id> links to it are removed."""
         try:
             response = await memory_service.forget_memory(identifier=id)
         except (
@@ -1986,77 +1650,36 @@ To connect a new database: create_datasource → describe_datasource (verify + l
     # column-hit hook can auto-refresh stale categorical columns.
     search_service = SearchService(storage=storage, engine=engine)
 
-    @mcp.tool()
+    @tool()
     async def search(
-        entities: list[str] | None = None,
-        query: Any = None,
-        question: str | None = None,
-        datasource: str | None = None,
-        max_results: int = 10,
-        cypher_filter: str | None = None,
-        compact: bool = True,
+        entities: Annotated[list[str] | None, Field(
+            description="Entity references; ranks memories tagged with overlapping entities.",
+        )] = None,
+        query: Annotated[Any, Field(
+            description="A query object whose entities are extracted and searched like entities.",
+        )] = None,
+        question: Annotated[str | None, Field(
+            description="Free text, matched by full text (and by embeddings when configured) over memories and entities.",
+        )] = None,
+        datasource: Annotated[str | None, Field(description="Restrict every hit to this datasource.")] = None,
+        max_results: Annotated[int, Field(description="Maximum hits returned (default 10).")] = 10,
+        cypher_filter: Annotated[str | None, Field(
+            description=(
+                "openCypher MATCH ... RETURN <node>.id AS id pre-filtering hits to the returned ids, e.g. "
+                "MATCH (n:ModelColumn) RETURN n.id AS id to spend max_results on columns only. Labels: "
+                "Memory, Datasource, Model, ModelColumn, Measure, Aggregation; without the "
+                "advanced_search extra only such label filters work."
+            ),
+        )] = None,
+        compact: Annotated[bool, Field(
+            description="Default true: one-line hits. False returns full renders; avoid it for broad searches.",
+        )] = True,
     ) -> str:
-        """Up to three-channel semantic search over memories + canonical entities.
+        """Search saved memories, example queries and entities (models, columns, measures, ...) by entity overlap and by meaning.
 
-        Call this BEFORE ``query`` to surface any notes or example
-        queries previously saved against the entities you're
-        considering.
+        Call it before `query` to surface notes and example queries saved against the entities you plan to use. Discovery, not detail: hits are one-line descriptions; read the ones you need with `inspect`, batching same-kind ids in one call.
 
-        Discovery, not detail: hits come back as one-line descriptions —
-        pick candidate ids here, then read their full bodies with
-        ``inspect`` (batching same-kind ids in one call). A broad
-        ``compact=False`` search drags full renders into cached context on
-        every later turn for no added signal.
-
-        Channel 1 (entity-overlap BM25 over memories): runs when
-        ``entities`` and/or ``query`` is supplied. Memories whose
-        canonical entity tags overlap the resolved input are ranked.
-
-        Channel 2 (tantivy full-text over memories ∪ entities): runs
-        when ``question`` is supplied. The in-memory index covers every
-        memory + every searchable entity (datasource / non-hidden model /
-        non-hidden column / named measure / aggregation).
-
-        Channel 3 (dense embedding similarity, optional): runs when
-        ``question`` is supplied AND the ``advanced_search`` extra is
-        installed AND a provider API key is configured for the active
-        embedding model. Cosine similarity between the question
-        embedding and persisted entity/memory embeddings. Skipped with
-        a single warning into ``SearchResponse.warnings`` when any
-        precondition fails — tantivy + BM25 continue to work.
-
-        All hits (memories, example queries, entities) are fused via
-        Reciprocal Rank Fusion (k=60) into a single ranked
-        ``results`` list capped at ``max_results``.
-
-        Empty input (no entities, no query, no question) returns the
-        newest memories capped at ``max_results``, with a warning.
-
-        Args:
-            entities: Canonical entity reference strings.
-            query: Optional ``SlayerQuery`` (dict). Entities are
-                auto-extracted to broaden channel-1 input.
-            question: Free-text query for the tantivy full-text channel.
-            datasource: Optional datasource name. When set, scope all
-                three channels to that one datasource. Entity hits are
-                limited to docs rooted at the datasource (exact match
-                or dotted-path descendant). Memories surface when any
-                of their tagged entities is rooted at the datasource —
-                a memory spanning multiple datasources surfaces from
-                each. BM25 / IDF stats reflect only the filtered subset.
-                Unknown datasource raises ``ValueError``.
-            max_results: Maximum total number of hits to return (default 10).
-            cypher_filter: Optional openCypher MATCH query returning
-                ``… AS id`` that pre-filters all three channels to the
-                returned canonical IDs — narrow to one kind so
-                ``max_results`` isn't spent on an RRF-fused mix of
-                memories, columns, measures, and models. When
-                ``advanced_search`` is not installed, only simple
-                ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
-                supported as a kind filter (multi-label uses union
-                semantics; allowed labels: Memory, Datasource, Model,
-                ModelColumn, Measure, Aggregation — use ``ModelColumn``,
-                not ``Column``, which resolves only on the naive fallback).
+        Hits from all channels are fused into one ranked list. With no input it returns the newest memories, with a warning.
         """
         try:
             response = await search_service.search(
