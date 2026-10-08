@@ -242,6 +242,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
+    always_load_query: bool = False,
 ) -> FastAPI:
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage)
@@ -263,7 +264,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage, _seed_help=False)
+    mcp = create_mcp_server(storage=storage, always_load_query=always_load_query, _seed_help=False)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
 

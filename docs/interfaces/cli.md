@@ -29,6 +29,7 @@ slayer serve --storage slayer.db
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; `duckdb` and `jafgen` ship as core dependencies, so no extra install is needed. |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer mcp`
 
@@ -49,6 +50,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; `duckdb` and `jafgen` ship as core dependencies, so no extra install is needed. |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer query`
 
@@ -90,7 +92,7 @@ The positional argument is interpreted as:
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
-| `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 | `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
 | `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
@@ -182,7 +184,7 @@ slayer models delete orders
 
 ### `slayer inspect`
 
-Point-lookup of an entity by reference + kind — no ranking, no bundled memories (use `slayer search` for an entity *in context*). Pass two or more references for a same-kind batch (DEV-1612).
+Point-lookup of an entity by reference + kind — no ranking, no bundled memories (use `slayer search` for an entity *in context*). Pass two or more references for a same-kind batch.
 
 ```bash
 slayer inspect jaffle_shop.orders --type model
@@ -278,8 +280,9 @@ slayer memory forget kb.returns.null-handling
 ### Conceptual help
 
 SLayer's conceptual help ships as a predefined set of **help memories**
-(`memory:help.intro` … `memory:help.workflow`) — read them with `inspect`, or
-find the relevant one with `search`:
+(`memory:help.intro` … `memory:help.queries`) — read them with `inspect` (`--no-compact`
+is not needed: compact never shortens a `help.*` memory), or find the relevant one with
+`search`:
 
 ```bash
 slayer inspect memory:help.intro --type memory        # overview + judgment calls
@@ -288,8 +291,9 @@ slayer search --question "how do joins resolve"       # surface the relevant top
 ```
 
 `memory:help.intro` lists the deep-dive topics (`memory:help.models`,
-`memory:help.workflow`); the query language itself is documented on the MCP
-`query` tool and its schema. See the corresponding concept docs for full
-treatments:
+`memory:help.workflow`, `memory:help.aggregations`, `memory:help.transforms`,
+`memory:help.time`, `memory:help.joins`, `memory:help.queries`); the query syntax
+itself is on the MCP `query` tool's schema fields. See the corresponding concept docs
+for full treatments:
 [queries](../concepts/queries.md), [formulas](../concepts/formulas.md),
 [models](../concepts/models.md), [ingestion](../concepts/ingestion.md).

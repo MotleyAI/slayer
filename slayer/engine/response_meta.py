@@ -1,7 +1,6 @@
 """Response metadata (``attributes`` + ``expected_columns``) from the typed plan.
 
-Engine-import-free (so ``query_engine`` re-exports without a cycle); result keys
-mirror ``_full_alias_for_slot`` in ``slayer/sql/generator.py``.
+Engine-import-free, so ``query_engine`` re-exports without a cycle.
 """
 
 from __future__ import annotations
@@ -23,15 +22,13 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     aggregation_source_type,
-    column_leaf,
-    column_path,
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.naming import result_key, result_key_from_alias, time_trunc_result_key
+from slayer.sql.naming import next_slot_result_key
 
 
 class FieldMetadata(BaseModel):
@@ -75,23 +72,31 @@ def expected_columns_from_sql(*, sql: str, dialect: str) -> List[str]:
     return list(parsed.named_selects)
 
 
-def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
-    """Canonical result keys for the projected, non-hidden slots.
-
-    Plan-derived, so independent of the emitted SQL (length-fitting / alias-mangling).
-    """
-    source_relation = root_planned.source_relation
-    projection_ids = set(root_planned.projection)
-    return [
-        rk
-        for slot in (
+def _projected_slot_keys(*, root_planned: PlannedQuery) -> List[Tuple[ValueSlot, str]]:
+    """``(slot, result key)`` per non-hidden projection occurrence, in projection order."""
+    slots_by_id = {
+        s.id: s
+        for s in (
             list(root_planned.row_slots)
             + list(root_planned.aggregate_slots)
             + list(root_planned.combined_expression_slots)
         )
-        if not slot.hidden and slot.id in projection_ids
-        for rk in _slot_result_keys(slot=slot, source_relation=source_relation)
-    ]
+    }
+    alias_index: Dict[str, int] = {}
+    out: List[Tuple[ValueSlot, str]] = []
+    for sid in root_planned.projection:
+        slot = slots_by_id.get(sid)
+        if slot is None or slot.hidden:
+            continue
+        out.append((slot, next_slot_result_key(
+            slot=slot, alias_index=alias_index, source_relation=root_planned.source_relation,
+        )))
+    return out
+
+
+def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
+    """Canonical result keys of the projection, in order; plan-derived, so independent of identifier fitting."""
+    return [rk for _, rk in _projected_slot_keys(root_planned=root_planned)]
 
 
 def _model_for_path(
@@ -101,7 +106,7 @@ def _model_for_path(
 
     Resolves each token through the shared bidirectional walker so reverse hops
     and edge-name tokens land on the right terminal model, never by reading the
-    last token as a model name (DEV-1853 D5)."""
+    last token as a model name."""
     current = bundle.source_model
     if not path or current is None:
         return current
@@ -119,35 +124,6 @@ def _model_for_path(
             return bundle.source_model
         current = nxt
     return current
-
-
-def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:
-    """Public result-key alias(es) for ``slot``; joined ROW slots emit the full dotted path."""
-    key = slot.key
-    if slot.phase == Phase.ROW:
-        if isinstance(key, ColumnKey) and key.path:
-            return [result_key(
-                source_relation=source_relation, path=key.path, leaf=key.leaf,
-            )]
-        if isinstance(key, ColumnSqlKey) and key.path:
-            return [result_key(
-                source_relation=source_relation,
-                path=key.path,
-                leaf=key.column_name,
-            )]
-        if isinstance(key, TimeTruncKey) and column_path(key.column):
-            return [time_trunc_result_key(
-                source_relation=source_relation,
-                path=column_path(key.column),
-                leaf=column_leaf(key.column),
-                granularity=key.granularity,
-                declared_name=slot.declared_name,
-            )]
-    aliases = slot.public_aliases or [slot.declared_name]
-    return [
-        result_key_from_alias(source_relation=source_relation, alias=a)
-        for a in aliases
-    ]
 
 
 def _column_for_row_slot(
@@ -187,7 +163,7 @@ def _measure_format(
         if isinstance(src, StarKey):
             measure_name: Optional[str] = "*"
         elif isinstance(src, EXPRESSION_SOURCE_KINDS):
-            # DEV-1826: an expression source classifies by its aggregation's
+            # An expression source classifies by its aggregation's
             # value class alone (the derived leaf is never a real column, so
             # PRESERVING inherits nothing — plain numeric by default).
             measure_name = expression_source_leaf(src)
@@ -236,16 +212,10 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     dialect: str,
 ) -> Tuple[ResponseAttributes, List[str]]:
     """Build ``(attributes, expected_columns)``; only keys in the rendered projection surface."""
-    source_relation = root_planned.source_relation
-    projection_ids = set(root_planned.projection)
-    candidate_slots = (
-        list(root_planned.row_slots)
-        + list(root_planned.aggregate_slots)
-        + list(root_planned.combined_expression_slots)
-    )
     # Canonical projection keys from the plan; the emitted SQL may carry
     # length-fitted / alias-mangled names.
-    plan_aliases = projection_result_keys(root_planned=root_planned)
+    slot_keys = _projected_slot_keys(root_planned=root_planned)
+    plan_aliases = [rk for _, rk in slot_keys]
 
     expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
     # Decode emitted projection names back to canonical dotted form so matching
@@ -270,35 +240,31 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
         for sub in attach.substitutions
     }
 
-    for slot in candidate_slots:
-        if slot.hidden or slot.id not in projection_ids:
+    for slot, rk in slot_keys:
+        if rk not in public_keys:
             continue
         # A combined regroup attach is a ROW-phase placeholder but is a measure.
         original = placeholder_original.get(slot.key)
         is_combined_placeholder = original is not None
-        measure_slot = (
-            slot.model_copy(update={"key": original})
-            if is_combined_placeholder else slot
-        )
-        is_dim = slot.phase == Phase.ROW and not is_combined_placeholder
-        for rk in _slot_result_keys(slot=slot, source_relation=source_relation):
-            if rk not in public_keys:
+        if slot.phase == Phase.ROW and not is_combined_placeholder:
+            col = _column_for_row_slot(slot=slot, bundle=bundle)
+            label = slot.label or (col.label if col else None)
+            if isinstance(slot.key, TimeTruncKey):
+                # Time dimensions carry a label only.
+                if label:
+                    dim_meta[rk] = FieldMetadata(label=label)
                 continue
-            if is_dim:
-                col = _column_for_row_slot(slot=slot, bundle=bundle)
-                label = slot.label or (col.label if col else None)
-                if isinstance(slot.key, TimeTruncKey):
-                    # Time dimensions carry a label only.
-                    if label:
-                        dim_meta[rk] = FieldMetadata(label=label)
-                    continue
-                fmt = col.format if col else None
-                if label or fmt:
-                    dim_meta[rk] = FieldMetadata(label=label, format=fmt)
-            else:
-                fmt = _measure_format(slot=measure_slot, bundle=bundle)
-                label = _measure_label(slot=measure_slot, bundle=bundle)
-                if label or fmt:
-                    measure_meta[rk] = FieldMetadata(label=label, format=fmt)
+            fmt = col.format if col else None
+            if label or fmt:
+                dim_meta[rk] = FieldMetadata(label=label, format=fmt)
+        else:
+            measure_slot = (
+                slot.model_copy(update={"key": original})
+                if is_combined_placeholder else slot
+            )
+            fmt = _measure_format(slot=measure_slot, bundle=bundle)
+            label = _measure_label(slot=measure_slot, bundle=bundle)
+            if label or fmt:
+                measure_meta[rk] = FieldMetadata(label=label, format=fmt)
 
     return ResponseAttributes(dimensions=dim_meta, measures=measure_meta), expected_columns

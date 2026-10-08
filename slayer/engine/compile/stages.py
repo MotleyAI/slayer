@@ -73,7 +73,7 @@ from slayer.engine.join_safety import (
 from slayer.core.query import (
     SlayerQuery,
 )
-from slayer.sql.naming import canonical_aggregate_alias, flat_name
+from slayer.sql.naming import canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
@@ -4189,7 +4189,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
-        stage_name=query.name, projection=projection, grain=grain,
+        stage_name=query.name, source_relation=source_relation, projection=projection, grain=grain,
         root=render_source_model, models_by_name=bundle.models_by_name,
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
@@ -4463,6 +4463,7 @@ def _leaf_variants(
 def _emit_stage_schema(
     *,
     stage_name: Optional[str],
+    source_relation: str,
     projection,
     grain: Optional[List[SlotId]],
     root: Optional[SlayerModel],
@@ -4479,17 +4480,16 @@ def _emit_stage_schema(
         slot = projection.registry.get(sid)
         if slot.hidden:
             continue
-        idx = alias_idx.setdefault(sid, 0)
-        alias = slot.public_aliases[idx] if idx < len(slot.public_aliases) else slot.declared_name
-        alias_idx[sid] = idx + 1
+        alias = pick_slot_alias(slot=slot, alias_index=alias_idx)
+        rk = slot_result_key(slot=slot, alias=alias, source_relation=source_relation)
         # Downstream bind + CTE column name are the ``__``-flattened form; public_alias keeps the dotted result-key form.
-        flat = flat_name(alias)
+        flat = flat_name(rk, strip_relation=source_relation)
         # Two distinct public columns flattening to one downstream name would make the CTE column ambiguous.
         check_stage_flatten_collision(
             flat_name=flat, collides=any(c.name == flat for c in columns),
         )
         columns.append(_stage_column(
-            slot=slot, alias=alias, flat=flat,
+            slot=slot, alias=rk.removeprefix(f"{source_relation}."), flat=flat,
             source=_source_column(key=slot.key, root=root, models_by_name=models_by_name, scope=scope),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,

@@ -86,7 +86,7 @@ This is exactly how `slayer import-cube` represents an optional Cube
 
 The same variable may be set in several places. Highest priority wins:
 
-**runtime `variables=` kwarg > query `variables` > model `query_variables`**
+**runtime `variables=` kwarg > stage `variables` > outer query `variables` (when a query-backed model is the `source_model`) > model `query_variables`**
 
 `query_variables` on a model are the lowest-priority *defaults*, so a
 parameterized model can ship with sensible values and still be overridden per
@@ -104,7 +104,7 @@ query or per call.
   for literal braces in a model that *does* use variables.
 - **Trusted input.** Values are treated as trusted, not attacker-controlled —
   prefer not to feed untrusted end-user input through `variables`. The Mode-A
-  escaping is dialect-aware (DEV-1727), so a quoted string value stays inside its
+  escaping is dialect-aware, so a quoted string value stays inside its
   literal on every backend, including backslash-escaping ones like MySQL and
   ClickHouse; only *quoted* literals are escaped, and a `{var}` in an unquoted
   position is still raw substitution.

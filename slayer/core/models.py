@@ -332,9 +332,9 @@ def _check_allowed_aggregation(
 
 
 class ModelMeasure(BaseModel):
-    """A named aggregated value: ``formula`` is an aggregation expression — inline in a query's measures or saved on a model and referenced by bare name. ``name`` sets the result key, referenceable in filters and order by either the name or the formula text."""
-    formula: str
-    name: str | None = None
+    """A named aggregation formula, inline in a query or saved on a model and referenced by bare name."""
+    formula: str = Field(description="Same syntax as the query object's measures.")
+    name: str | None = Field(default=None, description="Result key; filters and order may use it in place of the formula.")
     label: str | None = None
     description: str | None = None
     type: DataType | None = None

@@ -1750,14 +1750,6 @@
                     "endColumn": 22,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
             }
         ],
         "./slayer/memories/resolver.py": [

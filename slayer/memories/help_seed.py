@@ -14,30 +14,30 @@ from importlib.resources import files
 from pydantic import BaseModel
 
 from slayer.core.errors import MemoryNotFoundError
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 _CONTENT_SUBDIR = "help_content"
-_ID_PREFIX = "help."
+HELP_ID_PREFIX = "help."
 
 #: Authored one-line previews (<=500 chars) surfaced by search(compact=True)
 #: and inspect(compact=True). Keyed by the topic key (``NN_`` prefix stripped).
 _DESCRIPTIONS: dict[str, str] = {
-    "intro": "What {{product}} is, the judgment calls queries require, and the deep-dive topics.",
-    "models": "Authoring models: columns, saved measures, custom aggregations, joins, filters, query-backed models, result keys.",
-    "workflow": "Tool-chaining for discovery, query building, and connecting databases, plus an error decoder.",
+    "intro": "Start here: what {{product}} is, the judgment calls queries require, and the deep-dive topics.",
+    "models": "Read before creating or editing a model: columns, saved measures, custom aggregations, joins, filters, query-backed models, result keys.",
+    "workflow": "Read before building a non-trivial query: method, filter literals, verifying a result, error decoder, connecting databases.",
+    "aggregations": "Read when a measure needs an aggregation beyond sum/count, partition_by, a trailing window, nesting, or empty-input semantics.",
+    "transforms": "Read when a measure needs a running total, period-over-period change, time shift, lag/lead, ranking, or a streak.",
+    "time": "Read when a query filters or buckets by time: time-point forms, date_range and look-back, running totals from the start, gaps.",
+    "joins": "Read when a query uses another model's fields: dotted paths, choosing the root, joined aggregates, broadcast vs associate, anti-joins.",
+    "queries": "Read when one query object is not enough: query shapes, stages and their column names, raw rows, variables, debugging.",
 }
 
-#: Former built-in topic ids (query-language content now lives on the ``query``
-#: tool's docstring and schema). Seeding deletes them from warm stores so
-#: retired bodies stop being served; host-namespaced ids are never touched.
+#: Former built-in topic ids. Seeding deletes them from warm stores so retired
+#: bodies stop being served; host-namespaced ids are never touched.
 RETIRED_HELP_IDS: tuple[str, ...] = (
-    "help.queries",
     "help.formulas",
-    "help.aggregations",
-    "help.transforms",
-    "help.time",
     "help.filters",
-    "help.joins",
     "help.extending",
 )
 
@@ -102,7 +102,7 @@ def load_help_topics(
                 f"_DESCRIPTIONS; add one."
             )
         topics.append(HelpTopic(
-            id=f"{_ID_PREFIX}{key}",
+            id=f"{HELP_ID_PREFIX}{key}",
             learning=_render(entry.read_text(encoding="utf-8"), ctx),
             description=_render(description, ctx),
         ))
@@ -187,9 +187,6 @@ async def seed_help_memories(
             description=topic.description,
             entities=[],
         )
-        # Local import keeps search off the critical-path import graph.
-        from slayer.search.service import SearchService
-
         await SearchService(storage=storage).upsert_memory(memory)
         written += 1
     return written
