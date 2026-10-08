@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import sqlglot
 from pydantic import BaseModel, Field as PydanticField
+from sqlglot.expressions.query import Query
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
 from slayer.core.errors import AmbiguousJoinPathError
@@ -24,11 +25,11 @@ from slayer.core.keys import (
     aggregation_source_type,
 )
 from slayer.core.models import Column, SlayerModel
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS, expression_source_leaf
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
-from slayer.sql.naming import next_slot_result_key
+from slayer.sql.naming import expression_source_leaf, next_slot_result_key
 
 
 class FieldMetadata(BaseModel):
@@ -69,6 +70,7 @@ def _infer_aggregated_format(
 def expected_columns_from_sql(*, sql: str, dialect: str) -> List[str]:
     """The outer SELECT's result-key columns (aliases), read from the rendered SQL."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
+    assert isinstance(parsed, Query)  # rendered SQL is always a query
     return list(parsed.named_selects)
 
 
