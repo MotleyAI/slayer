@@ -236,7 +236,8 @@ def test_show_matches_the_next_send(telemetry_env) -> None:
 
 def _assert_notice(stderr: str) -> None:
     assert _NOTICE_URL in stderr
-    assert "anonymous" in stderr.lower() and "usage" in stderr.lower()
+    assert "anonymous" in stderr.lower()
+    assert "usage" in stderr.lower()
     assert "SLAYER_TELEMETRY=off" in stderr or "slayer telemetry disable" in stderr
 
 

@@ -43,6 +43,7 @@ nav = [
     { "REST API" = "reference/rest-api.md" },
     { "Python Client" = "reference/python-client.md" },
     { "CLI" = "reference/cli.md" },
+    { "Telemetry" = "reference/telemetry.md" },
     { "Database Support" = "database-support.md" },
   ]},
   { "Wire Protocols (BI Tools)" = [

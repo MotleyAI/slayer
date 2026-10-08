@@ -212,7 +212,8 @@ def test_rest_unmatched_maps_to_a_fixed_token(store: str, started) -> None:
     assert len(new) == 1
     (key,) = new
     assert key in usage_key_vocabulary()
-    assert "path" not in key and "unknown" not in key
+    assert "path" not in key
+    assert "unknown" not in key
     assert total(usage(report, key)) == 2
 
 

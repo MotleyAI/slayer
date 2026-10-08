@@ -8,8 +8,11 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from slayer import telemetry
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -31,6 +34,8 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
+
+_MCP_MOUNT = "/mcp"
 
 
 class QueryRequest(BaseModel):
@@ -231,6 +236,39 @@ class InspectRequest(BaseModel):
     descriptions_max_chars: int | None = None
 
 
+class _UsageMiddleware:
+    """Counts each REST request by its matched route template; requests under ``mounted`` count themselves."""
+
+    def __init__(self, app: ASGIApp, *, mounted: str) -> None:
+        self.app = app
+        self.mounted = mounted
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "")
+        if scope["type"] != "http" or not telemetry.is_active() or path == self.mounted or path.startswith(f"{self.mounted}/"):
+            await self.app(scope, receive, send)
+            return
+        status: list[int] = []
+
+        async def capture(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                status.append(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, capture)
+        except BaseException as exc:
+            self._record(scope, error=exc)
+            raise
+        self._record(scope, error=telemetry.HttpError(status[0]) if status and status[0] >= 400 else None)
+
+    @staticmethod
+    def _record(scope: Scope, *, error: BaseException | None) -> None:
+        route = scope.get("route")
+        token = route.path if isinstance(route, APIRoute) else "other"
+        telemetry.record(surface="rest", token=token, error=error)
+
+
 def _slayer_version() -> str:
     try:
         return _pkg_version("motley-slayer")
@@ -259,6 +297,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         )
     app = FastAPI(title="SLayer", version=_slayer_version())
+    app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
     # does NOT receive `ingest_on_startup` — orchestration happens once,
@@ -266,7 +305,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # the orchestrator twice.
     mcp = create_mcp_server(storage=storage, always_load_query=always_load_query, _seed_help=False)
     mcp_app = mcp.sse_app()
-    app.mount("/mcp", mcp_app)
+    app.mount(_MCP_MOUNT, mcp_app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -295,6 +334,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
             # tool's list form and ``engine.execute(query=[...])``.
             # Engine auto-sorts the list and validates DAG invariants.
+            run_kwargs: dict[str, Any] = {}
             if isinstance(request, QueryListRequest):
                 if not request.queries:
                     raise HTTPException(
@@ -303,12 +343,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     )
                 dry_run = bool(request.dry_run)
                 explain = bool(request.explain)
-                result = await engine.execute(
-                    query=list(request.queries),
-                    variables=request.variables or {},
-                    dry_run=dry_run,
-                    explain=explain,
-                )
+                run_query: Any = list(request.queries)
+                variables = request.variables or {}
             # Run-by-name: ``{"name": "<model>", "refine": {...}, "variables": {...}}``
             # runs the model's stored backing query, ``refine`` merged into its
             # final stage. Any other query field (even ``null``) is rejected.
@@ -324,13 +360,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     )
                 dry_run = bool(request.dry_run)
                 explain = bool(request.explain)
-                result = await engine.execute(
-                    request.name,
-                    variables=request.variables or {},
-                    dry_run=dry_run,
-                    explain=explain,
-                    refine=request.refine,
-                )
+                run_query = request.name
+                variables = request.variables or {}
+                run_kwargs["refine"] = request.refine
             elif "refine" in request.model_fields_set:
                 raise HTTPException(
                     status_code=400,
@@ -344,19 +376,18 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).
-                runtime_kwarg = payload.pop("variables", None)
+                variables = payload.pop("variables", None)
                 # ``dry_run``/``explain`` are execution-mode flags only — pop
                 # them here and pass as engine kwargs so v3 SlayerQuery
                 # (extra="forbid") doesn't reject them.
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
-                slayer_query = SlayerQuery.model_validate(payload)
-                result = await engine.execute(
-                    query=slayer_query,
-                    variables=runtime_kwarg,
-                    dry_run=dry_run,
-                    explain=explain,
-                )
+                run_query = SlayerQuery.model_validate(payload)
+            telemetry.observe_query(run_query)
+            result = await engine.execute(
+                query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,
+            )
+            telemetry.observe_executed(result)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:

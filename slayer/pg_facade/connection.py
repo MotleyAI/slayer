@@ -28,6 +28,7 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 from sqlglot.optimizer.scope import traverse_scope
 
+from slayer import telemetry
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.storage.base import StorageBackend
@@ -1048,6 +1049,7 @@ class PgConnection:
             return False
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
+            telemetry.record(surface="pg", token="probe")
             self._emit_row_batch(result.batch, result_formats, send_row_description)
             # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
             # Apply ONLY in the Execute path (not Describe). Pushes
@@ -1107,17 +1109,21 @@ class PgConnection:
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
+        telemetry.observe_query(result.query)
         try:
             # The translator resolves the per-query datasource from the
             # referenced model(s) and rejects cross-datasource joins. A model
             # query always carries one; guard the impossible None rather than
             # passing it to the engine.
-            if result.data_source is None:
-                raise ValueError("could not resolve a datasource for the query")
-            with timing.open_query_profile():
-                response = await self._engine.execute(
-                    query=result.query, data_source=result.data_source,
-                )
+            with telemetry.counting(surface="pg", token="query"):
+                if result.data_source is None:
+                    raise ValueError("could not resolve a datasource for the query")
+                engine = cast(SlayerQueryEngine, self._engine)
+                with timing.open_query_profile():
+                    response = await engine.execute(
+                        query=result.query, data_source=result.data_source,
+                    )
+            telemetry.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)

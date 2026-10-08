@@ -17,20 +17,20 @@
 
 ## 3. Telemetry package
 
-- [ ] 3.1 `slayer/telemetry/` settings: config-dir resolution, `telemetry.json` model, precedence + deciding rule, editable detection, unwritable → off, install ID + 13-month rotation. Verify: 1.4, 1.7 rotation.
-- [ ] 3.2 Payload model + fixed token tables (error classes, MCP clients, CLI leaves, buckets, extras list). Verify: 1.2.
-- [ ] 3.3 Recorder (no-op until `start()`), fork reset, merge semantics. Verify: 1.3, 1.7 fork.
-- [ ] 3.4 Spool (random names, temp + rename, 0600, cap, regular files only) and lease / claim / commit / stale-claim recovery. Verify: 1.7.
-- [ ] 3.5 Sender (stdlib `urllib`, PostHog EU request shape, endpoint override, daemon thread, ≤ ~1 s exit join only when in flight, 24 h gate). Verify: 1.7, 1.8.
-- [ ] 3.6 Notice (stderr, once per schema major). Verify: 1.4.
-- [ ] 3.7 `slayer/telemetry/features/`: structural flags + built-in names from `slayer.core` sets. Verify: 1.6.
+- [x] 3.1 `slayer/telemetry/` settings: config-dir resolution, `telemetry.json` model, precedence + deciding rule, editable detection, unwritable → off, install ID + 13-month rotation. Verify: 1.4, 1.7 rotation.
+- [x] 3.2 Payload model + fixed token tables (error classes, MCP clients, CLI leaves, buckets, extras list). Verify: 1.2.
+- [x] 3.3 Recorder (no-op until `start()`), fork reset, merge semantics. Verify: 1.3, 1.7 fork.
+- [x] 3.4 Spool (random names, temp + rename, 0600, cap, regular files only) and lease / claim / commit / stale-claim recovery. Verify: 1.7.
+- [x] 3.5 Sender (stdlib `urllib`, PostHog EU request shape, endpoint override, daemon thread, ≤ ~1 s exit join only when in flight, 24 h gate). Verify: 1.7, 1.8.
+- [x] 3.6 Notice (stderr, once per schema major). Verify: 1.4.
+- [x] 3.7 `slayer/telemetry/features/`: structural flags + built-in names from `slayer.core` sets. Verify: 1.6.
 
 ## 4. Hooks
 
 - [ ] 4.1 `slayer/cli.py`: `telemetry.start()` in `main`, a `set_defaults` telemetry token on every leaf parser, `slayer telemetry status|enable|disable|show`, `try/finally` flush around each server run, SIGTERM handler for stdio `mcp`. Verify: 1.4, 1.5 CLI, 1.7 lifecycle.
-- [ ] 4.2 `slayer/mcp/server.py`: one `call_tool` interception + `clientInfo` capture; features before execution in `query`. Verify: 1.5 MCP, 1.6.
-- [ ] 4.3 `slayer/api/server.py`: route-template middleware excluding `/mcp`; features before execution. Verify: 1.5 REST.
-- [ ] 4.4 `slayer/flight/handlers.py` `_execute_full` and `slayer/pg_facade/connection.py` `_run_query`: count + features. Verify: 1.5 Flight / PG.
+- [x] 4.2 `slayer/mcp/server.py`: one `call_tool` interception + `clientInfo` capture; features before execution in `query`. Verify: 1.5 MCP, 1.6.
+- [x] 4.3 `slayer/api/server.py`: route-template middleware excluding `/mcp`; features before execution. Verify: 1.5 REST.
+- [x] 4.4 `slayer/flight/handlers.py` `_execute_full` and `slayer/pg_facade/connection.py` `_run_query`: count + features. Verify: 1.5 Flight / PG.
 
 ## 5. Docs and release
 

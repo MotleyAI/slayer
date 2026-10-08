@@ -140,7 +140,8 @@ def test_every_cli_command_has_a_vocabulary_token(monkeypatch: pytest.MonkeyPatc
         if not _runs_bare(parser):
             continue
         token = parser.get_default("telemetry_token")
-        assert isinstance(token, str) and token, f"slayer {' '.join(path)} has no telemetry token"
+        assert isinstance(token, str), f"slayer {' '.join(path)} has no telemetry token"
+        assert token
         assert f"cli:{token}" in vocabulary, token
         tokens[path] = token
     assert len(set(tokens.values())) == len(tokens)
@@ -326,7 +327,8 @@ def test_report_identity_fields(telemetry_env) -> None:
     end_process()
     report = show()
     assert report["schema"] == SCHEMA_VERSION
-    assert report["install_id"] and report["batch_id"]
+    assert report["install_id"]
+    assert report["batch_id"]
     assert report["install_id"] != report["batch_id"]
     assert show()["batch_id"] != report["batch_id"]
 

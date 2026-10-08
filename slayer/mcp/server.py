@@ -3,17 +3,18 @@
 import json
 import logging
 import sys
+import weakref
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from collections.abc import Callable, Sequence
 from inspect import cleandoc
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import sqlalchemy as sa
 from pydantic import Field
 from sqlalchemy.exc import DatabaseError
 
-from slayer import __version__
+from slayer import __version__, telemetry
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -72,6 +73,9 @@ from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +153,44 @@ def _import_fastmcp():
             )
         raise ImportError(f"{detail} {_MCP_REMEDY}") from exc
     return FastMCP
+
+
+def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
+    """``fastmcp_cls`` counting every tool call, and each session's client once."""
+
+    class CountedFastMCP(fastmcp_cls):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._telemetry_sessions: weakref.WeakSet = weakref.WeakSet()
+
+        async def call_tool(self, name: str, arguments: dict[str, Any]):
+            self._observe_client()
+            try:
+                result = await super().call_tool(name, arguments)
+            except Exception as exc:
+                # FastMCP re-raises a tool's exception as ToolError from the original.
+                telemetry.record(surface="mcp", token=name, error=exc.__cause__ or exc)
+                raise
+            telemetry.record(surface="mcp", token=name)
+            return result
+
+        def _observe_client(self) -> None:
+            if not telemetry.is_active():
+                return
+            try:
+                session = self.get_context().session
+                if session in self._telemetry_sessions:
+                    return
+                self._telemetry_sessions.add(session)
+                info = session.client_params.clientInfo if session.client_params else None
+            except Exception:
+                logger.debug("telemetry: no MCP session to identify", exc_info=True)
+                return
+            telemetry.observe_mcp_client(
+                name=getattr(info, "name", None), version=getattr(info, "version", None),
+            )
+
+    return CountedFastMCP
 
 
 def _set_server_version(mcp) -> None:
@@ -456,7 +498,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
-    mcp = FastMCP("SLayer", instructions=SERVER_INSTRUCTIONS)
+    mcp = _counted(FastMCP)("SLayer", instructions=SERVER_INSTRUCTIONS)
     _set_server_version(mcp)
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
@@ -511,6 +553,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # opaque (its stored SQL can't take a pushed-down limit) — cap
             # response-side only.
             exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
+            telemetry.observe_query(query)
             result = await engine.execute(
                 query=exec_query,
                 variables=variables,
@@ -518,6 +561,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 explain=explain,
                 refine=refine,
             )
+            telemetry.observe_executed(result)
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if capped:

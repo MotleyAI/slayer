@@ -2134,22 +2134,6 @@
                 }
             },
             {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 19,

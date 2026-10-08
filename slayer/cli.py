@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import os
+import signal
 import sys
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -13,6 +14,7 @@ import sqlalchemy as sa
 import yaml
 from pydantic import BaseModel, Field
 
+from slayer import telemetry
 from slayer.async_utils import run_sync
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -66,6 +68,7 @@ from slayer.storage.type_refinement import (
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
+from slayer.telemetry import control as telemetry_control
 
 _STORAGE_DEFAULT = default_storage_path()
 _DATASOURCE_NAME_HELP = "Datasource name"
@@ -121,10 +124,52 @@ def _add_storage_arg(parser):
 def _resolve_storage(args):
     """Resolve storage backend from --storage or --models-dir flags."""
     path = args.storage or args.models_dir or _STORAGE_DEFAULT
-    return resolve_storage(path)
+    storage = resolve_storage(path)
+    telemetry.observe_storage(storage)
+    return storage
 
 
-def main():  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
+def _assign_telemetry_tokens(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> None:
+    """Give every leaf command a fixed usage token: its subcommand path."""
+    groups = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    for group in groups:
+        for name, sub in group.choices.items():
+            _assign_telemetry_tokens(sub, (*path, name))
+    if path and not groups:
+        parser.set_defaults(telemetry_token=".".join(path))
+
+
+def main():
+    parser = _build_parser()
+    _assign_telemetry_tokens(parser)
+    args = parser.parse_args()
+
+    try:
+        host_clock()  # Validates SLAYER_NOW before any command's side effects.
+    except SlayerError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.command == "telemetry":
+        _run_telemetry(args)
+        return
+    token = getattr(args, "telemetry_token", None)
+    if token is not None:
+        telemetry.start()
+    try:
+        with telemetry.counting(surface="cli", token=token):
+            _dispatch(parser, args)
+    except _StdioInterrupted as exc:
+        telemetry.flush()
+        telemetry.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exc.code if isinstance(exc.code, int) else 1)
+    finally:
+        telemetry.flush()
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="slayer",
         description="SLayer — a lightweight semantic layer for AI agents",
@@ -873,6 +918,7 @@ examples:
     _add_storage_arg(search_parser)
     search_subparsers = search_parser.add_subparsers(dest="search_command")
     # ``slayer search`` (no subcommand) runs the search query directly.
+    search_parser.set_defaults(telemetry_token="search")
     search_parser.add_argument(
         "--entity",
         action="append",
@@ -962,14 +1008,36 @@ examples:
     # concepts ship as help memories — read them with
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
-    args = parser.parse_args()
+    # ── telemetry ─────────────────────────────────────────────────────
+    telemetry_parser = subparsers.add_parser(
+        "telemetry",
+        help="Show or change anonymous usage telemetry",
+        epilog="docs: https://docs.motley.ai/slayer/reference/telemetry/",
+    )
+    telemetry_subparsers = telemetry_parser.add_subparsers(dest="telemetry_command", required=True)
+    telemetry_subparsers.add_parser("status", help="Whether telemetry is on, why, and the install ID")
+    telemetry_subparsers.add_parser("enable", help="Turn telemetry on (persisted)")
+    telemetry_subparsers.add_parser(
+        "disable", help="Turn telemetry off (persisted) and delete the install ID and unsent data",
+    )
+    telemetry_subparsers.add_parser("show", help="Print the report the next send would contain, without sending")
+    return parser
 
-    try:
-        host_clock()  # Validates SLAYER_NOW before any command's side effects.
-    except SlayerError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
 
+def _run_telemetry(args) -> None:
+    if args.telemetry_command == "status":
+        print(telemetry_control.status())
+    elif args.telemetry_command == "enable":
+        telemetry_control.enable()
+        print("Telemetry enabled.")
+    elif args.telemetry_command == "disable":
+        telemetry_control.disable()
+        print("Telemetry disabled; the install ID and unsent data were deleted.")
+    else:
+        print(telemetry_control.pending_report().model_dump_json(indent=2))
+
+
+def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
     if args.command == "serve":
         _run_serve(args)
     elif args.command == "flight-serve":
@@ -1415,6 +1483,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         query = json.loads(query_input)
         if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
+    telemetry.observe_query(query)
     result = engine.execute_sync(
         query=query,
         variables=runtime_kwarg or None,
@@ -1422,6 +1491,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         explain=bool(args.explain),
         refine=refine,
     )
+    telemetry.observe_executed(result)
 
     _print_query_warnings(result)
 
@@ -1496,7 +1566,32 @@ def _run_mcp(args):
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
     mcp = create_mcp_server(storage=storage, **_server_flags(args))
-    mcp.run()
+    _exit_on_signals()
+    try:
+        mcp.run()
+    except KeyboardInterrupt:
+        raise _StdioInterrupted(128 + signal.SIGINT) from None
+    except SystemExit as exc:
+        raise _StdioInterrupted(exc.code) from None
+
+
+class _StdioInterrupted(SystemExit):
+    """stdio MCP stopped by a signal; its blocked stdin reader thread would hold up a normal exit."""
+
+
+def _exit_on_signals() -> None:
+    """Make SIGTERM / SIGINT unwind stdio MCP at once (asyncio would only cancel); chains any handler."""
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, _unwinding_handler(signal.getsignal(signum)))
+
+
+def _unwinding_handler(previous):
+    def handler(signum, frame):
+        if callable(previous):
+            previous(signum, frame)
+        raise SystemExit(128 + signum)
+
+    return handler
 
 
 def _parse_csv_arg(value):
@@ -2024,6 +2119,7 @@ def _run_import_osi(args):
 
 def _models_list(storage, args) -> None:
     names = run_sync(storage.list_models())
+    telemetry.observe_model_count(len(names))
     builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
     if not names and not builtins:
         print("No models found.")
@@ -2085,12 +2181,17 @@ def _run_models(args):
 def _datasources_list(storage, args) -> None:
     names = run_sync(storage.list_datasources())
     if not names:
+        telemetry.observe_datasources([])
         print("No datasources found.")
         return
+    loaded = []
     for name in names:
         ds = run_sync(storage.get_datasource(name))
         ds_type = ds.type if ds and ds.type else "unknown"
         print(f"{name}  ({ds_type})")
+        if ds is not None:
+            loaded.append(ds)
+    telemetry.observe_datasources(loaded)
 
 
 def _datasource_or_exit(storage, name: str):

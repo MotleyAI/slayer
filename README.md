@@ -83,6 +83,10 @@ Now SLayer MCP will be visible in Claude Code next time you start it. Make sure 
 
 Read more on how to get started with [MCP](https://docs.motley.ai/slayer/getting-started/mcp/), [CLI](https://docs.motley.ai/slayer/getting-started/cli/), [REST API](https://docs.motley.ai/slayer/getting-started/rest-api/), [Python](https://docs.motley.ai/slayer/getting-started/python/) in the docs.
 
+## Telemetry
+
+The `slayer` command sends anonymous, aggregated usage statistics (command, tool and query-feature counts, versions) at most once a day — never queries, names, data or credentials; library use sends nothing. Opt out with `SLAYER_TELEMETRY=off`, `DO_NOT_TRACK=1` or `slayer telemetry disable`; see [Telemetry](https://docs.motley.ai/slayer/reference/telemetry/) for every field.
+
 ## License
 
 MIT
