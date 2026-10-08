@@ -432,12 +432,13 @@ class DuplicateMeasureNameError(NameCollisionError):
 class MeasureNameCollidesWithColumnError(NameCollisionError):
     """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column."""
 
-    def __init__(self, name: str, model: str) -> None:
+    def __init__(self, name: str, model: str, suggestion: str | None = None) -> None:
         self.name = name
         self.model = model
         super().__init__(
             summary=f"The declared measure name matches a source column on model {model!r}.",
             location=f"measure {name!r}",
+            suggestion=suggestion,
         )
 
 
