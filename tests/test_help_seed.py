@@ -263,7 +263,7 @@ class TestSearchSurfacing:
     async def test_help_memory_surfaces_via_self_ref(
         self, storage: YAMLStorage
     ) -> None:
-        # Deterministic (DEV-1513 BM25 self-ref): a seeded help memory is
+        # Deterministic (BM25 self-ref): a seeded help memory is
         # reachable through the search pipeline by its own id, independent of
         # tantivy ranking / embedding availability.
         await seed_help_memories(storage)

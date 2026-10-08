@@ -345,10 +345,10 @@ With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer in
 
 Point-lookup of an entity by reference and kind — no ranking, no bundled
 memories (use `slayer search` for an entity *in context*). Pass **two or more**
-references to inspect several entities of the **same kind** in one call
-(DEV-1612): the output is one `## <canonical>` block per reference, in input
+references to inspect several entities of the **same kind** in one call:
+the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
-**Omit the reference entirely** (DEV-1667) to list the whole **collection** at
+**Omit the reference entirely** to list the whole **collection** at
 `--type` — supported for `model` and `datasource` only. `--type model` lists all
 models grouped by datasource (a terse one line per model by default; `--no-compact`
 gives the full per-model tables); `--type datasource` lists all datasources.

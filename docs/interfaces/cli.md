@@ -184,7 +184,7 @@ slayer models delete orders
 
 ### `slayer inspect`
 
-Point-lookup of an entity by reference + kind — no ranking, no bundled memories (use `slayer search` for an entity *in context*). Pass two or more references for a same-kind batch (DEV-1612).
+Point-lookup of an entity by reference + kind — no ranking, no bundled memories (use `slayer search` for an entity *in context*). Pass two or more references for a same-kind batch.
 
 ```bash
 slayer inspect jaffle_shop.orders --type model

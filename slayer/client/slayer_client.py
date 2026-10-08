@@ -320,7 +320,7 @@ class SlayerClient:
             json={"priority": list(priority)},
         )
 
-    # ----- Memory API (DEV-1357 v2) -----
+    # ----- Memory API -----
 
     def _memory_service(self):
         if self._storage is None:
@@ -382,7 +382,7 @@ class SlayerClient:
         )
         return ForgetMemoryResponse.model_validate(result)
 
-    # ----- Search API (DEV-1375) -----
+    # ----- Search API -----
 
     async def search(
         self,

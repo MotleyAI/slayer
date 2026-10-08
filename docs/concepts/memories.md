@@ -18,8 +18,8 @@ A memory has two flavours:
   `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
   with `hit.query is not None`. Not rendered in `inspect_model`.
 
-Both flavours land in the same flat `SearchResponse.results` list
-(DEV-1532); callers split on `hit.query` rather than on separate
+Both flavours land in the same flat `SearchResponse.results` list;
+callers split on `hit.query` rather than on separate
 buckets. The split is implicit at save time: pass an entity list to
 `save_memory` to record a learning; pass a `SlayerQuery` and the
 memory carries that query.
@@ -186,7 +186,7 @@ A legacy flat `memories.yaml` is migrated into per-file `.md` on first
 open (and then deleted). SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
-IDs are non-empty strings (DEV-1428). The auto-allocator walks
+IDs are non-empty strings. The auto-allocator walks
 `max(int-shaped id) + 1` over the existing corpus where "int-shaped"
 means pure-digit, no-leading-zero (`"42"` counts; `"001"` and
 `"42abc"` do not). User-supplied ids share the namespace; duplicates

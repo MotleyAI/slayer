@@ -49,14 +49,14 @@ class TestMcpDependencyPin:
         assert Version(FIRST_BREAKING_MAJOR) not in _mcp_specifier(), (
             f"`mcp = {_mcp_constraint()!r}` admits {FIRST_BREAKING_MAJOR}, which "
             f"removed `mcp.server.fastmcp` and breaks `slayer mcp` on every "
-            f"fresh install (DEV-1757)."
+            f"fresh install."
         )
 
     def test_mcp_constraint_admits_1_x(self) -> None:
         """The cap must not be 'fixed' by over-tightening onto one release."""
         assert Version(VERIFIED_1X) in _mcp_specifier(), (
             f"`mcp = {_mcp_constraint()!r}` excludes {VERIFIED_1X}, the 1.x "
-            f"verified against a live datasource in DEV-1757."
+            f"verified against a live datasource."
         )
 
     def test_mcp_constraint_is_pep440(self) -> None:

@@ -1,7 +1,6 @@
-"""DEV-1883 — string ``time_dimensions`` entries at the MCP and REST surfaces; tool docs.
+"""String ``time_dimensions`` entries at the MCP and REST surfaces; tool docs.
 
-Spec: openspec/changes/dev-1883-support-functional-time-granularity-form-monthcol-in-query/
-specs/queries/time-dimensions (string entries at the API surfaces; advertised form).
+Spec: openspec/specs/queries/time-dimensions (string entries at the API surfaces; advertised form).
 """
 import json
 import re
@@ -96,7 +95,7 @@ class TestMcpSurface:
 class TestSchemaAdvertisesString:
     def test_time_dimensions_input_schema_allows_string(self) -> None:
         """The derived JSON/MCP input schema advertises the functional string form,
-        not only the TimeDimension object (DEV-1883)."""
+        not only the TimeDimension object."""
         schema = SlayerQuery.model_json_schema()
         td = schema["properties"]["time_dimensions"]
         array_schema = next(o for o in td["anyOf"] if o.get("type") == "array")

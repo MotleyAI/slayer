@@ -102,7 +102,7 @@ client.create_datasource({"name": "mydb", "type": "postgres", ...})
 
 ### Inspect
 
-`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. **DEV-1667:** `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
+`inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
 
 ```python
 # Compact default: schema skeleton for a model (column / measure / aggregation
@@ -118,7 +118,7 @@ print(client.inspect_sync(
     compact=False,
 ))
 
-# Batch: several same-kind columns in one round-trip (DEV-1612).
+# Batch: several same-kind columns in one round-trip.
 print(client.inspect_sync(
     reference=["mydb.orders.amount", "mydb.orders.customer_id"],
     entity_type="column", compact=False,
