@@ -192,7 +192,7 @@ class TestClickHouseExactNumericDetection:
         assert _sa_type_is_exact_numeric(sa_type) is False
 
 
-def _introspect_columns(columns, referenced_tables=()):
+def _introspect_columns(columns):
     inspector = MagicMock()
     inspector.get_columns.return_value = columns
     inspector.get_pk_constraint.return_value = {"constrained_columns": []}
@@ -201,8 +201,6 @@ def _introspect_columns(columns, referenced_tables=()):
         inspector=inspector,
         table_name="t",
         ref=None,
-        referenced_tables=set(referenced_tables),
-        fk_columns_by_table={},
     )
     return {c.name: c for c in results}
 
@@ -228,14 +226,6 @@ class TestWrappedDbTypeCapture:
         ])
         assert by_name["payload"].type is DataType.UNKNOWN
         assert by_name["payload"].db_type == "JSON"
-
-    def test_wrapped_decimal_on_referenced_table_stores_bare_inner_string(self):
-        by_name = _introspect_columns(
-            [{"name": "amount", "type": ch_types.Nullable(ch_types.Decimal(18, 2))}],
-            referenced_tables={"refs"},
-        )
-        assert by_name["refs.amount"].type is DataType.DOUBLE
-        assert by_name["refs.amount"].db_type == "Decimal(18, 2)"
 
 
 class _FakeUnknownType(sa.types.TypeEngine):

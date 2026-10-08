@@ -13,7 +13,6 @@ import sqlalchemy as sa
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
-    _build_fk_graph,
     _generate_joins,
     _get_single_column_unique_names,
     _is_cross_schema_fk,
@@ -132,7 +131,6 @@ class TestCompositeFk:
             joins = _generate_joins(
                 inspector=insp,
                 source_table="memberships",
-                referenced_tables={"org_units"},
                 schema=None,
                 table_set=table_set,
             )
@@ -142,27 +140,6 @@ class TestCompositeFk:
                 ("org_id", "org_id"),
                 ("code", "code"),
             }
-
-    async def test_build_fk_graph_one_edge_per_group(self, workspace: Path) -> None:
-        db_path = str(workspace / "live.db")
-        _create_schema(db_path)
-        with disposable_engine(f"sqlite:///{db_path}") as eng:
-            insp = sa.inspect(eng)
-            graph = _build_fk_graph(
-                inspector=insp,
-                table_names=[
-                    "customers",
-                    "orders",
-                    "user_profiles",
-                    "org_units",
-                    "memberships",
-                ],
-                schema=None,
-            )
-            # Composite FK contributes a single edge memberships -> org_units.
-            assert graph.get("memberships") == {"org_units"}
-            assert graph.get("orders") == {"customers"}
-            assert graph.get("user_profiles") == {"customers"}
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +349,8 @@ class TestCrossSchemaFk:
                 return []
 
         joins = _generate_joins(
-            _FakeInspector(), "orders", {"customers"}, "public", {"orders", "customers"},
+            inspector=_FakeInspector(), source_table="orders", schema="public",
+            table_set={"orders", "customers"},
         )
         assert joins == []
 
