@@ -19,7 +19,6 @@ from slayer.sql.dialects._tier2 import (
     PrestoDialect,
     RedshiftDialect,
     SparkDialect,
-    TrinoDialect,
 )
 from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
@@ -28,6 +27,7 @@ from slayer.sql.dialects.mysql import MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
+from slayer.sql.dialects.trino import TrinoDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.sql.naming import decode_alias
 
