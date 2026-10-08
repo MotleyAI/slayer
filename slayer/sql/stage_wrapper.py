@@ -64,7 +64,7 @@ def _dot_segments(node: exp.Expression) -> Optional[List[str]]:  # pyright: igno
 
 
 def unmangle_dotted_table_refs(node: exp.Expression) -> None:
-    """Undo a BigQuery / T-SQL round-trip mis-parse (DEV-1824 hoist).
+    """Undo a BigQuery / T-SQL round-trip mis-parse of a hoisted statement.
 
     Re-parsing a dotted result-key column splits its dots across the column's
     qualifier slots: a bare ``\\`orders.region\\``` becomes ``table=orders,
@@ -113,6 +113,7 @@ def unmangle_dotted_table_refs(node: exp.Expression) -> None:
 
 def build_flat_rename_wrapper(
     *,
+    stage: str,
     source_relation: str,
     inner: exp.Select,
     expected_columns: List[str],
@@ -122,7 +123,7 @@ def build_flat_rename_wrapper(
 
     A flat name strips ``<source_relation>.`` and ``__``-flattens the rest
     (``orders.customers.region`` -> ``customers__region``); the produced names must
-    equal ``expected_columns`` (a planner/generator divergence raises ``ValueError``).
+    equal ``expected_columns`` (a planner/generator divergence raises ``ValueError`` naming ``stage``).
     Names stay canonical: the statement's single finishing pass fits them for ``dialect``.
     """
     del dialect  # names are canonical here; fitting belongs to the finishing pass
@@ -130,7 +131,7 @@ def build_flat_rename_wrapper(
     produced = [flat_name(name, strip_relation=source_relation) for name in raw_names]
     if sorted(produced) != sorted(expected_columns):
         raise ValueError(
-            f"stage {source_relation!r}: rendered output columns "
+            f"stage {stage!r}: rendered output columns "
             f"{produced!r} do not match the expected schema "
             f"{expected_columns!r}.",
         )

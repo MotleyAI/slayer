@@ -1,9 +1,9 @@
-"""DEV-1452 Stage B — shared ``build_flat_rename_wrapper`` helper.
+"""Shared ``build_flat_rename_wrapper`` helper.
 
 Both the multi-stage CTE chaining in ``generate_planned_stages`` AND the
 ``_expand_query_backed_model`` virtual-model wrap call it.
 
-The helper takes no planner shapes — pure (source_relation, inner,
+The helper takes no planner shapes — pure (stage, source_relation, inner,
 expected_columns, dialect) -> sqlglot.expression. Stage rename wrapper
 uses ``named_selects`` to read the inner statement's aliases, strips
 the ``<source_relation>.`` prefix, ``__``-flattens the remainder, and
@@ -39,6 +39,7 @@ def test_strips_source_relation_prefix_and_flattens_dots() -> None:
         'FROM orders_t AS orders'
     )
     ast = build_flat_rename_wrapper(
+        stage="cr",
         source_relation="orders",
         inner=_select(stage_sql, "postgres"),
         expected_columns=["status", "customers__region"],
@@ -61,6 +62,7 @@ def test_mismatch_between_rendered_and_expected_raises() -> None:
     inner = _select(stage_sql, "postgres")
     with pytest.raises(ValueError, match="do not match"):
         build_flat_rename_wrapper(
+            stage="cr",
             source_relation="orders",
             inner=inner,
             expected_columns=["status", "missing_extra"],
@@ -79,6 +81,7 @@ def test_keeps_unprefixed_aliases_verbatim() -> None:
         'FROM orders_t AS orders'
     )
     ast = build_flat_rename_wrapper(
+        stage="cr",
         source_relation="orders",
         inner=_select(stage_sql, "postgres"),
         expected_columns=["amount_sum", "bare_synth"],
@@ -96,6 +99,7 @@ def test_bigquery_canonical_dotted_aliases_flatten() -> None:
         "bigquery",
     )
     ast = build_flat_rename_wrapper(
+        stage="cr",
         source_relation="orders",
         inner=inner,
         expected_columns=["status", "_count"],
@@ -114,6 +118,7 @@ def test_postgres_dotted_aliases_flatten() -> None:
         "FROM orders_t AS orders"
     )
     ast = build_flat_rename_wrapper(
+        stage="cr",
         source_relation="orders",
         inner=_select(stage_sql, "postgres"),
         expected_columns=["status", "_count"],
@@ -137,6 +142,7 @@ def test_no_param_output_is_byte_identical() -> None:
         "FROM orders_t AS orders GROUP BY status"
     )
     ast = build_flat_rename_wrapper(
+        stage="cr",
         source_relation="orders",
         inner=_select(stage_sql, "postgres"),
         expected_columns=["status", "_count"],
