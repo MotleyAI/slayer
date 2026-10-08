@@ -52,7 +52,6 @@ class TestClickHouseIntTypes:
     )
     def test_int_maps_to_number_not_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        # DEV-1361: integer family now narrows to DataType.INT.
         assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
@@ -75,7 +74,6 @@ class TestClickHouseDecimalScaleAware:
     )
     def test_decimal_scale_decides_float(self, scale, expect_float):
         sa_type = ch_types.Decimal(10, scale)
-        # DEV-1361: scale=0 → INT, scale>0 → DOUBLE.
         expected = DataType.DOUBLE if expect_float else DataType.INT
         assert _sa_type_to_data_type(sa_type) is expected
         assert _sa_type_is_float(sa_type) is expect_float
@@ -93,6 +91,14 @@ class TestClickHouseDateTimeTypes:
 
     def test_date32_maps_to_date(self):
         assert _sa_type_to_data_type(ch_types.Date32()) is DataType.DATE
+
+
+class TestClickHouseUuid:
+    def test_uuid_maps_to_text_without_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+            assert _sa_type_to_data_type(ch_types.UUID()) is DataType.TEXT
+            assert _sa_type_to_data_type(ch_types.Nullable(ch_types.UUID())) is DataType.TEXT
+        assert "Unrecognized SQLAlchemy type" not in caplog.text
 
 
 class TestClickHouseNullableUnwrap:
@@ -113,7 +119,7 @@ class TestClickHouseNullableUnwrap:
 
     def test_nullable_decimal_integer(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 0))
-        # DEV-1361: scale=0 narrows to INT.
+        # scale=0 narrows to INT.
         assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 

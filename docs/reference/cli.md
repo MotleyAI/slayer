@@ -27,6 +27,7 @@ slayer serve --ingest-on-startup     # run idempotent ingest over every configur
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer mcp`
 
@@ -47,6 +48,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer query`
 
@@ -77,7 +79,7 @@ slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
-| `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 
 ### `slayer ingest`
@@ -343,10 +345,10 @@ With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer in
 
 Point-lookup of an entity by reference and kind — no ranking, no bundled
 memories (use `slayer search` for an entity *in context*). Pass **two or more**
-references to inspect several entities of the **same kind** in one call
-(DEV-1612): the output is one `## <canonical>` block per reference, in input
+references to inspect several entities of the **same kind** in one call:
+the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
-**Omit the reference entirely** (DEV-1667) to list the whole **collection** at
+**Omit the reference entirely** to list the whole **collection** at
 `--type` — supported for `model` and `datasource` only. `--type model` lists all
 models grouped by datasource (a terse one line per model by default; `--no-compact`
 gives the full per-model tables); `--type datasource` lists all datasources.
@@ -366,7 +368,7 @@ slayer inspect --type datasource    # collection: all datasources
 |------|----------|-------------|
 | `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
-| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
+| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (model only) Sample-data rows. Ignored with a warning for other kinds. |
 | `--show-sql` | No | (model only) Include generated SQL. No-op for column/measure/aggregation; warned for datasource/memory. |

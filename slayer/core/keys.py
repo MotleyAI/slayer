@@ -678,6 +678,7 @@ class ScalarCallKey(_FrozenKey, frozen=True):
 
 
 TimePointOp = Literal["=", "!=", "<", "<=", ">", ">=", "in", "not in"]
+MIRRORED_TIME_POINT_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 
 
 class TimePointCmpKey(_FrozenKey, frozen=True):

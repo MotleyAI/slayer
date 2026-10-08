@@ -146,6 +146,8 @@ _SA_TYPE_MAP = {
     "NVARCHAR": DataType.TEXT,
     "NCHAR": DataType.TEXT,
     "NTEXT": DataType.TEXT,
+    "UUID": DataType.TEXT,  # ClickHouse (not an sa.Uuid)
+    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
     "MONEY": DataType.DOUBLE,
     "SMALLMONEY": DataType.DOUBLE,
     # SQL Server rowversion — 8-byte binary counter, not temporal
@@ -194,6 +196,9 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
     if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
         return DataType.TEXT
+    # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
+    if isinstance(sa_type, sa.Uuid):
+        return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
@@ -208,7 +213,7 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Most unmapped types (uuid, jsonb, bytea, arrays) "
+            "DataType.TEXT. Most unmapped types (bytea, arrays) "
             "are comparable and work as TEXT; add genuinely non-comparable "
             "ones to _OPAQUE_SA_TYPE_NAMES and the rest to _SA_TYPE_MAP.",
             type_name,

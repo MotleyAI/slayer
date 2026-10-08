@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -457,7 +457,6 @@ def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> N
 _OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
     "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
 }
-_MIRRORED_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 _NOT_IN: Final = "not in"
 _MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", _NOT_IN: _NOT_IN}
 
@@ -482,7 +481,7 @@ def _time_point_comparison(
     if _is_time_point_literal(right, units=units) and isinstance(right.value, str) and not isinstance(left, Literal):
         return left, op, right.value, False
     if _is_time_point_literal(left, units=units) and isinstance(left.value, str) and not isinstance(right, Literal):
-        return right, _MIRRORED_OP[op], left.value, True
+        return right, MIRRORED_TIME_POINT_OP[op], left.value, True
     return None
 
 
@@ -1009,10 +1008,6 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
-# Expression sources at bind: a time-point comparison is lowered by the checker before planning.
-_BOUND_EXPRESSION_SOURCE_KINDS = (*EXPRESSION_SOURCE_KINDS, TimePointCmpKey)
-
-
 def _bind_partition_keys(
     value, *,
     scope: ModelScope | StageSchema,
@@ -1052,7 +1047,7 @@ def _bind_expression_agg_source(
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
     expression (a column, star, or arithmetic/scalar/predicate composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(bound, _BOUND_EXPRESSION_SOURCE_KINDS):
+    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
         raise _not_an_aggregation_source(bound, agg=agg)
     return bound
 
@@ -1280,7 +1275,7 @@ def _bind_agg(
     # column (the ranked kernel can't rank an expression), and numeric-only
     # aggregations are rejected when the expression is confidently non-numeric
     # (per-column gates don't apply).
-    if isinstance(source, _BOUND_EXPRESSION_SOURCE_KINDS):
+    if isinstance(source, EXPRESSION_SOURCE_KINDS):
         if effective_agg in ("first", "last"):
             raise ValueError(
                 f"Aggregation {effective_agg!r} is not supported over an "

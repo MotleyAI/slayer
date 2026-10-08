@@ -1,4 +1,4 @@
-"""DEV-1871 group 2 — the pinned legacy key spelling behind SQL aliases.
+"""The pinned legacy key spelling behind SQL aliases.
 
 Pins the exact historical tokens (``grain_target``, ``partition_keys_frozenset_…``)
 so the locus rename and Grain retype cannot move emitted SQL: bypassing the
@@ -20,14 +20,12 @@ from slayer.core.keys import (
     TransformKey,
 )
 from slayer.core.refs import (
-    _value_key_display,
-    expression_source_leaf,
     legacy_key_repr,
     legacy_key_str,
     partition_by_suffix,
 )
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, regroup_producer_identity
-from slayer.sql.naming import canonical_aggregate_alias
+from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
 _AMOUNT = ColumnKey(leaf="amount")
 _CITY = ColumnKey(leaf="city")
@@ -89,10 +87,6 @@ class TestPinnedSpellings:
             "args=(), kwargs=(), partition_keys=frozenset(), time_key=None)"
         )
 
-    def test_value_key_display_fallback_uses_the_serializer(self) -> None:
-        key = TransformKey(op="rank", input=_AMOUNT)
-        assert _value_key_display(key) == legacy_key_str(key)
-
     def test_expression_source_leaf_over_an_aggregate_operand(self) -> None:
         source = ArithmeticKey(
             op="-",
@@ -101,9 +95,7 @@ class TestPinnedSpellings:
                 LiteralKey(value=Decimal("1")),
             ),
         )
-        assert expression_source_leaf(source) == (
-            "source_columnkey_path_leaf_a_edd6d14d_s_none_1"
-        )
+        assert expression_source_leaf(source) == "sum_amount_1"
 
     def test_expression_source_leaf_over_a_raw_scalar_arg(self) -> None:
         """Desugared change_pct keeps a raw Decimal in nullif's args."""

@@ -78,19 +78,22 @@ _INGEST_ON_STARTUP_HELP = (
     "starting the server. Per-datasource errors are logged to stderr and never "
     "abort startup. See docs/concepts/ingestion.md."
 )
+_ALWAYS_LOAD_QUERY_HELP = (
+    "Mark the MCP query tool with anthropic/alwaysLoad so Claude Code keeps it "
+    "loaded instead of deferring it behind tool search (env: SLAYER_MCP_ALWAYS_LOAD_QUERY)."
+)
 
 
-def _env_ingest_on_startup() -> bool:
-    """Truthy check for the ``SLAYER_INGEST_ON_STARTUP`` env var.
+def _env_flag(name: str) -> bool:
+    """Whether env var ``name`` is ``1`` / ``true`` / ``yes`` (case- and whitespace-insensitive)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
 
-    Truthy values (case-insensitive, with surrounding whitespace stripped):
-    ``1``, ``true``, ``yes``. Anything else — including unset, empty,
-    ``0``, ``false``, ``no``, ``garbage`` — returns False.
-    """
-    return os.environ.get("SLAYER_INGEST_ON_STARTUP", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
+
+def _server_flags(args) -> dict[str, bool]:
+    """``ingest_on_startup`` / ``always_load_query`` from the CLI flag or its env var."""
+    return {
+        "ingest_on_startup": getattr(args, "ingest_on_startup", False) or _env_flag("SLAYER_INGEST_ON_STARTUP"),
+        "always_load_query": getattr(args, "always_load_query", False) or _env_flag("SLAYER_MCP_ALWAYS_LOAD_QUERY"),
     }
 
 
@@ -179,6 +182,7 @@ examples:
         action="store_true",
         help=_INGEST_ON_STARTUP_HELP,
     )
+    serve_parser.add_argument("--always-load-query", action="store_true", help=_ALWAYS_LOAD_QUERY_HELP)
     _add_storage_arg(serve_parser)
 
     # ── flight-serve ──────────────────────────────────────────────────
@@ -222,6 +226,7 @@ examples:
         action="store_true",
         help=_INGEST_ON_STARTUP_HELP,
     )
+    mcp_parser.add_argument("--always-load-query", action="store_true", help=_ALWAYS_LOAD_QUERY_HELP)
     _add_storage_arg(mcp_parser)
 
     # ── query ─────────────────────────────────────────────────────────
@@ -266,7 +271,7 @@ examples:
         help="Output format (default: table)",
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
-    query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument("--explain", action="store_true", help="Run the database's EXPLAIN on the query")
     query_parser.add_argument(
         "--refine",
         default=None,
@@ -1477,10 +1482,7 @@ def _run_serve(args):
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-    ingest_on_startup = (
-        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
-    )
-    app = create_app(storage=storage, ingest_on_startup=ingest_on_startup)
+    app = create_app(storage=storage, **_server_flags(args))
 
     import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
@@ -1493,10 +1495,7 @@ def _run_mcp(args):
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-    ingest_on_startup = (
-        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
-    )
-    mcp = create_mcp_server(storage=storage, ingest_on_startup=ingest_on_startup)
+    mcp = create_mcp_server(storage=storage, **_server_flags(args))
     mcp.run()
 
 

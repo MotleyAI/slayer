@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    MIRRORED_TIME_POINT_OP,
     AggregateKey,
     ArithmeticKey,
     ColumnKey,
@@ -64,7 +65,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
 # is a same-model scalar EXPRESSION rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey)
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey)
 
 
 # The pinned legacy key spelling: the historical Pydantic
@@ -160,51 +161,6 @@ def legacy_key_str(key: Any) -> str:
     return " ".join(f"{n}={v}" for n, v in fields)
 
 
-def _value_key_display(key: Any) -> str:
-    """Canonical text of a row-level bound expression, for name derivation.
-
-    Deterministic and formatting-normalised, so ``sum(amount-cost)`` and
-    ``sum( amount - cost )`` derive the same leaf and the same hash fold.
-    """
-    if isinstance(key, ColumnKey):
-        return ".".join((*key.path, key.leaf))
-    if isinstance(key, ColumnSqlKey):
-        return ".".join((*key.path, key.column_name))
-    if isinstance(key, LiteralKey):
-        if isinstance(key.value, str):
-            return f"'{key.value}'"
-        return str(key.value)
-    if isinstance(key, ArithmeticKey):
-        return _arithmetic_key_display(key)
-    if isinstance(key, ScalarCallKey):
-        args = ", ".join(_value_key_display(a) for a in key.args)
-        return f"{key.name}({args})"
-    if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({_value_key_display(key.column)})"
-    if isinstance(key, InKey):
-        values = ", ".join(_value_key_display(v) for v in key.values)
-        return f"{_value_key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
-    if type(key) not in _LEGACY_KEY_SPELLINGS:
-        return str(key)  # raw scalar arg (e.g. Decimal in nullif/round)
-    return legacy_key_str(key)
-
-
-def _arithmetic_key_display(key: ArithmeticKey) -> str:
-    rendered = [_value_key_display(o) for o in key.operands]
-    if len(rendered) == 1:
-        return f"not {rendered[0]}" if key.op == "not" else f"{key.op}{rendered[0]}"
-    return f" {key.op} ".join(
-        f"({r})" if isinstance(o, ArithmeticKey) else r
-        for o, r in zip(key.operands, rendered)
-    )
-
-
-def expression_source_leaf(source: Any) -> str:
-    """The derived result-key leaf for an expression aggregate source
-    (``sum(amount - cost)`` → ``amount_cost``), via the shared sanitizer."""
-    return auto_name_from_expression(_value_key_display(source))
-
-
 def agg_signature_suffix(
     agg_args: list[str] | None,
     agg_kwargs: dict | None,
@@ -296,6 +252,12 @@ def _arithmetic_display(key: ArithmeticKey) -> str:
     return f" {key.op} ".join(rendered)
 
 
+def _time_point_cmp_display(key: TimePointCmpKey) -> str:
+    if key.literal_on_left:
+        return f"{_scalar_display(key.point)} {MIRRORED_TIME_POINT_OP[key.op]} {key_display(key.operand)}"
+    return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
+
+
 def _fragment_display(key: SqlFragmentKey) -> str:
     text = key.template
     for i, ref in enumerate(key.refs):
@@ -304,7 +266,7 @@ def _fragment_display(key: SqlFragmentKey) -> str:
 
 
 def key_display(key: ValueKey) -> str:
-    """User-facing formula text of any key kind (diagnostics only, never identity)."""
+    """User-facing formula text of any key kind."""
     if isinstance(key, ColumnKey):
         return ".".join((*key.path, key.leaf))
     if isinstance(key, ColumnSqlKey):
@@ -324,7 +286,7 @@ def key_display(key: ValueKey) -> str:
     if isinstance(key, ScalarCallKey):
         return _call_display(key.name, [_arg_display(a) for a in key.args])
     if isinstance(key, TimePointCmpKey):
-        return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
+        return _time_point_cmp_display(key)
     if isinstance(key, InKey):
         values = ", ".join(key_display(v) for v in key.values)
         return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
