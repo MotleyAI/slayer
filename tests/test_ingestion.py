@@ -23,6 +23,7 @@ from sqlalchemy.dialects.mssql import (
     SMALLMONEY,
     TIMESTAMP as MSSQL_TIMESTAMP,
     TINYINT,
+    UNIQUEIDENTIFIER,
 )
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSON as PG_JSON
@@ -32,6 +33,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig
+from slayer.engine import ingestion
 from slayer.engine.introspect_utils import _info_schema_type
 from slayer.engine.schema_drift import _live_schema_for_datasource
 from slayer.engine.schema_scope import SchemaRef
@@ -60,7 +62,7 @@ def _setup_mock_engine(rows):
 
 
 class TestInfoSchemaTypeMapping:
-    """DEV-1758 (CodeRabbit): the INFORMATION_SCHEMA fallback maps PostgreSQL
+    """The INFORMATION_SCHEMA fallback maps PostgreSQL
     multi-word type names, not just single-word ones, before the TEXT fallback."""
 
     @pytest.mark.parametrize(
@@ -523,7 +525,7 @@ class TestSqliteSafeGetters:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: auto-ingestion INT vs DOUBLE distinction.
+# Auto-ingestion INT vs DOUBLE distinction.
 # ---------------------------------------------------------------------------
 
 
@@ -619,6 +621,37 @@ class TestSaTypeToDataTypeIntDouble:
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
 
+_UUID_JSONB_TYPES = [
+    sa.Uuid(),
+    PG_UUID(),
+    UNIQUEIDENTIFIER(),
+    JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
+]
+_UUID_JSONB_IDS = ["uuid", "pg_uuid", "mssql_uniqueidentifier", "jsonb"]
+
+
+class TestSaTypeToDataTypeUuidJsonb:
+    """UUID-family types and JSONB are comparable: mapped to TEXT, not via the fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warning_dedup(self):
+        ingestion._logged_unmapped_sa_types.clear()
+        yield
+        ingestion._logged_unmapped_sa_types.clear()
+
+    @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
+    def test_maps_to_text(self, sa_type) -> None:
+        mapped = _sa_type_to_data_type(sa_type)
+        assert mapped is DataType.TEXT
+        assert mapped.is_opaque is False
+
+    @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
+    def test_no_unmapped_warning_logged(self, sa_type, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+            _sa_type_to_data_type(sa_type)
+        assert "Unrecognized SQLAlchemy type" not in caplog.text
+
+
 class TestUnmappedTypeBecomesOpaque:
     """DB types with no equality operator map to the explicit opaque
     ``UNKNOWN`` type, and the raw type string is retained on
@@ -632,12 +665,10 @@ class TestUnmappedTypeBecomesOpaque:
     @pytest.mark.parametrize(
         "sa_type",
         [
-            JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
-            PG_UUID(),
             sa.LargeBinary(),  # bytea
             PG_ARRAY(sa.Text()),
         ],
-        ids=["jsonb", "uuid", "bytea", "array"],
+        ids=["bytea", "array"],
     )
     def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
         """Regression: these are groupable/joinable and must not be marked
@@ -713,7 +744,7 @@ class TestSqliteIngestionRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: SQLite affinity probe — fresh-ingest path
+# SQLite affinity probe — fresh-ingest path
 # ---------------------------------------------------------------------------
 
 
@@ -734,7 +765,7 @@ def _create_sqlite_db_with_typed_data(
 
 
 class TestSqliteIngestionProbe:
-    """DEV-1538: ingest-time probe widens INT → DOUBLE/TEXT based on actual
+    """Ingest-time probe widens INT → DOUBLE/TEXT based on actual
     stored values, not declared affinity."""
 
     def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
@@ -910,7 +941,7 @@ class TestSqliteIngestionProbe:
             assert "customers.region_id" not in seen_columns
 
     def test_joined_column_probed_via_owning_model(self) -> None:
-        """DEV-1538 + Codex #9 restated: each table's columns are probed
+        """Each table's columns are probed
         when that table is ingested as its own model. Joined references to
         another table's column inherit the probed type via the FK target's
         persisted column — they aren't re-probed on the source side."""
