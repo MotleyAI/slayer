@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     OrientedJoin,
     aggregation_owner,
@@ -457,7 +457,6 @@ def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> N
 _OPERAND_LEFT_OP: Dict[str, TimePointOp] = {
     "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
 }
-_MIRRORED_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 _NOT_IN: Final = "not in"
 _MEMBERSHIP_OP: Dict[str, TimePointOp] = {"in": "in", _NOT_IN: _NOT_IN}
 
@@ -482,7 +481,7 @@ def _time_point_comparison(
     if _is_time_point_literal(right, units=units) and isinstance(right.value, str) and not isinstance(left, Literal):
         return left, op, right.value, False
     if _is_time_point_literal(left, units=units) and isinstance(left.value, str) and not isinstance(right, Literal):
-        return right, _MIRRORED_OP[op], left.value, True
+        return right, MIRRORED_TIME_POINT_OP[op], left.value, True
     return None
 
 

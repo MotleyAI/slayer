@@ -16,6 +16,7 @@ from slayer.core.keys import (
     Grain,
     LiteralKey,
     Phase,
+    TimePointCmpKey,
     _FrozenKey,
 )
 from slayer.core.query import SlayerQuery
@@ -74,6 +75,7 @@ async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
         ("sum(iif(ordered_at != '2024-02', 1, 0))", "orders.iif_ordered_at_2024_02_1_0_sum", 4),
         ("sum(iif(month(ordered_at) >= '2024-02', 1, 0))", "orders.iif_month_ordered_at_2024_02_1_0_sum", 5),
         ("sum(amount > 5 and ordered_at >= '2024-02-01')", "orders.amount_5_and_ordered_at_2024_02_01_sum", 4),
+        ("sum(iif('2024-02-01' <= ordered_at, 1, 0))", "orders.iif_2024_02_01_ordered_at_1_0_sum", 5),
     ],
 )
 async def test_date_comparison_forms(engine, formula, key, value) -> None:
@@ -313,6 +315,11 @@ class TestExpressionSourceLeaf:
     def test_literal_operands(self) -> None:
         source = ArithmeticKey(op="*", operands=(_col("amount"), LiteralKey(value=Decimal("0.0000001"))))
         assert expression_source_leaf(source) == "amount_0_0000001"
+
+    def test_literal_left_date_comparison_keeps_its_written_order(self) -> None:
+        source = TimePointCmpKey(op=">=", operand=_col("ordered_at"), point="2024-02-01", literal_on_left=True)
+        assert key_display(source) == "'2024-02-01' <= ordered_at"
+        assert expression_source_leaf(source) == auto_name_from_expression("'2024-02-01' <= ordered_at")
 
     def test_unknown_key_kind_fails_closed(self) -> None:
         alien = _AlienKey()

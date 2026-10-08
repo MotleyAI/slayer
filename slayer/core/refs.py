@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    MIRRORED_TIME_POINT_OP,
     AggregateKey,
     ArithmeticKey,
     ColumnKey,
@@ -279,6 +280,8 @@ def key_display(key: ValueKey) -> str:
     if isinstance(key, ScalarCallKey):
         return _call_display(key.name, [_arg_display(a) for a in key.args])
     if isinstance(key, TimePointCmpKey):
+        if key.literal_on_left:
+            return f"{_scalar_display(key.point)} {MIRRORED_TIME_POINT_OP[key.op]} {key_display(key.operand)}"
         return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
     if isinstance(key, InKey):
         values = ", ".join(key_display(v) for v in key.values)
