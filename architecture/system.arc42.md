@@ -11,7 +11,7 @@ place. Behaviour lives in `openspec/specs/`; decision history lives in
 ## 2. Building blocks
 
 The `landscape` view ([views.c4](views.c4), model in
-[model/slayer.c4](model/slayer.c4)):
+[model.c4](model.c4)):
 
 <!-- likec4:landscape -->
 ```mermaid
@@ -73,7 +73,7 @@ flowchart TD
 Ten nodes: precise `core`, `sql`, `ir`,
 `engine`, `storage` around the query pipeline; virtual buckets `importers`,
 `search`, `memories`, `protocols`, `surfaces` for the rest. Package claims and
-spec mapping are node metadata in [model/slayer.c4](model/slayer.c4); the
+spec mapping are node metadata in [model.c4](model.c4); the
 legacy-arrow baseline is in [index.yaml](index.yaml).
 
 ## 3. Principles
