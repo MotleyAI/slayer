@@ -392,12 +392,28 @@ def sql_literal(value: Any, *, bits: bool = False) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _typed_literal(value: Any, *, kind: str, bits: bool, typed_temporals: bool) -> str:
+    if typed_temporals and value is not None and kind in ("DATE", "TIMESTAMP"):
+        return f"{kind} {sql_literal(value)}"
+    return sql_literal(value, bits=bits)
+
+
 def seed_statements(
     table: TableSpec, *, types: Mapping[str, str], suffix: str = "", bits: bool = False,
+    typed_temporals: bool = False,
 ) -> list[str]:
-    """CREATE + one multi-row INSERT for a server backend (``types``: kind → column type)."""
+    """CREATE + one multi-row INSERT for a server backend (``types``: kind → column type).
+
+    ``typed_temporals`` writes DATE / TIMESTAMP values as typed literals (Trino coerces no text).
+    """
     cols = ", ".join(f"{c} {types[k]}" for c, k in table.columns)
-    values = ", ".join("(" + ", ".join(sql_literal(v, bits=bits) for v in row) + ")" for row in table.rows)
+    kinds = [k for _, k in table.columns]
+    values = ", ".join(
+        "(" + ", ".join(
+            _typed_literal(v, kind=k, bits=bits, typed_temporals=typed_temporals) for v, k in zip(row, kinds)
+        ) + ")"
+        for row in table.rows
+    )
     return [f"CREATE TABLE {table.name} ({cols}){suffix}", f"INSERT INTO {table.name} VALUES {values}"]
 
 
@@ -419,17 +435,27 @@ SERVER_TYPES: dict[str, dict[str, str]] = {
         "INT": "INT", "DOUBLE": "FLOAT", "TEXT": "NVARCHAR(255)", "BOOLEAN": "BIT",
         "DATE": "DATE", "TIMESTAMP": "DATETIME2(6)",
     },
+    "trino": {
+        "INT": "INTEGER", "DOUBLE": "DOUBLE", "TEXT": "VARCHAR", "BOOLEAN": "BOOLEAN",
+        "DATE": "DATE", "TIMESTAMP": "TIMESTAMP(6)",
+    },
 }
 _SERVER_SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
+
+
+def server_table_statements(table: TableSpec, *, backend: str) -> list[str]:
+    """``seed_statements`` for ``table`` with ``backend``'s types and literal conventions."""
+    return seed_statements(
+        table, types=SERVER_TYPES[backend], suffix=_SERVER_SUFFIX.get(backend, ""),
+        bits=backend == "tsql", typed_temporals=backend == "trino",
+    )
 
 
 def server_seed_statements(backend: str, *, today: date) -> list[str]:
     """Every statement seeding ``dt`` plus the scenario tables on a server backend."""
     out: list[str] = []
     for table in [DT, *scenario_tables(today=today)]:
-        out += seed_statements(
-            table, types=SERVER_TYPES[backend], suffix=_SERVER_SUFFIX.get(backend, ""), bits=backend == "tsql",
-        )
+        out += server_table_statements(table, backend=backend)
     return out
 
 

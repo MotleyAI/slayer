@@ -27,10 +27,10 @@ from slayer.sql.dialects._tier2 import (
     PrestoDialect,
     RedshiftDialect,
     SparkDialect,
-    TrinoDialect,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
+from slayer.sql.dialects.trino import TrinoDialect
 from tests._dev1965_fixtures import (
     assert_single_top_level_with,
     cumsum_chain,

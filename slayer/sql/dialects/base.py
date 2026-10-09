@@ -543,17 +543,18 @@ class SqlDialect(BaseModel):
         if literal is not None:
             amount = literal * per_count
             op = exp.Add if amount >= 0 else exp.Sub
-            moved: Expression = op(this=expr.copy(), expression=exp.Interval(
-                this=exp.Literal.number(abs(amount)), unit=exp.var(interval_unit),
-            ))
+            moved: Expression = op(this=expr.copy(), expression=self._interval(abs(amount), exp.var(interval_unit)))
         else:
             moved = exp.Add(this=expr.copy(), expression=exp.Mul(
-                this=exp.Paren(this=count.copy()),
-                expression=exp.Interval(this=exp.Literal.number(per_count), unit=exp.var(interval_unit)),
+                this=exp.Paren(this=count.copy()), expression=self._interval(per_count, exp.var(interval_unit)),
             ))
         if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
             return exp.Cast(this=moved, to=exp.DataType.build("DATE"))
         return moved
+
+    def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
+        """``INTERVAL amount unit`` for a non-negative ``amount``."""
+        return exp.Interval(this=exp.Literal.number(amount), unit=unit)
 
     def frame_time_operand(self, expr: Expression) -> Expression:
         """The source time column as compared in a trailing-window frame."""

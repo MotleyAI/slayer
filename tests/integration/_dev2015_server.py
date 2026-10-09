@@ -9,7 +9,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
-from tests._dev1737_fixtures import SERVER_TYPES, TableSpec, seed_statements
+from tests._dev1737_fixtures import TableSpec, server_table_statements
 from tests._dev2015_fixtures import (
     CG_ORDERS,
     CUSTOMERS,
@@ -30,9 +30,6 @@ from tests._dev2015_fixtures import (
     value,
 )
 
-_SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
-
-
 def _tables() -> list[TableSpec]:
     orders_ts = orders_table(
         [(i, c, f"{d} 09:30:00", a) for i, c, d, a in orders_table().rows], date_type="TIMESTAMP",
@@ -46,8 +43,7 @@ def _tables() -> list[TableSpec]:
 def server_statements(backend: str) -> list[str]:
     out: list[str] = []
     for table in _tables():
-        out += seed_statements(table, types=SERVER_TYPES[backend], suffix=_SUFFIX.get(backend, ""),
-                               bits=backend == "tsql")
+        out += server_table_statements(table, backend=backend)
     return out
 
 

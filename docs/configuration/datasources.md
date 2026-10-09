@@ -63,6 +63,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
 | `mssql` / `sqlserver` / `tsql` | `motley-slayer[sqlserver]` (plus the system ODBC Driver 18) | `mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server` |
 | `bigquery` | `motley-slayer[bigquery]` | `bigquery://project/dataset` |
+| `trino` | `motley-slayer[trino]` | `trino://user@host:8080/catalog/schema` |
 
 A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
 
@@ -77,7 +78,7 @@ SQL generation is covered by unit tests, but not verified against live instances
 | Type | SQLAlchemy Driver | Install |
 |------|-------------------|---------|
 | `redshift` | `sqlalchemy-redshift` + `redshift_connector` | `pip install sqlalchemy-redshift redshift-connector` |
-| `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
+| `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
 | `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
 | `oracle` | `oracledb` | `pip install oracledb` |
 
@@ -98,7 +99,7 @@ SQL generation is covered by unit tests, but not verified against live instances
     BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
 
 !!! note "Statement timeouts"
-    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), and sets MariaDB's timeout with `max_statement_time`.
+    SLayer sends ClickHouse's timeout as a per-request `max_execution_time` setting (a `SETTINGS` clause in your SQL wins), skips it for a `readonly = 1` user with a `statement_timeout_skipped` warning (grant `readonly = 2` to keep it), sets MariaDB's timeout with `max_statement_time`, and sends Trino's as the `query_max_run_time` session property of the query alone.
 
 ### Snowflake
 

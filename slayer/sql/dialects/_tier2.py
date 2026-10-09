@@ -1,21 +1,13 @@
 """Tier-2 dialect subclasses (no live integration tests).
 
-Each Tier-2 dialect differs from ``SqlDialect``'s Postgres-shaped defaults
-only in scalar config (sqlglot name, EXPLAIN prefix/postfix, log10/log2
-native flags) — no SQL-shape logic. They live together in one file
-because they're data-shaped, not logic-shaped.
+Each Tier-2 dialect differs from its base only in scalar config (sqlglot
+name, EXPLAIN prefix/postfix, log10/log2 native flags) — no SQL-shape
+logic. They live together in one file because they're data-shaped, not
+logic-shaped. ``PrestoDialect`` inherits the Presto-family grammar from
+``slayer/sql/dialects/trino.py``.
 
-Values codify today's behaviour from
-``query_engine.py:_EXPLAIN_PREFIX`` / ``_EXPLAIN_POSTFIX`` and
-``generator.py:_LOG10_NATIVE_DIALECTS`` / ``_LOG2_NATIVE_DIALECTS``.
-
-Two dialects were promoted out of this file to their own Tier 1 modules:
-
-* ``BigqueryDialect`` — see ``slayer/sql/dialects/bigquery.py`` (alias
-  mangling for joined-column references and per-statement quota tweaks).
-* ``SnowflakeDialect`` — see ``slayer/sql/dialects/snowflake.py``
-  (connection URL builder, ``creator=`` engine bridge, per-connection
-  session overrides, statement timeout, cursor type-code map).
+BigQuery, Snowflake and Trino were promoted out of this file to their own
+Tier 1 modules.
 """
 
 from __future__ import annotations
@@ -23,6 +15,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.trino import PrestoFamilyDialect
 
 
 class RedshiftDialect(SqlDialect):
@@ -43,27 +36,10 @@ class RedshiftDialect(SqlDialect):
         return self._expanded_null_safe_eq(left, right)
 
 
-class TrinoDialect(SqlDialect):
-    sqlglot_name: str = "trino"
-    ds_type_aliases: frozenset[str] = frozenset({"trino"})
-    explain_prefix: str | None = "EXPLAIN ANALYZE"
-    explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
-    max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_native: bool = True
-
-
-class PrestoDialect(SqlDialect):
+class PrestoDialect(PrestoFamilyDialect):
     sqlglot_name: str = "presto"
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
-    explain_prefix: str | None = "EXPLAIN ANALYZE"
-    explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
-    max_identifier_bytes: int | None = None  # unbounded
-    approx_count_distinct_native: bool = True
 
 
 class DatabricksDialect(SqlDialect):

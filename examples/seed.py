@@ -11,6 +11,8 @@ Usage:
 
 import sys
 from datetime import datetime
+from decimal import Decimal
+from urllib.parse import urlparse
 
 import sqlalchemy as sa
 
@@ -84,7 +86,7 @@ CREATE TABLE orders (
 );
 """
 
-# Snowflake (DEV-1551): NUMBER(38,0) is Snowflake's canonical integer type;
+# Snowflake: NUMBER(38,0) is Snowflake's canonical integer type;
 # NUMBER(p,s)/DECIMAL(p,s) for fixed-point. TIMESTAMP_NTZ avoids the
 # session-time-zone gotcha of bare TIMESTAMP. FK constraints are declarative
 # only (not enforced) — but the Inspector still surfaces them, so
@@ -150,6 +152,42 @@ CREATE TABLE orders (
 ) ENGINE = MergeTree() ORDER BY id;
 """
 
+# Trino (memory connector): no PRIMARY KEY / REFERENCES; INSERT never coerces DOUBLE into
+# DECIMAL, so prices bind as Decimal.
+CREATE_SQL_TRINO = """
+CREATE TABLE regions (
+    id INTEGER,
+    name VARCHAR
+);
+
+CREATE TABLE customers (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR,
+    region_id INTEGER
+);
+
+CREATE TABLE products (
+    id INTEGER,
+    name VARCHAR,
+    category VARCHAR,
+    price DECIMAL(10,2)
+);
+
+CREATE TABLE orders (
+    id INTEGER,
+    customer_id INTEGER,
+    product_id INTEGER,
+    quantity INTEGER,
+    status VARCHAR,
+    created_at TIMESTAMP
+);
+"""
+
+
+def _is_trino(connection_string: str) -> bool:
+    return connection_string.lower().startswith("trino://")
+
 
 def _get_create_sql(connection_string: str) -> str:
     """Return dialect-appropriate CREATE TABLE SQL."""
@@ -160,6 +198,8 @@ def _get_create_sql(connection_string: str) -> str:
         return CREATE_SQL_TSQL
     if cs.startswith("snowflake://") or "snowflakecomputing" in cs:
         return CREATE_SQL_SNOWFLAKE
+    if _is_trino(cs):
+        return CREATE_SQL_TRINO
     return CREATE_SQL_STANDARD
 
 
@@ -288,12 +328,11 @@ def seed(connection_string: str) -> None:
     ``snowflake://?connection_name=<name>`` sentinel URL and the SQLite
     UDF registration listener.
     """
-    from slayer.core.models import DatasourceConfig
-    from slayer.sql import engine_factory
+    from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
+    from slayer.sql import engine_factory  # ALLOW(import-not-top): verify scripts import this module's data without slayer installed
 
     # Build a minimal DatasourceConfig from the URL so the dialect
     # strategy class can route correctly.
-    from urllib.parse import urlparse
     parsed = urlparse(connection_string)
     ds_type = parsed.scheme.split("+", 1)[0].lower()
     if ds_type == "postgresql":
@@ -306,6 +345,7 @@ def seed(connection_string: str) -> None:
     engine = engine_factory.get_engine(ds)
 
     create_sql = _get_create_sql(connection_string)
+    trino = _is_trino(connection_string)
 
     with engine.connect() as conn:
         # Drop and recreate tables (safe for re-runs)
@@ -331,7 +371,7 @@ def seed(connection_string: str) -> None:
         for p in PRODUCTS:
             conn.execute(
                 sa.text("INSERT INTO products VALUES (:id, :name, :category, :price)"),
-                {"id": p[0], "name": p[1], "category": p[2], "price": p[3]},
+                {"id": p[0], "name": p[1], "category": p[2], "price": Decimal(str(p[3])) if trino else p[3]},
             )
 
         for o in ORDERS:
