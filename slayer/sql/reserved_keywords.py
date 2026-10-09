@@ -70,6 +70,7 @@ DIALECT_RESERVED_KEYWORDS: dict[str, frozenset[str]] = {
     }),
     "postgres": frozenset({"current_schema", "system_user"}),
     "clickhouse": frozenset({"top"}),
+    "trino": frozenset({"cube", "current_schema", "grouping", "json_table", "recursive", "rollup", "unnest"}),
     "mysql": frozenset({
         "_armscii8", "_ascii", "_big5", "_binary", "_cp1250", "_cp1251", "_cp1256", "_cp1257", "_cp850",
         "_cp852", "_cp866", "_cp932", "_dec8", "_eucjpms", "_euckr", "_gb18030", "_gb2312", "_gbk",
