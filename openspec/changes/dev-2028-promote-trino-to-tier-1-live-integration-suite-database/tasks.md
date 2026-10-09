@@ -26,6 +26,7 @@
 
 - [x] 4.1 Make 1.6–1.10 pass against a local Docker Trino with the CI invocation for the Trino file
 - [x] 4.2 New `.github/workflows/integration-trino.yml` (pytest job asserting `import testcontainers.trino`, verify-example job) gated on Trino paths plus the shared code per design D6; widen the MySQL, ClickHouse and SQL Server workflow gates the same way; `ci.yml` always-on integration job and both CLAUDE.md integration commands gain `--ignore=tests/integration/test_integration_trino.py`; verify with `actionlint` if available, else YAML parse
+- [x] 4.3 Federated join: Postgres and MySQL testcontainers on a Docker network shared with the Trino container, each mounted as a Trino catalog (`postgresql`, `mysql`) and seeded through Trino; one Trino datasource whose models use catalog-qualified `sql_table` (`postgresql.public.customers`, `mysql.<db>.orders`); a SLayer query joining them returns the expected per-region totals, and the sum of grouped counts equals the total; one sentence in the `docs/database-support.md` Trino caveats saying models may join tables from different catalogs by catalog-qualifying `sql_table`
 
 ## 5. Example
 

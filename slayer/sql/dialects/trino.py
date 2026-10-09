@@ -92,21 +92,28 @@ class PrestoFamilyDialect(SqlDialect):
         return exp.Div(this=value, expression=divisor, typed=True)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
-        """``UNNEST(SEQUENCE(..))``; past ``SEQUENCE``'s entry cap, a filtered product of two."""
+        """``UNNEST(SEQUENCE(..))``; past ``SEQUENCE``'s entry cap, a filtered product of base-cap digits."""
         if size <= _SEQUENCE_MAX:
             return exp.select(exp.column("i")).from_(_unnest_sequence(size=size, name="_seq"))
+        places = [1]
+        while places[-1] * _SEQUENCE_MAX < size:
+            places.append(places[-1] * _SEQUENCE_MAX)
+        places.reverse()  # most significant digit first
+        names = ["_hi", *(f"_d{j}" for j in range(len(places) - 2, 0, -1)), "_lo"]
 
         def value() -> Expression:
-            return exp.Add(
-                this=exp.Mul(this=exp.column("i", table="_hi"), expression=exp.Literal.number(_SEQUENCE_MAX)),
-                expression=exp.column("i", table="_lo"),
-            )
+            total: Expression = exp.Mul(this=exp.column("i", table="_hi"), expression=exp.Literal.number(places[0]))
+            for name, place in zip(names[1:], places[1:]):
+                digit = exp.column("i", table=name)
+                total = exp.Add(
+                    this=total, expression=exp.Mul(this=digit, expression=exp.Literal.number(place)) if place > 1 else digit,
+                )
+            return total
 
-        return exp.select(value().as_("i")).from_(
-            _unnest_sequence(size=-(-size // _SEQUENCE_MAX), name="_hi"),
-        ).join(
-            _unnest_sequence(size=_SEQUENCE_MAX, name="_lo"), join_type="cross",
-        ).where(exp.LT(this=value(), expression=exp.Literal.number(size)))
+        select = exp.select(value().as_("i")).from_(_unnest_sequence(size=-(-size // places[0]), name="_hi"))
+        for name in names[1:]:
+            select = select.join(_unnest_sequence(size=_SEQUENCE_MAX, name=name), join_type="cross")
+        return select.where(exp.LT(this=value(), expression=exp.Literal.number(size)))
 
 
 class TrinoDialect(PrestoFamilyDialect):

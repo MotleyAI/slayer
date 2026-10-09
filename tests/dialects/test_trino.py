@@ -262,6 +262,24 @@ def test_integer_sequence_past_the_cap_crosses_two(dialect) -> None:
     )
 
 
+@_family
+def test_integer_sequence_past_the_squared_cap_crosses_three(dialect) -> None:
+    sql = _sql(dialect, dialect.build_integer_sequence(size=100_000_001))
+    value = "_hi.i * 100000000 + _d1.i * 10000 + _lo.i"
+    assert sql == (
+        f"SELECT {value} AS i FROM UNNEST(SEQUENCE(0, 1)) AS _hi(i) "
+        "CROSS JOIN UNNEST(SEQUENCE(0, 9999)) AS _d1(i) CROSS JOIN UNNEST(SEQUENCE(0, 9999)) AS _lo(i) "
+        f"WHERE {value} < 100000001"
+    )
+
+
+@_family
+@pytest.mark.parametrize("size", [10**12, 10**12 + 1, 10**17])
+def test_integer_sequence_never_exceeds_the_cap(dialect, size: int) -> None:
+    bounds = [int(b) for b in re.findall(r"SEQUENCE\(0, (\d+)\)", _sql(dialect, dialect.build_integer_sequence(size=size)))]
+    assert max(bounds) <= 9_999
+
+
 # ---------------------------------------------------------------------------
 # Median / percentile stay approximate
 # ---------------------------------------------------------------------------

@@ -74,7 +74,9 @@ the URL rebuilt by SQLAlchemy (never string surgery) so every other component su
 `TrinoContainer` pinned to `trinodb/trino:483`; each module seeds its own `memory` schema. Shared
 fixture seeders gain a Trino column-type map and a typed-temporal-literal mode used only by Trino,
 so every other backend's seed SQL is byte-identical. The approximate-percentile tests compare
-against a direct `APPROX_PERCENTILE` query over the same rows.
+against a direct `APPROX_PERCENTILE` query over the same rows. A federation test adds Postgres and
+MySQL containers on a Docker network shared with Trino, each mounted as a catalog, and joins models
+from both through one Trino datasource.
 
 ### D6 CI path gates
 

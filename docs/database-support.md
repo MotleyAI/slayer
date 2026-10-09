@@ -246,6 +246,8 @@ Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
   (a password, `access_token`, `cert` + `key`, or `externalAuthentication`);
   `?http_scheme=http` or `?http_scheme=https` overrides. The HTTPS path is
   unit-tested only — the live suite runs without TLS.
+- **Cross-catalog joins.** Models on one Trino datasource may join tables from
+  different catalogs by catalog-qualifying `sql_table` (e.g. `postgresql.public.customers`).
 
 ### BigQuery caveats
 

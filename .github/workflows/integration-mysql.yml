@@ -82,15 +82,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install verify.py dependencies
-        run: pip install sqlalchemy
-
-      - name: Make slayer_data writable for container user
-        working-directory: examples/mysql
-        run: chmod -R 777 slayer_data
+        run: 'pip install --only-binary :all: sqlalchemy==2.0.49'
 
       - name: Build images
         working-directory: examples/mysql
         run: docker compose build
+
+      - name: Hand slayer_data to the container user
+        working-directory: examples/mysql
+        run: sudo chown -R "$(docker compose run --rm --no-deps --entrypoint id slayer -u)" slayer_data
 
       - name: Start DB + seed
         working-directory: examples/mysql

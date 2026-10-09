@@ -1,5 +1,7 @@
 """Live Trino suite: a ``trinodb/trino`` container, each module seeding its own ``memory`` schema.
 
+The federation tests run a second Trino with live Postgres and MySQL catalogs.
+
 The ``memory`` connector has no primary or foreign keys, so joins are hand-declared.
 Skipped when ``testcontainers[trino]`` or the Trino driver is missing, or Docker is unreachable.
 """
@@ -28,6 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient, get_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import trino as trino_dialect_module
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import (
     DateCase,
@@ -53,6 +56,9 @@ pytest.importorskip("testcontainers.trino")
 pytest.importorskip("trino.sqlalchemy")
 
 import docker  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.core.network import Network  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.mysql import MySqlContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from testcontainers.postgres import PostgresContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from testcontainers.trino import TrinoContainer  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 _IMAGE = "trinodb/trino:483"
@@ -85,16 +91,18 @@ def _host_port(container) -> tuple[str, int]:
     return container.get_container_host_ip(), int(container.get_exposed_port(8080))
 
 
-def _url(container, schema: str | None = None) -> str:
+def _url(container, schema: str | None = None, *, catalog: str = _CATALOG) -> str:
     host, port = _host_port(container)
-    path = f"{_CATALOG}/{schema}" if schema else _CATALOG
+    path = f"{catalog}/{schema}" if schema else catalog
     return f"trino://{container.user}@{host}:{port}/{path}"
 
 
-def _run(container, statements: Iterable[str], *, schema: str | None = None) -> list[list[Any]]:
+def _run(
+    container, statements: Iterable[str], *, schema: str | None = None, catalog: str = _CATALOG,
+) -> list[list[Any]]:
     """Run ``statements`` in order on a raw driver cursor; the last one's rows."""
     rows: list[list[Any]] = []
-    with disposable_engine(_url(container, schema)) as engine:
+    with disposable_engine(_url(container, schema, catalog=catalog)) as engine:
         raw = engine.raw_connection()
         try:
             cursor = raw.cursor()
@@ -126,11 +134,11 @@ def _seeded_schema(container, statements: Iterable[str]) -> Generator[str]:
         _drop_schema(container, schema)
 
 
-def _ds_config(container, schema: str, *, name: str = _DS) -> DatasourceConfig:
+def _ds_config(container, schema: str, *, name: str = _DS, catalog: str = _CATALOG) -> DatasourceConfig:
     host, port = _host_port(container)
     return DatasourceConfig(
         name=name, type="trino", host=host, port=port,
-        database=f"{_CATALOG}/{schema}", username=container.user,
+        database=f"{catalog}/{schema}", username=container.user,
     )
 
 
@@ -687,6 +695,93 @@ class TestCrossModelAndMultistageTrino:
         assert {r["orders.status"]: r["orders._count"] for r in wide.data} == {"completed": 4, "pending": 2}
 
 
+# ---------------------------------------------------------------------------
+# Federation: one Trino datasource joining Postgres and MySQL catalogs
+# ---------------------------------------------------------------------------
+
+_FED_CATALOGS = {
+    "postgresql": "connector.name=postgresql\nconnection-url=jdbc:postgresql://pg:5432/fed\n"
+                  "connection-user=slayer\nconnection-password=slayer\n",
+    "mysql": "connector.name=mysql\nconnection-url=jdbc:mysql://mysql:3306\n"
+             "connection-user=root\nconnection-password=root\n",
+}
+_FED_SEED = [
+    "CREATE TABLE postgresql.public.customers (id INTEGER, name VARCHAR, region VARCHAR)",
+    "INSERT INTO postgresql.public.customers VALUES (1, 'Acme Corp', 'US'), (2, 'Globex', 'EU'), (3, 'Initech', 'US')",
+    "CREATE TABLE mysql.shop.orders (id INTEGER, status VARCHAR, amount DOUBLE, customer_id INTEGER)",
+    "INSERT INTO mysql.shop.orders VALUES "
+    + ", ".join(f"({i}, '{status}', {amount}, {customer})" for i, status, amount, customer, _ in _BASE_ORDERS),
+]
+
+
+@pytest.fixture(scope="module")
+def trino_federation_env(tmp_path_factory):
+    """A Trino whose ``postgresql`` / ``mysql`` catalogs are live containers, as one SLayer datasource."""
+    catalog_dir = tmp_path_factory.mktemp("trino_catalogs")
+    trino = TrinoContainer(_IMAGE, container_start_timeout=180)
+    for name, properties in _FED_CATALOGS.items():
+        path = catalog_dir / f"{name}.properties"
+        path.write_text(properties)
+        trino.with_volume_mapping(str(path), f"/etc/trino/catalog/{name}.properties")
+    with Network() as network:
+        postgres = PostgresContainer(
+            "postgres:16-alpine", username="slayer", dbname="fed",
+            password="slayer",  # NOSONAR(S2068) — testcontainer credentials, not real secrets
+        ).with_network(network).with_network_aliases("pg")
+        mysql = MySqlContainer(
+            "mysql:8.0", dbname="shop",
+            root_password="root",  # NOSONAR(S2068) — testcontainer credentials, not real secrets
+        ).with_network(network).with_network_aliases("mysql")
+        with postgres, mysql, trino.with_network(network):
+            _run(trino, _FED_SEED, catalog="postgresql")
+            yield SlayerQueryEngine(storage=_storage(
+                str(tmp_path_factory.mktemp("trino_fed")),
+                _ds_config(trino, "public", name="fed", catalog="postgresql"),
+                [
+                    SlayerModel(
+                        name="orders", sql_table="mysql.shop.orders", data_source="fed",
+                        columns=[
+                            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                            Column(name="status", sql="status", type=DataType.TEXT),
+                            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+                            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                        ],
+                        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+                    ),
+                    SlayerModel(
+                        name="customers", sql_table="postgresql.public.customers", data_source="fed",
+                        columns=[
+                            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                            Column(name="region", sql="region", type=DataType.TEXT),
+                        ],
+                    ),
+                ],
+            ))
+            engine_factory.reset_cache()
+
+
+@pytest.mark.integration
+class TestTrinoFederation:
+    async def test_join_across_catalogs(self, trino_federation_env: SlayerQueryEngine) -> None:
+        result = await trino_federation_env.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customers.region"],
+            "measures": [{"formula": "*:count", "name": "n"}, {"formula": "amount:sum", "name": "revenue"}],
+        }))
+        assert {
+            r["orders.customers.region"]: (int(r["orders.n"]), float(r["orders.revenue"])) for r in result.data
+        } == {"US": (4, 675.0), "EU": (2, 200.0)}
+
+    async def test_grouped_counts_sum_to_total(self, trino_federation_env: SlayerQueryEngine) -> None:
+        grouped = await trino_federation_env.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["customers.region", "status"],
+            "measures": [{"formula": "*:count", "name": "n"}],
+        }))
+        total = await trino_federation_env.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "measures": [{"formula": "*:count", "name": "n"}],
+        }))
+        assert sum(int(r["orders.n"]) for r in grouped.data) == int(total.data[0]["orders.n"]) == len(_BASE_ORDERS)
+
+
 @pytest.fixture
 def trino_derived_chain_env(trino_container, tmp_path):
     seed = [
@@ -1161,3 +1256,8 @@ class TestTrinoTimeSpine:
         sequence = dialect_for_ds_type("trino").build_integer_sequence(size=size).sql(dialect="trino")
         rows = _run(trino_container, [f"SELECT count(*), count(DISTINCT i), min(i), max(i) FROM ({sequence}) AS s"])
         assert rows == [[size, size, 0, size - 1]]
+
+    @pytest.mark.parametrize("size", [101, 1_000, 1_234])
+    def test_integer_sequence_digits_cover_the_range(self, trino_container, monkeypatch, size: int) -> None:
+        monkeypatch.setattr(trino_dialect_module, "_SEQUENCE_MAX", 10)  # 3+ digit factors at small sizes
+        self.test_integer_sequence_spans_the_sequence_cap(trino_container, size)
