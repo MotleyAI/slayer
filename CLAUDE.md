@@ -16,7 +16,7 @@ references), `docs/examples/`, `docs/cube/cube_import.md`, `docs/database-suppor
 ## Structure
 
 The package map and per-node docs live in `architecture/`: package→node claims in the
-node metadata of the LikeC4 model `architecture/model/slayer.c4` (enforced by `la-arch-check` from
+node metadata of the LikeC4 model `architecture/model.c4` (enforced by `la-arch-check` from
 MotleyAI/living-architecture), repo-wide settings in `architecture/index.yaml`, node descriptions in
 `architecture/*.arc42.md`, cross-cutting principles in `architecture/system.arc42.md` §3,
 and the enforcement-bundle commands in §4.
