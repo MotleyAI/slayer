@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from importlib.metadata import distribution
 from typing import get_args
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.telemetry import features, recorder
-from slayer.telemetry.payload import CLIENTS, DIALECTS, ErrorToken
+from slayer.telemetry.payload import CLIENTS, DIALECTS, EXTRAS, ErrorToken
 
 
 @pytest.mark.parametrize("dotted", sorted(recorder._ERROR_TOKENS))
@@ -38,6 +39,11 @@ def test_http_errors_count_by_status_class(status: int, token: str) -> None:
 
 def test_client_table_maps_into_vocabulary() -> None:
     assert set(recorder._CLIENT_NAMES.values()) <= CLIENTS
+
+
+def test_every_package_extra_is_vocabulary() -> None:
+    declared = set(distribution("motley-slayer").metadata.get_all("Provides-Extra") or [])
+    assert declared - {"all", "embedding-search"} <= set(EXTRAS)
 
 
 def test_every_dialect_is_vocabulary() -> None:

@@ -83,7 +83,7 @@ OsToken = Literal["linux", "darwin", "windows", "other"]
 ArchToken = Literal["x86_64", "arm64", "other"]
 ExtraToken = Literal[
     "client", "postgres", "mysql", "clickhouse", "sqlserver", "snowflake", "bigquery", "dbt",
-    "flight", "advanced-search",
+    "flight", "advanced-search", "trino",
 ]
 
 USAGE_KEYS: frozenset[str] = frozenset(get_args(UsageKey))
