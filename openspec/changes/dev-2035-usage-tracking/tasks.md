@@ -34,10 +34,10 @@
 
 ## 5. Docs and release
 
-- [ ] 5.1 `docs/reference/telemetry.md`: every field, controls, notice text, destination (IP received at transport, discarded, no GeoIP), privacy notice (Motley as controller, purpose, PostHog EU processor, 13-month raw retention, ID rotation, erasure by install ID + contact address); nav entry in `zensical.toml`. Verify: page renders in nav.
+- [x] 5.1 `docs/reference/telemetry.md`: every field, controls, notice text, destination (IP received at transport, discarded, no GeoIP), privacy notice (Motley as controller, purpose, PostHog EU processor, 13-month raw retention, ID rotation, erasure by install ID + contact address); nav entry in `zensical.toml`. Verify: page renders in nav.
 - [ ] 5.2 README telemetry section (one paragraph + opt-out); CLI reference for `slayer telemetry`; release-notes item. Verify: grep.
 
 ## 6. Gates
 
-- [ ] 6.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
+- [x] 6.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
 - [ ] 6.2 **Release-blocking:** PostHog EU project created with "Discard client IP data", DPA signed, project API key (`phc_…`) received from the user and set as the shipped default; a live smoke send verified in PostHog. Implementation and tests proceed without it via `SLAYER_TELEMETRY_ENDPOINT`.
