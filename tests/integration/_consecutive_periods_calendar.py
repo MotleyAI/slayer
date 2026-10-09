@@ -31,10 +31,12 @@ def seed_statements(
     text_type: str = "VARCHAR(32)",
     float_type: str = "FLOAT",
     table_options: str = "",
+    typed_temporals: bool = False,
 ) -> list[str]:
-    """``CREATE TABLE streak_events`` plus one literal multi-row INSERT."""
+    """``CREATE TABLE streak_events`` plus one literal multi-row INSERT (typed DATE / TIMESTAMP literals on request)."""
+    date_kw, ts_kw = ("DATE ", "TIMESTAMP ") if typed_temporals else ("", "")
     values = ", ".join(
-        f"({i}, '{g}', 1, '{day}', '{day} 13:45:00')"
+        f"({i}, '{g}', 1, {date_kw}'{day}', {ts_kw}'{day} 13:45:00')"
         for i, (g, day) in enumerate(
             ((g, day) for g, days in _SERIES.items() for day in days), start=1,
         )

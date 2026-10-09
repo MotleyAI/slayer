@@ -96,14 +96,14 @@ jobs:
 
       - name: Run integration tests
         timeout-minutes: 20
-        # DEV-1564: the MySQL / ClickHouse / SQL Server pytest integration
+        # The MySQL / ClickHouse / SQL Server / Trino pytest integration
         # suites have their own path-gated workflows under
         # .github/workflows/integration-<dialect>.yml. They require Docker
         # + testcontainers + (for SQL Server) the ODBC Driver 18 — provisioned
         # only in those workflows. Exclude them from the always-on integration
         # job; they run when their respective dialect files change.
         #
-        # DEV-1562: the live-Metabase e2e suite (`metabase_e2e` marker) has
+        # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
         # a Metabase container.
@@ -115,9 +115,10 @@ jobs:
             -n logical --dist loadscope \
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
-            --ignore=tests/integration/test_integration_sqlserver.py
+            --ignore=tests/integration/test_integration_sqlserver.py \
+            --ignore=tests/integration/test_integration_trino.py
 
-  # DEV-1564: the previous `integration-examples` matrix (verify.py-based
+  # The previous `integration-examples` matrix (verify.py-based
   # end-to-end checks for ClickHouse + MySQL) migrated into the per-dialect
   # workflows so each dialect's CI lives in one place and is path-gated.
   # SQL Server gained its first verify.py-based CI coverage there too.
