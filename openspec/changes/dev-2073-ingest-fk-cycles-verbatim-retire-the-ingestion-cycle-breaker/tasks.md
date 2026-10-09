@@ -46,8 +46,8 @@
 
 - [x] 8.1 Full unit suite, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline) and `la-arch-check` all green
 - [x] 8.2 Comment on DEV-2074 recording the deferred items (self-referencing FKs, literal-first/route rules, facade diagnostic for hand-authored unaddressable pairs) and the D/E pins it owns
-- [ ] 8.3 PR description says `Fixes #477` and credits the reporter; draft a closing comment for PR #479 (thanks, why back-edge dropping was not taken — table-name-order choice, latest-child silently re-keyed — link to the PR) and get the user's OK on the exact text before posting or closing anything
+- [x] 8.3 PR description says `Fixes #477` and credits the reporter; draft a closing comment for PR #479 (thanks, why back-edge dropping was not taken — table-name-order choice, latest-child silently re-keyed — link to the PR) and get the user's OK on the exact text before posting or closing anything
 
 ## 9. Reserved-word aliases (added in pr-implement with user approval)
 
-- [x] 9.1 Per-dialect reserved-alias sets in `slayer/sql/reserved_keywords.py`, live alias probes in the SQLite/DuckDB unit tests and each engine's integration suite (Postgres, MySQL, ClickHouse, SQL Server, Snowflake, BigQuery)
+- [x] 9.1 Per-dialect reserved-alias sets in `slayer/sql/reserved_keywords.py`, live alias probes in the SQLite/DuckDB unit tests and each engine's integration suite (Postgres, MySQL, ClickHouse, SQL Server, Trino, Snowflake, BigQuery)

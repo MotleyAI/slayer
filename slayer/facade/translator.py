@@ -225,7 +225,7 @@ def _expand_select_star(
 AGG_OVER_MEASURE_MESSAGE = (
     "Aggregating over a saved measure or a non-column expression is not "
     "supported yet (only aggregates over base/joined columns are mapped). "
-    "See DEV-1493. Project the saved measure by its name instead."
+    "Project the saved measure by its name instead."
 )
 
 
@@ -691,7 +691,7 @@ def _assert_local_metric(metric: FacadeMetric) -> None:
         raise TranslationError(
             f"Cross-model metric {metric.name!r} cannot be projected in "
             f"a flat SELECT. Use a saved metric or rewrite as a multi-"
-            f"stage query (DEV-1493)."
+            f"stage query."
         )
 
 
