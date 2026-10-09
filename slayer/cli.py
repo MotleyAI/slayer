@@ -1037,7 +1037,12 @@ def _run_telemetry(args) -> None:
         print(telemetry_control.pending_report().model_dump_json(indent=2))
 
 
+_SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
+
+
 def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
+    if args.command in _SERVER_COMMANDS:
+        _unwind_on(signal.SIGTERM)
     if args.command == "serve":
         _run_serve(args)
     elif args.command == "flight-serve":
@@ -1566,7 +1571,7 @@ def _run_mcp(args):
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
     mcp = create_mcp_server(storage=storage, **_server_flags(args))
-    _exit_on_signals()
+    _unwind_on(signal.SIGINT)
     try:
         mcp.run()
     except KeyboardInterrupt:
@@ -1579,19 +1584,16 @@ class _StdioInterrupted(SystemExit):
     """stdio MCP stopped by a signal; its blocked stdin reader thread would hold up a normal exit."""
 
 
-def _exit_on_signals() -> None:
-    """Make SIGTERM / SIGINT unwind stdio MCP at once (asyncio would only cancel); chains any handler."""
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(signum, _unwinding_handler(signal.getsignal(signum)))
+def _unwind_on(signum: signal.Signals) -> None:
+    """Make ``signum`` raise ``SystemExit`` so a server unwinds and spools; chains any installed handler."""
+    previous = signal.getsignal(signum)
 
-
-def _unwinding_handler(previous):
-    def handler(signum, frame):
+    def handler(received, frame):
         if callable(previous):
-            previous(signum, frame)
-        raise SystemExit(128 + signum)
+            previous(received, frame)
+        raise SystemExit(128 + received)
 
-    return handler
+    signal.signal(signum, handler)
 
 
 def _parse_csv_arg(value):

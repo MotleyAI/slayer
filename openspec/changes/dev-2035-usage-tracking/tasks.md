@@ -27,7 +27,7 @@
 
 ## 4. Hooks
 
-- [ ] 4.1 `slayer/cli.py`: `telemetry.start()` in `main`, a `set_defaults` telemetry token on every leaf parser, `slayer telemetry status|enable|disable|show`, `try/finally` flush around each server run, SIGTERM handler for stdio `mcp`. Verify: 1.4, 1.5 CLI, 1.7 lifecycle.
+- [x] 4.1 `slayer/cli.py`: `telemetry.start()` in `main`, a `set_defaults` telemetry token on every leaf parser, `slayer telemetry status|enable|disable|show`, `try/finally` flush around each server run, SIGTERM handler for stdio `mcp`. Verify: 1.4, 1.5 CLI, 1.7 lifecycle.
 - [x] 4.2 `slayer/mcp/server.py`: one `call_tool` interception + `clientInfo` capture; features before execution in `query`. Verify: 1.5 MCP, 1.6.
 - [x] 4.3 `slayer/api/server.py`: route-template middleware excluding `/mcp`; features before execution. Verify: 1.5 REST.
 - [x] 4.4 `slayer/flight/handlers.py` `_execute_full` and `slayer/pg_facade/connection.py` `_run_query`: count + features. Verify: 1.5 Flight / PG.
