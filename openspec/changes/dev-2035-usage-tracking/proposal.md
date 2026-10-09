@@ -9,7 +9,7 @@ We have no signal on how SLayer is used — active installs, which surfaces, dia
 - Per-process in-memory counters, spooled locally at exit; sent to PostHog EU at most once per 24 h per install, only when SLayer runs anyway (no heartbeat), from a background thread.
 - Controls: `DO_NOT_TRACK=1`, `SLAYER_TELEMETRY=on|off`, auto-off in `CI`, editable installs and unwritable config dirs, and `slayer telemetry status|enable|disable|show`.
 - One-time stderr notice; docs page with every field and a privacy notice; random install ID rotated every 13 months.
-- Architecture: new precise node `telemetry` in the LikeC4 model; principle 17 in `system.arc42.md`; new `telemetry.arc42.md` (fail-silent).
+- Architecture: new precise node `telemetry` in the LikeC4 model; new `telemetry.arc42.md` (fail-silent, payload vocabulary, privacy principles).
 
 ## Capabilities
 
@@ -25,6 +25,6 @@ We have no signal on how SLayer is used — active installs, which surfaces, dia
 
 - New package `slayer/telemetry/` (stdlib `urllib`, no new dependency).
 - Hooks in `slayer/cli.py`, `slayer/mcp/server.py` (`FastMCP.call_tool`), `slayer/api/server.py` (middleware), `slayer/flight/handlers.py` (`_execute_full`), `slayer/pg_facade/connection.py` (`_run_query`), and the query-executing surfaces (feature extraction).
-- Architecture: `architecture/model/slayer.c4` (node + edges), `architecture/system.arc42.md` §3, new `architecture/telemetry.arc42.md`, regenerated landscape diagram.
+- Architecture: `architecture/model/slayer.c4` (node + edges), `architecture/system.arc42.md` §2, new `architecture/telemetry.arc42.md`, regenerated landscape diagram.
 - Docs: `docs/reference/telemetry.md` (+ `zensical.toml` nav), README, CLI reference, release notes.
 - External prerequisite (release-blocking): PostHog EU project with "Discard client IP data", PostHog DPA, project API key.

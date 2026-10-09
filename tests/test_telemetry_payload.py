@@ -1,4 +1,4 @@
-"""system.arc42.md principle 17: a usage report carries only SLayer-defined vocabulary."""
+"""telemetry.arc42.md principle 2: a usage report carries only SLayer-defined vocabulary."""
 
 from __future__ import annotations
 
