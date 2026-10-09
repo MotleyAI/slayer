@@ -147,23 +147,24 @@ def test_stdio_mcp_broken_pipe_spools(store: str, telemetry_env) -> None:
         [sys.executable, "-m", "slayer", "mcp", "--storage", store],
         env=telemetry_env.subprocess_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
+    stdin, stdout = proc.stdin, proc.stdout
+    assert stdin is not None
+    assert stdout is not None
 
     def send(message: dict) -> None:
-        proc.stdin.write((json.dumps(message) + "\n").encode())
-        proc.stdin.flush()
+        stdin.write((json.dumps(message) + "\n").encode())
+        stdin.flush()
 
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "2.3.1"}}})
-        assert json.loads(proc.stdout.readline())["id"] == 1
+        assert json.loads(stdout.readline())["id"] == 1
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
-        assert json.loads(proc.stdout.readline())["id"] == 2
-        proc.stdout.close()
+        assert json.loads(stdout.readline())["id"] == 2
+        stdout.close()
         send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
-        proc.stdin.close()
+        stdin.close()
         proc.wait(timeout=30)
     finally:
         if proc.poll() is None:

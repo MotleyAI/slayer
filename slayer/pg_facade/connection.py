@@ -725,7 +725,7 @@ class PgConnection:
     async def _handle_simple_query(self, sql: str) -> None:
         try:
             statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
-        except sqlglot.errors.ParseError as exc:
+        except sqlglot.errors.SqlglotError as exc:
             # BI tools (Metabase) wrap reads in ``BEGIN READ ONLY`` etc., which
             # sqlglot can't parse. Strip the transaction characteristics and
             # retry once before surfacing a syntax error.
@@ -734,7 +734,7 @@ class PgConnection:
                 statements = [
                     s for s in sqlglot.parse(stripped, dialect="postgres") if s is not None
                 ] if stripped != sql else None
-            except sqlglot.errors.ParseError:
+            except sqlglot.errors.SqlglotError:
                 statements = None
             if statements is None:
                 logger.warning("pg facade: cannot parse simple query %r: %s", sql, exc)
@@ -969,7 +969,7 @@ class PgConnection:
     def _portal_is_tx_end(sql: str) -> bool:
         try:
             parsed = sqlglot.parse_one(sql, dialect="postgres")
-        except sqlglot.errors.ParseError:
+        except sqlglot.errors.SqlglotError:
             return False
         return _is_tx_end(parsed)
 

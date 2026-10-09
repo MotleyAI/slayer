@@ -1437,13 +1437,13 @@ def _parse_with_keyword_alias_fallback(
     with the original parse error if both attempts fail."""
     try:
         return sqlglot.parse_one(sql, dialect=dialect)  # pyright: ignore[reportReturnType] — parse_one's Expr TypeVar
-    except sqlglot.errors.ParseError as primary:
+    except sqlglot.errors.SqlglotError as primary:
         retry_sql = _quote_keyword_aliases(sql)
         if retry_sql == sql:
             raise TranslationError(f"SQL parse error: {primary}") from primary
         try:
             return sqlglot.parse_one(retry_sql, dialect=dialect)  # pyright: ignore[reportReturnType] — parse_one's Expr TypeVar
-        except sqlglot.errors.ParseError:
+        except sqlglot.errors.SqlglotError:
             raise TranslationError(f"SQL parse error: {primary}") from primary
 
 
