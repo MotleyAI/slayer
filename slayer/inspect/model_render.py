@@ -574,6 +574,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         )
     if model.hidden:
         meta.append("- **hidden:** true")
+    if model.access_tags:
+        meta.append(f"- **access_tags:** {', '.join(f'`{t}`' for t in model.access_tags)}")
     if model.meta is not None:
         meta.append(f"- **meta:** {json.dumps(model.meta, sort_keys=True, default=str)}")
     row_count: int | None = None
@@ -595,10 +597,6 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     backing_info = _build_backing_query_info(model)
     if backing_info is not None:
         out_sections.append(_backing_query_markdown_section(backing_info))
-        if show_sql and model.backing_query_sql:
-            out_sections.append(
-                f"## Backing Query SQL\n\n```sql\n{model.backing_query_sql}\n```"
-            )
 
     # Rendered samples come only from the profiling owner's returned columns.
     sampled_by_name: dict[str, Column] = {}
@@ -860,10 +858,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             payload["sql"] = model.sql
         if backing_info is not None:
             payload["backing_query"] = backing_info
-            if show_sql and model.backing_query_sql:
-                payload["backing_query_sql"] = model.backing_query_sql
         payload["default_time_dimension"] = model.default_time_dimension
         payload["hidden"] = model.hidden
+        payload["access_tags"] = model.access_tags
         payload["meta"] = model.meta
         payload["row_count"] = row_count
         if show_sql:

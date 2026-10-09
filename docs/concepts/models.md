@@ -35,11 +35,11 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `filters` | list[str] | No | Model-level WHERE filters (always applied) |
 | `default_time_dimension` | string | No | Default time dim for time-dependent formulas; when unset, a model's only DATE / TIMESTAMP column serves, and it is the model's [time spine](time.md#time-spine) axis; saving a model whose declared default isn't a DATE / TIMESTAMP column fails |
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
-| `backing_query_sql` | string | No | Engine-managed cache of the rendered backing query |
 | `description` | string | No | Helps agents and users understand the model |
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
+| `access_tags` | list[str] | No | Access groups: through a [tag-filtered store](../configuration/storage.md#tag-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `11`) |
+| `version` | int | No | Schema version stamp (currently `15`) |
 
 ## Source modes
 
@@ -421,7 +421,7 @@ await engine.create_model_from_query(
 )
 ```
 
-This saves the query structure in `model.source_queries`, saves any defaults in `model.query_variables`, runs save-time validation (rendered exactly as execution with no runtime variables, so a `{var}` without a default refuses the save), and caches the resulting `columns` and rendered `backing_query_sql` on the model for fast inspection.
+This saves the query structure in `model.source_queries`, saves any defaults in `model.query_variables`, runs save-time validation (rendered exactly as execution with no runtime variables, so a `{var}` without a default refuses the save), and caches the resulting `columns` on the model for fast inspection; a `dry_run` query on the model returns its SQL.
 
 `create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced. Stages form a DAG: any stage may use a *prior* named sibling as `source_model` or as `joins.target_model`. Forward and self references are rejected.
 
@@ -523,9 +523,9 @@ Unresolved placeholders raise a clear error at execute time, naming the model an
 
 ### What gets cached
 
-For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot) and `model.backing_query_sql` (the rendered backing query); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
+For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
 
-You **cannot** supply `columns` or `backing_query_sql` yourself when creating a query-backed model — both are engine-managed, and any user-supplied value is rejected with a clear error.
+You **cannot** supply `columns` yourself when creating a query-backed model — they are engine-managed, and any user-supplied value is rejected with a clear error.
 
 ### Column naming in query-derived models
 

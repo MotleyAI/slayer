@@ -241,7 +241,8 @@ class TestCreateModelFromQuery:
             assert from_storage is not None
             assert [c.name for c in from_storage.columns] == [c.name for c in saved.columns]
             sql = (await engine.execute("rev_by_region", dry_run=True)).sql
-            assert sql is not None and "amount" in sql.lower()
+            assert sql is not None
+            assert "amount" in sql.lower()
         finally:
             tmp.cleanup()
 

@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 14,
+    "SlayerModel": 15,
     "SlayerQuery": 6,
     "DatasourceConfig": 2,
     "Memory": 4,
@@ -98,6 +98,13 @@ def _model_v11_to_v12(data: dict) -> dict:
     aggs = data.get("aggregations")
     if isinstance(aggs, list):
         data["aggregations"] = [_drop_blank_agg_fields(a) if isinstance(a, dict) else a for a in aggs]
+    return data
+
+
+@register_migration(entity="SlayerModel", source_version=14)
+def _model_v14_to_v15(data: dict) -> dict:
+    """v15: drop the cached ``backing_query_sql`` (a ``dry_run`` query renders it); ``access_tags`` defaults to public."""
+    data.pop("backing_query_sql", None)
     return data
 
 

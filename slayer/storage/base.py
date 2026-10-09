@@ -4,12 +4,13 @@ import asyncio
 import logging
 import os
 import sys
+import uuid
 import warnings
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
@@ -413,28 +414,33 @@ class StorageBackend(ABC):
     #: True on filename-backed backends (YAML): saves reject ids differing only
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
+    _instance_identity: str | None = None
 
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
         self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        """Persist a model: reserved-name and case-collision rejection, then derived-column well-formedness (reference arity + cycles) and join-edge validation, before the backend write. ``_validate=False`` (migration write-back only) skips all of it. Backends must NOT override this."""
+        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
         if _validate:
-            if model.name == TIME_SPINE_MODEL:
-                raise ReservedModelNameError(name=model.name)
-            if self._ids_collide_as_filenames:
-                await self._check_model_identity_collision(model)
-            # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
-            loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
-            peers = {m.name: m for m in (failures or DocumentLoadFailures()).skip((loaded, unloaded))}
-            validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
-            self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
-            await self._validate_aggregations(model)
-            await self._validate_column_granularities(model)
-            _validate_default_time_dimension(model)
+            await self.validate_for_save(model, failures=failures)
         await self._save_model_impl(model)
         self._forget_raw(data_source=model.data_source, name=model.name)
+
+    async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
+        """Reserved-name and case-collision rejection, derived-column well-formedness (reference arity + cycles) and join-edge validation against this store's peers."""
+        if model.name == TIME_SPINE_MODEL:
+            raise ReservedModelNameError(name=model.name)
+        if self._ids_collide_as_filenames:
+            await self._check_model_identity_collision(model)
+        # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
+        loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
+        peers = {m.name: m for m in (failures or DocumentLoadFailures()).skip((loaded, unloaded))}
+        validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+        self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
+        await self._validate_aggregations(model)
+        await self._validate_column_granularities(model)
+        _validate_default_time_dimension(model)
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
@@ -1252,12 +1258,19 @@ class StorageBackend(ABC):
         )
         return True
 
-    # ---- graph fingerprint ----
+    # ---- cache keys ----
 
-    async def graph_fingerprint(self) -> str:
-        """A string that changes whenever storage content changes (drives LadybugDB graph rebuilds). Default ``"0"``; backends override with file mtimes. May raise ``OSError`` when files are inaccessible — callers force a rebuild."""
+    async def graph_fingerprint(self) -> str | None:
+        """A string that changes whenever storage content changes; ``None`` (the default) = unknown, so no cache entry is ever reused. May raise ``OSError`` — callers force a rebuild."""
         await asyncio.sleep(0)
-        return "0"
+        return None
+
+    async def cache_identity(self) -> Hashable:
+        """Key under which caches derived from this store's content are kept (default: one per instance)."""
+        await asyncio.sleep(0)
+        if self._instance_identity is None:
+            self._instance_identity = uuid.uuid4().hex
+        return self._instance_identity
 
     # ---- embeddings sidecar ----
     # One row per ``(canonical_id, embedding_model_name)``; the active model

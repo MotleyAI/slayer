@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sqlite3
+from collections.abc import Hashable
 from typing import Any
 
 from slayer.core.errors import StoredDocumentLoadError
@@ -173,9 +174,12 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 "ON memory_entities(entity)"
             )
 
-    # ---- graph fingerprint -------------------------------------------------
+    # ---- cache keys --------------------------------------------------------
 
-    async def graph_fingerprint(self) -> str:
+    async def cache_identity(self) -> Hashable:
+        return os.path.abspath(self.db_path)
+
+    async def graph_fingerprint(self) -> str | None:
         """mtime of the SQLite database file as a string.
 
         Any write to the database changes the file's mtime, so this is

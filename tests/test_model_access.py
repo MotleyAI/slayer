@@ -24,6 +24,7 @@ from tests._model_access_fixtures import (
     AccessStore,
     access_store,
     model_ids,
+    must_get,
 )
 
 
@@ -112,7 +113,7 @@ class TestBypass:
         assert await everything._list_all_model_identities() == await inner._list_all_model_identities()
         assert await everything.list_models(DS) == await inner.list_models(DS)
         assert await everything.get_model("fin") == await inner.get_model("fin")
-        assert (await everything.get_model("fin")).joins  # the join to hr is kept
+        assert (await must_get(everything, "fin")).joins  # the join to hr is kept
         assert await everything.list_memories() == await inner.list_memories()
         model_name = embedding_client.current_model()
         assert (

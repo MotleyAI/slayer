@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: customers
 sql_table: customers
 source_kind: table
@@ -31,3 +31,4 @@ joins: []
 filters: []
 description: "Customers of the Jaffle Shop \u2014 one row per person."
 hidden: false
+access_tags: []

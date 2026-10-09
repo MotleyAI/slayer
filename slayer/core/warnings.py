@@ -202,6 +202,21 @@ class UnloadableDocumentWarning(SlayerWarning):
         return _single_line(f"skipped stored {self.document_kind} {document!r}, which cannot be loaded: {self.cause}")
 
 
+class NarrowedAccessWarning(SlayerWarning):
+    """Model ``model`` reads tagged models (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
+
+    kind: Literal["narrowed_access"] = "narrowed_access"
+    data_source: str
+    model: str
+    narrowed_by: list[str]
+
+    def human_message(self) -> str:
+        return (
+            f"narrowed access: model {self.data_source}.{self.model} reads {', '.join(self.narrowed_by)}, "
+            f"whose access tags do not cover its own; callers lacking those tags cannot see it"
+        )
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -215,6 +230,7 @@ AnySlayerWarning = Annotated[
         StatementTimeoutSkippedWarning,
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
+        NarrowedAccessWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -246,6 +262,17 @@ class SlayerUnloadableDocumentWarning(UserWarning):
     """Carrier ``UserWarning`` for an ``UnloadableDocumentWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: UnloadableDocumentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerNarrowedAccessWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``NarrowedAccessWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: NarrowedAccessWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

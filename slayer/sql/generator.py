@@ -6303,7 +6303,7 @@ def _user_authored_exemptions(
     in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
     ``name``/``sql``/``filter`` across the source, referenced, per-stage source and
     inline-extension models. These pass through emission
-    unfitted; SLayer-generated ``backing_query_sql`` and synthetic stage-schema
+    unfitted; SLayer-generated query-backed model SQL and synthetic stage-schema
     models (built later) are deliberately excluded."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     limit = d.max_identifier_bytes

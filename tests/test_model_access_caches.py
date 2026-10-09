@@ -139,7 +139,8 @@ class TestCacheIdentity:
         fin = TagFilteredStorage(store.storage, tags={"fin"}, bypass=False)
         hr = TagFilteredStorage(store.storage, tags={"hr"}, bypass=False)
         before = await fin.graph_fingerprint()
-        assert before is not None and before != await hr.graph_fingerprint()
+        assert before is not None
+        assert before != await hr.graph_fingerprint()
         await store.storage.save_model(_table_model("extra"), _validate=False)
         assert await fin.graph_fingerprint() != before
 

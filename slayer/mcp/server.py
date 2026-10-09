@@ -32,7 +32,7 @@ from slayer.core.models import (
 from slayer.core.granularity import CustomGranularity
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.core.warnings import ResponseTruncationWarning
+from slayer.core.warnings import NarrowedAccessWarning, ResponseTruncationWarning
 from slayer import async_utils
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
@@ -702,6 +702,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         variables: Annotated[dict[str, Any] | None, Field(
             description="Default values for {var} placeholders in the backing query.",
         )] = None,
+        access_tags: Annotated[list[str] | None, Field(
+            description="Access groups allowed to see the model; omit for public.",
+        )] = None,
     ) -> str:
         """Create a semantic model from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the model becomes query-backed and its columns come from the result).
 
@@ -711,6 +714,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
         """
+        notes: list[NarrowedAccessWarning] = []
         if query is not None:
             table_params = {
                 k: v for k, v in {
@@ -735,6 +739,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     name=name,
                     description=description or "",
                     variables=variables,
+                    access_tags=access_tags,
+                    warnings_out=notes,
                 )
             except Exception as e:
                 if isinstance(e, DatabaseError):
@@ -745,7 +751,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return (
                 f"Model '{name}' created from query. "
                 f"Columns: {cols}. Measures: {meas}."
-            )
+            ) + _warning_lines(notes)
 
         data = _build_dict(
             name=name,
@@ -756,6 +762,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             columns=columns,
             measures=measures,
             aggregations=aggregations,
+            access_tags=access_tags,
         )
         model = SlayerModel.model_validate(data)
         existed = (
@@ -765,13 +772,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # save_model normalizes, validates Mode-A join paths, and trial-executes
         # a raw-sql source against its datasource before it persists.
         try:
-            await engine.save_model(model)
+            await engine.save_model(model, warnings_out=notes)
         except Exception as e:
             if isinstance(e, DatabaseError):
                 return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
-        return f"Model '{model.name}' {verb}."
+        return f"Model '{model.name}' {verb}." + _warning_lines(notes)
 
     def _upsert_entity(
         entity_list: list,
@@ -835,6 +842,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="Replace the backing query's default {var} values; null clears them.",
         )] = _UNSET,
         hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
+        access_tags: Annotated[list[str] | None, Field(
+            description="Replace the access groups allowed to see the model; [] makes it public.",
+        )] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
@@ -953,14 +963,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model_level_change = True
             changes.append(f"set sql to '{sql}'")
         if source_queries is not None:
-            # Switching to query-backed source mode. Cache columns and
-            # backing_query_sql get refreshed when we save via engine.save_model.
+            # Switching to query-backed source mode; the cached columns are
+            # refreshed when we save via engine.save_model.
             model.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
             model.sql_table = None
             model.sql = None
             # Clear the user-managed columns so the cache write succeeds.
             model.columns = []
-            model.backing_query_sql = None
             changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             model.query_variables = query_variables or {}
@@ -972,6 +981,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if hidden is not None:
             model.hidden = hidden
             changes.append(f"set hidden to {hidden}")
+        if access_tags is not None:
+            model.access_tags = list(access_tags)
+            changes.append(f"set access_tags to {access_tags}")
         if meta is not _UNSET:
             model.meta = meta
             changes.append("updated meta" if meta is not None else "cleared meta")
@@ -1086,33 +1098,25 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Validation error: {exc}"
 
         if validated.source_queries:
-            # columns / backing_query_sql are engine-managed here; reject
-            # explicit user supply rather than silently dropping it.
+            # columns are engine-managed here; reject explicit user supply
+            # rather than silently dropping it.
             if columns is not None:
                 return (
                     "Validation error: cannot supply 'columns' on a "
                     f"query-backed model ('{model_name}'). Columns are "
                     "engine-managed (auto-derived from the backing query)."
                 )
-            # Strip cache fields so save_model repopulates them from a fresh
-            # expansion of the backing query.
-            validated = validated.model_copy(update={
-                "columns": [],
-                "backing_query_sql": None,
-            })
-            try:
-                # save_model may recompute data_source for query-backed models,
-                # so use the returned model's identity for cleanup below.
-                saved_model = await engine.save_model(validated)
-            except Exception as exc:
-                return f"Validation error: {exc}"
-        else:
-            # save_model normalizes, validates Mode-A join paths, and trial-
-            # executes a raw-sql source before it persists.
-            try:
-                saved_model = await engine.save_model(validated)
-            except Exception as exc:
-                return f"Validation error: {exc}"
+            # Strip the cached columns so save_model repopulates them from a
+            # fresh expansion of the backing query.
+            validated = validated.model_copy(update={"columns": []})
+        notes: list[NarrowedAccessWarning] = []
+        # save_model refreshes a query-backed model's cache (and may recompute its
+        # data_source, so cleanup below uses the returned identity); otherwise it
+        # normalizes, validates Mode-A join paths and trial-executes a raw-sql source.
+        try:
+            saved_model = await engine.save_model(validated, warnings_out=notes)
+        except Exception as exc:
+            return f"Validation error: {exc}"
 
         # Atomic move: remove the source row only after the save succeeded and
         # only if the saved model actually landed at a different data_source
@@ -1148,8 +1152,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             "changes": changes,
             "message": f"Applied {len(changes)} change(s) to '{model_name}'",
         }
-        if refresh_warnings:
-            response_payload["warnings"] = refresh_warnings
+        reply_warnings = [*(n.human_message() for n in notes), *refresh_warnings]
+        if reply_warnings:
+            response_payload["warnings"] = reply_warnings
         return json.dumps(response_payload, indent=2)
 
     # Datasource management
@@ -1696,6 +1701,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         return response.model_dump_json(indent=2)
 
     return mcp
+
+
+def _warning_lines(notes: list[NarrowedAccessWarning]) -> str:
+    return "".join(f"\nWarning: {n.human_message()}" for n in notes)
 
 
 def _build_dict(**kwargs: Any) -> dict[str, Any]:

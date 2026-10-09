@@ -36,8 +36,8 @@ and table B (union semantics — LadybugDB behaviour).
 from __future__ import annotations
 
 import asyncio
-import os
 import re
+from collections.abc import Hashable
 from functools import lru_cache
 from typing import Any
 
@@ -46,8 +46,6 @@ from pydantic import BaseModel
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.storage.sqlite_storage import SQLiteStorage
-from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
@@ -484,20 +482,11 @@ class _GraphCache(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
-_cache: dict[str, _GraphCache] = {}
-_locks: dict[str, asyncio.Lock] = {}
+_cache: dict[Hashable, _GraphCache] = {}
+_locks: dict[Hashable, asyncio.Lock] = {}
 
 
-def _storage_key(storage: StorageBackend) -> str:
-    """Stable path key for cache lookups."""
-    if isinstance(storage, YAMLStorage):
-        return os.path.abspath(storage.base_dir)
-    if isinstance(storage, SQLiteStorage):
-        return os.path.abspath(storage.db_path)
-    return str(id(storage))
-
-
-def _get_lock(key: str) -> asyncio.Lock:
+def _get_lock(key: Hashable) -> asyncio.Lock:
     """Return the per-key asyncio.Lock, creating it if absent.
 
     Safe without an outer lock because no ``await`` separates the
@@ -528,8 +517,8 @@ def clear_cache() -> None:
 async def _get_or_rebuild(
     storage: StorageBackend, *, failures: DocumentLoadFailures | None = None,
 ) -> tuple[Any, Any]:
-    """Return cached (db, conn) if the fingerprint matches; else rebuild."""
-    key = _storage_key(storage)
+    """Return cached (db, conn) if the fingerprint matches; else rebuild. Keyed by the store's view."""
+    key = await storage.cache_identity()
 
     try:
         current_fp: str | None = await storage.graph_fingerprint()

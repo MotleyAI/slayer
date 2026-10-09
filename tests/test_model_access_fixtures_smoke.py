@@ -21,7 +21,8 @@ from tests._model_access_fixtures import (
 async def test_full_store(params: tuple[str, str]) -> None:
     backend, dialect = params
     async with access_store(backend=backend, dialect=dialect) as s:
-        assert s.backend == backend and s.dialect == dialect
+        assert s.backend == backend
+        assert s.dialect == dialect
         loaded, unloaded = await s.storage.load_models(data_source=DS)
         assert {m.name for m in loaded} == ALL_LOADABLE
         assert [e.name for e in unloaded] == [UNLOADABLE]

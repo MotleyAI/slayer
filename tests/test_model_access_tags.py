@@ -146,4 +146,5 @@ class TestRestAndClient:
     async def test_local_client_reads_tags(self, storage: StorageBackend) -> None:
         await storage.save_model(_model(access_tags=["hr"]))
         model = await SlayerClient(storage=storage).get_model("items", data_source=DS)
-        assert model is not None and model.access_tags == ["hr"]
+        assert model is not None
+        assert model.access_tags == ["hr"]

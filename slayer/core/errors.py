@@ -1008,6 +1008,42 @@ class StoredDocumentLoadError(SlayerError, ValueError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
+class HiddenContentConflictError(SlayerError):
+    """A write conflicts with stored parts the caller cannot access; names only the caller's own document."""
+
+    def __init__(self, *, kind: str, name: str) -> None:
+        self.kind = kind
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The change to {kind} {name!r} conflicts with parts of it you cannot access.",
+            suggestion="Ask a caller with full access to make this change.",
+        ))
+
+
+class AccessTagsEditError(SlayerError):
+    """A caller without bypass tried to set or change a model's ``access_tags``."""
+
+    def __init__(self, *, model: str) -> None:
+        self.model = model
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model {model!r}: only a caller with full access may set or change access_tags.",
+        ))
+
+
+class UnknownJoinTargetError(SlayerError):
+    """A saved join names a model the caller cannot see."""
+
+    def __init__(self, *, model: str, target: str) -> None:
+        self.model = model
+        self.target = target
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model {model!r}: join target {target!r} is not a known model.",
+        ))
+
+
 class QueryBackedCycleError(SlayerError, ValueError):
     """A query-backed model that references itself, directly or transitively."""
 

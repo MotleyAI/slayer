@@ -75,11 +75,13 @@ class TestSaveWarning:
     async def test_tags_beyond_the_read_model_warn(self, engine: SlayerQueryEngine) -> None:
         model = query_backed("hr_wide", source="hr", formula="sum(salary)", access_tags=["hr", "fin"])
         payloads = await narrowed_payloads(engine.save_model(model))
-        assert len(payloads) == 1 and mentions(payloads[0], "hr")
+        assert len(payloads) == 1
+        assert mentions(payloads[0], "hr")
 
     async def test_transitive_reader_warns(self, engine: SlayerQueryEngine) -> None:
         payloads = await narrowed_payloads(engine.save_model(query_backed("rollup2", source="hr_summary", formula="sum(total)")))
-        assert len(payloads) == 1 and mentions(payloads[0], "hr")
+        assert len(payloads) == 1
+        assert mentions(payloads[0], "hr")
 
     async def test_reader_of_untagged_model_does_not_warn(self, engine: SlayerQueryEngine) -> None:
         assert await narrowed_payloads(engine.save_model(query_backed("pub_count", source="pub", formula="count(*)"))) == []

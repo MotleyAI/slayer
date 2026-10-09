@@ -40,7 +40,8 @@ from slayer.core.errors import (
 )
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery
+from slayer.engine.model_reads import FieldKind, query_field_texts
 from slayer.engine.syntax import (
     AggCall,
     DottedRef,
@@ -498,8 +499,18 @@ def _extract_filter_tokens(filter_text: str) -> list[str]:
     return out
 
 
-def _column_ref_path(ref: ColumnRef) -> str:
-    return ref.full_name
+def _field_entity_tokens(kind: FieldKind, text: str) -> list[str]:
+    """Entity tokens of one query field; an unparseable formula is a single token."""
+    if kind == "ref":
+        return [text]
+    if kind == "filter":
+        return _extract_filter_tokens(text)
+    try:
+        parsed = parse_expr(text)
+    # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
+    except (ValueError, UnknownFunctionError):
+        return [text]
+    return list(_formula_entity_tokens(parsed))
 
 
 async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
@@ -507,13 +518,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     *,
     storage: StorageBackend,
 ) -> EntityResolution:
-    """Extract every canonical entity referenced by ``query``.
-
-    Walks ``source_model``, ``dimensions``, ``time_dimensions``,
-    ``measures`` (formula bodies), and ``filters``. The source model is
-    always tagged, even if no field references it explicitly.
-    Resolution failures bubble up unchanged.
-    """
+    """Extract every canonical entity referenced by ``query``: the source model, then each token of each field ``query_field_texts`` yields. Resolution failures bubble up unchanged."""
     canonical: list[str] = []
     warnings: list[str] = []
     seen: set[str] = set()
@@ -542,64 +547,16 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         )
     _add([f"{source_model.data_source}.{source_model.name}"])
 
-    # 2. dimensions
-    for dim in query.dimensions or []:
-        result = await resolve_entity(
-            _column_ref_path(dim),
-            storage=storage,
-            source_model=source_model,
-        )
-        _add(result.canonical_forms)
-        warnings.extend(result.warnings)
-
-    # 3. time_dimensions
-    for td in query.time_dimensions or []:
-        ref: ColumnRef = td.dimension if isinstance(td, TimeDimension) else td
-        result = await resolve_entity(
-            _column_ref_path(ref),
-            storage=storage,
-            source_model=source_model,
-        )
-        _add(result.canonical_forms)
-        warnings.extend(result.warnings)
-
-    # 4. measures — parse each formula (Mode-B DSL) and resolve each
-    # referenced entity token. The parser accepts both aggregation spellings
-    # natively, and an unknown functional name — e.g. a custom
-    # aggregation defined on a joined model, ``rolling_avg(customers.score)``
-    # — defers to an ``AggCall`` candidate, so its source token still
-    # surfaces without any custom-aggregation registry walk.
-    for m in query.measures or []:
-        if m.formula is None:
-            continue
-        try:
-            parsed = parse_expr(m.formula)
-        # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
-        except (ValueError, UnknownFunctionError):
-            # Not parseable as Mode-B DSL — fall back to treating the whole
-            # formula text as a single entity reference.
-            result = await resolve_entity(
-                m.formula,
-                storage=storage,
-                source_model=source_model,
-            )
-            _add(result.canonical_forms)
-            warnings.extend(result.warnings)
-            continue
-        for token in _formula_entity_tokens(parsed):
+    # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
+    local_names = {m.name for m in query.measures or [] if m.name} | {
+        d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
+    }
+    for kind, text in query_field_texts(query):
+        for token in _field_entity_tokens(kind, text):
+            if token in local_names:
+                continue
             result = await resolve_entity(
                 token,
-                storage=storage,
-                source_model=source_model,
-            )
-            _add(result.canonical_forms)
-            warnings.extend(result.warnings)
-
-    # 5. filters — extract identifier tokens, resolve each.
-    for f in query.filters or []:
-        for tok in _extract_filter_tokens(f):
-            result = await resolve_entity(
-                tok,
                 storage=storage,
                 source_model=source_model,
             )

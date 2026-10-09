@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: tweets
 sql_table: tweets
 source_kind: table
@@ -54,3 +54,4 @@ filters: []
 default_time_dimension: tweeted_at
 description: Synthetic customer tweets mentioning the Jaffle Shop.
 hidden: false
+access_tags: []

@@ -126,7 +126,8 @@ class TestJoinPruning:
     async def test_join_to_hidden_model_is_omitted(self, pair: Pair, name: str) -> None:
         pruned = await pair.fin.get_model(name, data_source=DS)
         full = await pair.everything.get_model(name, data_source=DS)
-        assert pruned is not None and full is not None
+        assert pruned is not None
+        assert full is not None
         assert [j.target_model for j in full.joins] == ["hr"]
         assert pruned.joins == []
 
@@ -139,7 +140,8 @@ class TestJoinPruning:
     async def test_dangling_join_is_kept(self, pair: Pair) -> None:
         pruned = await pair.fin.get_model("dangling", data_source=DS)
         full = await pair.everything.get_model("dangling", data_source=DS)
-        assert pruned is not None and pruned == full
+        assert pruned is not None
+        assert pruned == full
         assert [j.target_model for j in pruned.joins] == ["ghost"]
 
     async def test_dangling_join_inspects_as_for_bypass(self, pair: Pair) -> None:
@@ -304,4 +306,5 @@ class TestBareNameAmbiguity:
         fin = TagFilteredStorage(two_datasources, tags={"fin"}, bypass=False)
         assert await fin.resolve_model_identity("shared") == ("east", "shared")
         model = await fin.get_model("shared")
-        assert model is not None and model.data_source == "east"
+        assert model is not None
+        assert model.data_source == "east"

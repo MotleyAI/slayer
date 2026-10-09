@@ -118,6 +118,15 @@ ToDeleteEntry = Annotated[
 ]
 
 
+class NarrowedAccessFinding(BaseModel):
+    """Report-only: the model reads tagged models (``narrowed_by``) whose tags do not cover its own."""
+
+    finding: Literal["narrowed_access"] = "narrowed_access"
+    model_name: str
+    data_source: str
+    narrowed_by: list[str]
+
+
 def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
     """The validation report's entry for a stored model that cannot be loaded."""
     return WholeModelDelete(

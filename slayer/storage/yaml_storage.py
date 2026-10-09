@@ -24,7 +24,7 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 import contextlib
 import os
 from typing import Any
-from collections.abc import Iterator
+from collections.abc import Hashable, Iterator
 
 import yaml
 from pydantic import ValidationError
@@ -304,9 +304,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             db_path=os.path.join(base_dir, "embeddings.db"),
         )
 
-    # ---- graph fingerprint -------------------------------------------------
+    # ---- cache keys --------------------------------------------------------
 
-    async def graph_fingerprint(self) -> str:
+    async def cache_identity(self) -> Hashable:
+        return os.path.abspath(self.base_dir)
+
+    async def graph_fingerprint(self) -> str | None:
         """(file_count, max_mtime) across all YAML files under base_dir.
 
         Including the file count ensures that deleting a YAML file (which

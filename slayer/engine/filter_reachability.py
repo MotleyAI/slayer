@@ -40,7 +40,7 @@ from slayer.engine.reference_closure import (
     UnhandledValueKindError,  # re-exported
     _child_keys,
     _expand_derived_refs_any_dialect,
-    _parse_filter_sql_any_dialect,
+    parse_fragment_any_dialect,
     key_closure,
 )
 from slayer.ir.planned import FilterReachability
@@ -77,7 +77,7 @@ def _expanded_fragment_ast_uncached(
     expanded = _expand_derived_refs_any_dialect(
         sql=fragment, model=model, alias_path=alias_path, bundle=bundle,
     )
-    return _parse_filter_sql_any_dialect(expanded or fragment)
+    return parse_fragment_any_dialect(expanded or fragment)
 
 
 def _expanded_fragment_ast(

@@ -1742,16 +1742,6 @@
                 }
             }
         ],
-        "./slayer/memories/resolver.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/osi/converter.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -7158,14 +7148,6 @@
                 "range": {
                     "startColumn": 21,
                     "endColumn": 81,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOperatorIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 51,
                     "lineCount": 1
                 }
             },

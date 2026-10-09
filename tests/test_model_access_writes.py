@@ -170,8 +170,9 @@ class TestAccessTags:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
         for tags in (["fin", "hr"], []):
+            retagged = model.model_copy(update={"access_tags": tags})
             with pytest.raises(AccessTagsEditError):
-                await save(fin, model.model_copy(update={"access_tags": tags}), saver=saver)
+                await save(fin, retagged, saver=saver)
         assert (await must_get(store.storage, "fin")).access_tags == ["fin"]
 
     async def test_access_tags_error_comes_first(self, store: AccessStore, saver: str) -> None:
@@ -184,8 +185,9 @@ class TestAccessTags:
     async def test_tagged_create_is_refused(self, store: AccessStore, saver: str) -> None:
         fresh = SlayerModel(name="fresh", sql_table="pub_items", data_source=DS, access_tags=["fin"],
                             columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+        fin = view(store, "fin")
         with pytest.raises(AccessTagsEditError):
-            await save(view(store, "fin"), fresh, saver=saver)
+            await save(fin, fresh, saver=saver)
         assert await store.storage.get_model("fresh", data_source=DS) is None
 
     async def test_bypass_may_retag(self, store: AccessStore, saver: str) -> None:
@@ -202,8 +204,9 @@ class TestDeletes:
         assert await store.storage.get_model("hr", data_source=DS) is not None
 
     async def test_deleting_hidden_memory_is_not_found(self, store: AccessStore) -> None:
+        fin = view(store, "fin")
         with pytest.raises(MemoryNotFoundError):
-            await view(store, "fin").delete_memory(HR_ONLY_MEMORY)
+            await fin.delete_memory(HR_ONLY_MEMORY)
         assert await store.storage.get_memory_row(HR_ONLY_MEMORY) is not None
 
     async def test_deleting_visible_model_cascades_over_the_full_store(self, store: AccessStore) -> None:
@@ -244,8 +247,9 @@ class TestMergedMemoryWrites:
         assert stored.query is not None
 
     async def test_upsert_on_hidden_id_is_refused(self, store: AccessStore) -> None:
+        fin = view(store, "fin")
         with pytest.raises(HiddenContentConflictError) as excinfo:
-            await view(store, "fin").save_memory(id=HR_ONLY_MEMORY, learning="overwrite", entities=[])
+            await fin.save_memory(id=HR_ONLY_MEMORY, learning="overwrite", entities=[])
         assert foreign_leaks(str(excinfo.value), own="hr") == []
         assert (await store.storage.get_memory(HR_ONLY_MEMORY)).learning != "overwrite"
 
@@ -260,17 +264,21 @@ class TestEmbeddingWrites:
     ])
     async def test_write_for_hidden_id_is_refused(self, store: AccessStore, canonical_id: str, kind: EntityKind) -> None:
         fin = view(store, "fin")
+        row = self.row(canonical_id, kind)
+        rows = [self.row(f"{DS}.fin"), self.row(canonical_id, kind)]
         with pytest.raises(HiddenContentConflictError):
-            await fin.save_embedding(self.row(canonical_id, kind))
+            await fin.save_embedding(row)
         with pytest.raises(HiddenContentConflictError):
-            await fin.save_embeddings([self.row(f"{DS}.fin"), self.row(canonical_id, kind)])
+            await fin.save_embeddings(rows)
         stored = await store.storage.get_embedding(canonical_id=canonical_id, embedding_model_name=embedding_client.current_model())
-        assert stored is not None and stored.content_hash != "new"
+        assert stored is not None
+        assert stored.content_hash != "new"
 
     async def test_write_for_visible_id_lands(self, store: AccessStore) -> None:
         await view(store, "fin").save_embedding(self.row(f"{DS}.fin"))
         stored = await store.storage.get_embedding(canonical_id=f"{DS}.fin", embedding_model_name=embedding_client.current_model())
-        assert stored is not None and stored.content_hash == "new"
+        assert stored is not None
+        assert stored.content_hash == "new"
 
 
 class TestMcpEdits:

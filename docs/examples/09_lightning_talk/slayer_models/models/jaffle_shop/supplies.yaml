@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: supplies
 sql_table: supplies
 source_kind: table
@@ -71,3 +71,4 @@ filters: []
 description: Supplies (ingredients and packaging) used per product, with unit costs
   in dollars.
 hidden: false
+access_tags: []

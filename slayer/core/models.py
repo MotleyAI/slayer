@@ -668,7 +668,6 @@ class SlayerModel(BaseModel):
         list | None, BeforeValidator(_coerce_source_queries)
     ] = None  # List of SlayerQuery — query-backed source mode
     query_variables: dict[str, Any] = Field(default_factory=dict)
-    backing_query_sql: str | None = None
     data_source: str = ""
     columns: list[Column] = Field(default_factory=list)
     measures: list[ModelMeasure] = Field(default_factory=list)
@@ -720,6 +719,8 @@ class SlayerModel(BaseModel):
     default_time_dimension: str | None = None
     description: str | None = None
     hidden: bool = False
+    # Callers sharing a tag may read the model; empty = public.
+    access_tags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
