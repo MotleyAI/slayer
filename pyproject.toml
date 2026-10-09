@@ -56,8 +56,8 @@ duckdb = ">=0.9"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
-# Cube JavaScript-config importer (`slayer import-cube` on `.js` files,
-# DEV-1730). Core dep so `import-cube` works after a single
+# Cube JavaScript-config importer (`slayer import-cube` on `.js`
+# files). Core dep so `import-cube` works after a single
 # `pip install motley-slayer`. Frozen upstream at ES2017 — sufficient for the
 # declarative cube()/view() config subset; newer syntax surfaces as a report
 # issue rather than a crash.
@@ -70,7 +70,7 @@ dbt-core = {version = ">=1.7", optional = true}
 pyarrow = {version = ">=18.0", optional = true}
 protobuf = {version = ">=6.31.1", optional = true}
 tantivy = "^0.26"
-# Embedding-based semantic search (DEV-1386). Optional — search degrades
+# Embedding-based semantic search. Optional — search degrades
 # gracefully to tantivy + BM25 when this extra is not installed.
 litellm = {version = ">=1.50", optional = true}
 numpy = {version = ">=1.24", optional = true}
@@ -78,10 +78,12 @@ numpy = {version = ">=1.24", optional = true}
 # the original KuzuDB repo was archived post-acquisition). Import name is
 # ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
-# Snowflake support (DEV-1551). snowflake-sqlalchemy >= 1.7 is the first
+# Snowflake support. snowflake-sqlalchemy >= 1.7 is the first
 # release with SQLAlchemy 2.x support (a hard repo dep).
 snowflake-connector-python = {version = ">=3.13", optional = true}
 snowflake-sqlalchemy = {version = ">=1.7", optional = true}
+# 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
+trino = {version = ">=0.340", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -91,11 +93,12 @@ clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 bigquery = ["sqlalchemy-bigquery"]
+trino = ["trino"]
 dbt = ["dbt-core"]
 flight = ["pyarrow", "protobuf"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -122,11 +125,11 @@ pyinstrument = "^5.1.2"
 # wire path a real BI tool would. Java >= 11 must be on PATH.
 jaydebeapi = "^1.2.3"
 jpype1 = "^1.5.0"
-# DEV-1564: dialect integration suites spin up real DBs via testcontainers.
-# The MySQL/ClickHouse/SQL Server suites import `testcontainers.<dialect>`
+# Dialect integration suites spin up real DBs via testcontainers.
+# The MySQL/ClickHouse/SQL Server/Trino suites import `testcontainers.<dialect>`
 # and skip cleanly if it's missing; CI workflows assert the extras are
 # importable before invoking pytest so a missing dep surfaces as failure.
-testcontainers = {extras = ["mysql", "clickhouse", "mssql"], version = "^4.0"}
+testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
 living-architecture = "0.2.3"
@@ -139,12 +142,12 @@ markers = [
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
-# DEV-1943 gate: a leaked sqlite connection / undisposed engine is an error on
+# Resource-ownership gate: a leaked sqlite connection / undisposed engine is an error on
 # CPython 3.13+. Both filters are sqlite-specific and inert on 3.11/3.12 (the
 # messages are 3.13+). The unraisable filter is scoped to sqlite's finalizer
 # message so a non-sqlite driver's connection finalizer (e.g. aiomysql's
 # "Exception ignored in: <function Connection.__del__>" after the loop closes)
-# stays a warning — DEV-1943's scope is sqlite. See test_law_resource_ownership.py.
+# stays a warning — the gate's scope is sqlite. See test_law_resource_ownership.py.
 filterwarnings = [
     "error:unclosed database:ResourceWarning",
     "error:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning",

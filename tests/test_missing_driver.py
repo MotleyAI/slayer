@@ -100,6 +100,7 @@ def test_sync_missing_dbapi_names_extra(monkeypatch, ds_type, blocked_module, ex
     [
         ("clickhouse", "clickhouse.http", "clickhouse+http", "clickhouse"),
         ("bigquery", "bigquery", "bigquery", "bigquery"),
+        ("trino", "trino", "trino", "trino"),
     ],
 )
 def test_sync_missing_plugin_names_scheme_and_extra(

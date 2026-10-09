@@ -33,7 +33,8 @@ poetry run pytest -m "not integration"               # unit tests (excludes inte
 poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
   --ignore=tests/integration/test_integration_mysql.py \
   --ignore=tests/integration/test_integration_clickhouse.py \
-  --ignore=tests/integration/test_integration_sqlserver.py   # integration tests (CI settings — see Testing)
+  --ignore=tests/integration/test_integration_sqlserver.py \
+  --ignore=tests/integration/test_integration_trino.py      # integration tests (CI settings — see Testing)
 poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
 poetry run slayer mcp                                # MCP server
@@ -56,7 +57,7 @@ poetry run la-arch-diagrams                          # regenerate arc42 diagrams
 
 Integration tests are marked `@pytest.mark.integration` and skip when their DB is
 unavailable; shared fixtures in `tests/conftest.py`. The `integration` marker is
-ONLY for tests that need an external DB server (MySQL, ClickHouse, SQL Server,
+ONLY for tests that need an external DB server (MySQL, ClickHouse, SQL Server, Trino,
 Metabase — all under `tests/integration/`). Tests that execute SQL through our
 inline, in-process **SQLite and DuckDB** engines (e.g. the `make_exec_engine`
 sqlite/duckdb fixture, or any `tmp`/`:memory:` engine) are **unit** tests that run
@@ -68,17 +69,18 @@ suite's shared on-disk fixtures.
 
 Backends runnable locally: SQLite and DuckDB (in-process); Postgres via `pytest-postgresql`
 (`factories.postgresql_proc(port=None)` spawns a throwaway server from the local
-`/usr/lib/postgresql/<ver>/bin/pg_ctl` — no Docker); MySQL and ClickHouse via
+`/usr/lib/postgresql/<ver>/bin/pg_ctl` — no Docker); MySQL, ClickHouse and Trino via
 testcontainers (Docker). SQL Server also needs `ODBC Driver 18` (skips without it);
 BigQuery / Snowflake need credentials, so only emission tests run locally. MySQL /
-ClickHouse / SQL Server run in CI only in their path-gated `integration-<db>.yml` workflows.
+ClickHouse / SQL Server / Trino run in CI only in their path-gated `integration-<db>.yml` workflows.
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only
 poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
   --ignore=tests/integration/test_integration_mysql.py \
   --ignore=tests/integration/test_integration_clickhouse.py \
-  --ignore=tests/integration/test_integration_sqlserver.py   # integration (CI settings)
+  --ignore=tests/integration/test_integration_sqlserver.py \
+  --ignore=tests/integration/test_integration_trino.py      # integration (CI settings)
 poetry run pytest tests/ -m "integration or not integration" -n logical --dist loadscope  # everything
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py  # live Metabase e2e (needs Docker)
 ```

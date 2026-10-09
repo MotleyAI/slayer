@@ -1,20 +1,7 @@
-"""DEV-1542: tests for Tier-2 dialect subclasses (no live integration tests).
+"""Tier-2 dialects (Redshift, Presto, Databricks, Spark, Oracle): scalar config only.
 
-Tier-2 dialects (BigQuery, Redshift, Trino, Presto, Databricks,
-Spark, Oracle) are empty-body subclasses of ``SqlDialect`` with class-level
-field overrides only. They differ from the base in:
-
-* ``sqlglot_name``
-* ``ds_type_aliases``
-* ``explain_prefix`` / ``explain_postfix``
-* ``log10_native`` / ``log2_native``
-
-Today's behaviour codified in ``query_engine.py:_EXPLAIN_PREFIX`` /
-``_EXPLAIN_POSTFIX`` and ``generator.py:_LOG10_NATIVE_DIALECTS`` /
-``_LOG2_NATIVE_DIALECTS`` must be preserved exactly.
-
-DEV-1551 promoted Snowflake out of this file — see
-``tests/dialects/test_snowflake.py``.
+Promoted Tier-1 dialects have their own test files (``test_bigquery.py``,
+``test_snowflake.py``, ``test_trino.py``).
 """
 
 from __future__ import annotations
@@ -27,13 +14,7 @@ from slayer.sql.dialects._tier2 import (
     PrestoDialect,
     RedshiftDialect,
     SparkDialect,
-    TrinoDialect,
 )
-
-# BigqueryDialect was promoted out of _tier2 to its own file (Tier 1) — see
-# slayer/sql/dialects/bigquery.py and tests/dialects/test_bigquery.py.
-# SnowflakeDialect was likewise promoted (DEV-1551) — see
-# slayer/sql/dialects/snowflake.py and tests/dialects/test_snowflake.py.
 
 
 # ---------------------------------------------------------------------------
@@ -54,22 +35,12 @@ def test_redshift_log_native_flags() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Trino / Presto — same shape
+# Presto (Athena)
 # ---------------------------------------------------------------------------
-
-
-def test_trino_explain_prefix() -> None:
-    assert TrinoDialect().explain_prefix == "EXPLAIN ANALYZE"
 
 
 def test_presto_explain_prefix() -> None:
     assert PrestoDialect().explain_prefix == "EXPLAIN ANALYZE"
-
-
-def test_trino_log_native_flags() -> None:
-    d = TrinoDialect()
-    assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
 
 
 def test_presto_log_native_flags() -> None:
@@ -134,7 +105,6 @@ def test_oracle_log_native_flags() -> None:
     "dialect_cls,expected",
     [
         (RedshiftDialect, "EXPLAIN SELECT 1"),
-        (TrinoDialect, "EXPLAIN ANALYZE SELECT 1"),
         (PrestoDialect, "EXPLAIN ANALYZE SELECT 1"),
         (DatabricksDialect, "EXPLAIN EXTENDED SELECT 1"),
         (SparkDialect, "EXPLAIN EXTENDED SELECT 1"),
