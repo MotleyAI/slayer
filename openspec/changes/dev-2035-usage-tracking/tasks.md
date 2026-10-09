@@ -41,3 +41,4 @@
 
 - [x] 6.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
 - [ ] 6.2 **Release-blocking:** PostHog EU project created with "Discard client IP data", DPA signed, project API key (`phc_…`) received from the user and set as the shipped default; a live smoke send verified in PostHog. Implementation and tests proceed without it via `SLAYER_TELEMETRY_ENDPOINT`.
+- [x] 6.3 Update the DEV-2035 issue body: Lifecycle section per design.md decision 7 (SIGTERM unwinding for every server; SIGINT + hard exit for stdio `mcp`), and D10: the payload-vocabulary principle and the other privacy principles live in `telemetry.arc42.md` §3, not `system.arc42.md`.
