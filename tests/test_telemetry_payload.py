@@ -273,7 +273,7 @@ def test_flight_sql_never_leaves(telemetry_env) -> None:
     quiet_config()
     telemetry.start()
     handlers = _make_handlers()
-    handlers.do_get_for_sql(f"SELECT revenue_sum FROM jaffle.orders WHERE status = '{HOSTILE}'")
+    handlers.do_get_for_sql(f"SELECT revenue_sum FROM jaffle.orders WHERE status = '{HOSTILE.replace(chr(39), chr(39) * 2)}'")
     with pytest.raises(TranslationError):
         handlers.do_get_for_sql(f"SELECT {SENT} FROM {SENT}")
     end_process()
