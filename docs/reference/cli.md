@@ -467,3 +467,14 @@ slayer memory forget kb.brooklyn-pos
 | `save` | `--query JSON_OR_@FILE` | Inline SLayer query (or `@path.json`). Entities are auto-extracted and the query is persisted on the memory. Mutually exclusive with `--entities`. |
 | `save` | `--id ID` | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to auto-allocate (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved. |
 | `forget` | `<id>` (positional) | Memory id. Cascade-strips every `memory:<id>` reference to it from every other memory's `entities` list. |
+
+### `slayer telemetry`
+
+Show or change [usage telemetry](telemetry.md).
+
+```bash
+slayer telemetry status    # on/off, the rule that decided it, the install ID
+slayer telemetry show      # the report the next send would contain (sends nothing)
+slayer telemetry disable   # persist off; delete the install ID and unsent data
+slayer telemetry enable    # persist on
+```

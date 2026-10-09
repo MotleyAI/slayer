@@ -355,3 +355,9 @@ def test_do_get_for_dml_raises_translation_error_propagating() -> None:
     handlers = _make_handlers()
     with pytest.raises(TranslationError):
         handlers.do_get_for_sql("INSERT INTO orders VALUES (1)")
+
+
+def test_do_get_for_untokenizable_sql_raises_translation_error() -> None:
+    handlers = _make_handlers()
+    with pytest.raises(TranslationError):
+        handlers.do_get_for_sql("SELECT revenue_sum FROM jaffle.orders WHERE status = 'x'\";--'")

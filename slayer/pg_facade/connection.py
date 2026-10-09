@@ -28,6 +28,7 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 from sqlglot.optimizer.scope import traverse_scope
 
+from slayer import telemetry
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.storage.base import StorageBackend
@@ -724,7 +725,7 @@ class PgConnection:
     async def _handle_simple_query(self, sql: str) -> None:
         try:
             statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
-        except sqlglot.errors.ParseError as exc:
+        except sqlglot.errors.SqlglotError as exc:
             # BI tools (Metabase) wrap reads in ``BEGIN READ ONLY`` etc., which
             # sqlglot can't parse. Strip the transaction characteristics and
             # retry once before surfacing a syntax error.
@@ -733,7 +734,7 @@ class PgConnection:
                 statements = [
                     s for s in sqlglot.parse(stripped, dialect="postgres") if s is not None
                 ] if stripped != sql else None
-            except sqlglot.errors.ParseError:
+            except sqlglot.errors.SqlglotError:
                 statements = None
             if statements is None:
                 logger.warning("pg facade: cannot parse simple query %r: %s", sql, exc)
@@ -968,7 +969,7 @@ class PgConnection:
     def _portal_is_tx_end(sql: str) -> bool:
         try:
             parsed = sqlglot.parse_one(sql, dialect="postgres")
-        except sqlglot.errors.ParseError:
+        except sqlglot.errors.SqlglotError:
             return False
         return _is_tx_end(parsed)
 
@@ -1048,6 +1049,7 @@ class PgConnection:
             return False
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
+            telemetry.record(surface="pg", token="probe")
             self._emit_row_batch(result.batch, result_formats, send_row_description)
             # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
             # Apply ONLY in the Execute path (not Describe). Pushes
@@ -1107,17 +1109,21 @@ class PgConnection:
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
+        telemetry.observe_query(result.query)
         try:
             # The translator resolves the per-query datasource from the
             # referenced model(s) and rejects cross-datasource joins. A model
             # query always carries one; guard the impossible None rather than
             # passing it to the engine.
-            if result.data_source is None:
-                raise ValueError("could not resolve a datasource for the query")
-            with timing.open_query_profile():
-                response = await self._engine.execute(
-                    query=result.query, data_source=result.data_source,
-                )
+            with telemetry.counting(surface="pg", token="query"):
+                if result.data_source is None:
+                    raise ValueError("could not resolve a datasource for the query")
+                engine = cast(SlayerQueryEngine, self._engine)
+                with timing.open_query_profile():
+                    response = await engine.execute(
+                        query=result.query, data_source=result.data_source,
+                    )
+            telemetry.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
