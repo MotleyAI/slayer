@@ -132,7 +132,7 @@ jpype1 = "^1.5.0"
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
-living-architecture = "0.2.3"
+living-architecture = "0.3.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
