@@ -311,7 +311,7 @@ class TestSave:
         saved = await exec_engine.create_model_from_query(
             query=q(dimensions=["region"], measures=["amount:sum * {k}"], variables={"k": 10}), name="staged",
         )
-        assert saved.backing_query_sql is not None
+        assert saved.columns
 
     async def test_source_model_default_satisfies_save(self, exec_engine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
@@ -319,16 +319,17 @@ class TestSave:
             "query_variables": {"k": 10},
         }))
         saved = await exec_engine.create_model_from_query(query=q(measures=["amt_scaled"]), name="sourced")
-        assert saved.backing_query_sql is not None
+        assert saved.columns
 
-    async def test_defaulted_variable_saves_exact_sql(self, exec_engine) -> None:
-        saved = await exec_engine.create_model_from_query(
+    async def test_defaulted_variable_renders_by_default(self, exec_engine) -> None:
+        await exec_engine.create_model_from_query(
             query=q(dimensions=["region"], measures=["amount:sum * {k}"]), name="scaled", variables={"k": 10},
         )
-        at_10 = await exec_engine._expand_query_backed_model(model=saved, runtime_kwarg={"k": 10})
-        at_20 = await exec_engine._expand_query_backed_model(model=saved, runtime_kwarg={"k": 20})
-        assert saved.backing_query_sql == at_10.sql
-        assert saved.backing_query_sql != at_20.sql
+        default = (await exec_engine.execute("scaled", dry_run=True)).sql
+        at_10 = (await exec_engine.execute("scaled", variables={"k": 10}, dry_run=True)).sql
+        at_20 = (await exec_engine.execute("scaled", variables={"k": 20}, dry_run=True)).sql
+        assert default == at_10
+        assert default != at_20
 
     async def test_model_with_saved_measure_placeholder_saves(self, exec_engine) -> None:
         saved = await exec_engine.save_model(orders_model().model_copy(update={

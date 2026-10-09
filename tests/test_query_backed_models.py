@@ -220,7 +220,7 @@ class TestVariablePrecedence:
 
 
 class TestCreateModelFromQuery:
-    async def test_caches_columns_and_sql(self) -> None:
+    async def test_caches_columns(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
             saved = await engine.create_model_from_query(
@@ -236,13 +236,12 @@ class TestCreateModelFromQuery:
             col_names = {c.name for c in saved.columns}
             assert "region" in col_names
             assert "amount_sum" in col_names
-            assert saved.backing_query_sql is not None
-            assert "amount" in saved.backing_query_sql.lower()
             # Reload from storage and confirm cache persisted
             from_storage = await engine.storage.get_model("rev_by_region")
             assert from_storage is not None
-            assert from_storage.backing_query_sql == saved.backing_query_sql
             assert [c.name for c in from_storage.columns] == [c.name for c in saved.columns]
+            sql = (await engine.execute("rev_by_region", dry_run=True)).sql
+            assert sql is not None and "amount" in sql.lower()
         finally:
             tmp.cleanup()
 
@@ -274,7 +273,6 @@ class TestCreateModelFromQuery:
                 name="not_persisted",
                 save=False,
             )
-            assert built.backing_query_sql is not None
             assert built.columns
             # Storage doesn't have it
             from_storage = await engine.storage.get_model("not_persisted")
@@ -329,20 +327,6 @@ class TestSaveModelGuards:
         finally:
             tmp.cleanup()
 
-    async def test_rejects_user_backing_query_sql(self) -> None:
-        engine, tmp = await _engine_with_orders()
-        try:
-            m = SlayerModel(
-                name="bad2",
-                data_source="ds",
-                source_queries=[SlayerQuery(source_model="orders")],
-                backing_query_sql="SELECT 1",
-            )
-            with pytest.raises(ValueError, match="backing_query_sql.*auto-managed"):
-                await engine.save_model(m)
-        finally:
-            tmp.cleanup()
-
 
 def _wrap_save_counter(storage):
     """Spy on ``storage.save_model``. Returns ``(calls, restore)`` where
@@ -366,7 +350,7 @@ def _wrap_save_counter(storage):
 
 class TestCacheRefreshOnExecute:
     """Read paths must never write to storage. Cache (`columns`,
-    `backing_query_sql`, `data_source`) is populated only by
+    `data_source`) is populated only by
     ``engine.save_model`` / ``create_model_from_query(save=True)``.
     Lost-update race fix: see issue #74.
     """
@@ -391,13 +375,11 @@ class TestCacheRefreshOnExecute:
             stored = await engine.storage.get_model("rev_by_region")
             assert stored is not None
             assert stored.columns == []
-            assert stored.backing_query_sql is None
 
             await engine.execute("rev_by_region", dry_run=True)
             refreshed = await engine.storage.get_model("rev_by_region")
             assert refreshed is not None
             assert refreshed.columns == []
-            assert refreshed.backing_query_sql is None
         finally:
             tmp.cleanup()
 
@@ -439,7 +421,6 @@ class TestCacheRefreshOnExecute:
             base = await engine.storage.get_model("rev_by_region")
             assert base is not None
             assert not any(c.name == "is_high_rev" for c in base.columns)
-            assert "is_high_rev" not in (base.backing_query_sql or "")
         finally:
             tmp.cleanup()
 
@@ -534,27 +515,6 @@ class TestCacheRefreshOnExecute:
                 assert calls == [], f"empty-cache execute wrote: {calls}"
             finally:
                 restore()
-
-            # Case 4: stale cache (persisted SQL doesn't match what would now
-            # resolve). We forge a stale entry by hand-saving with a bogus
-            # backing_query_sql; execute still must not rewrite it.
-            stale = (await engine.storage.get_model("rev_by_region"))
-            assert stale is not None
-            stale_sql = "SELECT 'stale' AS region"
-            await engine.storage.save_model(
-                stale.model_copy(update={"backing_query_sql": stale_sql})
-            )
-            calls, restore = _wrap_save_counter(engine.storage)
-            try:
-                await engine.execute("rev_by_region", dry_run=True)
-                assert calls == [], f"stale-cache execute wrote: {calls}"
-            finally:
-                restore()
-            after = await engine.storage.get_model("rev_by_region")
-            assert after is not None
-            assert after.backing_query_sql == stale_sql, (
-                "execute must not overwrite even an obviously stale cache"
-            )
         finally:
             tmp.cleanup()
 
@@ -650,16 +610,12 @@ class TestQueryBackedColumnTypes:
             tmp.cleanup()
 
 
-class TestBackingQuerySQLCacheHygiene:
-    """``backing_query_sql`` is the canonical default-variable render produced
-    by ``engine.save_model`` and must not capture per-request runtime
-    variables. After issue #74, read paths can no longer write to storage at
-    all — so the per-request leak is structurally impossible. These tests
-    pin both invariants: the save-time render is canonical, AND no execute
-    call (with runtime kwargs or outer-query variables) can modify it.
+class TestRequestVariableHygiene:
+    """Per-request variables (runtime kwargs or outer-query variables) never
+    persist: a later plain run renders the saved defaults again.
     """
 
-    async def test_runtime_variables_do_not_leak_into_persisted_sql(
+    async def test_runtime_variables_do_not_persist(
         self,
     ) -> None:
         engine, tmp = await _engine_with_orders()
@@ -674,29 +630,24 @@ class TestBackingQuerySQLCacheHygiene:
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
-            initial = await engine.storage.get_model("rev_filtered")
-            initial_sql = initial.backing_query_sql
-            # Save-time canonical render should already have the default value.
+            initial_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
             assert initial_sql is not None
             assert "'DEFAULT_R'" in initial_sql
 
-            # Execute with a runtime variable that overrides the default —
-            # must not modify the persisted cache.
-            await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)
+            request_sql = (await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)).sql
+            assert "'REQUEST_VAL'" in (request_sql or "")
 
             after = await engine.storage.get_model("rev_filtered")
             assert after is not None
-            assert "'REQUEST_VAL'" not in (after.backing_query_sql or "")
-            assert after.backing_query_sql == initial_sql
+            assert after.query_variables == {"r": "DEFAULT_R"}
+            assert (await engine.execute("rev_filtered", dry_run=True)).sql == initial_sql
         finally:
             tmp.cleanup()
 
-    async def test_outer_query_variables_do_not_leak_into_persisted_sql(
+    async def test_outer_query_variables_do_not_persist(
         self,
     ) -> None:
-        """Variables from an enclosing ``SlayerQuery.variables`` must also not
-        modify ``backing_query_sql``.
-        """
+        """Variables from an enclosing ``SlayerQuery.variables`` must also not persist."""
         engine, tmp = await _engine_with_orders()
         try:
             await engine.save_model(SlayerModel(
@@ -710,7 +661,7 @@ class TestBackingQuerySQLCacheHygiene:
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
-            initial_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            initial_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
             assert initial_sql
             assert "'DEFAULT_R'" in initial_sql
 
@@ -722,7 +673,10 @@ class TestBackingQuerySQLCacheHygiene:
                 variables={"r": "OUTER_VAL"},
             )
             await engine.execute(outer, dry_run=True)
-            after_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            after = await engine.storage.get_model("rev_filtered")
+            assert after is not None
+            assert after.query_variables == {"r": "DEFAULT_R"}
+            after_sql = (await engine.execute("rev_filtered", dry_run=True)).sql
             assert "'OUTER_VAL'" not in (after_sql or ""), (
                 f"outer query variables must not be persisted, got:\n{after_sql}"
             )
@@ -1396,11 +1350,8 @@ class TestMultiStageMeasureRename:
             assert "rev_sum" in col_names, (
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
-            sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames the column to ``rev``; DEV-1452 Stage B's
-            # ``build_flat_rename_wrapper`` may emit the alias quoted
-            # (``AS "rev"``) or bare (``AS rev``); both forms satisfy the
-            # rename contract, so the assertion accepts either.
+            sql = (await engine.execute("renamed_metric", dry_run=True)).sql or ""
+            # The inner stage names its column ``rev``, quoted or bare.
             assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
             )

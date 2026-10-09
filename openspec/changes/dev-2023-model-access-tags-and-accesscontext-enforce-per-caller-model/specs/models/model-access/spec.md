@@ -171,6 +171,11 @@ A non-bypass caller's write SHALL be applied to the full stored document, keepin
 - **WHEN** a `{fin}` caller removes the column that `fin`'s join to `hr` uses as its key
 - **THEN** the save fails with the conflict error, whose text does not contain `hr`
 
+#### Scenario: A join to a hidden model fails like a join to a missing one
+
+- **WHEN** a `{fin}` caller saves `pub` with a join to `hr`, and again with a join to a model that exists nowhere
+- **THEN** both saves fail with the same error apart from the target's name, and the stored `pub` is unchanged
+
 #### Scenario: Deleting a hidden memory looks like a missing one
 
 - **WHEN** a `{fin}` caller deletes a memory that is hidden from them

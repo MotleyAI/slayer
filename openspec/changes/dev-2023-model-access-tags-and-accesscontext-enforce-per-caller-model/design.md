@@ -53,7 +53,7 @@ For a non-bypass caller, `save_model` runs in two phases:
 1. Phase 1 is the base save validation run on the wrapper, so peers and identities are filtered. Its errors pass through typed. Through the engine, the engine's own pre-save checks also run on the view first.
 2. Phase 2 merges the stored model's pruned joins back in, then calls `inner.save_model(merged)`, which runs the full validation.
 
-Any phase-2 failure becomes `HiddenContentConflictError`, whose message names only the model being saved. Name, id and edge-name clashes with hidden documents are detected while merging and raise the same error. A join whose target is outside the view fails phase 1 as an unknown model. A change to `access_tags` raises `AccessTagsEditError` before anything else runs.
+Any phase-2 failure becomes `HiddenContentConflictError`, whose message names only the model being saved. Name, id and edge-name clashes with hidden documents are detected while merging and raise the same error. Phase 1 also rejects every join whose target is absent from the view, hidden or nonexistent alike, with one unknown-join-target error; unwrapped and bypass saves keep accepting dangling joins. A change to `access_tags` raises `AccessTagsEditError` before anything else runs.
 
 The memory merge sits at `_save_memory_row`, so `save_memory`, ingestion cleanup and cascades all keep the withheld entities and query.
 

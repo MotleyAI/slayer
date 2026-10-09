@@ -88,6 +88,17 @@ def mcp_server(_shared_mcp_server, storage: YAMLStorage):
     return _shared_mcp_server
 
 
+async def _dry_run_sql(storage: YAMLStorage, name: str) -> str:
+    """The SQL a dry run of the saved model ``name`` renders."""
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        sql = (await engine.execute(name, dry_run=True)).sql
+    finally:
+        engine.close()
+    assert sql is not None
+    return sql
+
+
 async def _call(mcp_server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
     """Call an MCP tool and return the text result."""
     content_blocks, result_dict = await mcp_server.call_tool(name=name, arguments=arguments or {})
@@ -465,20 +476,17 @@ class TestInspectModelQueryBacked:
         assert bq["variables"] == {"threshold": 100}
         assert bq["required_variables"] == []  # threshold has a default
         assert len(bq["stages"]) == 1
-        assert "backing_query_sql" not in parsed  # gated by show_sql
+        assert "backing_query_sql" not in parsed
 
-    async def test_json_show_sql_includes_backing_query_sql(
+    async def test_json_show_sql_omits_backing_query_sql(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """``backing_query_sql`` is included when ``show_sql=True``."""
-        await self._setup(storage)  # populates cache at save time
+        """No backing SQL even with ``show_sql=True``; a dry run renders it."""
+        await self._setup(storage)
         result = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "qb", "format": "json", "show_sql": True,
         })
-        parsed = json.loads(result)
-        assert "backing_query_sql" in parsed
-        assert parsed["backing_query_sql"]
-        assert "amount" in parsed["backing_query_sql"].lower()
+        assert "backing_query_sql" not in json.loads(result)
 
     async def test_required_variables_reported(
         self, mcp_server, storage: YAMLStorage
@@ -1520,11 +1528,11 @@ class TestCreateModel:
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
 
-    async def test_create_from_query_populates_backing_query_sql(
+    async def test_create_from_query_populates_columns(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
         """create_model(query=...) routes through engine.save_model so the persisted
-        model has backing_query_sql populated (read paths don't warm the cache, #74)."""
+        model has its columns populated (read paths don't warm the cache)."""
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -1542,10 +1550,7 @@ class TestCreateModel:
         assert "Error" not in result, result
         persisted = await storage.get_model("summary")
         assert persisted is not None
-        assert persisted.backing_query_sql, (
-            "MCP create_model(query=...) must populate backing_query_sql"
-        )
-        assert "amount" in persisted.backing_query_sql.lower()
+        assert "amount" in (await _dry_run_sql(storage, "summary")).lower()
         assert persisted.columns, "MCP create_model(query=...) must populate columns"
 
 
@@ -1975,11 +1980,8 @@ class TestEditModel:
         assert len(reloaded.source_queries) == 1
         assert reloaded.source_queries[0].source_model == "orders_source"
         assert not reloaded.sql_table
-        # Cache populated by the MCP write path (read paths don't, #74).
-        assert reloaded.backing_query_sql, (
-            "MCP edit_model(source_queries=...) must populate backing_query_sql"
-        )
-        assert "amount" in reloaded.backing_query_sql.lower()
+        assert reloaded.columns
+        assert "amount" in (await _dry_run_sql(storage, "orders")).lower()
 
     async def test_edit_query_variables_on_query_backed_model(
         self, mcp_server, storage: YAMLStorage
@@ -2319,8 +2321,7 @@ class TestEditModelMultiStageRename:
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_model("qb")
         assert before is not None
-        assert before.backing_query_sql is not None
-        assert "old" in before.backing_query_sql
+        assert "old" in await _dry_run_sql(storage, "qb")
         assert "old_sum" in [c.name for c in before.columns]
 
         # Edit: rename inner-stage measure to 'new' (and update outer to match).
@@ -2344,7 +2345,6 @@ class TestEditModelMultiStageRename:
 
         after = await storage.get_model("qb")
         assert after is not None
-        assert after.backing_query_sql is not None
         col_names = [c.name for c in after.columns]
         assert "new_sum" in col_names, (
             f"cache must reflect renamed inner measure, got: {col_names}"
@@ -2352,14 +2352,14 @@ class TestEditModelMultiStageRename:
         assert "old_sum" not in col_names, (
             f"stale 'old_sum' must be evicted, got: {col_names}"
         )
-        sql = after.backing_query_sql
-        assert "new" in sql, f"backing_query_sql must contain new name:\n{sql}"
+        sql = await _dry_run_sql(storage, "qb")
+        assert "new" in sql, f"the SQL must contain the new name:\n{sql}"
         # The stale name must not survive in the wrap aliases or measure refs.
         assert " AS old " not in sql, (
-            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+            f"the SQL must not retain the stale 'old' alias:\n{sql}"
         )
         assert 'AS "old"' not in sql, (
-            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+            f"the SQL must not retain the stale 'old' alias:\n{sql}"
         )
 
     async def test_edit_model_stage_shape_change_drops_and_adds_measure(
@@ -2379,9 +2379,9 @@ class TestEditModelMultiStageRename:
         before_cols = [c.name for c in before.columns]
         assert "rev_sum" in before_cols
         # Inner-stage `n` is not directly emitted on the outer model (the
-        # outer only takes rev:sum), but it must appear in backing_query_sql
+        # outer only takes rev:sum), but it must appear in the SQL
         # as the inner stage's wrap rename.
-        before_sql = before.backing_query_sql or ""
+        before_sql = await _dry_run_sql(storage, "qb")
         assert " AS n " in before_sql or 'AS "n"' in before_sql or before_sql.find("AS n\n") >= 0, (
             f"initial cache should expose inner 'n' alias:\n{before_sql}"
         )
@@ -2413,7 +2413,7 @@ class TestEditModelMultiStageRename:
 
         after = await storage.get_model("qb")
         assert after is not None
-        after_sql = after.backing_query_sql or ""
+        after_sql = await _dry_run_sql(storage, "qb")
         # Stale `n` must be gone from the inner wrap.
         assert " AS n " not in after_sql, (
             f"stale inner 'n' alias must be evicted:\n{after_sql}"
@@ -2423,7 +2423,7 @@ class TestEditModelMultiStageRename:
         )
         # New `avg_amount` must be present.
         assert "avg_amount" in after_sql, (
-            f"new 'avg_amount' alias must appear in backing_query_sql:\n{after_sql}"
+            f"new 'avg_amount' alias must appear in the SQL:\n{after_sql}"
         )
         # Cached outer columns reflect the new outer measures.
         after_cols = [c.name for c in after.columns]
