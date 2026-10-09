@@ -37,6 +37,9 @@ flowchart TD
   search("Search & embeddings")
   memories("Agent memories")
   protocols("BI wire protocols")
+  subgraph telemetry["Usage telemetry"]
+    telemetry__features["Features"]
+  end
   surfaces("User-facing surfaces")
   core__query -.-> engine__syntax
   core__models -.-> sql__dialects
@@ -56,8 +59,9 @@ flowchart TD
   sql --> core
   storage --> core
   surfaces --> core
+  telemetry__features --> core
   classDef leaf fill:none;
-  class core__query,core__models,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,surfaces leaf;
+  class core__query,core__models,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,telemetry__features,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

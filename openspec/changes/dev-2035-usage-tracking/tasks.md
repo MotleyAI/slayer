@@ -11,9 +11,9 @@
 
 ## 2. Architecture (each exact edit shown to the user and approved before it lands)
 
-- [ ] 2.1 `architecture/model/slayer.c4`: node `telemetry` in `python` (metadata `package 'slayer.telemetry'`, `arc42 'architecture/telemetry.arc42.md'`, `specs ['telemetry']`), child `features`; edges `surfaces -> telemetry`, `protocols -> telemetry`, `telemetry.features -> core` (+ any measured extractor edge). Verify: `poetry run la-arch-check` green after 3.x.
-- [ ] 2.2 `architecture/system.arc42.md` §2 node list; new `architecture/telemetry.arc42.md` (§1–§4; §3 principles approved in design.md D2: Fail-silent, the payload vocabulary, and the other privacy principles). Verify: `la-arch-check` arc42 checks green.
-- [ ] 2.3 Regenerate the landscape diagram: `poetry run la-arch-diagrams`. Verify: `diagrams-fresh` green; `npx -y likec4@1.47.0 validate architecture` green.
+- [x] 2.1 `architecture/model/slayer.c4`: node `telemetry` in `python` (metadata `package 'slayer.telemetry'`, `arc42 'architecture/telemetry.arc42.md'`, `specs ['telemetry']`), child `features`; edges `surfaces -> telemetry`, `protocols -> telemetry`, `telemetry.features -> core` (+ any measured extractor edge). Verify: `poetry run la-arch-check` green after 3.x.
+- [x] 2.2 `architecture/system.arc42.md` §2 node list; new `architecture/telemetry.arc42.md` (§1–§4; §3 principles approved in design.md D2: Fail-silent, the payload vocabulary, and the other privacy principles). Verify: `la-arch-check` arc42 checks green.
+- [x] 2.3 Regenerate the landscape diagram: `poetry run la-arch-diagrams`. Verify: `diagrams-fresh` green; `npx -y likec4@1.47.0 validate architecture` green.
 
 ## 3. Telemetry package
 

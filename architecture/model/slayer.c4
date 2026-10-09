@@ -82,6 +82,14 @@ model {
         specs ['facade']
       }
     }
+    telemetry = node 'Usage telemetry' {
+      metadata {
+        package 'slayer.telemetry'
+        arc42 'architecture/telemetry.arc42.md'
+        specs ['telemetry']
+      }
+      features = node 'Features'
+    }
     surfaces = bucket 'User-facing surfaces' {
       metadata {
         packages ['slayer.api', 'slayer.mcp', 'slayer.cli', 'slayer.client', 'slayer.inspect', 'slayer.demo', 'slayer.__main__']
@@ -146,5 +154,9 @@ model {
     surfaces -> search
     surfaces -> sql
     surfaces -> storage
+    protocols -> telemetry
+    surfaces -> telemetry
+    telemetry.features -> core
+    telemetry.features -> sql
   }
 }
