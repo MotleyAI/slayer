@@ -100,7 +100,7 @@ class TestDunderTableIngestion:
     def test_dunder_table_is_modelled_under_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: the ``__`` ban is lifted — the model keeps the faithful
+        """The ``__`` ban is lifted — the model keeps the faithful
         object name, and ``sql_table`` matches."""
         ds = _sqlite_ds(
             workspace,
@@ -164,7 +164,7 @@ class TestDunderTableIngestion:
 
 
 class TestCollisionPolicy:
-    """DEV-1743: ``__`` is a legal model-name character now, so ``a__b`` and
+    """``__`` is a legal model-name character now, so ``a__b`` and
     ``a_b`` (and ``a___b``) are DISTINCT models — the old sanitize-collapse
     collision between them no longer exists. A genuine collision is now only two
     objects sharing one raw name across different schemas (covered in
@@ -476,7 +476,7 @@ class TestWrapperContract:
 class TestJoinTargetsUseModelNames:
     """A join must name the persisted MODEL, not the live object.
 
-    DEV-1743: model names keep ``__``, so an FK pointing at
+    Model names keep ``__``, so an FK pointing at
     ``reports__patient__drug`` binds to the faithful ``reports__patient__drug``.
     """
 
@@ -505,7 +505,7 @@ class TestJoinTargetsUseModelNames:
         self, workspace: Path
     ) -> None:
         """An out-of-scope target is not ingested, so a join to it is dropped
-        rather than left dangling (DEV-1743: no longer a sanitize-collision, but
+        rather than left dangling (no longer a sanitize-collision, but
         the exclude filter still yields a target with no model)."""
         ds = _sqlite_ds(
             workspace,
@@ -571,7 +571,7 @@ class TestSanitizedNamesDoNotLeakIntoColumns:
         )
         models = {m.name: m for m in ingest_datasource(datasource=ds)}
         refs_it = models["refs_it"]
-        # DEV-1743: a__b is a valid model now, so the FK becomes a real join
+        # ``a__b`` is a valid model now, so the FK becomes a real join
         # (not dropped) targeting the faithful name.
         assert [j.target_model for j in refs_it.joins] == ["a__b"]
         # No qualified column names leaked in from the join target.

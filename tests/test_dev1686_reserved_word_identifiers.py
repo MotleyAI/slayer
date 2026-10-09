@@ -1,4 +1,4 @@
-"""DEV-1686: SLayer must quote SQL reserved words used as identifiers.
+"""SLayer must quote SQL reserved words used as identifiers.
 
 A model whose name is a reserved word (``grant``, ``order``, ``user``,
 ``group``, ``select``, ...) was unqueryable because the query builder derived
@@ -23,22 +23,33 @@ suite.
 from __future__ import annotations
 
 
+import contextlib
+import importlib
+import sqlite3
+
+import duckdb
 import pytest
 import sqlglot
+from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
+from sqlglot.errors import ParseError, TokenError
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
-from slayer.sql.dialects import _ALL_DIALECTS
+from slayer.sql.dialects import _ALL_DIALECTS, SQLGLOT_NAMES
+from slayer.storage.sqlite_conn import open_connection
 
 # The feature under test.
 from slayer.sql.reserved_keywords import (
+    DIALECT_RESERVED_KEYWORDS,
     SLAYER_RESERVED_KEYWORDS,
     install_reserved_keywords,
     prequote_reserved_identifiers,
 )
 
 from tests._engine_helpers import _engine_generate
+from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +79,8 @@ async def _gen(
 
 def _assert_parses(sql: str, dialect: str = "postgres") -> None:
     stmts = sqlglot.parse(sql, dialect=dialect)
-    assert stmts and len(stmts) == 1, f"expected 1 parseable statement:\n{sql}"
+    assert stmts, f"expected 1 parseable statement:\n{sql}"
+    assert len(stmts) == 1, f"expected 1 parseable statement:\n{sql}"
 
 
 # Dialects whose byte-level emission we assert (Tier-1). Each has a quote char.
@@ -115,8 +127,7 @@ def _merchant_model() -> SlayerModel:
 
 class TestReservedKeywordsInstalled:
     def test_every_dialect_generator_carries_the_set(self) -> None:
-        from sqlglot.dialects.dialect import Dialect
-        install_reserved_keywords()  # idempotent
+        install_reserved_keywords(SQLGLOT_NAMES)  # idempotent
         for d in _ALL_DIALECTS:
             gen_cls = Dialect.get_or_raise(d.sqlglot_name).generator_class
             assert SLAYER_RESERVED_KEYWORDS <= set(gen_cls.RESERVED_KEYWORDS), (
@@ -126,8 +137,6 @@ class TestReservedKeywordsInstalled:
 
     def test_importing_dialects_package_installs_the_patch(self) -> None:
         # Importing slayer.sql.dialects alone must have run the installer.
-        import importlib
-        from sqlglot.dialects.dialect import Dialect
         importlib.import_module("slayer.sql.dialects")
         pg = Dialect.get_or_raise("postgres").generator_class
         assert "grant" in pg.RESERVED_KEYWORDS
@@ -141,7 +150,7 @@ class TestReservedKeywordsInstalled:
     def test_set_includes_reported_and_common_reserved_words(self) -> None:
         for w in ("grant", "order", "user", "group", "select", "table",
                   "from", "where", "join", "having", "distinct",
-                  # DEV-1686 completeness (Codex review): words that fail as a
+                  # Completeness (Codex review): words that fail as a
                   # bare alias in Postgres parse must be in the set.
                   "between", "alter", "drop", "insert", "qualify", "xor",
                   "regexp", "revoke", "rollback"):
@@ -151,9 +160,6 @@ class TestReservedKeywordsInstalled:
         """Regression for the curation gap Codex found (`between`): every token
         in the sqlglot keyword universe that fails as a bare Postgres alias must
         be quoted by our set."""
-        from sqlglot.dialects.dialect import Dialect
-        from sqlglot.errors import ParseError, TokenError
-
         universe: set[str] = set()
         for name in ("postgres", "mysql", "duckdb", "bigquery", "redshift",
                      "trino", "tsql", "snowflake"):
@@ -173,6 +179,36 @@ class TestReservedKeywordsInstalled:
         assert not missing, f"reserved words missing from SLAYER_RESERVED_KEYWORDS: {missing}"
 
 
+class TestDialectReservedKeywords:
+    @pytest.mark.parametrize("dialect", sorted(DIALECT_RESERVED_KEYWORDS))
+    def test_dialect_words_emit_quoted_for_their_dialect(self, dialect: str) -> None:
+        bare = [
+            w for w in DIALECT_RESERVED_KEYWORDS[dialect]
+            if exp.to_identifier(w).sql(dialect=dialect) != _q(w, dialect)
+        ]
+        assert not bare
+
+    def test_dialect_words_stay_bare_elsewhere(self) -> None:
+        assert exp.to_identifier("index").sql(dialect="postgres") == "index"
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+    def test_every_live_alias_failure_is_quoted(self, dialect: str) -> None:
+        connection = open_connection(":memory:") if dialect == "sqlite" else contextlib.closing(duckdb.connect())
+        with connection as con:
+            con.execute("CREATE TABLE t (a INTEGER)")
+
+            def fails(sql: str) -> bool:
+                try:
+                    con.execute(sql)
+                except (sqlite3.Error, duckdb.Error):
+                    return True
+                return False
+
+            assert unquoted_alias_failures(
+                dialect=dialect, words=keyword_universe(), table="t", column="a", fails=fails,
+            ) == []
+
+
 # ---------------------------------------------------------------------------
 # 2/3/4/5/6. Byte-level alias + qualifier quoting
 # ---------------------------------------------------------------------------
@@ -180,7 +216,7 @@ class TestReservedKeywordsInstalled:
 class TestReservedAliasQuoting:
     @pytest.mark.parametrize("dialect", _EMIT_DIALECTS)
     async def test_grant_alias_and_qualifier_quoted(self, dialect: str) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(source_model="grant", dimensions=["namespace"], measures=["*:count"])
         sql = _norm(await _gen(q, _grant_model(), dialect=dialect))
         qg = _q("grant", dialect)
@@ -192,7 +228,7 @@ class TestReservedAliasQuoting:
 
     @pytest.mark.parametrize("name", ["order", "user", "group", "select", "table", "between"])
     async def test_other_reserved_model_names(self, name: str) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         model = SlayerModel(
             name=name, sql_table=f'"{name.capitalize()}"', data_source="api",
             columns=[
@@ -207,7 +243,7 @@ class TestReservedAliasQuoting:
         _assert_parses(sql)
 
     async def test_mixed_case_reserved_name_consistent(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         model = SlayerModel(
             name="Order", sql_table='"Order"', data_source="api",
             columns=[
@@ -223,7 +259,7 @@ class TestReservedAliasQuoting:
         _assert_parses(sql)
 
     async def test_non_reserved_names_stay_bare(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         model = SlayerModel(
             name="orders", sql_table="orders", data_source="api",
             columns=[
@@ -233,11 +269,12 @@ class TestReservedAliasQuoting:
         )
         q = SlayerQuery(source_model="orders", dimensions=["revenue"], measures=["*:count"])
         sql = _norm(await _gen(q, model, dialect="postgres"))
-        assert "AS orders" in sql and '"orders"' not in sql, sql
+        assert "AS orders" in sql, sql
+        assert '"orders"' not in sql, sql
         _assert_parses(sql)
 
     async def test_physical_reserved_word_column_quoted(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         model = SlayerModel(
             name="events", sql_table="events", data_source="api",
             columns=[
@@ -257,7 +294,7 @@ class TestReservedAliasQuoting:
 
 class TestReservedStringReparsePaths:
     async def test_join_from_reserved_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(source_model="grant", dimensions=["merchant.name"], measures=["*:count"])
         sql = _norm(await _gen(
             q, _grant_model(with_join=True), extra_models=[_merchant_model()],
@@ -273,7 +310,7 @@ class TestReservedStringReparsePaths:
         source relation. It projects a NAMED list now (P-B), so the star is gone
         and each reference is checked directly, which is the stronger claim —
         a star hides whether the individual refs were quoted at all."""
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "amount:last"}],
@@ -285,7 +322,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_where_filter_on_reserved_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], filters=["amount > 0"],
@@ -295,7 +332,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_order_by_base_column_on_reserved_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], order=[OrderItem(column="namespace")],
@@ -304,7 +341,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_time_shift_with_filter_on_reserved_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
@@ -315,7 +352,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_where_filter_byte_level(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=["*:count"], filters=["amount > 0"],
@@ -327,7 +364,7 @@ class TestReservedStringReparsePaths:
         """A ``Column.filter`` measure emits ``SUM(CASE WHEN ... END)`` whose
         predicate is parsed via the ``measure.filter_sql`` sites — the reserved
         qualifier inside the CASE WHEN must be quoted."""
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         model = _grant_model(
             extra_cols=(Column(name="big", sql="amount", type=DataType.DOUBLE, filter="amount > 100"),),
         )
@@ -340,7 +377,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_having_on_reserved_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "amount:sum"}], filters=["amount:sum > 100"],
@@ -350,7 +387,7 @@ class TestReservedStringReparsePaths:
         _assert_parses(sql)
 
     async def test_raw_row_distinct_dimension_values_false(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(
             source_model="grant", dimensions=["namespace"],
             distinct_dimension_values=False,
@@ -394,7 +431,7 @@ def _orders_joined_to_grant() -> tuple[SlayerModel, SlayerModel]:
 
 class TestReservedJoinedFromNonReservedRoot:
     async def test_reserved_join_alias_in_projection_and_on(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(source_model="orders", dimensions=["grant.status"], measures=["*:count"])
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
@@ -402,7 +439,7 @@ class TestReservedJoinedFromNonReservedRoot:
         _assert_parses(sql)
 
     async def test_where_on_reserved_joined_qualifier(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(
             source_model="orders", dimensions=["grant.status"],
@@ -415,7 +452,7 @@ class TestReservedJoinedFromNonReservedRoot:
         _assert_parses(sql)
 
     async def test_first_last_referencing_reserved_joined(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_joined_to_grant()
         q = SlayerQuery(
             source_model="orders", dimensions=["grant.status"],
@@ -507,13 +544,13 @@ def _orders_derived_grant_models() -> tuple[SlayerModel, SlayerModel]:
 
 class TestReservedInComputedPaths:
     async def test_derived_column_referencing_reserved_joined_model(self) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_derived_grant_models()
         q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # The reserved joined model must be JOINED (not just referenced): a
         # quoted qualifier in the expanded derived-column SQL must still be
-        # discovered by join-path resolution (DEV-1686 / Codex review).
+        # discovered by join-path resolution (Codex review).
         assert 'LEFT JOIN "Grant" AS "grant"' in sql, sql
         assert 'ON orders.grant_id = "grant".id' in sql, sql
         assert '"grant".amount' in sql, sql
@@ -525,8 +562,8 @@ class TestReservedInComputedPaths:
     ) -> None:
         """The reserved qualifier is emitted with the dialect's quote char
         (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); join-path
-        discovery must still find it on every dialect (DEV-1686 / Codex review)."""
-        install_reserved_keywords()
+        discovery must still find it on every dialect (Codex review)."""
+        install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_derived_grant_models()
         q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
         sql = _norm(await _gen(q, orders, extra_models=[grant], dialect=dialect))
@@ -541,7 +578,7 @@ class TestReservedInComputedPaths:
 class TestGeneratedSqlAlwaysParses:
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql", "tsql"])
     async def test_standalone_reserved_parses_all_dialects(self, dialect: str) -> None:
-        install_reserved_keywords()
+        install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery(source_model="grant", dimensions=["namespace"], measures=["*:count"])
         sql = await _gen(q, _grant_model(), dialect=dialect)
         _assert_parses(sql, dialect)

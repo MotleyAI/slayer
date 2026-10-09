@@ -232,4 +232,4 @@ To explore first without auto-ingesting:
    )
 ```
 
-Upsert semantics: if a column/measure/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"columns"`, `"measures"`, `"aggregations"`, `"joins"`). `measures` here are named formulas (`{formula, name, label, description}`) — the row-level `sql` definitions live under `columns`.
+Upsert semantics: if a column/measure/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"columns"`, `"measures"`, `"aggregations"`, `"joins"`, `"join_edges"`); a join is matched by its name, else its target and `join_pairs`, else the only join to its target, and two joins to one target need edge names (removable by name, or exactly via `join_edges: [{target_model, name, join_pairs}]`). `measures` here are named formulas (`{formula, name, label, description}`) — the row-level `sql` definitions live under `columns`.

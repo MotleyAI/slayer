@@ -7,6 +7,7 @@ import re
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
+from slayer.core.query import ColumnRef
 from slayer.engine.ingestion import _updated_detail_lines
 from slayer.engine.schema_drift import ModelAddition
 from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
@@ -106,6 +107,10 @@ def _customers() -> SlayerModel:
     )
 
 
+def _dimension_names(result: QueryResult) -> list[str]:
+    return [d.full_name if isinstance(d, ColumnRef) else repr(d) for d in result.query.dimensions or []]
+
+
 class TestTranslatorMatchesTheDeclaredEdge:
     def test_reverse_direction_join_traverses_the_declared_edge(self) -> None:
         orders = orders_with(join_to([["customer_id", "id"]], target="customers"))
@@ -119,7 +124,7 @@ class TestTranslatorMatchesTheDeclaredEdge:
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
         assert result.query.source_model == "customers"
-        assert [d.full_name for d in result.query.dimensions or []] == ["orders.status"]
+        assert _dimension_names(result) == ["orders.status"]
 
     def test_parallel_join_uses_the_edge_name(self) -> None:
         catalog = build_catalog(models_by_datasource={DS: [_orders(), addresses_model()]})
@@ -132,7 +137,7 @@ class TestTranslatorMatchesTheDeclaredEdge:
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
         assert result.query.source_model == "orders"
-        assert [d.full_name for d in result.query.dimensions or []] == ["shipping_address.city"]
+        assert _dimension_names(result) == ["shipping_address.city"]
 
 
 class TestIngestReportListsNamedEdges:

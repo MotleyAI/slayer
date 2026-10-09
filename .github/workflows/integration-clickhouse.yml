@@ -10,6 +10,8 @@ on:
     paths:
       - 'slayer/sql/dialects/clickhouse.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/clickhouse/**'
       - 'tests/integration/test_integration_clickhouse.py'
@@ -20,6 +22,8 @@ on:
     paths:
       - 'slayer/sql/dialects/clickhouse.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/clickhouse/**'
       - 'tests/integration/test_integration_clickhouse.py'

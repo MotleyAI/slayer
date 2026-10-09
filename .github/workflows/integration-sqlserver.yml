@@ -13,6 +13,8 @@ on:
     paths:
       - 'slayer/sql/dialects/tsql.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'
@@ -23,6 +25,8 @@ on:
     paths:
       - 'slayer/sql/dialects/tsql.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'

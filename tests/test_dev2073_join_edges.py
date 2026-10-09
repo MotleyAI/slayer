@@ -64,7 +64,8 @@ class TestMcpEditModelAddressesOneEdge:
         await storage.save_model(orders_with(*unnamed_pair()))
         text = await _edit(mcp_server, remove={"joins": ["addresses"]})
         assert not _succeeded(text)
-        assert "billing_address_id" in text and "shipping_address_id" in text
+        assert "billing_address_id" in text
+        assert "shipping_address_id" in text
         assert len(await stored_joins(storage)) == 2
 
     async def test_upsert_names_the_matching_unnamed_edge(self, mcp_server, storage) -> None:

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -21,7 +21,9 @@ from slayer.core.models import (
     is_key_set_unique,
     sanitize_model_name,
 )
+from slayer.core.join_edges import edge_reference
 from slayer.engine.cardinality import infer_structural_cardinality
+from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _CLICKHOUSE_WRAPPER_MAX_DEPTH,
@@ -260,13 +262,7 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     return False
 
 
-class RollupGraphError(Exception):
-    """Raised when the FK reference graph contains cycles."""
-
-    pass
-
-
-# --- FK graph utilities ---
+# --- Join generation from FK relationships ---
 
 
 def _is_cross_schema_fk(
@@ -283,106 +279,6 @@ def _is_cross_schema_fk(
     return referred_schema != effective_schema
 
 
-def _get_fk_relationships(
-    inspector: sa.engine.Inspector,
-    table_name: str,
-    schema: str | None,
-    table_set: set[str],
-    schema_name: str | None = None,
-) -> list[tuple]:
-    """``(source_column, target_table, target_column)`` FKs into ``table_set``; ``[]`` on error.
-
-    ``schema`` is the Inspector token; ``schema_name`` the bare name for the cross-schema check.
-    """
-    try:
-        fks = inspector.get_foreign_keys(table_name, schema=schema)
-    except Exception as exc:  # noqa: BLE001 — FK metadata is optional
-        logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
-        return []
-    result = []
-    for fk in fks:
-        referred_table = fk["referred_table"]
-        if referred_table not in table_set or referred_table == table_name:
-            continue
-        if _is_cross_schema_fk(
-            fk=fk,
-            schema=schema_name if schema_name is not None else schema,
-            default_schema=getattr(inspector, "default_schema_name", None),
-        ):
-            continue
-        constrained = fk["constrained_columns"]
-        referred = fk["referred_columns"]
-        for src_col, tgt_col in zip(constrained, referred):
-            result.append((src_col, referred_table, tgt_col))
-    return result
-
-
-def _build_fk_graph(
-    inspector: sa.engine.Inspector,
-    table_names: list[str],
-    schema: str | None,
-    schema_name: str | None = None,
-) -> dict[str, set[str]]:
-    """Build directed graph: graph[table] = set of tables it references via FK."""
-    table_set = set(table_names)
-    graph: dict[str, set[str]] = defaultdict(set)
-    for table_name in table_names:
-        for _, ref_table, _ in _get_fk_relationships(
-            inspector=inspector,
-            table_name=table_name,
-            schema=schema,
-            table_set=table_set,
-            schema_name=schema_name,
-        ):
-            graph[table_name].add(ref_table)
-    return dict(graph)
-
-
-def _check_acyclic(graph: dict[str, set[str]]) -> None:
-    """Check that FK graph is a DAG. Raises RollupGraphError if cycles found."""
-    visited: set[str] = set()
-    rec_stack: set[str] = set()
-
-    def dfs(node: str, path: list[str]) -> None:
-        visited.add(node)
-        rec_stack.add(node)
-        path.append(node)
-        for neighbor in graph.get(node, set()):
-            if neighbor not in visited:
-                dfs(neighbor, path)
-            elif neighbor in rec_stack:
-                cycle_start = path.index(neighbor)
-                cycle = path[cycle_start:] + [neighbor]
-                raise RollupGraphError(f"Foreign key graph contains a cycle: {' -> '.join(cycle)}")
-        path.pop()
-        rec_stack.remove(node)
-
-    all_nodes: set[str] = set(graph.keys())
-    for neighbors in graph.values():
-        all_nodes.update(neighbors)
-    for node in all_nodes:
-        if node not in visited:
-            dfs(node, [])
-
-
-def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[str]:
-    """BFS to find all tables transitively reachable from source (excluding source)."""
-    reachable: set[str] = set()
-    queue = deque([source])
-    visited = {source}
-    while queue:
-        current = queue.popleft()
-        for neighbor in graph.get(current, set()):
-            if neighbor not in visited:
-                visited.add(neighbor)
-                reachable.add(neighbor)
-                queue.append(neighbor)
-    return reachable
-
-
-# --- Join generation from FK relationships ---
-
-
 def _get_fk_constraint_groups(
     inspector: sa.engine.Inspector,
     table_name: str,
@@ -390,8 +286,12 @@ def _get_fk_constraint_groups(
     table_set: set[str],
     schema_name: str | None = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
-    """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per FK constraint."""
-    fks = inspector.get_foreign_keys(table_name, schema=schema)
+    """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per FK constraint; ``[]`` on error."""
+    try:
+        fks = inspector.get_foreign_keys(table_name, schema=schema)
+    except Exception as exc:  # noqa: BLE001 — FK metadata is optional
+        logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
+        return []
     result: list[tuple[str, list[tuple[str, str]]]] = []
     for fk in fks:
         referred_table = fk["referred_table"]
@@ -570,7 +470,6 @@ def _logical_column_name(live_name: str) -> str:
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
-    referenced_tables: set[str],
     schema: str | None,
     table_set: set[str],
     sa_engine: sa.Engine | None = None,
@@ -588,6 +487,8 @@ def _generate_joins(
         table_set=table_set,
         schema_name=schema_name,
     )
+    if not groups:
+        return []
     source_uniques = _get_unique_key_sets(
         inspector=inspector, table_name=source_table,
         schema=schema, sa_engine=sa_engine,
@@ -596,8 +497,6 @@ def _generate_joins(
     joins = []
     seen_signatures: set[tuple] = set()
     for ref_table, pairs in groups:
-        if ref_table not in referenced_tables:
-            continue
         # Model names strip `__`, so the live name is not always the model name.
         target_name = (
             ref_table if model_name_by_table is None
@@ -755,37 +654,14 @@ def _introspect_query_columns_via_inspector(
     inspector: sa.engine.Inspector,
     table_name: str,
     ref: SchemaRef | None,
-    referenced_tables: set[str],
-    fk_columns_by_table: dict[str, set[str]],
-    joins: list[ModelJoin] | None = None,
-    live_name_by_model: dict[str, str] | None = None,
 ) -> list[IntrospectedColumn]:
-    """Introspect the table's columns plus one aliased set per join path."""
+    """Introspect the table's own columns."""
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
-    results = [
+    return [
         _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns)
         for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
     ]
-
-    # (live table, path) per join — the same table may appear via several paths.
-    # An EMPTY join list means every join was dropped — not "never generated".
-    if joins is not None:
-        lookup = live_name_by_model or {}
-        table_path_pairs = [(lookup.get(mj.target_model, mj.target_model), mj.target_model) for mj in joins]
-    else:
-        table_path_pairs = [(t, t) for t in referenced_tables]
-
-    for ref_table, path in table_path_pairs:
-        ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, ref)
-        ref_pk_cols = set(ref_pk.get("constrained_columns", []))
-        ref_fk_cols = fk_columns_by_table.get(ref_table, set())
-        results.extend(
-            _introspected_column(col, name=f"{path}.{col['name']}", primary_key=col["name"] in ref_pk_cols)
-            for col in _safe_get_columns(inspector, sa_engine, ref_table, ref)
-            if col["name"] not in ref_fk_cols
-        )
-    return results
 
 
 # --- Model generation from introspected columns ---
@@ -803,7 +679,7 @@ def _columns_to_model(
     meta: dict[str, Any] | None = None,
     description: str | None = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel with one Column per non-joined introspected column."""
+    """Generate a SlayerModel with one Column per introspected column."""
     cols: list[Column] = []
     unique_set = unique_columns or set()
 
@@ -811,10 +687,6 @@ def _columns_to_model(
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
     for col in columns:
-        # Joined columns live on the target model.
-        if "." in col.name:
-            continue
-
         column_name = _logical_column_name(col.name)
 
         if col.is_float:
@@ -930,8 +802,6 @@ def introspect_table_to_model(
         inspector=inspector,
         table_name=table_name,
         ref=ref,
-        referenced_tables=set(),
-        fk_columns_by_table={},
     )
     sql_table = ref.qualify(table_name)
     columns = _sqlite_probe_integer_columns(
@@ -1152,12 +1022,8 @@ def _build_one_model(
     model_name: str,
     ref: SchemaRef,
     data_source: str,
-    fk_graph: dict[str, set[str]],
-    has_cycles: bool,
-    fk_columns_by_table: dict[str, set[str]],
     table_set: set[str],
     model_name_by_table: dict[str, str] | None = None,
-    live_name_by_model: dict[str, str] | None = None,
     internal_tool: str | None = None,
 ) -> SlayerModel:
     """Introspect one live object into a model; raises on failure.
@@ -1165,33 +1031,21 @@ def _build_one_model(
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     """
     schema_token = ref.token
-    referenced = (
-        set() if has_cycles else _compute_transitive_closure(fk_graph, obj.name)
-    )
     sql_table = ref.qualify(obj.name)
-
-    model_joins = None
-    if referenced:
-        model_joins = _generate_joins(
-            inspector=inspector,
-            source_table=obj.name,
-            referenced_tables=referenced,
-            schema=schema_token,
-            table_set=table_set,
-            sa_engine=sa_engine,
-            model_name_by_table=model_name_by_table,
-            schema_name=ref.name,
-        )
-
+    model_joins = _generate_joins(
+        inspector=inspector,
+        source_table=obj.name,
+        schema=schema_token,
+        table_set=table_set,
+        sa_engine=sa_engine,
+        model_name_by_table=model_name_by_table,
+        schema_name=ref.name,
+    )
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
         inspector=inspector,
         table_name=obj.name,
         ref=ref,
-        referenced_tables=referenced,
-        fk_columns_by_table=fk_columns_by_table,
-        joins=model_joins,
-        live_name_by_model=live_name_by_model,
     )
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
@@ -1214,26 +1068,6 @@ def _build_one_model(
         meta=meta,
         description=_safe_get_table_comment(inspector, obj.name, schema_token),
     )
-
-
-def _collect_fk_columns(
-    *,
-    inspector: sa.engine.Inspector,
-    table_names: list[str],
-    schema: str | None,
-) -> dict[str, set[str]]:
-    """Map each table to its FK-constrained columns (per-table failures tolerated)."""
-    out: dict[str, set[str]] = defaultdict(set)
-    for table_name in table_names:
-        try:
-            fks = inspector.get_foreign_keys(table_name, schema=schema)
-        except Exception as exc:  # noqa: BLE001 — FK metadata is optional
-            logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
-            continue
-        for fk in fks:
-            for col in fk["constrained_columns"]:
-                out[table_name].add(col)
-    return out
 
 
 def _fetch_bigquery_dataset_description(
@@ -1282,25 +1116,8 @@ def _scan_one_schema(
     surface_internals: bool,
 ) -> tuple[list[SlayerModel], list[SkippedTable], list[InternalTable]]:
     """Build every winning model for one schema; joins resolve within this schema only."""
-    schema_token = ref.token
-    obj_names = [obj.name for _, obj in entries]
-    table_set = set(obj_names)
+    table_set = {obj.name for _, obj in entries}
     name_by_object = {obj.name: mn for mn, obj in entries}
-    live_by_model = {mn: obj.name for mn, obj in entries}
-
-    fk_graph = _build_fk_graph(
-        inspector=inspector, table_names=obj_names, schema=schema_token,
-        schema_name=ref.name,
-    )
-    has_cycles = False
-    try:
-        _check_acyclic(fk_graph)
-    except RollupGraphError as e:
-        logger.warning(f"FK graph has cycles, skipping rollup: {e}")
-        has_cycles = True
-    fk_columns_by_table = _collect_fk_columns(
-        inspector=inspector, table_names=obj_names, schema=schema_token
-    )
 
     models: list[SlayerModel] = []
     skipped: list[SkippedTable] = []
@@ -1317,12 +1134,8 @@ def _scan_one_schema(
                     model_name=model_name,
                     ref=ref,
                     data_source=data_source,
-                    fk_graph=fk_graph,
-                    has_cycles=has_cycles,
-                    fk_columns_by_table=fk_columns_by_table,
                     table_set=table_set,
                     model_name_by_table=name_by_object,
-                    live_name_by_model=live_by_model,
                     internal_tool=None if surface_internals else tool,
                 )
             )
@@ -1347,6 +1160,15 @@ def _scan_one_schema(
                 )
             )
     return models, skipped, internal_tables
+
+
+def _plan_scanned_edges(models: list[SlayerModel]) -> list[SlayerModel]:
+    """The scanned models with their FK joins planned as a first ingest (no stored models)."""
+    plan = plan_fk_edges(
+        models={m.name: m.model_copy(update={"joins": []}) for m in models},
+        candidates={m.name: m.joins for m in models},
+    )
+    return [plan.models[m.name] for m in models]
 
 
 def ingest_datasource_report(
@@ -1426,7 +1248,7 @@ def ingest_datasource_report(
             )
 
         return IngestionScanReport(
-            models=models,
+            models=_plan_scanned_edges(models),
             skipped=skipped,
             objects=all_objects,
             internal_tables=internal_tables,
@@ -1463,15 +1285,6 @@ def ingest_datasource(
 
 
 # --- Idempotent re-ingestion ---
-
-
-def _existing_join_signatures(model: SlayerModel) -> set[tuple[str, tuple[tuple[str, str], ...]]]:
-    """``(target_model, sorted join_pairs)`` signatures of ``model``'s joins."""
-    out: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
-    for j in model.joins:
-        sig_pairs = tuple(sorted((p[0], p[1]) for p in j.join_pairs))
-        out.add((j.target_model, sig_pairs))
-    return out
 
 
 def _is_auto_default_integer_format(fmt: NumberFormat | None) -> bool:
@@ -1556,48 +1369,21 @@ def _repair_legacy_join_targets(
     return persisted.model_copy(update={"joins": joins}), True
 
 
-def _merge_joins_strict(
+def _merge_stored_joins(
     persisted: SlayerModel, fresh: SlayerModel,
-) -> tuple[list[ModelJoin], list[str], bool]:
-    """Append new-signature joins; raises on a same-target/different-pairs conflict.
-
-    Fills only unset ``cardinality``; the third value flags that metadata-only change.
-    """
-    persisted, target_repaired = _repair_legacy_join_targets(
-        persisted=persisted, fresh=fresh
-    )
-
-    existing_join_sigs = _existing_join_signatures(persisted)
-    existing_join_targets = {j.target_model for j in persisted.joins}
+) -> tuple[list[ModelJoin], bool]:
+    """Stored joins with legacy targets repaired and unset ``cardinality`` filled from the matching fresh join."""
+    persisted, changed = _repair_legacy_join_targets(persisted=persisted, fresh=fresh)
     fresh_by_sig = {_join_sig(j): j for j in fresh.joins}
-
-    metadata_changed = target_repaired
-    new_joins: list[ModelJoin] = []
+    joins: list[ModelJoin] = []
     for pj in persisted.joins:
         fj = fresh_by_sig.get(_join_sig(pj))
         if pj.cardinality is None and fj is not None and fj.cardinality is not None:
-            new_joins.append(pj.model_copy(update={"cardinality": fj.cardinality}))
-            metadata_changed = True
+            joins.append(pj.model_copy(update={"cardinality": fj.cardinality}))
+            changed = True
         else:
-            new_joins.append(pj)
-
-    new_join_targets: list[str] = []
-    for j in fresh.joins:
-        sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
-        if sig in existing_join_sigs:
-            continue
-        if j.target_model in existing_join_targets:
-            raise ValueError(
-                f"Model {persisted.name!r} already has a join targeting "
-                f"{j.target_model!r} with different join_pairs; the "
-                f"additive re-ingest cannot represent both join "
-                f"definitions safely. Drop the existing join via "
-                f"``edit_model(remove={{'joins': [{j.target_model!r}]}})`` "
-                f"and re-run."
-            )
-        new_joins.append(j)
-        new_join_targets.append(j.target_model)
-    return new_joins, new_join_targets, metadata_changed
+            joins.append(pj)
+    return joins, changed
 
 
 class AdditiveMergeResult(BaseModel):
@@ -1605,7 +1391,6 @@ class AdditiveMergeResult(BaseModel):
 
     merged: SlayerModel
     new_columns: list[str] = Field(default_factory=list)
-    new_joins: list[str] = Field(default_factory=list)
     widened_columns: list[str] = Field(default_factory=list)
     kind_changed: bool = False
     #: A metadata-only fill (join cardinality / column unique) that still
@@ -1615,6 +1400,13 @@ class AdditiveMergeResult(BaseModel):
     #: DB comment, and whether the model-level description was filled.
     described_columns: list[str] = Field(default_factory=list)
     model_described: bool = False
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(
+            self.new_columns or self.widened_columns or self.kind_changed or self.metadata_changed
+            or self.described_columns or self.model_described
+        )
 
 
 def _merge_one_column(
@@ -1686,7 +1478,7 @@ def _additive_merge_existing(
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 
-    new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
+    merged_joins, joins_metadata_changed = _merge_stored_joins(
         persisted=persisted, fresh=fresh
     )
     metadata_changed = metadata_changed or joins_metadata_changed
@@ -1700,7 +1492,6 @@ def _additive_merge_existing(
 
     if not (
         new_column_names
-        or new_join_targets
         or widened_column_names
         or kind_changed
         or metadata_changed
@@ -1709,7 +1500,7 @@ def _additive_merge_existing(
     ):
         return AdditiveMergeResult(merged=persisted)
 
-    update: dict[str, Any] = {"columns": merged_columns, "joins": new_joins}
+    update: dict[str, Any] = {"columns": merged_columns, "joins": merged_joins}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
     if model_described:
@@ -1718,7 +1509,6 @@ def _additive_merge_existing(
     return AdditiveMergeResult(
         merged=persisted.model_copy(update=update),
         new_columns=new_column_names,
-        new_joins=new_join_targets,
         widened_columns=widened_column_names,
         kind_changed=kind_changed,
         metadata_changed=metadata_changed,
@@ -1727,11 +1517,20 @@ def _additive_merge_existing(
     )
 
 
-class ProcessTableOutcome(BaseModel):
-    """One table's idempotent-merge result: an addition, a skip, or neither."""
+class _TableMerge(BaseModel):
+    """One fresh table merged into its stored model, before FK edges are planned."""
 
-    addition: Any = None
-    skipped: SkippedTable | None = None
+    table_name: str
+    fresh: SlayerModel
+    base: SlayerModel  # stored joins only; the edge plan adds the fresh FKs
+    created: bool = False
+    merge: AdditiveMergeResult | None = None
+    sql_table_change: str | None = None
+    kind_change: str | None = None
+
+    @property
+    def changed(self) -> bool:
+        return self.created or self.sql_table_change is not None or (self.merge is not None and self.merge.has_changes)
 
 
 def _qualifier_repair_allowed(
@@ -1753,44 +1552,26 @@ def _qualifier_repair_allowed(
     return bare_name not in default_objects
 
 
-async def _process_one_table(
+def _merge_one_table(
     *,
     table_name: str,
     fresh: SlayerModel,
+    persisted: SlayerModel | None,
     datasource: DatasourceConfig,
-    storage: StorageBackend,
-    failures: DocumentLoadFailures,
     default_schema_name: str | None = None,
     default_objects: set[str] | None = None,
-) -> ProcessTableOutcome:
-    """Save / merge one fresh model; raises on persistence failure. An unloadable stored model is recorded and skipped.
+) -> _TableMerge | SkippedTable | None:
+    """Merge one fresh model into its stored twin (``None``: a sql/query-backed model, left alone).
 
     A BARE persisted ``sql_table`` is healed to the qualified one when safe; a
     qualified one is never rewritten.
     """
-    from slayer.engine.schema_drift import ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
-
-    try:
-        persisted = await storage.get_model(table_name, data_source=datasource.name)
-    except StoredDocumentLoadError as exc:
-        failures.record(exc)
-        return ProcessTableOutcome()
     if persisted is None:
-        await storage.save_model(fresh, failures=failures)
-        return ProcessTableOutcome(
-            addition=ModelAddition(
-                model_name=table_name,
-                data_source=datasource.name,
-                created=True,
-                new_columns=[c.name for c in fresh.columns],
-                new_joins=[j.target_model for j in fresh.joins],
-                source_kind=fresh.source_kind,
-                described_columns=[c.name for c in fresh.columns if c.description],
-                model_described=bool(fresh.description),
-            )
+        return _TableMerge(
+            table_name=table_name, fresh=fresh, base=fresh.model_copy(update={"joins": []}), created=True,
         )
     if persisted.sql or persisted.source_queries:
-        return ProcessTableOutcome()
+        return None
 
     sql_table_change: str | None = None
     if (
@@ -1802,14 +1583,12 @@ async def _process_one_table(
         fresh_schema, _ = split_sql_table(fresh.sql_table)
         if persisted_schema is not None:
             # A differently qualified twin is a different physical table.
-            return ProcessTableOutcome(
-                skipped=SkippedTable(
-                    table_name=persisted.sql_table,
-                    reason=(
-                        f"kept qualified {persisted.sql_table!r}: the fresh "
-                        f"{fresh.sql_table!r} is a different physical table"
-                    ),
-                )
+            return SkippedTable(
+                table_name=persisted.sql_table,
+                reason=(
+                    f"kept qualified {persisted.sql_table!r}: the fresh "
+                    f"{fresh.sql_table!r} is a different physical table"
+                ),
             )
         if not _qualifier_repair_allowed(
             bare_name=persisted_obj,
@@ -1817,14 +1596,12 @@ async def _process_one_table(
             default_schema_name=default_schema_name,
             default_objects=default_objects,
         ):
-            return ProcessTableOutcome(
-                skipped=SkippedTable(
-                    table_name=persisted.sql_table,
-                    reason=(
-                        f"kept unqualified {persisted.sql_table!r}: the fresh "
-                        f"{fresh.sql_table!r} is a different physical table"
-                    ),
-                )
+            return SkippedTable(
+                table_name=persisted.sql_table,
+                reason=(
+                    f"kept unqualified {persisted.sql_table!r}: the fresh "
+                    f"{fresh.sql_table!r} is a different physical table"
+                ),
             )
         sql_table_change = f"{persisted.sql_table} → {fresh.sql_table}"
         persisted = persisted.model_copy(update={"sql_table": fresh.sql_table})
@@ -1834,35 +1611,12 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    if (
-        outcome.new_columns
-        or outcome.new_joins
-        or outcome.widened_columns
-        or outcome.kind_changed
-        or outcome.metadata_changed
-        or outcome.described_columns
-        or outcome.model_described
-        or sql_table_change
-    ):
-        await storage.save_model(outcome.merged, failures=failures)
     kind_change = None
     if outcome.kind_changed:
-        before = persisted.source_kind or "unknown"
-        kind_change = f"{before} → {fresh.source_kind}"
-    return ProcessTableOutcome(
-        addition=ModelAddition(
-            model_name=table_name,
-            data_source=datasource.name,
-            created=False,
-            new_columns=outcome.new_columns,
-            new_joins=outcome.new_joins,
-            widened_columns=outcome.widened_columns,
-            source_kind=outcome.merged.source_kind,
-            kind_change=kind_change,
-            described_columns=outcome.described_columns,
-            model_described=outcome.model_described,
-            sql_table_change=sql_table_change,
-        )
+        kind_change = f"{persisted.source_kind or 'unknown'} → {fresh.source_kind}"
+    return _TableMerge(
+        table_name=table_name, fresh=fresh, base=outcome.merged, merge=outcome,
+        sql_table_change=sql_table_change, kind_change=kind_change,
     )
 
 
@@ -2034,6 +1788,74 @@ def _schema_hint_message(other_schemas: list[str]) -> str | None:
     )
 
 
+def _edge_name_collision(*, table_name: str, fresh: SlayerModel, edge_owner: dict[str, str]) -> SkippedTable:
+    return SkippedTable(
+        table_name=_bare_table_name(fresh.sql_table) if fresh.sql_table else table_name,
+        kind=fresh.source_kind,
+        reason=(
+            f"model name '{table_name}' collides with the edge '{table_name}' declared on "
+            f"model '{edge_owner[table_name]}'"
+        ),
+    )
+
+
+def _merge_fresh_tables(
+    *,
+    fresh_by_name: dict[str, SlayerModel],
+    stored: dict[str, SlayerModel],
+    unloadable: set[str],
+    datasource: DatasourceConfig,
+    default_schema_name: str | None,
+    default_objects: set[str] | None,
+) -> tuple[dict[str, _TableMerge], list[SkippedTable]]:
+    """Merge every fresh model into storage's view; a table named like a stored edge is skipped."""
+    edge_owner = {j.name: m.name for m in stored.values() for j in m.joins if j.name}
+    merges: dict[str, _TableMerge] = {}
+    skipped: list[SkippedTable] = []
+    for table_name, fresh in fresh_by_name.items():
+        if table_name in unloadable:
+            continue
+        if table_name not in stored and table_name in edge_owner:
+            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner))
+            continue
+        outcome = _merge_one_table(
+            table_name=table_name, fresh=fresh, persisted=stored.get(table_name), datasource=datasource,
+            default_schema_name=default_schema_name, default_objects=default_objects,
+        )
+        if isinstance(outcome, SkippedTable):
+            skipped.append(outcome)
+        elif outcome is not None:
+            merges[table_name] = outcome
+    return merges, skipped
+
+
+def _addition_fields(*, merge: _TableMerge, final: SlayerModel, plan: FkEdgePlan) -> dict[str, Any]:
+    """``ModelAddition`` fields for one merged table."""
+    added = final.joins if merge.created else plan.added.get(final.name, [])
+    fields: dict[str, Any] = {
+        "model_name": merge.table_name,
+        "new_joins": [edge_reference(model=final, join=j) for j in added],
+        "named_joins": plan.named.get(final.name, []),
+        "source_kind": final.source_kind,
+    }
+    if merge.created:
+        return fields | {
+            "created": True,
+            "new_columns": [c.name for c in final.columns],
+            "described_columns": [c.name for c in final.columns if c.description],
+            "model_described": bool(final.description),
+        }
+    assert merge.merge is not None
+    return fields | {
+        "new_columns": merge.merge.new_columns,
+        "widened_columns": merge.merge.widened_columns,
+        "kind_change": merge.kind_change,
+        "described_columns": merge.merge.described_columns,
+        "model_described": merge.merge.model_described,
+        "sql_table_change": merge.sql_table_change,
+    }
+
+
 async def _run_additive_pass(
     *,
     fresh_by_name: dict[str, SlayerModel],
@@ -2043,35 +1865,41 @@ async def _run_additive_pass(
     default_objects: set[str] | None,
     failures: DocumentLoadFailures,
 ):
-    """Save / merge every fresh model → ``(additions, errors, merge_skipped)``."""
+    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped)``.
+
+    Every name is computed before the first save, and name-only updates save first.
+    """
     from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
 
-    additions: list[ModelAddition] = []
+    loaded, unloaded = await storage.load_models(data_source=datasource.name)
+    stored = {m.name: m for m in failures.skip((loaded, unloaded))}
+    merges, merge_skipped = _merge_fresh_tables(
+        fresh_by_name=fresh_by_name, stored=stored, unloadable={e.name for e in unloaded},
+        datasource=datasource, default_schema_name=default_schema_name, default_objects=default_objects,
+    )
+    plan = plan_fk_edges(
+        models={**stored, **{n: m.base for n, m in merges.items()}},
+        candidates={n: m.fresh.joins for n, m in merges.items()},
+    )
+
+    name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
+    rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
     errors: list[IngestionError] = []
-    merge_skipped: list[SkippedTable] = []
-    for table_name, fresh in fresh_by_name.items():
+    for name in [*name_only, *rest]:
         try:
-            outcome = await _process_one_table(
-                table_name=table_name,
-                fresh=fresh,
-                datasource=datasource,
-                storage=storage,
-                failures=failures,
-                default_schema_name=default_schema_name,
-                default_objects=default_objects,
-            )
-            if outcome.addition is not None:
-                additions.append(outcome.addition)
-            if outcome.skipped is not None:
-                merge_skipped.append(outcome.skipped)
+            await storage.save_model(plan.models[name], failures=failures)
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
-            errors.append(
-                IngestionError(
-                    model_name=table_name,
-                    data_source=datasource.name,
-                    error=str(exc),
-                )
-            )
+            errors.append(IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
+    failed = {e.model_name for e in errors}
+
+    additions = [
+        ModelAddition(data_source=datasource.name, **_addition_fields(merge=m, final=plan.models[n], plan=plan))
+        for n, m in merges.items() if n not in failed
+    ]
+    additions.extend(
+        ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
+        for n in name_only if n not in merges and n not in failed
+    )
     return additions, errors, merge_skipped
 
 
@@ -2275,6 +2103,7 @@ def _updated_detail_lines(addition) -> list[str]:
     """The ``Updated: <model> (...)`` detail fragments, in display order."""
     described = getattr(addition, "described_columns", []) or []
     widened = getattr(addition, "widened_columns", []) or []
+    named = getattr(addition, "named_joins", []) or []
     entries = [
         f"sql_table: {addition.sql_table_change}"
         if getattr(addition, "sql_table_change", None) else None,
@@ -2282,6 +2111,7 @@ def _updated_detail_lines(addition) -> list[str]:
         if addition.new_columns else None,
         f"+joins: {', '.join(addition.new_joins)}"
         if addition.new_joins else None,
+        f"named joins: {', '.join(named)}" if named else None,
         f"widened: {', '.join(widened)}" if widened else None,
         f"source_kind: {addition.kind_change}"
         if getattr(addition, "kind_change", None) else None,

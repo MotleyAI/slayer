@@ -34,6 +34,7 @@ from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_col
 __all__ = [
     "OrientedJoin",
     "OrientedLike",
+    "addressable_token",
     "aggregation_owner",
     "canonical_path",
     "canonical_token",
@@ -339,6 +340,19 @@ def resolve_hop(
         )
     _observe([candidates[0].target_model], strict=True)
     return candidates[0]
+
+
+def addressable_token(
+    *, current: SlayerModel, edge: OrientedJoin, models_by_name: dict[str, SlayerModel],
+) -> str | None:
+    """``edge``'s hop token from ``current`` (name first), or ``None`` when the hop is unaddressable."""
+    token = canonical_token(edge)
+    try:
+        if resolve_hop(current=current, token=token, models_by_name=models_by_name) is None:
+            return None
+    except AmbiguousJoinPathError:
+        return None
+    return token
 
 
 def walk(

@@ -61,6 +61,4 @@ Key terms used throughout SLayer documentation and code.
 
 **Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with direct joins (one per FK on the source table). Columns from transitively reachable tables appear as dotted references (e.g., `customers.name`, `customers.regions.name`) usable as dimensions or in formulas. Multi-hop JOINs are resolved dynamically at query time by walking each intermediate model's own joins.
 
-**Transitive closure** — The set of all tables reachable from a source table via foreign key chains. For `orders → customers → regions`, the transitive closure of `orders` includes both `customers` and `regions`. Used during ingestion for FK graph analysis and column introspection (determining which dotted dimensions to create), but not baked into model joins — each model only stores direct joins from its own FKs.
-
 **Default time dimension** — An optional model-level setting (`default_time_dimension`) that specifies which dimension to use for time ordering in transform functions, when no time dimension is explicitly provided in the query.

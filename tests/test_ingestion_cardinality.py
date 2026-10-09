@@ -6,6 +6,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 import sqlalchemy as sa
@@ -349,7 +350,7 @@ class TestCrossSchemaFk:
                 return []
 
         joins = _generate_joins(
-            inspector=_FakeInspector(), source_table="orders", schema="public",
+            inspector=cast(sa.engine.Inspector, _FakeInspector()), source_table="orders", schema="public",
             table_set={"orders", "customers"},
         )
         assert joins == []

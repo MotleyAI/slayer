@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest
+from mcp.types import TextContent
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
@@ -79,7 +80,9 @@ class TestDropAddressesOneEdge:
             name="edit_model",
             arguments={"model_name": "orders", "remove": entry.remove.model_dump(mode="json")},
         )
-        assert '"success": true' in blocks[0].text
+        (block,) = blocks
+        assert isinstance(block, TextContent)
+        assert '"success": true' in block.text
         assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
 
 

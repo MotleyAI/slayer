@@ -4,7 +4,9 @@ Joins are an important concept when dealing with tabular data, as are foreign ke
 
 In SQL, there are many kinds of joins serving various purposes; SLayer follows the example of other semantic layers such as Cube.js by initially only supporting left joins, as the kind most frequently used for data enrichment.
 
-If you think of left joins as directed edges of a graph whose vertices are models (we assume that the graph thus defined is acyclic, **and throw an error otherwise**), then the measures, dimensions, **and filters** in a model have access to the columns of not just the SQL expression underlying that model (the “sql” field of the model definition), but also of those underlying any model that is reachable from that model in the join graph.
+If you think of left joins as edges of a graph whose vertices are models, then the measures, dimensions, **and filters** in a model have access to the columns of not just the SQL expression underlying that model (the “sql” field of the model definition), but also of those underlying any model that is reachable from that model in the join graph.
+
+The graph may contain cycles; a path token always binds the edge it names, so from `x` in a cycle `x → y → z → x` the token `z` follows the direct edge between `x` and `z`, never the route through `y`.
 
 The data model for a SLayer join is covered in the [Models section](../../concepts/models.md#joins), it consists of a target model plus list of column pairs (of the sql expressions underlying the models) to join on.
 

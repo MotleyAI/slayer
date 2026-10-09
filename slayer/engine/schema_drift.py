@@ -50,6 +50,7 @@ from slayer.engine.ingestion import (
     _sa_type_to_data_type,
 )
 from slayer.core.errors import AmbiguousJoinPathError, StoredDocumentLoadError
+from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_walker import neighbors, resolve_hop
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
@@ -87,7 +88,18 @@ class RemoveSpec(BaseModel):
     columns: list[str] = Field(default_factory=list)
     measures: list[str] = Field(default_factory=list)
     aggregations: list[str] = Field(default_factory=list)
+    # Edge references of the dropped joins that have one; ``join_edges`` addresses each exactly.
     joins: list[str] = Field(default_factory=list)
+    join_edges: list[JoinEdgeRef] = Field(default_factory=list)
+
+    def add_join(self, *, model: SlayerModel, join: ModelJoin) -> None:
+        if is_addressable(model=model, join=join):
+            self.joins.append(edge_reference(model=model, join=join))
+        self.join_edges.append(JoinEdgeRef.of(join))
+
+
+#: Model name → exact references of its joins dropped so far.
+_DroppedJoins = dict[str, list[JoinEdgeRef]]
 
 
 class EditModelDelete(BaseModel):
@@ -133,7 +145,10 @@ class ModelAddition(BaseModel):
     data_source: str
     created: bool = False  # True if the model was new
     new_columns: list[str] = Field(default_factory=list)
+    # Added joins by edge reference.
     new_joins: list[str] = Field(default_factory=list)
+    # Edge names this pass generated on the model's joins.
+    named_joins: list[str] = Field(default_factory=list)
     # INT columns widened to DOUBLE/TEXT by the SQLite affinity probe.
     widened_columns: list[str] = Field(default_factory=list)
     # Output-only label; durable record is SlayerModel.source_kind.
@@ -295,9 +310,9 @@ def _diff_sql_table_joins(
     model: SlayerModel,
     live_table: LiveTable,
     available_models_in_ds: set[str],
-) -> tuple[list[str], list[DeleteReason]]:
+) -> tuple[list[ModelJoin], list[DeleteReason]]:
     """Per-join diff of a sql_table-mode model against live FK columns and model availability."""
-    dropped: list[str] = []
+    dropped: list[ModelJoin] = []
     reasons: list[DeleteReason] = []
     for join in model.joins:
         local_cols = [pair[0] for pair in join.join_pairs]
@@ -307,10 +322,10 @@ def _diff_sql_table_joins(
             or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
         ]
         if missing_locals:
-            dropped.append(join.target_model)
+            dropped.append(join)
             reasons.append(
                 DeleteReason(
-                    target=f"join:{join.target_model}",
+                    target=f"join:{edge_reference(model=model, join=join)}",
                     reason=(
                         f"Local FK column(s) {missing_locals} missing from "
                         f"live table"
@@ -319,10 +334,10 @@ def _diff_sql_table_joins(
             )
             continue
         if join.target_model not in available_models_in_ds:
-            dropped.append(join.target_model)
+            dropped.append(join)
             reasons.append(
                 DeleteReason(
-                    target=f"join:{join.target_model}",
+                    target=f"join:{edge_reference(model=model, join=join)}",
                     reason=(
                         f"Join target {join.target_model!r} not present in "
                         f"datasource {model.data_source!r}"
@@ -369,12 +384,15 @@ def diff_sql_table_model(
     if not dropped_cols and not dropped_joins:
         return None, set()
     reasons = col_reasons + join_reasons
+    remove = RemoveSpec(columns=dropped_cols)
+    for join in dropped_joins:
+        remove.add_join(model=model, join=join)
 
     return (
         EditModelDelete(
             model_name=model.name,
             data_source=model.data_source,
-            remove=RemoveSpec(columns=dropped_cols, joins=dropped_joins),
+            remove=remove,
             reasons=reasons,
         ),
         set(dropped_cols),
@@ -651,20 +669,21 @@ def _add_dropped_measure(
 def _add_dropped_join(
     *,
     edit_entries: dict[str, EditModelDelete],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     model: SlayerModel,
-    target_name: str,
+    join: ModelJoin,
     reason: str,
 ) -> bool:
-    if target_name in dropped_joins.get(model.name, set()):
+    ref = JoinEdgeRef.of(join)
+    if ref in dropped_joins.get(model.name, []):
         return False
     entry = _ensure_edit_entry(edit_entries=edit_entries, model=model)
-    if target_name not in entry.remove.joins:
-        entry.remove.joins.append(target_name)
+    if ref not in entry.remove.join_edges:
+        entry.remove.add_join(model=model, join=join)
         entry.reasons.append(
-            DeleteReason(target=f"join:{target_name}", reason=reason)
+            DeleteReason(target=f"join:{edge_reference(model=model, join=join)}", reason=reason)
         )
-    dropped_joins.setdefault(model.name, set()).add(target_name)
+    dropped_joins.setdefault(model.name, []).append(ref)
     return True
 
 
@@ -985,12 +1004,12 @@ def _stage_uses_dropped_join(
     stage: SlayerQuery,
     base_name: str,
     graph: _StageGraph,
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> str | None:
     """The conflicting target if ``stage`` references a column under a join dropped on ``base_name``, else None; bounded to ``graph.reachable``."""
     if base_name not in graph.reachable:
         return None
-    targets = dropped_joins.get(base_name, set())
+    targets = sorted({r.target_model for r in dropped_joins.get(base_name, [])})
     if not targets:
         return None
     for target in targets:
@@ -1011,7 +1030,7 @@ def _check_stage_for_whole_drop(
     graph: _StageGraph,
     whole_dropped_models: set[str],
     dropped_cols: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     pk_per_model: dict[str, set[str]],
     candidate_base_names: set[str],
 ) -> DeleteReason | None:
@@ -1070,7 +1089,7 @@ def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
     dropped_cols: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     whole_dropped_models: set[str],
     pk_per_model: dict[str, set[str]],
     candidate_base_names: set[str] | None = None,
@@ -1139,7 +1158,7 @@ class _CascadeState:
         whole_entries: dict[str, WholeModelDelete],
         dropped_cols: dict[str, set[str]],
         dropped_measures: dict[str, set[str]],
-        dropped_joins: dict[str, set[str]],
+        dropped_joins: _DroppedJoins,
         pk_per_model: dict[str, set[str]],
     ) -> None:
         self.models_by_name = models_by_name
@@ -1276,7 +1295,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rules 3a + 3b: local FK column dropped here, or foreign column dropped on the target."""
     changed = False
     for join in model.joins:
-        if join.target_model in state.dropped_joins.get(model.name, set()):
+        if JoinEdgeRef.of(join) in state.dropped_joins.get(model.name, []):
             continue
         # Raw dropped_cols: a dropped local PK key invalidates the join too.
         local_missing = [
@@ -1288,7 +1307,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
                 edit_entries=state.edit_entries,
                 dropped_joins=state.dropped_joins,
                 model=model,
-                target_name=join.target_model,
+                join=join,
                 reason=f"Local FK column(s) {local_missing} dropped from this model",
             ) or changed
             continue
@@ -1306,7 +1325,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
             edit_entries=state.edit_entries,
             dropped_joins=state.dropped_joins,
             model=model,
-            target_name=join.target_model,
+            join=join,
             reason=(
                 f"Foreign column(s) {foreign_missing} dropped on target "
                 f"model {join.target_model!r}"
@@ -1387,7 +1406,7 @@ def _cascade_one_pass(
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     pk_per_model: dict[str, set[str]],
 ) -> bool:
     """Run one cascade pass; True if anything new was added."""
@@ -1420,26 +1439,37 @@ def _cascade_one_pass(
     return changed
 
 
+def _removed_join_refs(*, model: SlayerModel | None, remove: RemoveSpec) -> list[JoinEdgeRef]:
+    """Exact references of every join ``remove`` drops; a reference-only entry resolves on ``model``."""
+    refs = list(remove.join_edges)
+    for ref in remove.joins:
+        joins = [] if model is None else (
+            [j for j in model.joins if j.name == ref] or [j for j in model.joins if j.target_model == ref]
+        )
+        refs.extend(r for r in map(JoinEdgeRef.of, joins) if r not in refs)
+    return refs
+
+
 def _seed_one_diff_entry(
     *,
     model_name: str,
+    model: SlayerModel | None,
     entry: ToDeleteEntry | None,
     cols: set[str],
     edit_entries: dict[str, EditModelDelete],
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> None:
     """Apply one ``(entry, dropped_columns)`` diff to the cascade state dicts."""
     if isinstance(entry, WholeModelDelete):
         whole_entries[model_name] = entry
     elif isinstance(entry, EditModelDelete):
         edit_entries[model_name] = entry
-        if entry.remove.joins:
-            dropped_joins.setdefault(model_name, set()).update(
-                entry.remove.joins
-            )
+        refs = _removed_join_refs(model=model, remove=entry.remove)
+        if refs:
+            dropped_joins.setdefault(model_name, []).extend(refs)
         if entry.remove.measures:
             dropped_measures.setdefault(model_name, set()).update(
                 entry.remove.measures
@@ -1453,17 +1483,19 @@ def _seed_state_from_diffs(
     diffs_iterables: tuple[
         dict[str, tuple[ToDeleteEntry | None, set[str]]], ...
     ],
+    models_by_name: dict[str, SlayerModel],
     edit_entries: dict[str, EditModelDelete],
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> None:
     """Populate the cascade state dicts from the base per-model diffs."""
     for diffs in diffs_iterables:
         for model_name, (entry, cols) in diffs.items():
             _seed_one_diff_entry(
                 model_name=model_name,
+                model=models_by_name.get(model_name),
                 entry=entry,
                 cols=cols,
                 edit_entries=edit_entries,
@@ -1500,10 +1532,12 @@ def compute_datasource_drops(
     whole_entries: dict[str, WholeModelDelete] = {}
     dropped_cols: dict[str, set[str]] = {}
     dropped_measures: dict[str, set[str]] = {}
-    dropped_joins: dict[str, set[str]] = {}
+    dropped_joins: _DroppedJoins = {}
+    models_by_name = {m.name: m for m in models}
 
     _seed_state_from_diffs(
         diffs_iterables=(sql_table_diffs, sql_diffs),
+        models_by_name=models_by_name,
         edit_entries=edit_entries,
         whole_entries=whole_entries,
         dropped_cols=dropped_cols,
@@ -1511,7 +1545,6 @@ def compute_datasource_drops(
         dropped_joins=dropped_joins,
     )
 
-    models_by_name = {m.name: m for m in models}
     pk_per_model = {m.name: _pk_columns(m) for m in models}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.

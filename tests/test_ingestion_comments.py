@@ -496,7 +496,6 @@ class TestAdditiveMergeDescriptions:
         assert outcome.merged.description == "fresh model desc"
         assert _col(outcome.merged, "a").description == "fresh col desc"
         assert outcome.new_columns == []
-        assert outcome.new_joins == []
         assert outcome.widened_columns == []
 
     def test_existing_descriptions_untouched(self) -> None:

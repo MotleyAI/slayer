@@ -63,8 +63,9 @@ class TestResolveJoinRef:
 
     def test_exact_reference_matching_two_declarations_fails(self) -> None:
         orders = orders_with(join_to(BILLING_PAIRS), join_to(BILLING_PAIRS))
+        ref = JoinEdgeRef(target_model="addresses", join_pairs=BILLING_PAIRS)
         with pytest.raises(ValueError, match="billing_address_id"):
-            resolve_join_ref(model=orders, ref=JoinEdgeRef(target_model="addresses", join_pairs=BILLING_PAIRS))
+            resolve_join_ref(model=orders, ref=ref)
 
     def test_ref_round_trips_through_json(self) -> None:
         orders = orders_with(*named_pair())

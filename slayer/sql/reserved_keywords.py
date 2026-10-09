@@ -1,4 +1,4 @@
-"""DEV-1686: quote SQL reserved words used as identifiers.
+"""Quote SQL reserved words used as identifiers.
 
 sqlglot's per-dialect ``Generator.RESERVED_KEYWORDS`` is empty for Postgres,
 T-SQL, SQLite, ClickHouse, Snowflake, Databricks, Spark, and Oracle, so a
@@ -27,8 +27,11 @@ on unrelated in-process sqlglot use is strictly-more-correct quoting.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.tokens import TokenType
 
 # ANSI SQL:2016 + Postgres reserved words (lowercase). Curated to the
@@ -54,23 +57,57 @@ SLAYER_RESERVED_KEYWORDS: frozenset[str] = frozenset({
     "using", "variadic", "verbose", "when", "where", "window", "with", "xor",
 })
 
+# Per sqlglot dialect: further words that fail there as a bare table alias, quoted for that dialect
+# only (live-probed by the engines' integration suites; Snowflake's from its reserved-keyword list).
+DIALECT_RESERVED_KEYWORDS: dict[str, frozenset[str]] = {
+    "sqlite": frozenset({
+        "add", "autoincrement", "commit", "delete", "escape", "exists", "index", "nothing", "raise",
+        "set", "transaction", "update", "values",
+    }),
+    "duckdb": frozenset({
+        "anti", "asof", "at", "by", "describe", "pivot", "pivot_wider", "positional", "semi", "show",
+        "summarize", "unpivot",
+    }),
+    "postgres": frozenset({"current_schema", "system_user"}),
+    "clickhouse": frozenset({"top"}),
+    "mysql": frozenset({
+        "_armscii8", "_ascii", "_big5", "_binary", "_cp1250", "_cp1251", "_cp1256", "_cp1257", "_cp850",
+        "_cp852", "_cp866", "_cp932", "_dec8", "_eucjpms", "_euckr", "_gb18030", "_gb2312", "_gbk",
+        "_geostd8", "_greek", "_hebrew", "_hp8", "_keybcs2", "_koi8r", "_koi8u", "_latin1", "_latin2",
+        "_latin5", "_latin7", "_macce", "_macroman", "_sjis", "_swe7", "_tis620", "_ucs2", "_ujis",
+        "_utf16", "_utf16le", "_utf32", "_utf8", "_utf8mb3", "_utf8mb4",
+    }),
+    "tsql": frozenset({
+        "add", "backup", "begin", "by", "cascade", "commit", "contains", "continue", "convert", "current",
+        "cursor", "database", "deallocate", "declare", "delete", "double", "escape", "exec", "execute",
+        "exists", "exit", "file", "function", "identity", "if", "index", "key", "kill", "merge", "of",
+        "off", "open", "option", "over", "percent", "pivot", "plan", "print", "proc", "procedure", "read",
+        "restore", "restrict", "return", "rule", "schema", "set", "system_user", "top", "transaction",
+        "trigger", "truncate", "unpivot", "update", "use", "values", "varying", "view", "while",
+    }),
+    "snowflake": frozenset({
+        "by", "connect", "current", "delete", "exists", "following", "minus", "nulls", "of", "row", "rows",
+        "set", "start", "top", "update", "values",
+    }),
+}
 
-def install_reserved_keywords() -> None:
-    """Idempotently union :data:`SLAYER_RESERVED_KEYWORDS` into the
-    ``RESERVED_KEYWORDS`` of every generator SLayer targets.
+
+def install_reserved_keywords(sqlglot_names: Iterable[str]) -> None:
+    """Idempotently union :data:`SLAYER_RESERVED_KEYWORDS` and the dialect's
+    :data:`DIALECT_RESERVED_KEYWORDS` into the ``RESERVED_KEYWORDS`` of each
+    named dialect's generator.
 
     Assigns a FRESH set per generator class so we never mutate sqlglot's shared
     base empty-set singleton (Postgres / T-SQL / SQLite / ... all inherit the
     same ``Generator.RESERVED_KEYWORDS`` object). Each dialect keeps its own
     native reserved words (union, not replace).
     """
-    from sqlglot.dialects.dialect import Dialect
-
-    from slayer.sql.dialects import _ALL_DIALECTS
-
-    for d in _ALL_DIALECTS:
-        gen_cls = Dialect.get_or_raise(d.sqlglot_name).generator_class
-        gen_cls.RESERVED_KEYWORDS = set(gen_cls.RESERVED_KEYWORDS) | SLAYER_RESERVED_KEYWORDS
+    for name in sqlglot_names:
+        gen_cls = Dialect.get_or_raise(name).generator_class
+        gen_cls.RESERVED_KEYWORDS = (
+            set(gen_cls.RESERVED_KEYWORDS) | SLAYER_RESERVED_KEYWORDS
+            | DIALECT_RESERVED_KEYWORDS.get(name, frozenset())
+        )
 
 
 def _reserved_dot_edit(

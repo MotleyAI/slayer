@@ -13,37 +13,37 @@
 
 ## 2. Delete the cycle machinery
 
-- [ ] 2.1 Delete `RollupGraphError`, `_get_fk_relationships`, `_build_fk_graph`, `_check_acyclic`, `_compute_transitive_closure`, `_collect_fk_columns` and the `has_cycles`/`fk_graph`/`referenced_tables` plumbing; reduce `_introspect_query_columns_via_inspector` to the table's own columns and drop the `"."` skip in `_columns_to_model`; verify 1.1 passes
-- [ ] 2.2 Make `_get_fk_constraint_groups` tolerate `get_foreign_keys` failure (`[]` + debug log); verify 1.5's reflection-failure test passes
+- [x] 2.1 Delete `RollupGraphError`, `_get_fk_relationships`, `_build_fk_graph`, `_check_acyclic`, `_compute_transitive_closure`, `_collect_fk_columns` and the `has_cycles`/`fk_graph`/`referenced_tables` plumbing; reduce `_introspect_query_columns_via_inspector` to the table's own columns and drop the `"."` skip in `_columns_to_model`; verify 1.1 passes
+- [x] 2.2 Make `_get_fk_constraint_groups` tolerate `get_foreign_keys` failure (`[]` + debug log); verify 1.5's reflection-failure test passes
 
 ## 3. Identity concepts and storage
 
-- [ ] 3.1 Add the relationship signature and `JoinEdgeRef` (+ edge-reference string, resolver failing on >1 match) in one shared module; unit-test both
-- [ ] 3.2 Make `save_model` reject a model named like a stored edge in its datasource; verify 1.5's save test passes
+- [x] 3.1 Add the relationship signature and `JoinEdgeRef` (+ edge-reference string, resolver failing on >1 match) in one shared module; unit-test both
+- [x] 3.2 Make `save_model` reject a model named like a stored edge in its datasource; verify 1.5's save test passes
 
 ## 4. Ingestion planning pass
 
-- [ ] 4.1 Implement the datasource-wide planning pass (inverse survivor, reconciliation by relationship signature, edge-name-collision skip) used by first ingest and re-ingest; remove `_merge_joins_strict`'s raise; verify 1.2 and 1.4 (non-naming parts) pass
-- [ ] 4.2 Implement the naming algorithm (design D3) incl. hand-authored members of FK parallel sets and reserved user names; verify 1.3 passes
-- [ ] 4.3 Apply name fills to stored models of other tables, save name-only updates first, add `ModelAddition.named_joins` and report joins by edge reference (MCP + CLI rendering); verify 1.4 incl. fault injection passes
+- [x] 4.1 Implement the datasource-wide planning pass (inverse survivor, reconciliation by relationship signature, edge-name-collision skip) used by first ingest and re-ingest; remove `_merge_joins_strict`'s raise; verify 1.2 and 1.4 (non-naming parts) pass
+- [x] 4.2 Implement the naming algorithm (design D3) incl. hand-authored members of FK parallel sets and reserved user names; verify 1.3 passes
+- [x] 4.3 Apply name fills to stored models of other tables, save name-only updates first, add `ModelAddition.named_joins` and report joins by edge reference (MCP + CLI rendering); verify 1.4 incl. fault injection passes
 
 ## 5. Mutation surfaces
 
-- [ ] 5.1 MCP `edit_model` upsert matching (name → (target, pairs) → sole join) and removal by edge reference / `join_edges` (`VALID_REMOVE_KEYS`, widened `remove` type, descriptions within the tool-description budget); engine `edit_model_remove(remove_join_edges=…)`; verify 1.6 and the MCP tool-surface budget tests pass
-- [ ] 5.2 Schema drift keyed by `JoinEdgeRef`; `RemoveSpec.joins` edge references + additive `RemoveSpec.join_edges`; `DeleteReason.target` `join:<ref>`; `apply_drift_deletes` forwards `join_edges`; verify 1.7 passes
+- [x] 5.1 MCP `edit_model` upsert matching (name → (target, pairs) → sole join) and removal by edge reference / `join_edges` (`VALID_REMOVE_KEYS`, widened `remove` type, descriptions within the tool-description budget); engine `edit_model_remove(remove_join_edges=…)`; verify 1.6 and the MCP tool-surface budget tests pass
+- [x] 5.2 Schema drift keyed by `JoinEdgeRef`; `RemoveSpec.joins` edge references + additive `RemoveSpec.join_edges`; `DeleteReason.target` `join:<ref>`; `apply_drift_deletes` forwards `join_edges`; verify 1.7 passes
 
 ## 6. Inspection and facade
 
-- [ ] 6.1 `inspect` joins `name` column, names-only/skeleton edge references, `models_summary._join_targets` addressable tokens + ambiguity marker; verify 1.8 inspect/summary tests pass
-- [ ] 6.2 `FacadeJoin.name`, `FacadeTable.joins` from `neighbors()`, translator matching on oriented pairs with the canonical token; verify 1.8 facade tests pass
+- [x] 6.1 `inspect` joins `name` column, names-only/skeleton edge references, `models_summary._join_targets` addressable tokens + ambiguity marker; verify 1.8 inspect/summary tests pass
+- [x] 6.2 `FacadeJoin.name`, `FacadeTable.joins` from `neighbors()`, translator matching on oriented pairs with the canonical token; verify 1.8 facade tests pass
 
 ## 7. Docs
 
-- [ ] 7.1 Fix `docs/examples/05_joins/joins.md:7`, `docs/concepts/ingestion.md:23` and `:240-242`, `docs/examples/03_auto_ingest/auto_ingest.md:17`, `docs/concepts/terminology.md:62-64`; add one sentence on parallel-edge naming and one on literal-first binding; grep docs for `RollupGraphError`/`acyclic`/`transitive closure` returns nothing stale
-- [ ] 7.2 Rewrite `docs/examples/03_auto_ingest/auto_ingest_nb.ipynb` and `docs/examples/05_joins/joins_nb.ipynb` without `_build_fk_graph`/`_compute_transitive_closure`; re-execute both with `jupyter nbconvert --to notebook --execute --inplace` and verify they run clean
+- [x] 7.1 Fix `docs/examples/05_joins/joins.md:7`, `docs/concepts/ingestion.md:23` and `:240-242`, `docs/examples/03_auto_ingest/auto_ingest.md:17`, `docs/concepts/terminology.md:62-64`; add one sentence on parallel-edge naming and one on literal-first binding; grep docs for `RollupGraphError`/`acyclic`/`transitive closure` returns nothing stale
+- [x] 7.2 Rewrite `docs/examples/03_auto_ingest/auto_ingest_nb.ipynb` and `docs/examples/05_joins/joins_nb.ipynb` without `_build_fk_graph`/`_compute_transitive_closure`; re-execute both with `jupyter nbconvert --to notebook --execute --inplace` and verify they run clean
 
 ## 8. Gates and hand-off (pr-implement)
 
-- [ ] 8.1 Full unit suite, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline) and `la-arch-check` all green
-- [ ] 8.2 Comment on DEV-2074 recording the deferred items (self-referencing FKs, literal-first/route rules, facade diagnostic for hand-authored unaddressable pairs) and the D/E pins it owns
+- [x] 8.1 Full unit suite, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline) and `la-arch-check` all green
+- [x] 8.2 Comment on DEV-2074 recording the deferred items (self-referencing FKs, literal-first/route rules, facade diagnostic for hand-authored unaddressable pairs) and the D/E pins it owns
 - [ ] 8.3 PR description says `Fixes #477` and credits the reporter; draft a closing comment for PR #479 (thanks, why back-edge dropping was not taken — table-name-order choice, latest-child silently re-keyed — link to the PR) and get the user's OK on the exact text before posting or closing anything

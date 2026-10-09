@@ -38,6 +38,7 @@ from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
     FacadeDimension,
+    FacadeJoin,
     FacadeMetric,
     FacadeTable,
     build_local_view,
@@ -2337,6 +2338,8 @@ class _JoinPlan(BaseModel):
     source_col: str
     target_col: str
     is_dynamic: bool
+    # The hop token the joined columns resolve through: the matched edge's canonical spelling.
+    path: str
     warn_cardinality: bool = False
 
 
@@ -2367,7 +2370,7 @@ def _parse_left_join(
         target_table=target_table,
         alias=alias,
     )
-    is_dynamic, warn_cardinality = _classify_against_parent_joins(
+    matched = _match_parent_join(
         parent_table=parent_table,
         target_name=target_table.name,
         source_col=source_col,
@@ -2379,8 +2382,9 @@ def _parse_left_join(
         target_schema=target_schema,
         source_col=source_col,
         target_col=target_col,
-        is_dynamic=is_dynamic,
-        warn_cardinality=warn_cardinality,
+        is_dynamic=matched is None,
+        path=(matched.name or target_table.name) if matched else target_table.name,
+        warn_cardinality=matched is not None and matched.join_type != JoinType.LEFT,
     )
 
 
@@ -2590,43 +2594,33 @@ def _canonical_column_or_raise(
     )
 
 
-def _classify_against_parent_joins(
+def _match_parent_join(
     *,
     parent_table: FacadeTable,
     target_name: str,
     source_col: str,
     target_col: str,
-) -> tuple[bool, bool]:
-    """Match the emitted (target_model, join_pairs) against the parent's
-    configured joins.
+) -> FacadeJoin | None:
+    """The parent's incident edge (either orientation) to ``target_name`` on exactly
+    the emitted ON columns; ``None`` when no edge reaches the target (dynamic fallback).
 
-    Returns ``(is_dynamic, warn_cardinality)``:
-      - existing LEFT match → (False, False).
-      - existing INNER match on same pairs → (False, True) (warn about
-        SQL LEFT vs configured INNER cardinality divergence).
-      - no entry for target_model → (True, False) (dynamic fallback).
-      - entry for target_model but DIFFERENT join_pairs → raise (an
-        additive ModelExtension would produce a duplicate join).
+    Raises when edges reach the target but none — or several — match the ON columns
+    (an additive ModelExtension would duplicate an existing join).
     """
     same_target = [j for j in parent_table.joins if j.target_model == target_name]
     if not same_target:
-        return True, False
-    matching_pairs = [
-        j for j in same_target if list(j.join_pairs) == [[source_col, target_col]]
-    ]
-    if not matching_pairs:
-        configured = same_target[0].join_pairs
-        raise TranslationError(
-            f"LEFT JOIN to {target_name!r} uses ON columns "
-            f"({source_col!r}, {target_col!r}) which do not match the "
-            f"configured join_pairs ({configured}) on {parent_table.name!r}. "
-            f"ModelExtension cannot override an existing join — adjust the "
-            f"emitted SQL to match the configured join, or update the model "
-            f"join_pairs."
-        )
-    j = matching_pairs[0]
-    warn_cardinality = j.join_type != JoinType.LEFT
-    return False, warn_cardinality
+        return None
+    matching = [j for j in same_target if list(j.join_pairs) == [[source_col, target_col]]]
+    if len(matching) == 1:
+        return matching[0]
+    configured = [j.join_pairs for j in same_target]
+    problem = "match several configured joins" if matching else "do not match the configured join_pairs"
+    raise TranslationError(
+        f"LEFT JOIN to {target_name!r} uses ON columns "
+        f"({source_col!r}, {target_col!r}) which {problem} ({configured}) on "
+        f"{parent_table.name!r}. ModelExtension cannot override an existing join — "
+        f"adjust the emitted SQL to match a configured join, or update the model joins."
+    )
 
 
 def _materialise_dynamic_join_lookups(
@@ -2744,7 +2738,7 @@ def _prepare_join_overlays(
     if join_plan is None:
         return _JoinOverlays()
     overlays = _JoinOverlays(
-        alias_map={join_plan.alias: join_plan.target_table.name},
+        alias_map={join_plan.alias: join_plan.path},
     )
     if join_plan.is_dynamic and join_plan.target_table.model_ref is not None:
         _materialise_dynamic_join_lookups(

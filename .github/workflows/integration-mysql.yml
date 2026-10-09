@@ -11,6 +11,8 @@ on:
     paths:
       - 'slayer/sql/dialects/mysql.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'
@@ -21,6 +23,8 @@ on:
     paths:
       - 'slayer/sql/dialects/mysql.py'
       - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/reserved_keywords.py'
+      - 'tests/_reserved_alias_probe.py'
       - 'slayer/sql/generator.py'
       - 'examples/mysql/**'
       - 'tests/integration/test_integration_mysql.py'

@@ -32,6 +32,7 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -75,6 +76,7 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
 )
 from tests._engine_helpers import disposable_engine
+from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 
 pytest.importorskip("testcontainers.clickhouse")
 pytest.importorskip("clickhouse_sqlalchemy")
@@ -1842,3 +1844,23 @@ def _clickhouse_spine_storage(clickhouse_container, tmp_path_factory):
 class TestClickHouseTimeSpine:
     async def test_scenarios(self, _clickhouse_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_clickhouse_spine_storage), data_source="ch", ts_data_source="ch_ts")
+
+
+@pytest.mark.integration
+def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text("CREATE TABLE kw_probe (a Int32) ENGINE = Memory"))
+            try:
+                with engine.connect() as conn:
+                    own = [r[0] for r in conn.execute(sa.text("SELECT keyword FROM system.keywords"))]
+            except DBAPIError:
+                own = []  # system.keywords is newer than some server versions
+            assert unquoted_alias_failures(
+                dialect="clickhouse", words=keyword_universe(own), table="kw_probe", column="a",
+                fails=sa_statement_fails(engine), workers=8,
+            ) == []
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
