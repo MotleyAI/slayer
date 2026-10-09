@@ -335,7 +335,7 @@ def test_report_identity_fields(telemetry_env) -> None:
 
 def test_period_holds_dates_only(telemetry_env) -> None:
     day_one = datetime.datetime(2026, 3, 1, 9, 30, tzinfo=datetime.timezone.utc)
-    day_two = datetime.datetime(2026, 3, 2, 17, 45, tzinfo=datetime.timezone.utc)
+    day_two = datetime.datetime(2026, 3, 2, 8, 45, tzinfo=datetime.timezone.utc)
     quiet_config(last_sent=day_one)
     for day in (day_one, day_two):
         telemetry_env.set_now(day)

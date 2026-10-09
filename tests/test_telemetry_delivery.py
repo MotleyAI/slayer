@@ -143,16 +143,32 @@ def test_stdio_mcp_end_of_input_spools(store: str, telemetry_env) -> None:
 
 @posix_only
 def test_stdio_mcp_broken_pipe_spools(store: str, telemetry_env) -> None:
-    session = _mcp_with_one_call(store, telemetry_env.subprocess_env())
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "slayer", "mcp", "--storage", store],
+        env=telemetry_env.subprocess_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+
+    def send(message: dict) -> None:
+        proc.stdin.write((json.dumps(message) + "\n").encode())
+        proc.stdin.flush()
+
     try:
-        assert session.proc.stdout is not None
-        session.proc.stdout.close()
-        session.send({"jsonrpc": "2.0", "id": 99, "method": "tools/call",
-                      "params": {"name": "list_datasources", "arguments": {}}})
-        session.close_stdin()
-        session.wait()
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "2.3.1"}}})
+        assert json.loads(proc.stdout.readline())["id"] == 1
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
+        assert json.loads(proc.stdout.readline())["id"] == 2
+        proc.stdout.close()
+        send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
+        proc.stdin.close()
+        proc.wait(timeout=30)
     finally:
-        session.kill()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
     assert total(usage(show(), "mcp:list_datasources")) >= 1
 
 

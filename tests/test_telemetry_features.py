@@ -208,6 +208,7 @@ def test_telemetry_makes_no_storage_call_or_connection(
     monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
     args = [*command[:1], "--storage", store, *command[1:]] if command[0] in ("models", "datasources") \
         else [*command, "--storage", store]
+    _storage_and_connection_calls(args, monkeypatch)  # warm-up: the first run seeds help memories
     on = _storage_and_connection_calls(args, monkeypatch)
     monkeypatch.setenv("SLAYER_TELEMETRY", "off")
     off = _storage_and_connection_calls(args, monkeypatch)
