@@ -31,7 +31,7 @@ _EXPECTED = {
     "sqlite": ("sqlite", None, None, None),
     "duckdb": ("duckdb", None, None, None),
     "redshift": (None, None, None, None),
-    "trino": (None, None, None, None),
+    "trino": ("trino", None, None, "trino"),
     "presto": (None, None, None, None),
     "athena": (None, None, None, None),
     "databricks": (None, None, None, None),

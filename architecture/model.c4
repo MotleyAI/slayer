@@ -3,6 +3,7 @@
 // attribute to their finest declared child, coverage licenses each edge by its
 // most-specific arrow (la-arch-check). Authoring convention: see
 // system.arc42.md §5.
+
 specification {
   element system
   element node
@@ -12,7 +13,6 @@ specification {
   tag virtual
   tag legacy
 }
-
 model {
   python = system 'SLayer' {
     core = node 'Core domain models' {
