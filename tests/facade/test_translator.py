@@ -197,7 +197,7 @@ def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
 
 def test_select_star_browse_mode_skips_fanout_paths(dialect) -> None:
     """``SELECT *`` on the 1-side table keeps its own grain — dims across the
-    inverted (fan-out) hop are excluded from expansion (DEV-1853)."""
+    inverted (fan-out) hop are excluded from expansion."""
     result = translate(
         sql="SELECT * FROM customers", catalog=_catalog(), dialect=dialect,
         expand_star_in_browse_mode=True,
@@ -238,7 +238,7 @@ def test_parse_error_translates(dialect) -> None:
     assert "parse error" in str(exc_info.value).lower()
 
 
-# --- DEV-1569: SET / RESET capture on NoOpResult, set_config mutation tunneling ---
+# --- SET / RESET capture on NoOpResult, set_config mutation tunneling ---
 
 
 @pytest.mark.parametrize(
@@ -660,7 +660,7 @@ def test_as_alias_renames_projected_column(dialect) -> None:
     assert result.query.measures[0].name == "rs"
 
 
-# --- aggregate-SQL → metric mapping (DEV-1486 decision 21) -------------------
+# --- aggregate-SQL → metric mapping -------------------
 
 
 def test_sum_of_column_maps_to_measure(dialect) -> None:
@@ -2222,9 +2222,9 @@ def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
     assert result.query.filters == ["stores.name = 'Acme'"]
 
 
-def test_left_join_subquery_aggregate_on_joined_col_blocked_by_dev_1567(dialect) -> None:
-    """AVG(Stores.tax_rate) maps to a cross-model measure, but DEV-1567's guard
-    rejects cross-model metric projection in flat SELECT (error points at DEV-1493)."""
+def test_left_join_subquery_aggregate_on_joined_col_blocked_by_local_metric_guard(dialect) -> None:
+    """AVG(Stores.tax_rate) maps to a cross-model measure, but the local-metric guard
+    rejects cross-model metric projection in flat SELECT."""
     sql = _metabase_join_sql(
         projection='AVG("Stores"."tax_rate") AS "avg"',
     )
@@ -2234,7 +2234,6 @@ def test_left_join_subquery_aggregate_on_joined_col_blocked_by_dev_1567(dialect)
     msg = str(exc_info.value)
     assert "Cross-model metric" in msg
     assert "flat SELECT" in msg
-    assert "DEV-1493" in msg
 
 
 def test_left_join_subquery_order_by_joined_col(dialect) -> None:
@@ -2267,8 +2266,8 @@ def test_left_join_subquery_group_by_joined_col(dialect) -> None:
     assert mapping["orders.stores.name"] == "Stores__name"
 
 
-def test_left_join_subquery_having_on_joined_aggregate_blocked_by_dev_1567(dialect) -> None:
-    """HAVING on a joined-col aggregate hits the same DEV-1567 guard as projection;
+def test_left_join_subquery_having_on_joined_aggregate_blocked_by_local_metric_guard(dialect) -> None:
+    """HAVING on a joined-col aggregate hits the same local-metric guard as projection;
     the cross-model AVG metric is rejected before the HAVING rewrite runs."""
     sql = _metabase_join_sql(
         projection='"public"."orders"."status", AVG("Stores"."tax_rate") AS "avg"',
@@ -2403,8 +2402,8 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)
 
 
-def test_left_join_dynamic_aggregate_on_joined_col_blocked_by_dev_1567(dialect, caplog) -> None:
-    """Dynamic-join + aggregate-on-joined-col hits the DEV-1567 guard; the
+def test_left_join_dynamic_aggregate_on_joined_col_blocked_by_local_metric_guard(dialect, caplog) -> None:
+    """Dynamic-join + aggregate-on-joined-col hits the local-metric guard; the
     dynamic-join WARN still fires (recognition is upstream of the guard)."""
     sql = _metabase_join_sql(projection='AVG("Stores"."tax_rate") AS "avg"')
     cat = _join_catalog(parent_join_target=None)
@@ -2450,7 +2449,7 @@ def test_left_join_configured_inner_with_matching_join_pairs_warns(
 
 
 def test_two_left_joins_rejected_phase1(dialect) -> None:
-    """Multiple LEFT JOINs in one query are out of Phase 1 scope (DEV-1565)."""
+    """Multiple LEFT JOINs in one query are out of Phase 1 scope."""
     sql = (
         'SELECT "Stores"."name", "Customers"."region" '
         'FROM "public"."orders" '

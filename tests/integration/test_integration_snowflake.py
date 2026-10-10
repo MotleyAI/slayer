@@ -1,4 +1,4 @@
-"""Live integration tests for Snowflake (DEV-1551).
+"""Live integration tests for Snowflake.
 
 Skip-by-default: requires ``snowflake-connector-python``, ``snowflake-sqlalchemy``,
 and a ``~/.snowflake/connections.toml`` profile named ``slayer_test`` (override
@@ -34,6 +34,12 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._reserved_alias_probe import (
+    SNOWFLAKE_KEYWORDS,
+    keyword_universe,
+    sa_statement_fails,
+    unquoted_alias_failures,
+)
 
 # Skip the entire module if the snowflake extras aren't installed.
 pytest.importorskip("snowflake.connector")
@@ -307,7 +313,7 @@ def test_basic_query(sf_storage_with_models) -> None:
 
 
 def test_functional_aggregation_parity(sf_storage_with_models) -> None:
-    """sum(quantity) returns the same value as quantity:sum (DEV-1826)."""
+    """sum(quantity) returns the same value as quantity:sum."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     colon = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
@@ -335,7 +341,7 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
 
 
 def test_dev1933_regex_literal_extension_column(sf_storage_with_models) -> None:
-    """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+    """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
     result = run_sync(engine.execute(SlayerQuery(
@@ -777,7 +783,7 @@ def test_query_result_keys_use_lowercase(sf_storage_with_models) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1645: mixed-case identifiers must be double-quoted for Snowflake.
+# Mixed-case identifiers must be double-quoted for Snowflake.
 #
 # Snowflake folds UNQUOTED identifiers to UPPERCASE. A column created via
 # QUOTED DDL (``"StateFlag"``) is stored with genuinely mixed case, so an
@@ -835,3 +841,10 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
         filters=["is_inactive == True"],
     )))
     assert result.data[0]["dev1645_accounts.cnt"] == 2
+
+
+def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
+    assert unquoted_alias_failures(
+        dialect="snowflake", words=keyword_universe(SNOWFLAKE_KEYWORDS), table="regions", column="id",
+        fails=sa_statement_fails(sf_engine), workers=8,
+    ) == []

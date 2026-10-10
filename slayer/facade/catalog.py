@@ -18,8 +18,7 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors, resolve_hop
+from slayer.core.join_walker import OrientedJoin, OrientedLike, addressable_token, neighbors
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -30,7 +29,6 @@ from slayer.core.enums import (
 from slayer.core.models import (
     Aggregation,
     Column,
-    ModelJoin,
     SlayerModel,
     is_identifier,
 )
@@ -83,6 +81,7 @@ class FacadeJoin(BaseModel):
     join_pairs: list[list[str]]
     join_type: JoinType = JoinType.LEFT
     cardinality: JoinCardinality | None = None
+    name: str | None = None
 
 
 class FacadeTable(BaseModel):
@@ -338,24 +337,24 @@ def _build_table(
 def _facade_joins_for(
     *, model: SlayerModel, models_by_name: dict[str, SlayerModel],
 ) -> list[FacadeJoin]:
-    """Expose every direct (single-hop) join whose target is a non-hidden
-    model in the same catalog. Mirrors the BFS filter so the translator's
-    existence check never matches a join that isn't otherwise addressable."""
+    """Every edge incident to ``model``, oriented from it, whose other end is a
+    non-hidden model in the same catalog (the BFS filter)."""
     out: list[FacadeJoin] = []
-    for j in model.joins:
-        target = models_by_name.get(j.target_model)
-        if target is None or target.hidden:
+    for edge in neighbors(model=model, models_by_name=models_by_name):
+        target = models_by_name.get(edge.target_model)
+        if target is None or target.hidden or not edge.join_pairs:
             continue
-        out.append(_facade_join_from(join=j))
+        out.append(_facade_join_from(join=edge))
     return out
 
 
-def _facade_join_from(*, join: ModelJoin) -> FacadeJoin:
+def _facade_join_from(*, join: OrientedLike) -> FacadeJoin:
     return FacadeJoin(
         target_model=join.target_model,
         join_pairs=[list(pair) for pair in join.join_pairs],
         join_type=join.join_type,
         cardinality=join.cardinality,
+        name=join.name,
     )
 
 
@@ -399,7 +398,7 @@ def _walk_join_paths(
             target = models_by_name.get(edge.target_model)
             if target is None or target.hidden or target.name in visited:
                 continue
-            token = _resolvable_token(
+            token = addressable_token(
                 current=current, edge=edge, models_by_name=models_by_name,
             )
             if token is None:
@@ -422,22 +421,6 @@ def _hop_preserves_grain(*, edge: OrientedJoin) -> bool:
     if edge.cardinality is None:
         return edge.declaring_model == edge.source_model
     return False
-
-
-def _resolvable_token(
-    *, current: SlayerModel, edge, models_by_name: dict[str, SlayerModel],
-) -> str | None:
-    """The engine-resolvable hop token for ``edge`` (name first), or ``None``
-    when the hop is unaddressable (a parallel unnamed pair)."""
-    token = canonical_token(edge)
-    try:
-        if resolve_hop(
-            current=current, token=token, models_by_name=models_by_name,
-        ) is None:
-            return None
-    except AmbiguousJoinPathError:
-        return None
-    return token
 
 
 def _path_dotted(path: list[str]) -> str:

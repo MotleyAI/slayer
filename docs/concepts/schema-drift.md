@@ -89,8 +89,10 @@ without the additive pass needing a dedicated code path.
 either:
 
 * `EditModelDelete` — `{tool: "edit_model", model_name, data_source,
-  remove: {columns, measures, aggregations, joins}, remove_filters,
-  reasons}`. Replays directly as an `edit_model` call.
+  remove: {columns, measures, aggregations, joins, join_edges}, remove_filters,
+  reasons}`. Replays directly as an `edit_model` call; `joins` lists each
+  dropped join by its target (its edge name when several joins share that
+  target) and `join_edges` addresses each exactly as `{target_model, name, join_pairs}`.
 * `WholeModelDelete` — `{tool: "delete_model", model_name, data_source,
   reasons}`. Replays directly as a `delete_model` call.
 

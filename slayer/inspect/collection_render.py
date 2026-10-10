@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from slayer.core.join_walker import neighbors
+from slayer.core.join_walker import addressable_token, neighbors
 from slayer.core.models import SlayerModel
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
 from slayer.inspect.model_render import (
@@ -41,18 +41,24 @@ def _visible_column_count(model: SlayerModel) -> int:
 def _join_targets(
     model: SlayerModel, all_models: list[SlayerModel] | None = None
 ) -> list[str]:
-    """Every model reachable in one hop, in either direction; with ``all_models``
-    reverse-reachable neighbours are included, else only declared forward targets.
-    The spine's virtual edges are left out (its description names its wiring)."""
+    """The hop token of every one-hop neighbour, in either direction, and each unaddressable neighbour
+    marked ambiguous; with ``all_models`` reverse-reachable neighbours are included, else only declared
+    forward targets. The spine's virtual edges are left out (its description names its wiring)."""
     if is_spine(model):
         return []
     models_by_name = {m.name: m for m in (all_models or [model])}
     models_by_name.setdefault(model.name, model)
-    return sorted({
-        h.target_model
-        for h in neighbors(model=model, models_by_name=models_by_name)
-        if h.target_model != TIME_SPINE_MODEL
-    })
+    tokens: set[str] = set()
+    ambiguous: set[str] = set()
+    for hop in neighbors(model=model, models_by_name=models_by_name):
+        if hop.target_model == TIME_SPINE_MODEL:
+            continue
+        token = addressable_token(current=model, edge=hop, models_by_name=models_by_name)
+        if token is None:
+            ambiguous.add(hop.target_model)
+        else:
+            tokens.add(token)
+    return sorted(tokens) + [f"{t} (ambiguous: name the edges)" for t in sorted(ambiguous)]
 
 
 # ---------------------------------------------------------------------------

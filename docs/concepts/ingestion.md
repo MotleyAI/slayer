@@ -20,7 +20,7 @@ SLayer introspects foreign key constraints and builds a directed dependency grap
 orders ──FK──→ customers ──FK──→ regions
 ```
 
-If the graph is acyclic, SLayer computes the **transitive closure** for each table — all tables reachable via FK chains — to determine which columns to introspect for dotted references (e.g. `customers.regions.name`). The transitive closure is used only for column discovery, not for generating joins (see Step 2). If a cycle is detected, ingestion logs a warning and falls back to simple models without rollup joins (see [Cycle Handling](#cycle-handling) below).
+Every foreign key between two ingested tables of the same schema becomes a join, whatever cycles the graph contains (see [Cycle Handling](#cycle-handling) below); self-referencing FKs are skipped.
 
 ### Step 2: Build Direct Joins
 
@@ -239,7 +239,7 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 ## Cycle Handling
 
-If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warning and falls back to simple models without rollup joins.
+FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more joins connect the same pair of models (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<model>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
 
 ## Ingesting at Startup
 

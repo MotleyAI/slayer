@@ -320,7 +320,6 @@ class TestGenerateJoinsDedup:
             joins = _generate_joins(
                 inspector=inspector,
                 source_table="orders",
-                referenced_tables={"users"},
                 schema=None,
                 table_set={"orders", "users"},
             )
@@ -342,7 +341,6 @@ class TestGenerateJoinsDedup:
             joins = _generate_joins(
                 inspector=inspector,
                 source_table="orders",
-                referenced_tables={"users"},
                 schema=None,
                 table_set={"orders", "users"},
             )

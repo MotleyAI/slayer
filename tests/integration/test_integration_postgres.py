@@ -15,6 +15,7 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -140,7 +141,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
                 Column(name="total", sql="amount", type=DataType.DOUBLE),
                 Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
-                # DEV-1576: a genuine DOUBLE PRECISION expression column.
+                # A genuine DOUBLE PRECISION expression column.
                 # ``amount`` is NUMERIC, so ``round(amount:sum, 2)`` works on
                 # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
                 # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
@@ -231,7 +232,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
-            # DEV-1369: filter references must resolve to a defined Column;
+            # Filter references must resolve to a defined Column;
             # use ``total`` (the SLayer Column whose sql is ``amount``)
             # rather than the bare underlying-table column name.
             filters=["total > 100"],
@@ -908,7 +909,7 @@ class TestPostgresMedianPercentile:
 
 @pytest.mark.integration
 class TestPostgresStatAggregations:
-    """DEV-1317 cross-dialect smoke: the new statistical aggregations
+    """Cross-dialect smoke: the new statistical aggregations
     (stddev_samp, stddev_pop, var_samp, var_pop, corr) must produce the
     same numeric results on Postgres native functions as the SQLite UDF
     path produces. Within rel=1e-9.
@@ -1004,7 +1005,7 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_log10_round_trip_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        """DEV-1337: a `log10(amount)` formula must execute correctly on
+        """A `log10(amount)` formula must execute correctly on
         Postgres (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
         # Add a Column.sql with log10 to the existing orders model. The
@@ -1048,7 +1049,7 @@ class TestPostgresStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters, Postgres parity
+# window functions in filters, Postgres parity
 # ---------------------------------------------------------------------------
 
 
@@ -1115,7 +1116,7 @@ async def planets_pg_env(postgresql):
 
 @pytest.mark.integration
 async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
-    """Postgres parity for DEV-1369: filtering a windowed Column.sql
+    """Postgres parity: filtering a windowed Column.sql
     raises (use rank-family transforms instead)."""
     engine = planets_pg_env
     query = SlayerQuery(
@@ -1127,7 +1128,7 @@ async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
         await engine.execute(query)
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)
+# Cross-model derived ``Column.sql`` chaining (Postgres)
 # ---------------------------------------------------------------------------
 
 
@@ -1211,7 +1212,7 @@ async def test_integration_postgres_cross_model_derived_columnsql(
 
 @pytest.mark.integration
 class TestPostgresDev1576Heals:
-    """DEV-1576 — round()/abs() execution (incl. the double-precision cast
+    """round()/abs() execution (incl. the double-precision cast
     path) and aggregation-alias healing against a real Postgres."""
 
     async def test_round_two_args_over_double_executes(
@@ -1266,7 +1267,7 @@ class TestPostgresDev1576Heals:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1645: compiler must emit valid Postgres SQL.
+# Compiler must emit valid Postgres SQL.
 #   Flavor A — ORDER BY on an unprojected/renamed column.
 #   Flavor B — mixed-case identifiers (Column.sql, filters, JOIN ON) must be
 #              double-quoted so Postgres does not fold them to lowercase.
@@ -1400,7 +1401,7 @@ class TestDev1645ValidPostgres:
     async def test_grouped_row_column_order_max_wrap_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """DEV-1703 Phase 1: a GROUPED query ordering by an unprojected LOCAL
+        """Phase 1: a GROUPED query ordering by an unprojected LOCAL
         row column materialises a hidden ``created_at:max`` wrap. Verified on
         real Postgres — the shape must both execute and sort correctly.
 
@@ -1422,7 +1423,7 @@ class TestDev1645ValidPostgres:
     async def test_ungrouped_joined_column_order_executes(
         self, pg_dev1645: SlayerQueryEngine,
     ) -> None:
-        """DEV-1703 Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
+        """Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
         the join (Law 1) and split-emits ``clusters.score``. Verified on real
         Postgres — the split reference must bind, which is exactly what the
         composite ``"clusters.score"`` form failed to do.
@@ -1445,14 +1446,14 @@ class TestDev1645ValidPostgres:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1686: reserved-word model name executes live against Postgres.
+# Reserved-word model name executes live against Postgres.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
     """Module-scoped Postgres DB with a reserved-word ("Grant") table joined to
     "Merchant", plus a YAMLStorage with a `grant` model (reserved name) that
-    joins to `merchant`. Exercises DEV-1686 alias/qualifier + join_cond quoting
+    joins to `merchant`. Exercises alias/qualifier + join_cond quoting
     end-to-end."""
     conn, db_name = _create_module_db(postgresql_proc)
     try:
@@ -1546,7 +1547,7 @@ def pg_reserved(_pg_reserved_storage):
 @pytest.mark.integration
 class TestPostgresReservedWordModel:
     async def test_standalone_grant_dims_count_executes(self, pg_reserved: SlayerQueryEngine) -> None:
-        """The exact DEV-1686 repro: a dims + *:count query on the `grant`
+        """The exact repro: a dims + *:count query on the `grant`
         model must execute (previously: syntax error at or near "grant")."""
         query = SlayerQuery(
             source_model="grant", dimensions=["namespace"], measures=["*:count"],
@@ -1576,7 +1577,7 @@ class TestPostgresReservedWordModel:
     async def test_query_backed_model_with_reserved_short_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """DEV-1686 query_engine._query_as_model fix: a cross-model measure
+        """``query_engine._query_as_model`` fix: a cross-model measure
         renamed to a reserved word (``order``) becomes a virtual-model column
         exposed via ``... AS "order"`` in the wrapped SQL; it must quote and
         execute."""
@@ -1599,7 +1600,7 @@ class TestPostgresReservedWordModel:
     async def test_derived_column_referencing_reserved_join_executes(
         self, pg_reserved: SlayerQueryEngine,
     ) -> None:
-        """DEV-1686 (Codex review): a derived column on a non-reserved root that
+        """A derived column on a non-reserved root that
         references a reserved joined model (`grant.amount + 1`) must both DISCOVER
         the join and execute — previously the join was silently dropped."""
         query = SlayerQuery(source_model="usage", dimensions=["bumped"], measures=["*:count"])
@@ -1623,3 +1624,28 @@ class TestPostgresIngestComments:
         models, _, _ = pg_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None
+
+
+@pytest.mark.integration
+def test_every_postgres_alias_failure_is_quoted(postgresql_proc) -> None:
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE kw_probe (a INTEGER)")
+        cur.execute("SELECT word FROM pg_get_keywords()")
+        words = keyword_universe(row[0] for row in cur.fetchall())
+
+        def fails(sql: str) -> bool:
+            try:
+                cur.execute(cast(LiteralString, sql))
+            except psycopg.Error:
+                return True
+            return False
+
+        assert unquoted_alias_failures(
+            dialect="postgres", words=words, table="kw_probe", column="a", fails=fails,
+        ) == []
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
