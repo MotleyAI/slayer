@@ -10,7 +10,7 @@ from inspect import cleandoc
 from typing import Annotated, Any
 
 import sqlalchemy as sa
-from pydantic import Field
+from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__
@@ -94,12 +94,26 @@ _MCP_REMEDY = (
 MAX_TOOL_DESCRIPTION_CHARS = 2048
 
 SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
-One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it.
+One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it. Aggregates over several joined models in one query are each computed over their own rows, so one query cannot fan out or double count; split only when a stage must re-query a whole result.
 The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
 Typical workflow: search(question='...') → inspect the model → query.
 To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
 
 _ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+
+
+def _query_form(value: Any) -> str:
+    """The ``query`` argument's form, chosen by its JSON type."""
+    if isinstance(value, str):
+        return "name"
+    return "stages" if isinstance(value, list) else "object"
+
+
+#: Validates only the chosen form, so an error never lists the other forms' mismatches.
+QueryArgument = Annotated[
+    Annotated[str, Tag("name")] | Annotated[SlayerQuery, Tag("object")] | Annotated[list[SlayerQuery], Tag("stages")],
+    Discriminator(_query_form),
+]
 
 
 def _check_budget(*, what: str, text: str) -> None:
@@ -469,7 +483,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
-        query: Annotated[str | SlayerQuery | list[SlayerQuery], Field(
+        query: Annotated[QueryArgument, Field(
             description="A query object, a list of query objects (stages), or a saved query-backed model's name.",
         )],
         variables: Annotated[dict[str, Any] | None, Field(

@@ -12,7 +12,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 ONE_ERROR = re.compile(r"\b1 validation error for\b")
-_RANK_QUERY ={"source_model": "orders", "measures": [{"formula": "count(*)", "name": "rank"}]}
+_RANK_QUERY = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "rank"}]}
 _FIRST_STAGE = {"name": "a", "source_model": "orders", "measures": ["count(*)"]}
 
 

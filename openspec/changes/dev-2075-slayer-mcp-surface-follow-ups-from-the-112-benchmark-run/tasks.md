@@ -7,19 +7,19 @@
 
 ## 2. Query schema field descriptions
 
-- [ ] 2.1 `slayer/core/query.py`: `time_dimensions`, `measures` (ratio sentence; several-child + parentless-row sentences on the joined-aggregate bullet), `order`, `source_model` per design D2 wording. Verify: 1.2, 1.3, `tests/test_mcp_surface_budget.py::test_query_schema_within_size_budget` (if over budget: STOP and ask).
+- [x] 2.1 `slayer/core/query.py`: `time_dimensions`, `measures` (ratio sentence; several-child + parentless-row sentences on the joined-aggregate bullet), `order`, `source_model` per design D2 wording. Verify: 1.2, 1.3, `tests/test_mcp_surface_budget.py::test_query_schema_within_size_budget` (if over budget: STOP and ask).
 
 ## 3. Help topics and instructions
 
-- [ ] 3.1 Remove `## Gaps` from `05_time.md`; remove judgment call 5 and "gaps" from the `help.time` deep-dive line in `00_intro.md`; remove "Project exactly the columns the question names." from `02_workflow.md`; remove ", gaps" from the "time" preview in `slayer/memories/help_seed.py` `_DESCRIPTIONS`. Verify: 1.2, `tests/test_help_seed.py`, `tests/test_functional_emission.py`.
-- [ ] 3.2 `SERVER_INSTRUCTIONS` in `slayer/mcp/server.py`: add the fan-out sentence (design D2). Verify: 1.2, instructions budget test.
+- [x] 3.1 Remove `## Gaps` from `05_time.md`; remove judgment call 5 and "gaps" from the `help.time` deep-dive line in `00_intro.md`; remove "Project exactly the columns the question names." from `02_workflow.md`; remove ", gaps" from the "time" preview in `slayer/memories/help_seed.py` `_DESCRIPTIONS`. Verify: 1.2, `tests/test_help_seed.py`, `tests/test_functional_emission.py`.
+- [x] 3.2 `SERVER_INSTRUCTIONS` in `slayer/mcp/server.py`: add the fan-out sentence (design D2). Verify: 1.2, instructions budget test.
 
 ## 4. Discriminated query argument
 
-- [ ] 4.1 `slayer/mcp/server.py`: `query` parameter becomes the callable-`Discriminator` union of design D4 (tags `name` / `object` / `stages`), description unchanged. Verify: 1.4, `tests/test_dev1858_mcp_query_tidy.py`, `tests/test_mcp_row_cap.py`, `tests/test_mcp_server.py`.
+- [x] 4.1 `slayer/mcp/server.py`: `query` parameter becomes the callable-`Discriminator` union of design D4 (tags `name` / `object` / `stages`), description unchanged. Verify: 1.4, `tests/test_dev1858_mcp_query_tidy.py`, `tests/test_mcp_row_cap.py`, `tests/test_mcp_server.py`.
 
 ## 5. Docs, gates, verification
 
-- [ ] 5.1 `docs/reference/mcp.md`: one sentence — an invalid `query` argument reports only the errors of the form its JSON type selects. Verify: grep shows it; no new page.
-- [ ] 5.2 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
+- [x] 5.1 `docs/reference/mcp.md`: one sentence — an invalid `query` argument reports only the errors of the form its JSON type selects. Verify: grep shows it; no new page.
+- [x] 5.2 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
 - [ ] 5.3 Before opening the PR: in Claude Code with this branch's `slayer mcp`, confirm no SLayer tool description or the instructions end in `[truncated]`; record on DEV-2075. Eval re-runs (N = 3 on the nine listed tasks, then the full set at N = 1) are driven from slayer-evals.
