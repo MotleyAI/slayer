@@ -1,7 +1,7 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Gotcha: this worktree's `.venv/` is empty (Poetry created it without installing). Before running anything, run `poetry install -E all --with dev`, then verify that `poetry run la-arch-check` runs.
-- [ ] 1.2 Write `tests/test_contributing_guide.py` per design D7.1–D7.4 (one test per check, imports at the top, no dataclasses). Verify that `poetry run pytest tests/test_contributing_guide.py` fails against the current CONTRIBUTING.md for the expected reasons: missing gates, missing pin, missing pointer, and stale paths such as `stage_planner.py`.
+- [x] 1.1 Gotcha: this worktree's `.venv/` is empty (Poetry created it without installing). Before running anything, run `poetry install -E all --with dev`, then verify that `poetry run la-arch-check` runs.
+- [x] 1.2 Write `tests/test_contributing_guide.py` per design D7.1–D7.4 (one test per check, imports at the top, no dataclasses). Verify that `poetry run pytest tests/test_contributing_guide.py` fails against the current CONTRIBUTING.md for the expected reasons: missing gates, missing pin, missing pointer, and stale paths such as `stage_planner.py`.
 
 ## 2. Gate: DEV-2078 released (pr-implement stage)
 
