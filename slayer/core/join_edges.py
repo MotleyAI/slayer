@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel
 
+from slayer.core.join_walker import OrientedJoin
 from slayer.core.models import ModelJoin, SlayerModel, _validate_model_name
 
 __all__ = [
@@ -40,6 +41,16 @@ class JoinEdgeRef(BaseModel):
             join.target_model == self.target_model
             and _pair_set(join.join_pairs) == _pair_set(self.join_pairs)
             and (self.name is None or join.name == self.name)
+        )
+
+    def matches_hop(self, edge: OrientedJoin) -> bool:
+        """Whether ``edge`` walks this declaration, in either direction."""
+        forward = edge.source_model == edge.declaring_model
+        pairs = edge.join_pairs if forward else [[t, s] for s, t in edge.join_pairs]
+        return (
+            (edge.target_model if forward else edge.source_model) == self.target_model
+            and _pair_set(pairs) == _pair_set(self.join_pairs)
+            and (self.name is None or edge.name == self.name)
         )
 
 

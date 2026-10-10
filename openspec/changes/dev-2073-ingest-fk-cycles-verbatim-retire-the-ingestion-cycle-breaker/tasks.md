@@ -51,3 +51,7 @@
 ## 9. Reserved-word aliases (added in pr-implement with user approval)
 
 - [x] 9.1 Per-dialect reserved-alias sets in `slayer/sql/reserved_keywords.py`, live alias probes in the SQLite/DuckDB unit tests and each engine's integration suite (Postgres, MySQL, ClickHouse, SQL Server, Trino, Snowflake, BigQuery)
+
+## 10. Review fixes (added in pr-review with user approval)
+
+- [x] 10.1 Drift stage cascade matches each dropped `JoinEdgeRef` against every stored edge a stage reference walks (full, self-prefixed or short-form route), covering DEV-1885's acceptance

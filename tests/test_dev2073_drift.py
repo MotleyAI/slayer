@@ -9,8 +9,9 @@ from mcp.types import TextContent
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import EditModelDelete, validate_datasource
+from slayer.engine.schema_drift import EditModelDelete, WholeModelDelete, validate_datasource
 from slayer.mcp.server import create_mcp_server
 
 from tests._dev2073_fixtures import (
@@ -84,6 +85,74 @@ class TestDropAddressesOneEdge:
         assert isinstance(block, TextContent)
         assert '"success": true' in block.text
         assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
+
+
+class TestQueryBackedCascadeFollowsTheEdge:
+    @pytest.mark.parametrize("prefix", ["", "orders."])
+    async def test_only_a_stage_walking_the_dropped_edge_is_whole_dropped(self, drifted: Live, prefix: str) -> None:
+        for name, edge in (("by_shipping", "shipping_address"), ("by_billing", "billing_address")):
+            stage = SlayerQuery.model_validate(
+                {"source_model": "orders", "dimensions": [f"{prefix}{edge}.city"], "measures": [{"formula": "*:count"}]},
+            )
+            await drifted.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
+        models = list((await drifted.models()).values())
+        whole = [e for e in await validate_datasource(datasource=drifted.ds, models=models)
+                 if isinstance(e, WholeModelDelete)]
+        assert [e.model_name for e in whole] == ["by_billing"]
+        assert "'billing_address' via 'orders'" in whole[0].reasons[0].reason
+
+
+_ROUTE_TABLES = {
+    "invoice": ["subscription_id", "promo_id"],
+    "subscription": ["customer_id"],
+    "customer": ["consumer_id"],
+    "consumer": [],
+    "promo": [],
+}
+_ROUTE_FKS = {"subscription_id": "subscription", "customer_id": "customer", "consumer_id": "consumer",
+              "promo_id": "promo"}
+
+
+def _route_models() -> list[SlayerModel]:
+    return [
+        SlayerModel(
+            name=table, data_source=DS, sql_table=table,
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                     Column(name="email", type=DataType.TEXT),
+                     *(Column(name=fk, type=DataType.INT) for fk in fks)],
+            joins=[join_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
+        )
+        for table, fks in _ROUTE_TABLES.items()
+    ]
+
+
+def _live_without(dropped_fk: str) -> str:
+    return "\n".join(
+        f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, email TEXT"
+        + "".join(f", {fk} INTEGER" for fk in fks if fk != dropped_fk) + ");"
+        for table, fks in _ROUTE_TABLES.items()
+    )
+
+
+class TestEveryHopOfTheRouteCounts:
+    @pytest.mark.parametrize(("dropped_fk", "removed"), [
+        ("subscription_id", {"full", "short"}),
+        ("customer_id", {"full", "short"}),
+        ("consumer_id", {"full", "short"}),
+        ("promo_id", set()),
+    ])
+    async def test_stage_cascades_on_any_hop_it_walks(self, dropped_fk: str, removed: set[str]) -> None:
+        async with live(_live_without(dropped_fk)) as lv:
+            for model in _route_models():
+                await lv.storage.save_model(model)
+            for name, dim in (("full", "subscription.customer.consumer.email"), ("short", "consumer.email")):
+                stage = SlayerQuery.model_validate(
+                    {"source_model": "invoice", "dimensions": [dim], "measures": [{"formula": "*:count"}]},
+                )
+                await lv.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
+            models = list((await lv.models()).values())
+            entries = await validate_datasource(datasource=lv.ds, models=models)
+            assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == removed
 
 
 class TestNonParallelDropReportsTheTarget:

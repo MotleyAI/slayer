@@ -51,7 +51,7 @@ from slayer.engine.ingestion import (
 )
 from slayer.core.errors import AmbiguousJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_walker import OrientedJoin, neighbors, resolve_hop
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
@@ -782,6 +782,12 @@ def _build_stage_graph(
     )
 
 
+def _hop_path(*, ref: str, graph: _StageGraph) -> list[str]:
+    """``ref``'s hop tokens, a leading self-prefix stripped as the binder does."""
+    path = ref.split(".")[:-1]
+    return path[1:] if path and path[0] == graph.stage_source_name else path
+
+
 def _attribute_ref_to_base(
     *,
     ref: str,
@@ -789,33 +795,26 @@ def _attribute_ref_to_base(
     graph: _StageGraph,
 ) -> str | None:
     """Walk ``ref`` through the stage's join graph; the leaf column name when it resolves to ``base_name``, else None (bare refs attribute to the stage source)."""
-    if "." not in ref:
-        return ref if graph.stage_source_name == base_name else None
-    parts = ref.split(".")
-    leaf = parts[-1]
-    path = parts[:-1]
     if graph.stage_source_name is None:
         return None
-    # Root-qualified ref (``orders.amount`` from a stage rooted at orders):
-    # ``orders`` isn't in its own join set, so treat path==[source] as same-model.
-    if path == [graph.stage_source_name]:
+    leaf = ref.rsplit(".", 1)[-1]
+    path = _hop_path(ref=ref, graph=graph)
+    if not path:
         return leaf if graph.stage_source_name == base_name else None
-    terminal = _walk_stage_path(path=path, graph=graph)
+    walked = _walk_stage_chain(path=path, graph=graph)
+    terminal = walked[0] if walked is not None else None
     if terminal is None and len(path) == 1:
         # Short-form auto-routing: a len==1 prefix with no direct join
-        # attributes to its uniquely-routed terminal only (mirroring full paths),
-        # so the stage cascades on the terminal column or terminal-reaching join.
-        # Route-precise attribution (earlier intervening joins, and no over-cascade
-        # on off-route joins to the terminal) is deferred to DEV-1885.
+        # attributes to its uniquely-routed terminal (mirroring full paths).
         terminal = _route_short_form_terminal(target=path[0], graph=graph)
     if terminal is None:
         return None
     return leaf if terminal == base_name else None
 
 
-def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
-    """The short-form target when it is uniquely routable from the stage source
-    over the datasource-scoped join graph (ambiguous / unreachable → None).
+def _short_form_route(*, target: str, graph: _StageGraph) -> list[str] | None:
+    """The hop route to a short-form target uniquely routable from the stage
+    source over the datasource-scoped join graph (ambiguous / unreachable → None).
     Routing triggers only when the first hop resolves to no edge; a parallel pair
     directly off the source is a fail-closed ambiguous hop, not a
     route, so it attributes to nothing — mirroring the binder."""
@@ -832,16 +831,20 @@ def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None
             return None
     except AmbiguousJoinPathError:
         return None
-    route = short_form_route_or_none(
+    return short_form_route_or_none(
         root=root, target_model=target, models_by_name=graph.models_by_name,
     )
-    return target if route is not None else None
 
 
-def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
-    """Terminal model name of ``path`` from the stage source — either
-    traversal direction, stage-extension joins included — or ``None``."""
+def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
+    return target if _short_form_route(target=target, graph=graph) is not None else None
+
+
+def _walk_stage_chain(*, path: list[str], graph: _StageGraph) -> tuple[str, list[OrientedJoin]] | None:
+    """Terminal model of ``path`` from the stage source and the stored edges it
+    walks — either traversal direction, stage-extension joins included — or ``None``."""
     current = graph.stage_source_name
+    chain: list[OrientedJoin] = []
     for hop in path:
         # Extension joins live on the stage, not the stored model; their
         # token is the join name when set, else the target name.
@@ -859,67 +862,34 @@ def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
             return None
         if edge is None:
             return None
+        chain.append(edge)
         current = edge.target_model
-    return current
+    return (current, chain) if current is not None else None
 
 
-def _measure_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
-    for m in stage.measures or []:
-        formula = getattr(m, "formula", None)
-        if not formula:
-            continue
-        for ref in _measure_formula_refs(formula):
-            attributed = _attribute_ref_to_base(
-                ref=ref, base_name=base_name, graph=graph
-            )
-            if attributed is not None:
-                out.add(attributed)
-    return out
+def _ref_stored_edges(*, ref: str, graph: _StageGraph) -> list[OrientedJoin]:
+    """The stored edges ``ref``'s path walks, a short-form ref along its route."""
+    path = _hop_path(ref=ref, graph=graph)
+    if not path:
+        return []
+    walked = _walk_stage_chain(path=path, graph=graph)
+    if walked is None and len(path) == 1:
+        route = _short_form_route(target=path[0], graph=graph)
+        walked = _walk_stage_chain(path=route, graph=graph) if route else None
+    return walked[1] if walked is not None else []
 
 
-def _dimension_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
-    for d in stage.dimensions or []:
-        full = getattr(d, "full_name", None) or str(d)
-        attributed = _attribute_ref_to_base(
-            ref=full, base_name=base_name, graph=graph
-        )
-        if attributed is not None:
-            out.add(attributed)
-    return out
-
-
-def _time_dimension_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
-    for td in stage.time_dimensions or []:
-        attributed = _attribute_ref_to_base(
-            ref=td.dimension.full_name, base_name=base_name, graph=graph
-        )
-        if attributed is not None:
-            out.add(attributed)
-    return out
-
-
-def _filter_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
+def _stage_refs(stage: SlayerQuery) -> list[str]:
+    """Every column reference of one stage: measures, dimensions, time dimensions, filters."""
+    refs = [
+        ref for m in stage.measures or [] if (formula := getattr(m, "formula", None))
+        for ref in _measure_formula_refs(formula)
+    ]
+    refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
+    refs += [td.dimension.full_name for td in stage.time_dimensions or []]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
-    for f in stage.filters or []:
-        for col in _filter_refs_dsl(f):
-            attributed = _attribute_ref_to_base(
-                ref=col, base_name=base_name, graph=graph
-            )
-            if attributed is not None:
-                out.add(attributed)
-    return out
+    refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]
+    return refs
 
 
 def _stage_referenced_columns_for_base(
@@ -940,12 +910,8 @@ def _stage_referenced_columns_for_base(
             reachable={stage_source_name} if stage_source_name else set(),
             models_by_name={},
         )
-    return (
-        _measure_refs_on_base(stage, base_name, graph)
-        | _dimension_refs_on_base(stage, base_name, graph)
-        | _time_dimension_refs_on_base(stage, base_name, graph)
-        | _filter_refs_on_base(stage, base_name, graph)
-    )
+    attributed = (_attribute_ref_to_base(ref=ref, base_name=base_name, graph=graph) for ref in _stage_refs(stage))
+    return {leaf for leaf in attributed if leaf is not None}
 
 
 def _stage_source_joins(stage: SlayerQuery) -> list[ModelJoin]:
@@ -1006,19 +972,15 @@ def _stage_uses_dropped_join(
     graph: _StageGraph,
     dropped_joins: _DroppedJoins,
 ) -> str | None:
-    """The conflicting target if ``stage`` references a column under a join dropped on ``base_name``, else None; bounded to ``graph.reachable``."""
-    if base_name not in graph.reachable:
+    """The reference of a join dropped on ``base_name`` that a ``stage`` ref walks, else None."""
+    dropped = dropped_joins.get(base_name, [])
+    if not dropped or base_name not in graph.reachable:
         return None
-    targets = sorted({r.target_model for r in dropped_joins.get(base_name, [])})
-    if not targets:
-        return None
-    for target in targets:
-        # Column names the stage references on ``target`` (via the join graph);
-        # non-empty ⇒ the dropped join means those refs no longer resolve.
-        if _stage_referenced_columns_for_base(
-            stage=stage, base_name=target, graph=graph
-        ):
-            return target
+    for ref in _stage_refs(stage):
+        for edge in _ref_stored_edges(ref=ref, graph=graph):
+            hit = next((d for d in dropped if edge.declaring_model == base_name and d.matches_hop(edge)), None)
+            if hit is not None:
+                return hit.name or hit.target_model
     return None
 
 

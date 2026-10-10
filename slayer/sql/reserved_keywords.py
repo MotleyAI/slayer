@@ -70,6 +70,7 @@ DIALECT_RESERVED_KEYWORDS: dict[str, frozenset[str]] = {
     }),
     "postgres": frozenset({"current_schema", "system_user"}),
     "clickhouse": frozenset({"top"}),
+    "bigquery": frozenset({"current_datetime", "match_recognize"}),
     "trino": frozenset({"cube", "current_schema", "grouping", "json_table", "recursive", "rollup", "unnest"}),
     "mysql": frozenset({
         "_armscii8", "_ascii", "_big5", "_binary", "_cp1250", "_cp1251", "_cp1256", "_cp1257", "_cp850",
@@ -105,10 +106,12 @@ def install_reserved_keywords(sqlglot_names: Iterable[str]) -> None:
     """
     for name in sqlglot_names:
         gen_cls = Dialect.get_or_raise(name).generator_class
-        gen_cls.RESERVED_KEYWORDS = (
-            set(gen_cls.RESERVED_KEYWORDS) | SLAYER_RESERVED_KEYWORDS
-            | DIALECT_RESERVED_KEYWORDS.get(name, frozenset())
-        )
+        gen_cls.RESERVED_KEYWORDS = set(gen_cls.RESERVED_KEYWORDS) | reserved_keywords_for(name)
+
+
+def reserved_keywords_for(dialect: str) -> frozenset[str]:
+    """The words SLayer quotes as identifiers in sqlglot ``dialect``."""
+    return SLAYER_RESERVED_KEYWORDS | DIALECT_RESERVED_KEYWORDS.get(dialect, frozenset())
 
 
 def _reserved_dot_edit(
@@ -120,7 +123,7 @@ def _reserved_dot_edit(
     :func:`prequote_reserved_identifiers` to keep that function's cognitive
     complexity within the analysis budget."""
     tok = toks[i]
-    if tok.text.lower() not in SLAYER_RESERVED_KEYWORDS:
+    if tok.text.lower() not in reserved_keywords_for(dialect):
         return None
     # Defensive: offsets must map back to the original text (Token.end is
     # inclusive). Skip anything that doesn't round-trip cleanly.

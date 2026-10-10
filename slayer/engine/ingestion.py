@@ -658,9 +658,11 @@ def _introspect_query_columns_via_inspector(
     """Introspect the table's own columns."""
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
+    # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
     return [
         _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns)
         for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
+        if "." not in col["name"]
     ]
 
 

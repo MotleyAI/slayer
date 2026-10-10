@@ -140,6 +140,24 @@ class TestOneEdgePerFkRelationship:
             assert [(j.target_model, j.name) for j in (await lv.model("customers")).joins] == [("orders", name)]
 
 
+class TestNestedFieldColumns:
+    async def test_struct_subfields_are_not_table_columns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        original = Inspector.get_columns
+
+        def with_subfield(self, table_name, schema=None, **kw):
+            cols = original(self, table_name, schema=schema, **kw)
+            # BigQuery reflects a STRUCT's subfields as extra ``parent.child`` columns.
+            return [*cols, {**cols[-1], "name": f"{cols[-1]['name']}.city"}] if table_name == "orders" else cols
+
+        monkeypatch.setattr(Inspector, "get_columns", with_subfield)
+        async with live(CHAIN) as lv:
+            for _ in range(2):
+                result = await lv.ingest()
+                assert result.errors == []
+                assert result.skipped == []
+            assert {c.name for c in (await lv.model("orders")).columns} == {"id", "customer_id", "amount"}
+
+
 class TestFkReflectionFailure:
     async def test_failing_table_ingests_without_joins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         original = Inspector.get_foreign_keys

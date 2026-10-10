@@ -20,3 +20,13 @@ The exact references SHALL be accepted unchanged by the model-editing surface.
 - **WHEN** a drift entry's removal, serialised as JSON, is passed unchanged to the model-editing
   surface
 - **THEN** exactly the reported joins are removed
+
+#### Scenario: A query-backed stage cascades only on the edges it walks
+- **WHEN** a query-backed stage over `orders` reads `shipping_address.city` (or `orders.shipping_address.city`)
+  and the billing join is dropped
+- **THEN** that model is kept, while a stage reading `billing_address.city` is removed
+
+#### Scenario: Every hop of a stage reference's route counts
+- **WHEN** a stage over `Invoice` reads `Consumer.email` along `Invoice → Subscription → Customer → Consumer`,
+  spelled in full or short form, and any one of those joins is dropped
+- **THEN** the query-backed model is removed; dropping a join off that route does not remove it

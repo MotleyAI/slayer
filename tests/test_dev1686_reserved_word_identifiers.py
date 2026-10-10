@@ -508,6 +508,15 @@ class TestPrequoteHelper:
         assert prequote_reserved_identifiers("grant.x = 1", dialect="mysql") == "`grant`.x = 1"
         assert prequote_reserved_identifiers("grant.x = 1", dialect="tsql") == "[grant].x = 1"
 
+    @pytest.mark.parametrize("dialect", sorted(DIALECT_RESERVED_KEYWORDS))
+    def test_quotes_dialect_words(self, dialect: str) -> None:
+        bare = [
+            w for w in DIALECT_RESERVED_KEYWORDS[dialect]
+            if prequote_reserved_identifiers(f"1 + {w}.a + t.{w}", dialect=dialect)
+            != f"1 + {_q(w, dialect)}.a + t.{_q(w, dialect)}"
+        ]
+        assert not bare
+
     def test_tokenizer_error_returns_unchanged(self) -> None:
         # An unterminated string literal makes sqlglot.tokenize raise; the helper
         # must swallow it and return the input verbatim (never make a
@@ -542,11 +551,15 @@ def _orders_derived_grant_models() -> tuple[SlayerModel, SlayerModel]:
     return orders, grant
 
 
+def _bumped_query() -> SlayerQuery:
+    return SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["bumped"], "measures": ["*:count"]})
+
+
 class TestReservedInComputedPaths:
     async def test_derived_column_referencing_reserved_joined_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_derived_grant_models()
-        q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
+        q = _bumped_query()
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # The reserved joined model must be JOINED (not just referenced): a
         # quoted qualifier in the expanded derived-column SQL must still be
@@ -565,9 +578,24 @@ class TestReservedInComputedPaths:
         discovery must still find it on every dialect (Codex review)."""
         install_reserved_keywords(SQLGLOT_NAMES)
         orders, grant = _orders_derived_grant_models()
-        q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
+        q = _bumped_query()
         sql = _norm(await _gen(q, orders, extra_models=[grant], dialect=dialect))
         assert "JOIN" in sql, f"[{dialect}] join dropped:\n{sql}"
+        _assert_parses(sql, dialect)
+
+    @pytest.mark.parametrize(("dialect", "word"), [("duckdb", "pivot"), ("sqlite", "index"), ("bigquery", "current_datetime")])
+    async def test_derived_column_dialect_reserved_join_discovered(self, dialect: str, word: str) -> None:
+        install_reserved_keywords(SQLGLOT_NAMES)
+        orders, grant = _orders_derived_grant_models()
+        target = grant.model_copy(update={"name": word})
+        orders = orders.model_copy(update={
+            "columns": [c.model_copy(update={"sql": f"{word}.amount + 1"}) if c.name == "bumped" else c
+                        for c in orders.columns],
+            "joins": [ModelJoin(target_model=word, join_pairs=[["grant_id", "id"]])],
+        })
+        q = _bumped_query()
+        sql = _norm(await _gen(q, orders, extra_models=[target], dialect=dialect))
+        assert f"{_q(word, dialect)}.amount + 1" in sql, sql
         _assert_parses(sql, dialect)
 
 
