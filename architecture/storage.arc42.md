@@ -20,6 +20,11 @@ Child `migrations` (the registry); the other modules are leaves of the node.
    `sqlite_conn` (`transaction` / `open_connection`), which always closes them;
    a `with sqlite3.connect(...)` block anywhere else is a violation.
    [enforced: test:tests/test_law_resource_ownership.py]
+2. **Access is a view**: a non-bypass `TagFilteredStorage` reads as the store
+   with every inaccessible model and memory deleted and joins into them pruned
+   (inaccessible ≡ deleted); its writes merge onto the full documents. Code
+   downstream of storage takes no caller context.
+   [enforced: test:tests/test_model_access.py]
 
 ## 4. Rationale
 

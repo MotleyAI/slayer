@@ -122,7 +122,7 @@ class TestBypass:
         )
 
     async def test_bypass_ignores_tags(self, store: AccessStore) -> None:
-        assert set(await view(store, "nobody", bypass=True).list_models(DS)) == ALL_LOADABLE
+        assert set(await view(store, "nobody", bypass=True).list_models(DS)) == ALL_LOADABLE | {UNLOADABLE}
 
 
 class TestDependents:

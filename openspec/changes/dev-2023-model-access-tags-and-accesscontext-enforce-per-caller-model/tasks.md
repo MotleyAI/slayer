@@ -23,10 +23,10 @@
 - [x] 2.6 `slayer/storage/tag_filtered.py` `TagFilteredStorage` (design D2–D5): filtered primitives, view pass over the inner store with lock + post-pass fingerprint memo, join pruning, memory strip/withhold, embeddings. Verify: 1.3–1.8, 1.11 pass.
 - [x] 2.7 Merged writes (design D7): two-phase `save_model`, memory merge at `_save_memory_row`, deletes resolve in view and run on inner, conflict / access-tags errors as typed `SlayerError` subclasses in `slayer/core/errors.py`. Verify: 1.9 passes.
 - [x] 2.8 Narrowed access (design D8): save-time warning both directions as a structured warning surfaced twice; `validate_models` finding. Verify: 1.10 passes.
-- [ ] 2.9 `architecture/storage.arc42.md` §3 principle 2, the approved text: "2. **Access is a view**: a non-bypass `TagFilteredStorage` reads as the store with every inaccessible model and memory deleted and joins into them pruned (inaccessible ≡ deleted); its writes merge onto the full documents. Code downstream of storage takes no caller context. [enforced: test:tests/test_model_access.py]". Verify: `poetry run la-arch-check` clean.
+- [x] 2.9 `architecture/storage.arc42.md` §3 principle 2, the approved text: "2. **Access is a view**: a non-bypass `TagFilteredStorage` reads as the store with every inaccessible model and memory deleted and joins into them pruned (inaccessible ≡ deleted); its writes merge onto the full documents. Code downstream of storage takes no caller context. [enforced: test:tests/test_model_access.py]". Verify: `poetry run la-arch-check` clean.
 - [x] 2.10 Docs: `docs/concepts/models.md` (`access_tags` as "access groups", the rule, difference from `hidden`; `backing_query_sql` removed → `dry_run`), `docs/configuration/storage.md` (`TagFilteredStorage`, `cache_identity`, `graph_fingerprint` default), `docs/reference/mcp.md`, `docs/interfaces/mcp.md`, `docs/interfaces/rest-api.md`. Verify: grep `backing_query_sql` in `docs/` returns nothing.
 
 ## 3. Gates
 
-- [ ] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
+- [x] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
 - [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` clean.
