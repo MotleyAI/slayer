@@ -17,7 +17,7 @@ Architecture: `slayer.mcp` and `slayer.memories` are buckets without a node arc4
 
 ## Decisions
 
-**D1 — Owners.** Gap filling → `time_dimensions` (where the agent picks the bucketed column; `date_range` already carries the look-back rules). Several child models, parentless child rows and the cross-model ratio → `measures`, beside the joined-aggregate bullet. Projection → `order` (the failure is adding the sort value; `measures` is already the longest field). Conditional rooting → `source_model`. Fan-out reason → `instructions`. Removed copies: `help.time` `## Gaps`; `help.intro` judgment call 5 and "gaps" in its `help.time` line; `help.workflow` "Project exactly the columns the question names."
+**D1 — Owners.** Gap filling → `time_dimensions` (where the agent picks the bucketed column; `date_range` already carries the look-back rules). Several child models, parentless child rows and the cross-model ratio → `measures`, beside the joined-aggregate bullet. Projection → `order` (the failure is adding the sort value; `measures` is already the longest field). Conditional rooting → `source_model`. Fan-out reason → `instructions`. Removed copies: `help.time` `## Gaps`; `help.intro` judgment call 5 and "gaps" in its `help.time` line; `help.workflow` "Project exactly the columns the question names."; the help.time preview's "gaps"
 
 **D2 — Exact wording.**
 - `time_dimensions` appends: "Buckets without rows are absent. To return every bucket, empty ones included, bucket time_spine.timestamp with a lower date_range bound and measure models by dotted path: {"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} with sum(orders.amount) returns all twelve months. It also lines several models up on one time axis."
