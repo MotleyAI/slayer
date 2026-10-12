@@ -159,6 +159,12 @@ def _living_architecture_pin() -> str:
     return spec["version"] if isinstance(spec, dict) else spec
 
 
+def _installs_plugin(markdown: str, pin: str) -> bool:
+    """Whether a code line is exactly the marketplace-add command for ``v<pin>``."""
+    command = f"/plugin marketplace add MotleyAI/living-architecture#v{pin}"
+    return any(line.strip() == command for line in _code_lines(markdown))
+
+
 def test_guide_paths_exist() -> None:
     missing = [p for p in _guide_paths(_GUIDE.read_text()) if p != _LOCAL_OVERRIDE and not _path_exists(p)]
     assert not missing, (
@@ -205,8 +211,7 @@ def test_living_architecture_pin_is_exact() -> None:
 
 def test_guide_installs_pinned_plugin() -> None:
     pin = _living_architecture_pin()
-    ref = re.compile(rf"MotleyAI/living-architecture#v{re.escape(pin)}(?![\w.])")
-    assert ref.search(_GUIDE.read_text()), f"CONTRIBUTING.md must install MotleyAI/living-architecture#v{pin}"
+    assert _installs_plugin(_GUIDE.read_text(), pin), f"CONTRIBUTING.md must install MotleyAI/living-architecture#v{pin}"
 
 
 class TestParsingRules:
@@ -255,3 +260,11 @@ class TestParsingRules:
         assert _selects_unit_tests('poetry run pytest -m "not integration"')
         assert not _selects_unit_tests('poetry run pytest-x -m "not integration"')
         assert not _selects_unit_tests('poetry run pytest -m "not integration and slow"')
+
+    def test_plugin_install_is_exact_code_line(self) -> None:
+        command = "/plugin marketplace add MotleyAI/living-architecture#v0.3.1"
+        assert _installs_plugin(f"```text\n{command}\n```", "0.3.1")
+        assert _installs_plugin(f"Run `{command}`.", "0.3.1")
+        assert not _installs_plugin(f"Pinned at {command}.", "0.3.1")
+        for suffix in ("-next", "+b1", "0", ".1"):
+            assert not _installs_plugin(f"```\n{command}{suffix}\n```", "0.3.1"), suffix

@@ -39,7 +39,8 @@ poetry run la-arch-check
 poetry run pytest -m "not integration"
 
 # Integration tests, exactly as CI runs them
-poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+poetry run pytest tests/ -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
+  -n logical --dist loadscope \
   --ignore=tests/integration/test_integration_mysql.py \
   --ignore=tests/integration/test_integration_clickhouse.py \
   --ignore=tests/integration/test_integration_sqlserver.py \
