@@ -7,18 +7,21 @@ import inspect
 import json
 import re
 import tempfile
+import warnings
 from functools import cache
 from typing import Annotated, Any
 
 import pytest
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
+from pydantic.json_schema import PydanticJsonSchemaWarning
 
 import slayer.mcp.server as server_mod
 from slayer.mcp.server import create_mcp_server
+from slayer.memories.help_seed import load_help_topics
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._mcp_idiom_fixtures import EXAMPLE_OWNERS
+from tests._mcp_idiom_fixtures import CROSS_MODEL_RATIO, EXAMPLE_OWNERS, SECOND_CHILD
 
 DESCRIPTION_BUDGET = 2048
 # The query schema ships with every request; set from the size measured after the rewrite + ~10%.
@@ -38,8 +41,22 @@ MARKER_OWNERS: dict[str, tuple[str, str]] = {
     "consecutive_periods(": ("SlayerQuery", "measures"),
     "rows before the range": ("TimeDimension", "date_range"),
     "range start": ("TimeDimension", "date_range"),
+    "time_spine.timestamp": ("SlayerQuery", "time_dimensions"),
+    "an order with no customer": ("SlayerQuery", "measures"),
+    "only the columns the question asks for": ("SlayerQuery", "order"),
+    "where the facts are": ("SlayerQuery", "source_model"),
     **EXAMPLE_OWNERS,
 }
+
+_INSTRUCTIONS = ("<instructions>",)
+FAN_OUT_MARKER = "cannot fan out"
+#: Moved guidance: also absent from the instructions and every help topic.
+SOLE_OWNER_MARKERS = (
+    "time_spine.timestamp", "an order with no customer", "only the columns the question asks for",
+    "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, FAN_OUT_MARKER,
+)
+#: Help-topic copies the moved guidance replaced.
+RETIRED_HELP_PHRASES = ("Project exactly the columns", "Fill time gaps", "## Gaps")
 
 
 _STORE = tempfile.TemporaryDirectory()
@@ -111,6 +128,20 @@ def test_description_has_no_args_section(name: str) -> None:
     assert not re.search(r"^\s*Args:\s*$", _tools()[name].description or "", re.M)
 
 
+def test_server_builds_without_json_schema_warnings(tmp_path) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PydanticJsonSchemaWarning)
+        server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
+        asyncio.run(server.list_tools())
+
+
+def test_edit_model_unset_parameters_are_optional_without_default() -> None:
+    schema = _tools()["edit_model"].inputSchema
+    for param in ("query_variables", "meta"):
+        assert "default" not in schema["properties"][param], param
+        assert param not in schema.get("required", []), param
+
+
 @pytest.mark.parametrize("name", TOOL_NAMES)
 def test_every_parameter_described(name: str) -> None:
     props = _tools()[name].inputSchema.get("properties", {})
@@ -158,6 +189,13 @@ def test_instructions_within_budget_and_carry_the_help_call() -> None:
 
 def test_instructions_come_from_the_module_constant() -> None:
     assert _server_and_tools()[0].instructions == server_mod.SERVER_INSTRUCTIONS
+
+
+def test_instructions_give_the_fan_out_reason() -> None:
+    assert (
+        "Aggregates over several joined models in one query are each computed over their own rows, "
+        "so one query cannot fan out or double count; split only when a stage must re-query a whole result."
+    ) in server_mod.SERVER_INSTRUCTIONS
 
 
 def test_over_budget_instructions_fail_the_build(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -228,6 +266,39 @@ def test_guidance_marker_has_one_owner(marker: str) -> None:
     assert marker in texts.get(owner, ""), f"{marker!r} missing from {owner}"
     elsewhere = [path for path, text in texts.items() if path != owner and marker in text]
     assert elsewhere == []
+
+
+def _surface_texts() -> dict[tuple[str, ...], str]:
+    """The query description and schema descriptions, the instructions, and every help topic body."""
+    texts = _query_texts()
+    texts[_INSTRUCTIONS] = server_mod.SERVER_INSTRUCTIONS
+    texts.update({(f"<{t.id}>",): t.learning for t in load_help_topics()})
+    return texts
+
+
+@pytest.mark.parametrize("marker", SOLE_OWNER_MARKERS)
+def test_moved_guidance_has_no_second_copy(marker: str) -> None:
+    owner = _INSTRUCTIONS if marker == FAN_OUT_MARKER else _field_path(*MARKER_OWNERS[marker])
+    texts = _surface_texts()
+    assert marker in texts.get(owner, ""), f"{marker!r} missing from {owner}"
+    elsewhere = [path for path, text in texts.items() if path != owner and marker in text]
+    assert elsewhere == []
+
+
+@pytest.mark.parametrize("phrase", RETIRED_HELP_PHRASES)
+def test_retired_help_copies_are_gone(phrase: str) -> None:
+    assert [t.id for t in load_help_topics() if phrase in t.learning] == []
+
+
+def test_intro_time_deep_dive_line_drops_gaps() -> None:
+    intro = next(t.learning for t in load_help_topics() if t.id == "help.intro")
+    line = re.search(r"^- `memory:help\.time`.*?(?=^- |\Z)", intro, re.M | re.S)
+    assert line is not None
+    assert "gaps" not in line.group(0)
+
+
+def test_time_preview_drops_gaps() -> None:
+    assert "gaps" not in next(t.description for t in load_help_topics() if t.id == "help.time")
 
 
 def test_refinement_clauses_point_to_the_query_fields() -> None:
