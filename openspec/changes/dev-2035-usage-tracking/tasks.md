@@ -35,7 +35,7 @@
 ## 5. Docs and release
 
 - [x] 5.1 `docs/reference/usage-reporting.md`: every field, controls, notice text, destination (IP received at transport, discarded, no GeoIP), privacy notice (Motley as controller, purpose, PostHog EU processor, 13-month raw retention, ID rotation, erasure by install ID + contact address); nav entry in `zensical.toml`. Verify: page renders in nav.
-- [ ] 5.2 README usage-reporting section (one paragraph + opt-out); CLI reference for `slayer usage-reporting`; release-notes item. Verify: grep.
+- [x] 5.2 README usage-reporting section (one paragraph + opt-out); CLI reference for `slayer usage-reporting`; release-notes item. Verify: grep.
 
 ## 6. Gates
 
