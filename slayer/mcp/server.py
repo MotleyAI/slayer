@@ -78,6 +78,11 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET: Any = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
+
+def _unset() -> Any:
+    """``_UNSET`` as a default factory: JSON schemas skip factory defaults."""
+    return _UNSET
+
 # Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
 _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
@@ -829,6 +834,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @tool()
     async def edit_model(
         model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+        *,
         description: Annotated[str | None, Field(description="New model description.")] = None,
         data_source: Annotated[str | None, Field(
             description="The model's datasource; required when the name exists in several datasources.",
@@ -846,8 +852,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
         query_variables: Annotated[Any, Field(
+            default_factory=_unset,
             description="Replace the backing query's default {var} values; null clears them.",
-        )] = _UNSET,
+        )],
         hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
@@ -890,8 +897,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
+            default_factory=_unset,
             description="JSON metadata replacing the model's meta; null clears it.",
-        )] = _UNSET,
+        )],
     ) -> str:
         """Edit an existing model in one call: metadata, upserts of columns / measures / aggregations / joins (by name; only the given fields change), model filters, and removals (applied first).
 

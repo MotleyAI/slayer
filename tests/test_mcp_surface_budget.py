@@ -7,12 +7,14 @@ import inspect
 import json
 import re
 import tempfile
+import warnings
 from functools import cache
 from typing import Annotated, Any
 
 import pytest
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
+from pydantic.json_schema import PydanticJsonSchemaWarning
 
 import slayer.mcp.server as server_mod
 from slayer.mcp.server import create_mcp_server
@@ -124,6 +126,20 @@ def test_description_is_dedented(name: str) -> None:
 @pytest.mark.parametrize("name", TOOL_NAMES)
 def test_description_has_no_args_section(name: str) -> None:
     assert not re.search(r"^\s*Args:\s*$", _tools()[name].description or "", re.M)
+
+
+def test_server_builds_without_json_schema_warnings(tmp_path) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PydanticJsonSchemaWarning)
+        server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
+        asyncio.run(server.list_tools())
+
+
+def test_edit_model_unset_parameters_are_optional_without_default() -> None:
+    schema = _tools()["edit_model"].inputSchema
+    for param in ("query_variables", "meta"):
+        assert "default" not in schema["properties"][param], param
+        assert param not in schema.get("required", []), param
 
 
 @pytest.mark.parametrize("name", TOOL_NAMES)

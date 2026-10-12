@@ -22,4 +22,4 @@
 
 - [x] 5.1 `docs/reference/mcp.md`: one sentence — an invalid `query` argument reports only the errors of the form its JSON type selects. Verify: grep shows it; no new page.
 - [x] 5.2 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
-- [ ] 5.3 Before opening the PR: in Claude Code with this branch's `slayer mcp`, confirm no SLayer tool description or the instructions end in `[truncated]`; record on DEV-2075. Eval re-runs (N = 3 on the nine listed tasks, then the full set at N = 1) are driven from slayer-evals.
+- [x] 5.3 Before opening the PR: in Claude Code with this branch's `slayer mcp`, confirm no SLayer tool description or the instructions end in `[truncated]`; record on DEV-2075. Eval re-runs (N = 3 on the nine listed tasks, then the full set at N = 1) are driven from slayer-evals.
