@@ -843,7 +843,7 @@ class TestSourceQueryStages:
 
 
 class TestQueryVariablesAndCacheFields:
-    """``query_variables`` and ``backing_query_sql`` defaults and shape."""
+    """``query_variables`` defaults and shape."""
 
     def test_query_variables_default_is_empty_dict(self) -> None:
         m = SlayerModel(name="orders", sql_table="t", data_source="ds")
@@ -857,10 +857,6 @@ class TestQueryVariablesAndCacheFields:
             query_variables={"threshold": 1500, "region": "US"},
         )
         assert m.query_variables == {"threshold": 1500, "region": "US"}
-
-    def test_backing_query_sql_default_is_none(self) -> None:
-        m = SlayerModel(name="orders", sql_table="t", data_source="ds")
-        assert m.backing_query_sql is None
 
 
 class TestAllowedAggregationsBuildTimeValidation:

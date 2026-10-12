@@ -35,6 +35,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
     SchemaDriftError,
     SlayerError,
+    StoredDocumentLoadError,
 )
 from slayer.engine.cardinality import (
     CardinalityVerdict,
@@ -82,8 +83,10 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerNarrowedAccessWarning,
     SlayerWholePeriodsWarning,
     WholePeriodsNonNestingWarningPayload,
 )
@@ -117,10 +120,12 @@ from slayer.engine.schema_drift import (
     ApplyDriftResult,
     ApplyError,
     LiveSnapshotCache,
+    NarrowedAccessFinding,
     ToDeleteEntry,
     unloadable_model_delete,
     validate_datasource,
 )
+from slayer.engine.model_reads import narrowing_models
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -2212,8 +2217,8 @@ class SlayerQueryEngine:
                 f"Model {model_name!r} not found in datasource {data_source!r}."
             )
         if existing.source_queries:
-            # Query-backed models manage columns / backing_query_sql as cache;
-            # bypassing save_model would persist stale, mismatched cache.
+            # Query-backed models manage columns as cache; bypassing save_model
+            # would persist a stale, mismatched cache.
             raise ValueError(
                 f"edit_model_remove() does not support query-backed models "
                 f"({model_name!r}); edit source_queries via engine.save_model() "
@@ -2274,6 +2279,8 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
+            if isinstance(entry, NarrowedAccessFinding):
+                continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
             touched_ds.add(entry.data_source)
@@ -2317,7 +2324,10 @@ class SlayerQueryEngine:
         residual: List[Any] = []
         for ds_name in touched_ds:
             try:
-                residual.extend(await self.validate_models(data_source=ds_name))
+                residual.extend(
+                    e for e in await self.validate_models(data_source=ds_name)
+                    if not isinstance(e, NarrowedAccessFinding)
+                )
             except Exception as inner:
                 logger.debug(
                     "post-apply validate_models failed for ds=%r: %s",
@@ -2564,28 +2574,16 @@ class SlayerQueryEngine:
         self, data_source: Optional[str] = None
     ) -> "List[Any]":
         """Diff persisted models against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
-
-        if data_source is not None:
-            ds = await self.storage.get_datasource(data_source)
-            if ds is None:
-                return []
-            models, unloadable = await self.storage.load_models(data_source=data_source)
-            entries = await validate_datasource(
-                datasource=ds,
-                models=models,
-                sql_clients=self._sql_clients,
-            )
-            return [*entries, *(unloadable_model_delete(error=e) for e in unloadable)]
-
-        ds_names = await self.storage.list_datasources()
+        ds_names = [data_source] if data_source is not None else await self.storage.list_datasources()
         if not ds_names:
             return []
-
-        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
-            return await self.validate_models(data_source=name)
+        everything, _ = await self.storage.load_models()  # a reader's narrowing models may live elsewhere
+        narrowed = narrowing_models(everything)
+        if data_source is not None:
+            return await self._validate_datasource(data_source, narrowed=narrowed)
 
         results = await asyncio.gather(
-            *(_validate_one(n) for n in ds_names), return_exceptions=True
+            *(self._validate_datasource(n, narrowed=narrowed) for n in ds_names), return_exceptions=True
         )
         out: List = []
         for r in results:
@@ -2595,6 +2593,22 @@ class SlayerQueryEngine:
             out.extend(r)
         return out
 
+    async def _validate_datasource(
+        self, data_source: str, *, narrowed: Dict[Tuple[str, str], List[Tuple[str, str]]],
+    ) -> "List[Any]":
+        """One datasource's drift deletes, unloadable models and narrowed-access findings."""
+        ds = await self.storage.get_datasource(data_source)
+        if ds is None:
+            return []
+        models, unloadable = await self.storage.load_models(data_source=data_source)
+        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        findings = [
+            NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
+            for (ds_name, name), by in sorted(narrowed.items())
+            if ds_name == data_source
+        ]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+
     def create_model_from_query_sync(
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
@@ -2602,6 +2616,8 @@ class SlayerQueryEngine:
         description: Optional[str] = None,
         variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
+        access_tags: Optional[List[str]] = None,
+        warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
 
@@ -2612,6 +2628,8 @@ class SlayerQueryEngine:
                 description=description,
                 variables=variables,
                 save=save,
+                access_tags=access_tags,
+                warnings_out=warnings_out,
             )
         )
 
@@ -2654,7 +2672,7 @@ class SlayerQueryEngine:
             fitted = fit_map.get(alias.alias)
             if fitted is not None:
                 alias.set("alias", exp.to_identifier(fitted, quoted=True))
-        # Backing SQL is persisted on the virtual model, so length-fit here too.
+        # The virtual model's SQL is rendered verbatim, so length-fit here too.
         wrapped_sql = _finish_statement(
             wrapped_ast,
             dialect=dialect,
@@ -2679,6 +2697,8 @@ class SlayerQueryEngine:
         description: Optional[str] = None,
         variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
+        access_tags: Optional[List[str]] = None,
+        warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Create a query-backed model; cache fields come from a save-time dry-run, ``save=False`` skips persisting."""
         raw = query if isinstance(query, list) else [query]
@@ -2690,13 +2710,17 @@ class SlayerQueryEngine:
             description=description,
             source_queries=stages,
             query_variables=variables or {},
+            access_tags=access_tags or [],
         )
         if save:
-            return await self.save_model(model)
+            return await self.save_model(model, warnings_out=warnings_out)
         return await self._validate_and_populate_cache(model)
 
-    async def save_model(self, model: SlayerModel) -> SlayerModel:
-        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run."""
+    async def save_model(
+        self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]] = None,
+    ) -> SlayerModel:
+        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
+        Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale
@@ -2719,17 +2743,16 @@ class SlayerQueryEngine:
                     f"auto-generated and must not be supplied "
                     f"(got {len(model.columns)} columns)."
                 )
-            if model.backing_query_sql is not None:
-                raise ValueError(
-                    f"Model '{model.name}' is query-backed; backing_query_sql "
-                    f"is auto-managed and must not be supplied."
-                )
             model = await self._validate_and_populate_cache(model)
         failures = DocumentLoadFailures()
         loaded = await self._preload_join_targets(model, failures=failures)
         _validate_join_keys(model=model, loaded=loaded)
         await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
+        try:
+            prior = await self.storage.get_model(model.name, data_source=prior_data_source or model.data_source)
+        except StoredDocumentLoadError:
+            prior = None
         await self.storage.save_model(model, failures=failures)
         # Clean up the stale entry if the model moved datasource.
         if (
@@ -2739,7 +2762,34 @@ class SlayerQueryEngine:
             await self.storage.delete_model(
                 model.name, data_source=prior_data_source
             )
+        payloads = await self._narrowed_access(model=model, prior=prior)
+        if warnings_out is not None:
+            warnings_out.extend(payloads)
+            return model
+        # Last, as in query(): under ``-W error`` this raises after the save.
+        for payload in payloads:
+            _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
         return model
+
+    async def _narrowed_access(
+        self, *, model: SlayerModel, prior: Optional[SlayerModel],
+    ) -> List[NarrowedAccessWarning]:
+        """The saved model, if narrowed, and — when its tags changed — each reader it newly narrows, in any datasource."""
+        loaded, _ = await self.storage.load_models()
+        retagged = prior if prior is not None and prior.access_tags != model.access_tags else None
+        if retagged is None and not any(m.access_tags for m in loaded):
+            return []
+        key = (model.data_source, model.name)
+        after = narrowing_models(loaded)
+        flagged = {key} & set(after)
+        if retagged is not None:
+            replaced = {key, (retagged.data_source, retagged.name)}
+            before = narrowing_models([*(m for m in loaded if (m.data_source, m.name) not in replaced), retagged])
+            flagged |= set(after) - set(before)
+        return [
+            NarrowedAccessWarning(data_source=ds, model=name, narrowed_by=[f"{d}.{n}" for d, n in after[(ds, name)]])
+            for ds, name in sorted(flagged)
+        ]
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
         """Statically classify a raw-``sql`` source, then trial-execute it: a
@@ -2866,7 +2916,6 @@ class SlayerQueryEngine:
         virtual = await self._expand_query_backed_model(model=model)
         return model.model_copy(update={
             "columns": list(virtual.columns),
-            "backing_query_sql": virtual.sql,
             # Refreshed from the resolved virtual model: the backing query may now
             # resolve through a different datasource, which downstream callers read
             # before expanding the model.

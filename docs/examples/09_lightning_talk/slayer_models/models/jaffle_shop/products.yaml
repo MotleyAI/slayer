@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: products
 sql_table: products
 source_kind: table
@@ -65,3 +65,4 @@ joins: []
 filters: []
 description: "Menu items sold at the Jaffle Shop \u2014 jaffles and beverages."
 hidden: false
+access_tags: []

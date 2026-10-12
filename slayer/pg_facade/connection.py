@@ -600,9 +600,8 @@ class PgConnection:
         mid-transaction, to avoid a catalog shift inside a txn, (c) the TTL
         window has elapsed since the last check, and (d) the storage
         fingerprint has actually changed. When nothing changed the cost is a
-        single ``graph_fingerprint`` read per window. Backends that don't
-        implement a real fingerprint report a constant, so they never rebuild
-        and behave exactly as before.
+        single ``graph_fingerprint`` read per window. A backend reporting no
+        fingerprint (``None``) rebuilds every window.
 
         Best-effort: a transient storage failure during the fingerprint read
         or the rebuild must not propagate out of ``_run_statement`` and tear
