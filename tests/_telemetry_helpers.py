@@ -28,7 +28,7 @@ from tests._cli_inprocess import CliResult, run_cli_in_process
 from tests._saved_query_refinement_fixtures import build_refine_storage, orders_model
 
 SENT = "zqxjsentinel"
-HOSTILE = "zqxj‮Ώ\U0001f608'\";--​" + "x" * 10_000
+HOSTILE = "zqxj\u202e\u03a9\u0301\U0001f608'\";--\u200b" + "x" * 10_000
 _NEEDLES = (SENT, HOSTILE)
 
 SUBPROCESS_TIMEOUT = 120

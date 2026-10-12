@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from slayer import telemetry
-from slayer.telemetry import sender, settings
+from slayer.telemetry import sender, settings, spool
 from tests._telemetry_helpers import (
     McpStdio,
     build_storage,
@@ -436,6 +436,25 @@ def test_two_simultaneous_senders_send_one_report(store: str, telemetry_env) -> 
     time.sleep(1.5)
     assert telemetry_env.capture.arrivals == 1
     assert len(telemetry_env.capture.requests) == 1
+
+
+def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) -> None:
+    lease = tmp_path / "send.lease"
+    now = now_utc()
+    assert spool.acquire_lease(lease, now=now - datetime.timedelta(hours=1)) is not None
+    real_expired = spool._lease_expired
+    rival: list[str | None] = []
+
+    def rival_checks_meanwhile(path: Path, *, now: datetime.datetime) -> bool:
+        expired = real_expired(path, now=now)
+        if not rival:
+            rival.append(None)
+            rival[0] = spool.acquire_lease(path, now=now)
+        return expired
+
+    monkeypatch.setattr(spool, "_lease_expired", rival_checks_meanwhile)
+    mine = spool.acquire_lease(lease, now=now)
+    assert sum(token is not None for token in (mine, *rival)) == 1
 
 
 def test_sender_crash_recovered_by_a_later_send(store: str, telemetry_env) -> None:

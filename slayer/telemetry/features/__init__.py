@@ -54,27 +54,37 @@ def _wraps_aggregate(inner: list[tokenize.TokenInfo]) -> bool:
     )
 
 
+def _aggregation_token(name: str) -> str:
+    aggregation = normalize_aggregation_name(name)
+    return aggregation if aggregation in BUILTIN_AGGREGATIONS else CUSTOM
+
+
+def _is_call(tokens: list[tokenize.TokenInfo], i: int) -> bool:
+    return i + 1 < len(tokens) and tokens[i + 1].string == "(" and (i == 0 or tokens[i - 1].string != ".")
+
+
+def _count_call(tokens: list[tokenize.TokenInfo], i: int, out: QueryFeatures) -> None:
+    """Count the call at ``tokens[i]`` as a transform or an aggregation; scalar functions are skipped."""
+    name = tokens[i].string.lower()
+    if name in SCALAR_FUNCTIONS:
+        return
+    wraps = _wraps_aggregate(tokens[i + 2:_close_paren(tokens, i + 1)])
+    aggregation = _aggregation_token(tokens[i].string)
+    if name in ALL_TRANSFORMS and (wraps or aggregation == CUSTOM):
+        out.transforms.append(name)
+    else:
+        out.aggregations.append(aggregation)
+
+
 def _count_calls(text: str, out: QueryFeatures) -> None:
     tokens = _tokens(text)
     for i, tok in enumerate(tokens):
         if tok.type != tokenize.NAME:
             continue
-        before = tokens[i - 1].string if i else ""
-        if before == ":":
-            aggregation = normalize_aggregation_name(tok.string)
-            out.aggregations.append(aggregation if aggregation in BUILTIN_AGGREGATIONS else CUSTOM)
-            continue
-        if before == "." or i + 1 >= len(tokens) or tokens[i + 1].string != "(":
-            continue
-        name = tok.string.lower()
-        if name in SCALAR_FUNCTIONS:
-            continue
-        aggregation = normalize_aggregation_name(tok.string)
-        wraps = _wraps_aggregate(tokens[i + 2:_close_paren(tokens, i + 1)])
-        if name in ALL_TRANSFORMS and (wraps or aggregation not in BUILTIN_AGGREGATIONS):
-            out.transforms.append(name)
-        else:
-            out.aggregations.append(aggregation if aggregation in BUILTIN_AGGREGATIONS else CUSTOM)
+        if i and tokens[i - 1].string == ":":
+            out.aggregations.append(_aggregation_token(tok.string))
+        elif _is_call(tokens, i):
+            _count_call(tokens, i, out)
 
 
 def _stage(raw: Any) -> SlayerQuery | None:
@@ -84,6 +94,17 @@ def _stage(raw: Any) -> SlayerQuery | None:
         return SlayerQuery.model_validate(raw)
     except Exception:
         return None
+
+
+def _stage_flags(stage: SlayerQuery) -> set[str]:
+    present = {
+        "inline_source": stage.source_model is not None and not isinstance(stage.source_model, str),
+        "time_dimensions": bool(stage.time_dimensions),
+        "filters": bool(stage.filters),
+        "computed_dimensions": any(isinstance(d, ComputedDimension) for d in stage.dimensions or []),
+        "to_many_handling": stage.to_many_handling != SlayerQuery.model_fields["to_many_handling"].default,
+    }
+    return {flag for flag, on in present.items() if on}
 
 
 def query_features(query: Any) -> QueryFeatures:
@@ -96,16 +117,7 @@ def query_features(query: Any) -> QueryFeatures:
     if len(raw_stages) > 1:
         out.flags.add("multistage")
     for stage in filter(None, map(_stage, raw_stages)):
-        if stage.source_model is not None and not isinstance(stage.source_model, str):
-            out.flags.add("inline_source")
-        if stage.time_dimensions:
-            out.flags.add("time_dimensions")
-        if stage.filters:
-            out.flags.add("filters")
-        if any(isinstance(d, ComputedDimension) for d in stage.dimensions or []):
-            out.flags.add("computed_dimensions")
-        if stage.to_many_handling != SlayerQuery.model_fields["to_many_handling"].default:
-            out.flags.add("to_many_handling")
+        out.flags |= _stage_flags(stage)
         for text in [m.formula for m in stage.measures or [] if m.formula] + list(stage.filters or []):
             _count_calls(text, out)
     return out

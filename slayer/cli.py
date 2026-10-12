@@ -7,7 +7,7 @@ import json
 import os
 import signal
 import sys
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import parse_qs, urlparse
 
 import sqlalchemy as sa
@@ -159,14 +159,24 @@ def main():
     try:
         with telemetry.counting(surface="cli", token=token):
             _dispatch(parser, args)
-    except _StdioInterrupted as exc:
-        telemetry.flush()
-        telemetry.shutdown()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(exc.code if isinstance(exc.code, int) else 1)
+    except (SystemExit, KeyboardInterrupt) as exc:
+        if args.command == "mcp":
+            _exit_stdio_now(exc)
+        raise
     finally:
         telemetry.flush()
+
+
+def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
+    """Spool, then exit hard: stdio MCP's blocked stdin reader thread would hold up a normal exit."""
+    code = stop.code if isinstance(stop, SystemExit) else 128 + signal.SIGINT
+    if code is None:
+        code = 0
+    telemetry.flush()
+    telemetry.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code if isinstance(code, int) else 1)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1572,16 +1582,7 @@ def _run_mcp(args):
         _prepare_demo(args, storage)
     mcp = create_mcp_server(storage=storage, **_server_flags(args))
     _unwind_on(signal.SIGINT)
-    try:
-        mcp.run()
-    except KeyboardInterrupt:
-        raise _StdioInterrupted(128 + signal.SIGINT) from None
-    except SystemExit as exc:
-        raise _StdioInterrupted(exc.code) from None
-
-
-class _StdioInterrupted(SystemExit):
-    """stdio MCP stopped by a signal; its blocked stdin reader thread would hold up a normal exit."""
+    mcp.run()
 
 
 def _unwind_on(signum: signal.Signals) -> None:

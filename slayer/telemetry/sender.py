@@ -69,22 +69,27 @@ def _post(report: UsageReport, *, url: str) -> bool:
 
 def send(paths: Paths, *, now: datetime.datetime, url: str) -> None:
     """Send every spooled batch once, if still due and no other process is sending."""
-    token = spool.acquire_lease(paths.lease, now=now)
-    if token is None:
-        return
     try:
-        config = read_config(paths.config)
-        if config.install_id is None or not is_due(config.last_sent, now=now):
+        token = spool.acquire_lease(paths.lease, now=now)
+        if token is None:
             return
-        claimed = spool.claim(paths.spool)
-        batches = spool.load(claimed)
-        if batches and not _post(build_report(config=config, batches=batches), url=url):
-            return
-        for path in claimed:
-            path.unlink(missing_ok=True)
-        if batches:
-            write_config(read_config(paths.config).model_copy(update={"last_sent": now}), paths.config)
+        try:
+            _send_leased(paths, now=now, url=url)
+        finally:
+            spool.release_lease(paths.lease, token)
     except Exception:
         logger.debug("telemetry: send failed", exc_info=True)
-    finally:
-        spool.release_lease(paths.lease, token)
+
+
+def _send_leased(paths: Paths, *, now: datetime.datetime, url: str) -> None:
+    config = read_config(paths.config)
+    if config.install_id is None or not is_due(config.last_sent, now=now):
+        return
+    claimed = spool.claim(paths.spool)
+    batches = spool.load(claimed)
+    if batches and not _post(build_report(config=config, batches=batches), url=url):
+        return
+    for path in claimed:
+        path.unlink(missing_ok=True)
+    if batches:
+        write_config(read_config(paths.config).model_copy(update={"last_sent": now}), paths.config)

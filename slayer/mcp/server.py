@@ -168,7 +168,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             self._observe_client()
             try:
                 result = await super().call_tool(name, arguments)
-            except Exception as exc:
+            except BaseException as exc:
                 # FastMCP re-raises a tool's exception as ToolError from the original.
                 telemetry.record(surface="mcp", token=name, error=exc.__cause__ or exc)
                 raise

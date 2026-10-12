@@ -306,12 +306,14 @@ def record(*, surface: str, token: str | None, error: BaseException | None = Non
 @contextmanager
 def counting(*, surface: str, token: str | None) -> Generator[None]:
     """Count the enclosed action as ok, or as failed with the exception it raises."""
+    error: BaseException | None = None
     try:
         yield
     except BaseException as exc:
-        record(surface=surface, token=token, error=exc)
+        error = exc
         raise
-    record(surface=surface, token=token)
+    finally:
+        record(surface=surface, token=token, error=error)
 
 
 @_silent

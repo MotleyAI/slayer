@@ -11,7 +11,7 @@ from collections.abc import Callable
 import pytest
 
 from slayer import telemetry
-from slayer.telemetry import settings
+from slayer.telemetry import sender, settings
 from tests._telemetry_capture import RefusedEndpoint
 from tests._telemetry_helpers import (
     SENT,
@@ -152,6 +152,12 @@ def test_flush_and_shutdown_never_raise_when_storage_vanishes(telemetry_env) -> 
     shutil.rmtree(settings.config_dir())
     telemetry.shutdown()
     end_process()
+
+
+def test_send_never_raises_when_config_dir_vanishes(tmp_path) -> None:
+    gone = tmp_path / "gone"
+    paths = sender.Paths(config=gone / "telemetry.json", spool=gone / "spool", lease=gone / "send.lease")
+    sender.send(paths, now=datetime.datetime.now(datetime.timezone.utc), url="http://127.0.0.1:9/")
 
 
 def test_stalled_send_delays_exit_by_at_most_about_a_second(store: str, telemetry_env) -> None:

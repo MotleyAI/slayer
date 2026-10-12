@@ -142,6 +142,20 @@ async def test_mcp_unlisted_exception_counted_as_other(
     assert usage(show(), "mcp:query") == {"ok": 0, "errors": {"other": 1}}
 
 
+async def test_mcp_cancelled_tool_call_counted(
+    store: str, started, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cancelled(self, *args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(SlayerQueryEngine, "execute", cancelled)
+    server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
+    with pytest.raises(asyncio.CancelledError):
+        await server.call_tool("query", {"query": _QUERY})
+    end_process()
+    assert usage(show(), "mcp:query") == {"ok": 0, "errors": {"cancelled": 1}}
+
+
 @pytest.mark.parametrize(("name", "version", "client", "major"), [
     ("claude-code", "2.3.1", "claude-code", 2),
     ("acme-finance-bot", "2.3.1", "other", None),

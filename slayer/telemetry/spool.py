@@ -5,12 +5,20 @@ import json
 import logging
 import os
 import stat
+import sys
 import time
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from slayer.telemetry.payload import Batch
 from slayer.telemetry.settings import write_private
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -93,20 +101,32 @@ def purge(directory: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+@contextmanager
+def _guard(lease: Path) -> Generator[bool]:
+    """Hold an OS lock beside ``lease`` (freed on close or process death); yields ``False`` if held elsewhere."""
+    fd = os.open(lease.with_name(lease.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            if sys.platform == "win32":
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
+
+
 def acquire_lease(path: Path, *, now: datetime.datetime) -> str | None:
     """A token if this process may send now, else ``None`` (another sender's lease is live)."""
-    token = uuid.uuid4().hex
-    data = json.dumps({"token": token, "expires": (now + LEASE_TTL).isoformat()}).encode()
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        if not _lease_expired(path, now=now):
+    with _guard(path) as held:
+        if not held or not _lease_expired(path, now=now):
             return None
-        write_private(path, data)
-        return token if _lease_token(path) == token else None
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    return token
+        token = uuid.uuid4().hex
+        write_private(path, json.dumps({"token": token, "expires": (now + LEASE_TTL).isoformat()}).encode())
+        return token
 
 
 def _lease_token(path: Path) -> str | None:
@@ -124,5 +144,6 @@ def _lease_expired(path: Path, *, now: datetime.datetime) -> bool:
 
 
 def release_lease(path: Path, token: str) -> None:
-    if _lease_token(path) == token:
-        path.unlink(missing_ok=True)
+    with _guard(path) as held:
+        if held and _lease_token(path) == token:
+            path.unlink(missing_ok=True)
