@@ -14,6 +14,8 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests import _mcp_idiom_fixtures as fx
 
 _YEAR_2025 = [{"dimension": "order_date", "granularity": "month", "date_range": "2025"}]
+_MONTHLY = [{"dimension": "order_date", "granularity": "month"}]
+_REGION_CUSTOMER = ["customers.regions.name", "customers.name"]
 
 
 @pytest.fixture
@@ -113,21 +115,21 @@ async def test_order_by_an_undisplayed_aggregate_with_limit(engine: SlayerQueryE
 
 async def test_rank_filter_keeps_top_n_per_group(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
-        "source_model": "orders", "dimensions": ["customers.region_id", "customers.name"],
+        "source_model": "orders", "dimensions": _REGION_CUSTOMER,
         "measures": [{"formula": "sum(amount)", "name": "total"}], "filters": [fx.RANK_FILTER],
     })
-    assert {fx.value(r, ".name") for r in resp.data} == {"Alice", "Carol"}
+    assert {fx.value(r, "customers.name") for r in resp.data} == {"Alice", "Carol"}
 
 
 async def test_share_of_group_and_of_grand_total(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
-        "source_model": "orders", "dimensions": ["customers.region_id", "customers.name"],
+        "source_model": "orders", "dimensions": _REGION_CUSTOMER,
         "measures": [
             {"formula": fx.SHARE_OF_GROUP, "name": "share_region"},
             {"formula": fx.SHARE_OF_TOTAL, "name": "share_total"},
         ],
     })
-    rows = fx.rows_by(resp, key=".name")
+    rows = fx.rows_by(resp, key="customers.name")
     assert {k: fx.value(r, ".share_region") for k, r in rows.items()} == {
         "Alice": pytest.approx(170 / 300), "Bob": pytest.approx(130 / 300), "Carol": pytest.approx(1.0),
     }
@@ -161,12 +163,12 @@ async def test_cross_model_aggregate_splits_under_associate(engine: SlayerQueryE
 
 async def test_nested_aggregation_averages_inner_values(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
-        "source_model": "orders", "dimensions": ["customers.region_id"],
+        "source_model": "orders", "dimensions": ["customers.regions.name"],
         "measures": [{"formula": fx.NESTED, "name": "avg_customer_total"}],
     })
-    rows = fx.rows_by(resp, key="region_id")
+    rows = fx.rows_by(resp, key="regions.name")
     assert {k: fx.value(r, ".avg_customer_total") for k, r in rows.items()} == {
-        1: pytest.approx(150), 2: pytest.approx(190),
+        "North": pytest.approx(150), "South": pytest.approx(190),
     }
 
 
@@ -230,7 +232,7 @@ async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEn
     resp = await _run(engine, [
         {
             "name": "per_customer", "source_model": "orders",
-            "dimensions": ["customers.region_id", "customers.name"],
+            "dimensions": _REGION_CUSTOMER,
             "measures": [{"formula": "sum(amount)", "name": "total"}],
         },
         {
@@ -240,5 +242,92 @@ async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEn
     ])
     rows = fx.rows_by(resp, key=fx.STAGE_COLUMN)
     assert {k: (fx.value(r, "._count"), fx.value(r, ".region_total")) for k, r in rows.items()} == {
-        1: (2, 300), 2: (1, 190),
+        "North": (2, 300), "South": (1, 190),
     }
+
+
+async def test_filter_on_a_transform_value_applies_after_it(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "source_model": "orders", "time_dimensions": _MONTHLY,
+        "measures": [{"formula": fx.CUMSUM, "name": "run"}], "filters": [f"{fx.CUMSUM} > 300"],
+    })
+    assert {k: fx.value(r, ".run") for k, r in fx.rows_by(resp, key="order_date").items()} == {
+        "2025-03": 325, "2025-04": 385, "2025-06": 490,
+    }
+
+
+@pytest.mark.parametrize(("formula", "filtered", "unfiltered"), [
+    (fx.CUMSUM, (70, 100), (295, 325)),
+    ("lag(sum(amount), 1)", (None, 70), (150, 70)),
+    ("lead(sum(amount), 1)", (30, None), (30, 60)),
+    ("consecutive_periods(sum(amount) > 0)", (1, 2), (5, 6)),
+    ("rank(sum(amount), direction='desc')", (1, 2), (3, 6)),
+    ("ntile(sum(amount), n=2)", (2, 1), (2, 1)),
+    ("sum(amount, partition_by=[])", (100, 100), (490, 490)),
+    (fx.CHANGE, (-80, -40), (-80, -40)),
+    (fx.CHANGE_PCT, pytest.approx((-80 / 150, -40 / 70)), pytest.approx((-80 / 150, -40 / 70))),
+    (fx.TIME_SHIFT, (150, 70), (150, 70)),
+    ("time_shift(sum(amount), 1)", (30, 60), (30, 60)),
+    ("sum(amount, window='3m')", (265, 250), (265, 250)),
+])
+async def test_time_filter_restricts_cross_row_values_except_calendar_look_backs(
+    engine: SlayerQueryEngine, formula: str, filtered: tuple[Any, Any], unfiltered: tuple[Any, Any],
+) -> None:
+    async def feb_mar(filters: list[str]) -> tuple[Any, Any]:
+        resp = await _run(engine, {
+            "source_model": "orders", "time_dimensions": _MONTHLY,
+            "measures": [{"formula": formula, "name": "v"}], "filters": filters,
+        })
+        rows = fx.rows_by(resp, key="order_date")
+        return fx.value(rows["2025-02"], ".v"), fx.value(rows["2025-03"], ".v")
+
+    assert await feb_mar(["order_date >= '2025-02-01'", "order_date < '2025-04-01'"]) == filtered
+    assert await feb_mar([]) == unfiltered
+
+
+@pytest.mark.parametrize(("formula", "filtered", "unfiltered"), [
+    ("rank(sum(amount), direction='desc')", 1, 2),
+    ("dense_rank(sum(amount), direction='desc')", 1, 2),
+    ("ntile(sum(amount), n=3)", 1, 2),
+    ("sum(amount, partition_by=[])", 170, 490),
+    (fx.SHARE_OF_GROUP, pytest.approx(1.0), pytest.approx(170 / 300)),
+    ("avg(sum(amount, partition_by=[customers.name]), partition_by=[])", pytest.approx(170), pytest.approx(490 / 3)),
+])
+async def test_dimension_filter_restricts_peer_values(
+    engine: SlayerQueryEngine, formula: str, filtered: Any, unfiltered: Any,
+) -> None:
+    async def alice(filters: list[str]) -> Any:
+        resp = await _run(engine, {
+            "source_model": "orders", "dimensions": _REGION_CUSTOMER,
+            "measures": [{"formula": formula, "name": "v"}], "filters": filters,
+        })
+        return fx.value(fx.rows_by(resp, key="customers.name")["Alice"], ".v")
+
+    assert await alice(["customers.name == 'Alice'"]) == filtered
+    assert await alice([]) == unfiltered
+
+
+async def test_non_time_filter_restricts_window_rows_before_the_range(engine: SlayerQueryEngine) -> None:
+    async def jan(filters: list[str]) -> Any:
+        resp = await _run(engine, {
+            "source_model": "orders", "time_dimensions": _YEAR_2025,
+            "measures": [{"formula": "sum(amount, window='3m')", "name": "w"}], "filters": filters,
+        })
+        return fx.value(fx.rows_by(resp, key="order_date")["2025-01"], ".w")
+
+    assert await jan(["status == 'paid'"]) == 195
+    assert await jan([]) == 215
+
+
+async def test_rank_among_all_rows_needs_a_stage(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, [
+        {
+            "name": "ranked", "source_model": "orders", "dimensions": ["customers.name"],
+            "measures": [{"formula": "rank(sum(amount), direction='desc')", "name": "rnk"}],
+        },
+        {
+            "source_model": "ranked", "dimensions": ["customers__name", "rnk"],
+            "filters": ["customers__name == 'Alice'"],
+        },
+    ])
+    assert [(fx.value(r, "customers__name"), fx.value(r, ".rnk")) for r in resp.data] == [("Alice", 2)]

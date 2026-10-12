@@ -43,30 +43,37 @@ from tests._engine_helpers import seeded_exec_engine
 # --------------------------------------------------------------------------- #
 # Documented example texts — each must appear verbatim in its owning description
 # --------------------------------------------------------------------------- #
-SHARE_OF_GROUP = "sum(amount) / sum(amount, partition_by=customers.region_id)"
+SHARE_OF_GROUP = "sum(amount) / sum(amount, partition_by=customers.regions.name)"
 SHARE_OF_TOTAL = "sum(amount) / sum(amount, partition_by=[])"
 TRAILING_WINDOW = "count_distinct(customer_id, window='90d')"
 NESTED = (
-    "avg(sum(amount, partition_by=[customers.region_id, customers.name]), "
-    "partition_by=[customers.region_id])"
+    "avg(sum(amount, partition_by=[customers.regions.name, customers.name]), "
+    "partition_by=[customers.regions.name])"
 )
 CHANGE = "change(sum(amount))"
 CHANGE_PCT = "change_pct(sum(amount))"
 TIME_SHIFT = "time_shift(sum(amount), -1)"
 CUMSUM = "cumsum(sum(amount))"
 CROSS_MODEL = "sum(customers.credit)"
-RANK_FILTER = "rank(sum(amount), partition_by=customers.region_id, direction='desc') <= 1"
+RANK_FILTER = "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"
 ANTI_JOIN = "orders.id is null"
 ORDER_UNDISPLAYED = '{"column": "sum(amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
-STAGE_COLUMN = "customers__region_id"
+STAGE_COLUMN = "customers__regions__name"
 SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
 CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
 
-#: Example text → (owning $defs model, field) in the query tool's input schema.
+# Guidance markers
+STAGE_NOT_NEEDED = "A STAGE IS NOT NEEDED"
+STAGE_NEEDED = "a cross-row value must still see"
+READABLE_LABEL = "never by an id alone"
+ONE_QUERY = "ONE QUESTION = ONE QUERY"
+FAN_OUT = "NEVER fans out or double counts"
+
+#: Example text or schema-owned marker → (owning $defs model, field) in the query tool's input schema.
 EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     SHARE_OF_GROUP: ("SlayerQuery", "measures"),
     SHARE_OF_TOTAL: ("SlayerQuery", "measures"),
@@ -86,6 +93,9 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     SPINE_TIME_DIMENSION: ("SlayerQuery", "time_dimensions"),
     SECOND_CHILD: ("SlayerQuery", "measures"),
     CROSS_MODEL_RATIO: ("SlayerQuery", "measures"),
+    STAGE_NOT_NEEDED: ("SlayerQuery", "name"),
+    STAGE_NEEDED: ("SlayerQuery", "name"),
+    READABLE_LABEL: ("SlayerQuery", "dimensions"),
 }
 
 
