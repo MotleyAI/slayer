@@ -67,12 +67,9 @@ class _View(BaseModel):
 
 
 def _prior_tags(model: SlayerModel, *, view: _View) -> list[str]:
-    """The stored copy's tags; a model moved or copied from another datasource keeps its source's."""
+    """The stored copy's tags; a new model, moved or copied ones included, has none."""
     stored = view.full.get((model.data_source, model.name))
-    if stored is not None:
-        return stored.access_tags
-    sources = [m for (_, name), m in view.full.items() if name == model.name and m.access_tags == model.access_tags]
-    return model.access_tags if sources else []
+    return stored.access_tags if stored is not None else []
 
 
 def _visible_identities(

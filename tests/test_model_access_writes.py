@@ -224,6 +224,19 @@ class TestAccessTags:
             await save(fin, fresh, saver=saver)
         assert await store.storage.get_model("fresh", data_source=DS) is None
 
+    async def test_tagged_copy_into_another_datasource_is_refused(self, store: AccessStore, saver: str) -> None:
+        ledger = SlayerModel(name="ledger", sql_table="fin_ledger", data_source=DS, access_tags=["fin"],
+                             columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+        await store.storage.save_model(ledger, _validate=False)
+        ds = await store.storage.get_datasource(DS)
+        assert ds is not None
+        await store.storage.save_datasource(ds.model_copy(update={"name": "acme2"}))
+        copy = ledger.model_copy(update={"data_source": "acme2"})
+        fin = view(store, "fin")
+        with pytest.raises(AccessTagsEditError):
+            await save(fin, copy, saver=saver)
+        assert await store.storage.get_model("ledger", data_source="acme2") is None
+
     async def test_bypass_may_retag(self, store: AccessStore, saver: str) -> None:
         everything = view(store, bypass=True)
         model = await must_get(everything, "pub")
@@ -328,9 +341,9 @@ class TestMcpEdits:
 
     async def test_moving_model_with_pruned_join_is_refused(self, store: AccessStore) -> None:
         await store.storage.save_datasource(DatasourceConfig(name="acme2", type=store.dialect, database=store.db_path))
-        before = await store.storage.get_model("fin", data_source=DS)
-        text = await self.call(view(store, "fin"), model_name="fin", data_source=DS, new_data_source="acme2")
+        before = await store.storage.get_model("pub_link", data_source=DS)
+        text = await self.call(view(store, "fin"), model_name="pub_link", data_source=DS, new_data_source="acme2")
         assert "conflict" in text.lower()
         assert foreign_leaks(text) == []
-        assert await store.storage.get_model("fin", data_source=DS) == before
-        assert await store.storage.get_model("fin", data_source="acme2") is None
+        assert await store.storage.get_model("pub_link", data_source=DS) == before
+        assert await store.storage.get_model("pub_link", data_source="acme2") is None
