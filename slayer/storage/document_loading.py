@@ -31,7 +31,7 @@ class DocumentLoadFailures:
     def __init__(self, *, report: bool = True) -> None:
         self._errors: dict[str, StoredDocumentLoadError] = {}
         self.warnings: list[UnloadableDocumentWarning] = []
-        self._report = report
+        self.report = report
 
     @property
     def errors(self) -> list[StoredDocumentLoadError]:
@@ -41,7 +41,7 @@ class DocumentLoadFailures:
         if error.document in self._errors:
             return
         self._errors[error.document] = error
-        if not self._report:
+        if not self.report:
             return
         payload = UnloadableDocumentWarning(
             document_kind="memory" if error.data_source is None else "model",

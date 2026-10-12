@@ -76,6 +76,24 @@ async def test_save_warns_about_no_model_outside_the_view(store: AccessStore, sa
     assert [str(w.message) for w in caught if UNLOADABLE in str(w.message)] == []
 
 
+async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore) -> None:
+    pub_link = await must_get(store.storage, "pub_link")
+    extra = ModelJoin(target_model="pub", name="extra", join_pairs=[["id", "id"]])
+    await store.storage.save_model(pub_link.model_copy(update={"joins": [*pub_link.joins, extra]}), _validate=False)
+    secret = SlayerModel(
+        name="secret", sql_table="pub_items", data_source=DS, access_tags=["hr"],
+        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="lbl", sql="pub_link.extra.label")],
+        joins=[ModelJoin(target_model="pub_link", join_pairs=[["id", "id"]])],
+    )
+    await store.storage.save_model(secret, _validate=False)
+    fin = view(store, "fin")
+    edited = (await must_get(fin, "pub_link")).model_copy(update={"joins": []})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await fin.save_model(edited)
+    assert [str(w.message) for w in caught if "secret" in str(w.message)] == []
+
+
 @pytest.mark.parametrize("name", ["pub", "fin"], ids=["nothing-withheld", "pruned-join-reattached"])
 async def test_backend_failure_propagates_unchanged(
     store: AccessStore, monkeypatch: pytest.MonkeyPatch, name: str,

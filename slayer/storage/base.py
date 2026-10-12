@@ -24,7 +24,7 @@ from slayer.core.errors import (
     StoredDocumentLoadError,
     UnknownGranularityError,
 )
-from slayer.engine.column_dependency import validate_derived_columns
+from slayer.engine.column_dependency import validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
 from slayer.core.models import (
     DatasourceConfig,
@@ -428,19 +428,24 @@ class StorageBackend(ABC):
         self._forget_raw(data_source=model.data_source, name=model.name)
 
     async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
-        """Reserved-name and case-collision rejection, derived-column well-formedness (reference arity + cycles) and join-edge validation against this store's peers."""
+        """Reserved-name and case-collision rejection, derived-column well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
         if model.name == TIME_SPINE_MODEL:
             raise ReservedModelNameError(name=model.name)
         if self._ids_collide_as_filenames:
             await self._check_model_identity_collision(model)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
+        failures = failures or DocumentLoadFailures()
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
-        peers = {m.name: m for m in (failures or DocumentLoadFailures()).skip((loaded, unloaded))}
+        peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
         await self._validate_aggregations(model)
         await self._validate_column_granularities(model)
         _validate_default_time_dimension(model)
+        if failures.report:
+            warn_broken_dependents(
+                model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
+            )
 
     async def _validate_column_granularities(self, model: SlayerModel) -> None:
         named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]

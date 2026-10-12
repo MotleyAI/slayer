@@ -579,7 +579,7 @@ rec.root_model          # "orders"  (the only model that determines both to-one)
 # {"customers.name": "customers.name", "products.category": "products.category"}
 ```
 
-A root is valid when it **determines** every requested column along provably to-one join paths; saved measures and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total join hops wins — the same rule as population inference, so the two surfaces cannot disagree. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`sum(revenue)`).
+A root is valid when it **determines** every requested column along provably to-one join paths; saved measures and aggregation-suffixed items are attachments that only need to be reachable and never steer the choice (each `ItemPath` flags `attachment`). Among valid roots, the one with the fewest total join hops wins — the same rule as population inference, so the two surfaces cannot disagree. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`), each hop spelled by its edge name when it has one (`customers.hr.name` for an edge named `hr`); aggregation suffixes are preserved (`sum(revenue)`).
 
 When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
 

@@ -18,7 +18,8 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.join_walker import OrientedJoin, OrientedLike, addressable_token, neighbors
+from slayer.core.join_search import paths_from, unaddressable_pairs
+from slayer.core.join_walker import OrientedJoin, OrientedLike, neighbors
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -193,6 +194,8 @@ def build_catalog(
     schemas: list[FacadeSchema] = []
     for datasource, models in models_by_datasource.items():
         by_name: dict[str, SlayerModel] = {m.name: m for m in models}
+        for pair in unaddressable_pairs(models_by_name=by_name):
+            logger.warning("Facade catalog (datasource %r): %s.", datasource, pair.describe())
         tables: list[FacadeTable] = []
         for model in models:
             if model.hidden:
@@ -370,46 +373,15 @@ def _walk_join_paths(
     models_by_name: dict[str, SlayerModel],
     max_depth: int,
 ) -> list[tuple[list[str], SlayerModel, bool]]:
-    """BFS the join graph from ``root`` up to ``max_depth`` hops, in either
-    traversal direction.
-
-    Returns a list of (path, target_model, row_preserving) tuples where
-    ``path`` is the sequence of hop tokens the engine resolves — an edge's
-    ``name`` when set, else the neighbour model name — and ``row_preserving``
-    is True iff every hop keeps the root grain. Diamond joins naturally
-    produce distinct path entries for the same target.
-
-    Only unambiguously resolvable tokens are emitted (a parallel unnamed pair
-    is unaddressable), and model-revisiting paths are excluded — both mirror
-    the engine's fail-closed resolution, so every emitted dotted field is
-    actually queryable.
-    """
-    out: list[tuple[list[str], SlayerModel, bool]] = []
-    if max_depth <= 0:
-        return out
-    queue: list[tuple[SlayerModel, list[str], set[str], bool]] = [
-        (root, [], {root.name}, True),
+    """Every addressable simple path from ``root`` up to ``max_depth`` hops into
+    non-hidden models, as ``(canonical tokens, target model, row_preserving)``;
+    ``row_preserving`` is True iff every hop keeps the root grain."""
+    return [
+        (list(r.tokens), models_by_name[r.edges[-1].target_model],
+         all(_hop_preserves_grain(edge=e) for e in r.edges))
+        for r in paths_from(root=root, models_by_name=models_by_name, depth=max_depth,
+                            passable=lambda m: not m.hidden)
     ]
-    while queue:
-        current, path, visited, preserving = queue.pop(0)
-        if len(path) >= max_depth:
-            continue
-        for edge in neighbors(model=current, models_by_name=models_by_name):
-            target = models_by_name.get(edge.target_model)
-            if target is None or target.hidden or target.name in visited:
-                continue
-            token = addressable_token(
-                current=current, edge=edge, models_by_name=models_by_name,
-            )
-            if token is None:
-                continue
-            new_path = [*path, token]
-            still_preserving = preserving and _hop_preserves_grain(edge=edge)
-            out.append((new_path, target, still_preserving))
-            queue.append(
-                (target, new_path, {*visited, target.name}, still_preserving)
-            )
-    return out
 
 
 def _hop_preserves_grain(*, edge: OrientedJoin) -> bool:

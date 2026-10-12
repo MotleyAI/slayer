@@ -15342,22 +15342,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 25,
-                    "endColumn": 67,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 24,
                     "endColumn": 32,
                     "lineCount": 1
