@@ -308,8 +308,8 @@ Note: the column node table is named `ModelColumn` (not `Column`) because `Colum
 | `JOINS` | Model → Model |
 
 Hidden models and hidden columns are excluded from the graph. The graph is
-rebuilt automatically when the storage fingerprint changes (file mtime for
-YAML and SQLite).
+rebuilt automatically when the storage fingerprint changes (a content digest
+of the files for YAML, the database's change counter for SQLite).
 
 **Example** — surface only memories that mention the `orders` model:
 

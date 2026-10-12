@@ -136,9 +136,9 @@ async def test_external_delete_evicts_datasource_cache(storage: YAMLStorage) -> 
 
 
 def _stat_key_raises_once(monkeypatch):
-    """Make the next _stat_key call raise FileNotFoundError (file deleted between
+    """Make the next stat_key call raise FileNotFoundError (file deleted between
     the existence check and the stat), then behave normally."""
-    orig = _yaml_storage._stat_key
+    orig = _yaml_storage.stat_key
     state = {"fired": False}
 
     def flaky(path):
@@ -147,7 +147,7 @@ def _stat_key_raises_once(monkeypatch):
             raise FileNotFoundError(path)
         return orig(path)
 
-    monkeypatch.setattr(_yaml_storage, "_stat_key", flaky)
+    monkeypatch.setattr(_yaml_storage, "stat_key", flaky)
 
 
 async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
@@ -189,7 +189,7 @@ async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLSt
     path = storage._model_path("ds", "m")
     # Stale the key so get_model misses and reaches the open(), which then races
     # with a delete — the stale entry must be evicted.
-    storage._model_cache[path] = ((0, 0, 0), storage._model_cache[path][1])
+    storage._model_cache[path] = ((0, 0, 0, 0), storage._model_cache[path][1])
     _open_raises_for(monkeypatch, path)
     assert await storage.get_model("m", data_source="ds") is None
     assert path not in storage._model_cache
@@ -199,7 +199,7 @@ async def test_datasource_delete_race_at_open_returns_none_and_evicts(storage: Y
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
-    storage._datasource_cache[path] = ((0, 0, 0), storage._datasource_cache[path][1])
+    storage._datasource_cache[path] = ((0, 0, 0, 0), storage._datasource_cache[path][1])
     _open_raises_for(monkeypatch, path)
     assert await storage.get_datasource("pg") is None
     assert path not in storage._datasource_cache
@@ -394,7 +394,7 @@ async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage
     assert path not in storage._model_cache
     # Second load reads the now-current file and caches it coherently.
     await storage.get_model("m", data_source="ds")
-    assert storage._model_cache[path][0] == _yaml_storage._stat_key(path)
+    assert storage._model_cache[path][0] == _yaml_storage.stat_key(path)
     # Third load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_model("m", data_source="ds")

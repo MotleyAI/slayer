@@ -21,6 +21,7 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 ``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
+import asyncio
 import contextlib
 import os
 from typing import Any
@@ -43,6 +44,7 @@ from slayer.storage.base import (
     _validate_path_component,
     _write_sample_fields,
 )
+from slayer.storage.content_fingerprint import StatKey, stat_key, tree_fingerprint
 from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
@@ -101,26 +103,14 @@ def _md_to_memory_dict(memory_id: str, text: str) -> dict[str, Any]:
     return {"id": memory_id, "learning": text}
 
 
-def _stat_key(path: str) -> tuple[int, int, int]:
-    """(st_mtime_ns, st_size, st_ctime_ns) — the load-cache key for
-    ``path``. ctime is included so a rewrite preserving both mtime and size
-    (timestamp-restoring deploy tools, coarse-mtime filesystems) still
-    invalidates: any content write bumps ctime, and there is no portable API to
-    forge it back."""
-    st = os.stat(path)  # NOSONAR(S6549) — path pre-sanitized by callers (get_model via _resolve_target_or_none; get_datasource via _validate_path_component)
-    return (st.st_mtime_ns, st.st_size, st.st_ctime_ns)
-
-
-def _cache_admit(
-    path: str, key_before: tuple[int, int, int],
-) -> tuple[int, int, int] | None:
+def _cache_admit(path: str, key_before: StatKey) -> StatKey | None:
     """Stable-read admission: return the post-read stat key iff the file was
     unchanged during the read, else ``None`` (a mid-read external edit — or a
     legacy migration write-back, which rewrites the file — must not pin the
     just-parsed object under a key that no longer matches its bytes). A file
     removed mid-read (OSError) also yields ``None``."""
     try:
-        key_after = _stat_key(path)
+        key_after = stat_key(path)
     except OSError:
         return None
     return key_after if key_after == key_before else None
@@ -278,9 +268,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # by the os.stat check on the next read; a stale entry is never served
         # because it is evicted on every write (and on an external delete), and
         # the miss path verifies the file did not change under it (stable-read).
-        self._model_cache: dict[str, tuple[tuple[int, int, int], SlayerModel]] = {}
+        self._model_cache: dict[str, tuple[StatKey, SlayerModel]] = {}
         self._datasource_cache: dict[
-            str, tuple[tuple[int, int, int], DatasourceConfig]
+            str, tuple[StatKey, DatasourceConfig]
         ] = {}
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
@@ -310,26 +300,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return os.path.abspath(self.base_dir)
 
     async def graph_fingerprint(self) -> str | None:
-        """(file_count, max_mtime) across all YAML files under base_dir.
-
-        Including the file count ensures that deleting a YAML file (which
-        doesn't change the max mtime of the remaining files) still invalidates
-        the graph cache.  OSError propagates to the caller (treated as a
-        forced rebuild by ``slayer.search.graph._get_or_rebuild``).
-        """
-        file_count = 0
-        max_mtime = 0.0
-        for root, _dirs, files in os.walk(self.base_dir):
-            for fname in files:
-                # Memories are ``.md`` files now — count them too so
-                # a memory create/update/delete invalidates the graph cache.
-                if fname.endswith(_YAML_EXTS) or fname.endswith(".md"):
-                    max_mtime = max(
-                        max_mtime,
-                        os.path.getmtime(os.path.join(root, fname)),
-                    )
-                    file_count += 1
-        return f"{file_count}:{max_mtime}"
+        """Content digest of every YAML and memory ``.md`` file; ``OSError`` propagates (callers force a rebuild)."""
+        await asyncio.sleep(0)
+        return tree_fingerprint(self.base_dir, suffixes=(*_YAML_EXTS, ".md"))
 
     # ---- internal helpers --------------------------------------------------
 
@@ -398,7 +371,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             self._model_cache.pop(path, None)  # Evict on external delete
             return None
         try:
-            key_before = _stat_key(path)
+            key_before = stat_key(path)
         except FileNotFoundError:  # deleted between the existence check and the stat
             self._model_cache.pop(path, None)
             return None
@@ -497,7 +470,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             self._datasource_cache.pop(path, None)  # Evict on external delete
             return None
         try:
-            key = _stat_key(path)
+            key = stat_key(path)
         except FileNotFoundError:  # deleted between the existence check and the stat
             self._datasource_cache.pop(path, None)
             return None

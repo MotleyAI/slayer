@@ -2713,7 +2713,7 @@ class SlayerQueryEngine:
         self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
-        Narrowed-access warnings are emitted and, when given, appended to ``warnings_out``."""
+        Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale
@@ -2755,10 +2755,13 @@ class SlayerQueryEngine:
             await self.storage.delete_model(
                 model.name, data_source=prior_data_source
             )
-        for payload in await self._narrowed_access(model=model, prior=prior):
+        payloads = await self._narrowed_access(model=model, prior=prior)
+        if warnings_out is not None:
+            warnings_out.extend(payloads)
+            return model
+        # Last, as in query(): under ``-W error`` this raises after the save.
+        for payload in payloads:
             _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
-            if warnings_out is not None:
-                warnings_out.append(payload)
         return model
 
     async def _narrowed_access(

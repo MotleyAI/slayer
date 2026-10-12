@@ -6,6 +6,7 @@ import asyncio
 import gc
 import os
 import tempfile
+import time
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -92,6 +93,16 @@ class TestGraphCache:
             gc.collect()
         assert len(search_graph._cache) <= 2
 
+    async def test_retag_behind_a_future_mtime_reaches_a_fresh_view(self) -> None:
+        async with access_store(backend="yaml", dialect="sqlite", unloadable=False) as s:
+            yaml_store = cast(YAMLStorage, s.storage)
+            future = time.time() + 3600
+            os.utime(os.path.join(yaml_store.datasources_dir, f"{DS}.yaml"), (future, future))
+            assert f"{DS}.pub" in await graph_models(TagFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+            pub = await must_get(s.storage, "pub")
+            await s.storage.save_model(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
+            assert f"{DS}.pub" not in await graph_models(TagFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+
     async def test_bypass_shares_the_inner_entry(self, store: AccessStore) -> None:
         await graph_models(store.storage)
         assert await graph_models(TagFilteredStorage(store.storage, tags=set(), bypass=True)) == canonical(ALL_LOADABLE)
@@ -117,7 +128,8 @@ class TestCacheIdentity:
     async def test_other_backends_get_a_stable_per_instance_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             a, b = _NoFingerprintYAML(base_dir=tmp), _NoFingerprintYAML(base_dir=tmp)
-            assert await a.cache_identity() == await a.cache_identity()
+            first = await a.cache_identity()
+            assert await a.cache_identity() == first
             assert await a.cache_identity() != await b.cache_identity()
 
     async def test_wrapper_identity_is_the_view(self, store: AccessStore) -> None:
@@ -127,7 +139,8 @@ class TestCacheIdentity:
             return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
         assert await wrap("fin").cache_identity() == (inner, frozenset({"fin"}), False)
-        assert await wrap("fin").cache_identity() == await wrap("fin").cache_identity()
+        fin_a, fin_b = wrap("fin"), wrap("fin")
+        assert await fin_a.cache_identity() == await fin_b.cache_identity()
         assert await wrap("fin").cache_identity() != await wrap("hr").cache_identity()
         assert await wrap("x", bypass=True).cache_identity() == inner
 

@@ -64,23 +64,21 @@ FieldKind = Literal["ref", "formula", "filter"]
 
 def query_field_texts(query: SlayerQuery) -> Iterator[tuple[FieldKind, str]]:
     """Every reference-bearing text of ``query`` — dimensions, time dimensions, measures, filters, order — and its kind."""
-    for dim in query.dimensions or []:
-        if isinstance(dim, ComputedDimension):
-            yield "formula", dim.expression
-        else:
-            yield "ref", dim.full_name
-    for td in query.time_dimensions or []:
-        yield "ref", td.dimension.full_name
+    yield from _dimension_texts(query)
     for measure in query.measures or []:
         if measure.formula:
             yield "formula", measure.formula
     for f in query.filters or []:
         yield "filter", f
     for item in query.order or []:
-        if item.raw_formula:
-            yield "formula", item.raw_formula
-        else:
-            yield "ref", item.column.full_name
+        yield ("formula", item.raw_formula) if item.raw_formula else ("ref", item.column.full_name)
+
+
+def _dimension_texts(query: SlayerQuery) -> Iterator[tuple[FieldKind, str]]:
+    for dim in query.dimensions or []:
+        yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
+    for td in query.time_dimensions or []:
+        yield "ref", td.dimension.full_name
 
 
 def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:

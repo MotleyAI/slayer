@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from slayer.cli import _format_validate_models_output
 from slayer.core.models import Aggregation, AggregationParam
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import SlayerNarrowedAccessWarning
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import NarrowedAccessFinding
@@ -60,6 +62,16 @@ async def test_mcp_edit_reports_newly_narrowed_readers(store: AccessStore, engin
     )
     reply = json.loads(await mcp_text(store.storage, "edit_model", model_name="pub", access_tags=["ops"]))
     assert any("narrowed" in w and "pub_count" in w for w in reply["warnings"])
+
+
+async def test_mcp_edit_under_warnings_as_errors_reports_the_save(store: AccessStore) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SlayerNarrowedAccessWarning)
+        reply = json.loads(await mcp_text(store.storage, "edit_model", model_name="pay_col", access_tags=["ops"]))
+    assert any("narrowed" in w for w in reply["warnings"])
+    saved = await store.storage.get_model("pay_col", data_source=DS)
+    assert saved is not None
+    assert saved.access_tags == ["ops"]
 
 
 async def test_order_on_a_measure_alias_is_not_an_entity(store: AccessStore) -> None:

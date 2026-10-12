@@ -206,7 +206,7 @@ class TagFilteredStorage(StorageBackend):
             if merged is not model:
                 merged = SlayerModel.model_validate(merged.model_dump())
             await self._inner.save_model(merged, _validate=_validate)
-        except Exception:  # noqa: BLE001 — valid in the view, invalid merged: the cause names hidden parts
+        except Exception:  # noqa: BLE001 — valid in the view but not merged, so the cause names hidden parts
             raise HiddenContentConflictError(kind="model", name=model.name) from None
 
     def _merged(self, model: SlayerModel, *, view: _View) -> SlayerModel:
