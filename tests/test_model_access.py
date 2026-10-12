@@ -7,10 +7,11 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
-from slayer.engine.model_reads import models_read_by
+from slayer.engine.model_reads import models_read_by, placeholder
 from slayer.storage.tag_filtered import TagFilteredStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
@@ -37,6 +38,20 @@ async def store(request) -> AsyncGenerator[AccessStore]:
 
 def view(store: AccessStore, *tags: str, bypass: bool = False) -> TagFilteredStorage:
     return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
+
+
+def _unloadable_reader(sql: str) -> SlayerModel:
+    """``reader``, joined to the unloadable model, with a column ``sql``."""
+    return SlayerModel(
+        name="reader", sql_table="pub_items", data_source=DS,
+        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="leak", type=DataType.INT, sql=sql)],
+        joins=[ModelJoin(target_model=UNLOADABLE, join_pairs=[["id", "id"]], cardinality=JoinCardinality.ONE_TO_ONE)],
+    )
+
+
+READS_OF_UNLOADABLE = pytest.mark.parametrize(
+    "sql", [f"{UNLOADABLE}.id", f"{UNLOADABLE}.onward.id"], ids=["reaching", "passing"],
+)
 
 
 class TestVisibility:
@@ -142,6 +157,12 @@ class TestDependents:
     async def test_untagged_reader_of_tagged_model_is_hidden_from_untagged_caller(self, store: AccessStore) -> None:
         assert "fin_report" not in await view(store).list_models(DS)
 
+    @READS_OF_UNLOADABLE
+    async def test_reader_of_unloadable_model_is_hidden(self, store: AccessStore, sql: str) -> None:
+        await store.storage.save_model(_unloadable_reader(sql), _validate=False)
+        assert "reader" not in await view(store, "fin").list_models(DS)
+        assert "reader" in await view(store, bypass=True).list_models(DS)
+
 
 class TestModelsReadBy:
     @pytest.fixture
@@ -206,3 +227,8 @@ class TestModelsReadBy:
             "name": "stray", "columns": [*models["pub"].columns, Column(name="far", sql="nowhere.x")],
         })
         assert self.reads(stray, models) == set()
+
+    @READS_OF_UNLOADABLE
+    async def test_path_reaching_a_placeholder_reads_it(self, models: dict[str, SlayerModel], sql: str) -> None:
+        stand_in = placeholder((DS, UNLOADABLE))
+        assert model_ids(models_read_by(_unloadable_reader(sql), models=[*models.values(), stand_in])) == {UNLOADABLE}

@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
-from slayer.core.join_walker import walk
+from slayer.core.join_walker import OrientedJoin, walk
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, render_probe_text
 from slayer.engine.param_binding import default_reference_sites
@@ -30,6 +30,16 @@ def models_read_by(
     else:
         reads.stages([subject], data_source=data_source)
     return frozenset(reads.out)
+
+
+def placeholder(identity: Identity) -> SlayerModel:
+    """Stand-in for a stored model that cannot be loaded: no source, columns or joins, so a path can only end on it."""
+    data_source, name = identity
+    return SlayerModel.model_construct(name=name, data_source=data_source)
+
+
+def _is_placeholder(model: SlayerModel) -> bool:
+    return not (model.sql_table or model.sql or model.source_queries)
 
 
 def narrowing_models(models: Sequence[SlayerModel]) -> dict[Identity, list[Identity]]:
@@ -116,6 +126,17 @@ def _node_parts(node: Any) -> Iterator[tuple[str, ...]]:
             yield from _node_parts(item)
 
 
+def _prefix_onto_placeholder(
+    hops: tuple[str, ...], *, host: SlayerModel, peers: dict[str, SlayerModel],
+) -> list[OrientedJoin]:
+    """The longest walkable prefix of ``hops`` when it ends on a placeholder, else ``[]``."""
+    for end in range(len(hops) - 1, 0, -1):
+        prefix = walk(root=host, path=hops[:end], models_by_name=peers)
+        if prefix is not None:
+            return prefix if prefix and _is_placeholder(peers[prefix[-1].target_model]) else []
+    return []
+
+
 class _Reads:
     """Accumulates read identities over the stored ``models``."""
 
@@ -197,13 +218,19 @@ class _Reads:
         peers = self.peers(host)
         try:
             chain = walk(root=host, path=hops, models_by_name=peers)
+            if chain is None:
+                self._record(_prefix_onto_placeholder(hops, host=host, peers=peers), host=host)
+                return None
         except (AmbiguousJoinPathError, CircularJoinPathError):
             return None
         if not chain:
             return None
+        self._record(chain, host=host)
+        return peers.get(chain[-1].target_model)
+
+    def _record(self, chain: Sequence[OrientedJoin], *, host: SlayerModel) -> None:
         for edge in chain:
             self.out.add((host.data_source, edge.target_model))
-        return peers.get(chain[-1].target_model)
 
     def ref(self, parts: Sequence[str], *, host: SlayerModel) -> None:
         """A reference rooted at ``host``: its hops, then the definition of a derived column or saved measure it names."""

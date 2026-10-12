@@ -17,7 +17,7 @@ from slayer.core.errors import (
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
-from slayer.engine.model_reads import Identity, models_read_by
+from slayer.engine.model_reads import Identity, models_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
 from slayer.storage.base import StorageBackend, _find_case_colliding_id
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
@@ -75,10 +75,11 @@ def _prior_tags(model: SlayerModel, *, view: _View) -> list[str]:
     return model.access_tags if sources else []
 
 
-def _visible_identities(*, full: dict[Identity, SlayerModel], tags: frozenset[str]) -> set[Identity]:
-    """Accessible models whose reads are all visible, transitively."""
-    models = list(full.values())
-    reads = {key: models_read_by(m, models=models) - {key} for key, m in full.items()}
+def _visible_identities(
+    *, full: dict[Identity, SlayerModel], known: list[SlayerModel], tags: frozenset[str],
+) -> set[Identity]:
+    """Accessible models whose reads, resolved over ``known`` (loaded plus placeholders), are all visible, transitively."""
+    reads = {key: models_read_by(m, models=known) - {key} for key, m in full.items()}
     visible = {key for key, m in full.items() if can_access(m, tags=tags)}
     while blocked := {key for key in visible if not reads[key] <= visible}:
         visible -= blocked
@@ -124,10 +125,11 @@ class TagFilteredStorage(StorageBackend):
         identities = await inner._list_all_model_identities()
         loaded, _ = await inner.load_models()
         full = {(m.data_source, m.name): m for m in loaded}
-        visible = _visible_identities(full=full, tags=self._tags)
+        known = [*loaded, *(placeholder(i) for i in identities if i not in full)]
+        visible = _visible_identities(full=full, known=known, tags=self._tags)
         hidden = frozenset((set(identities) | set(full)) - visible)
         rows, unloadable = await inner._list_memories_rows(entities=None)
-        query_reads = {m.id: models_read_by(m.query, models=loaded) if m.query else frozenset() for m in rows}
+        query_reads = {m.id: models_read_by(m.query, models=known) if m.query else frozenset() for m in rows}
         hidden_memories = {e.name for e in unloadable} | {
             m.id for m in rows
             if (linked := {i for e in m.entities if (i := entity_model(e))} | query_reads[m.id]) and linked <= hidden

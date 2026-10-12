@@ -310,8 +310,9 @@ async def test_failed_save_after_warm_cache_serves_preserved_file(
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
     monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _raise)
+    replacement = _model(sql_table="public.b")
     with pytest.raises(RuntimeError):
-        await storage.save_model(_model(sql_table="public.b"))
+        await storage.save_model(replacement)
     reloaded = await storage.get_model("m", data_source="ds")
     assert reloaded.sql_table == "public.a"
     assert path in storage._model_cache  # stable re-read was re-admitted
@@ -324,8 +325,9 @@ async def test_failed_save_datasource_after_warm_cache_serves_preserved_file(
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
     monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _raise)
+    replacement = DatasourceConfig(name="pg", database="b")
     with pytest.raises(RuntimeError):
-        await storage.save_datasource(DatasourceConfig(name="pg", database="b"))
+        await storage.save_datasource(replacement)
     assert (await storage.get_datasource("pg")).database == "a"
     assert path in storage._datasource_cache
 

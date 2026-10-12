@@ -30,3 +30,7 @@
 
 - [x] 3.1 Full unit suite `poetry run pytest -m "not integration"` green; integration suite with the CI invocation from CLAUDE.md green.
 - [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` clean.
+
+## 4. Review fixes
+
+- [x] 4.1 Reads walk: unloadable models resolve as empty placeholders, and a path stopping at one records its hops. Verify: a column reading `broken` through a join hides its model for `{fin}`; a memory whose query reads only `broken` is hidden.

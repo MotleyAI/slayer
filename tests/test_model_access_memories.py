@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from slayer.core.errors import MemoryNotFoundError
+from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
@@ -26,6 +27,7 @@ from tests._model_access_fixtures import (
     MEMORY_REF_MEMORY,
     MIXED_MEMORY,
     QUERY_HOP_MEMORY,
+    UNLOADABLE,
     AccessStore,
     access_store,
     outcome,
@@ -72,6 +74,12 @@ class TestMemoryVisibility:
 
     async def test_bypass_sees_every_memory_whole(self, store: AccessStore) -> None:
         assert await view(store, bypass=True).list_memories() == await store.storage.list_memories()
+
+    async def test_memory_reading_only_an_unloadable_model_is_hidden(self, store: AccessStore) -> None:
+        query = SlayerQuery.model_validate({"source_model": UNLOADABLE, "measures": [{"formula": "count(*)"}]})
+        await store.storage.save_memory(id="broken-note", learning="Broken counts", entities=[], query=query)
+        assert "broken-note" not in {m.id for m in await view(store, "fin").list_memories()}
+        assert "broken-note" in {m.id for m in await view(store, bypass=True).list_memories()}
 
 
 class TestMemoryStripping:
