@@ -49,7 +49,7 @@ bucket, a date, a random ID or a count. Anything SLayer does not recognise is re
 | `batch_id` | Random UUID per send (lets the backend drop duplicates). |
 | `period` | First and last **date** covered (no times). |
 | `env` | SLayer version, Python `major.minor`, OS family, CPU architecture, whether it runs in a container, installed SLayer extras (read from package metadata). |
-| `usage` | Per action — CLI command, MCP tool name, REST route template (e.g. `/models/{name}`), Flight SQL / PostgreSQL query or probe — the count of successes and of failures per error kind (a fixed list such as `value_error`, `schema_drift`, `http_4xx`). |
+| `usage` | Per action — CLI command (except `slayer telemetry …`), MCP tool name, REST route template (e.g. `/models/{name}`), Flight SQL / PostgreSQL query or probe — the count of successes and of failures per error kind (a fixed list such as `value_error`, `schema_drift`, `http_4xx`). |
 | `features` | Per query: counts of multistage queries, inline source models, time dimensions, filters, computed dimensions, saved-query runs, non-default `to_many_handling`; counts of each built-in aggregation and transform (`sum`, `time_shift`, …), user-defined ones as `custom`. |
 | `dialects` | Queries per SQL dialect; datasources per dialect in buckets `0` / `1` / `2-5` / `6+`. |
 | `context` | Per process: storage backend (`yaml` / `sqlite` / `other`), model count in buckets `0` / `1-10` / `11-50` / `51-200` / `200+`, whether the bundled demo database was queried. |

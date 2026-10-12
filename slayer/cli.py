@@ -130,11 +130,12 @@ def _resolve_storage(args):
 
 
 def _assign_telemetry_tokens(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> None:
-    """Give every leaf command a fixed usage token: its subcommand path."""
+    """Give every leaf command except ``slayer telemetry …`` a fixed usage token: its subcommand path."""
     groups = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
     for group in groups:
         for name, sub in group.choices.items():
-            _assign_telemetry_tokens(sub, (*path, name))
+            if (*path, name) != ("telemetry",):
+                _assign_telemetry_tokens(sub, (*path, name))
     if path and not groups:
         parser.set_defaults(telemetry_token=".".join(path))
 

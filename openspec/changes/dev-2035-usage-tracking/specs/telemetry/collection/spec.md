@@ -32,7 +32,7 @@ Every value in a usage report SHALL be a version string, a SLayer-defined enum t
 
 ### Requirement: Usage counters per surface
 A usage report SHALL count actions per surface as `{ok, errors: {error_token: n}}`, keyed by a fixed token per action:
-- CLI: one fixed token per leaf command, never built from argument values; argument-parse errors and help output are not counted.
+- CLI: one fixed token per leaf command, never built from argument values; argument-parse errors and help output are not counted; the `slayer telemetry` commands are not counted.
 - MCP: one count per tool call, keyed by tool name.
 - REST: one count per request, keyed by the matched route template; unmatched requests and mounts map to fixed tokens; requests to the mounted MCP endpoint are counted as MCP, not REST.
 - Flight SQL: one count per executed query (data fetch); schema validation or prepared-statement creation alone is not counted.

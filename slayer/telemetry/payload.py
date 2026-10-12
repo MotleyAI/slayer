@@ -22,7 +22,6 @@ UsageKey = Literal[
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
     "cli:inspect", "cli:search", "cli:search.refresh-samples",
-    "cli:telemetry.status", "cli:telemetry.enable", "cli:telemetry.disable", "cli:telemetry.show",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",

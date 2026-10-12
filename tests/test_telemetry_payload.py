@@ -137,7 +137,7 @@ def test_every_cli_command_has_a_vocabulary_token(monkeypatch: pytest.MonkeyPatc
     vocabulary = usage_key_vocabulary()
     tokens = {}
     for path, parser in _sub_parsers(_cli_parser(monkeypatch)):
-        if not _runs_bare(parser):
+        if not _runs_bare(parser) or path[0] == "telemetry":
             continue
         token = parser.get_default("telemetry_token")
         assert isinstance(token, str), f"slayer {' '.join(path)} has no telemetry token"
@@ -145,7 +145,7 @@ def test_every_cli_command_has_a_vocabulary_token(monkeypatch: pytest.MonkeyPatc
         assert f"cli:{token}" in vocabulary, token
         tokens[path] = token
     assert len(set(tokens.values())) == len(tokens)
-    assert {("telemetry", "show"), ("search",), ("search", "refresh-samples")} <= set(tokens)
+    assert {("search",), ("search", "refresh-samples")} <= set(tokens)
 
 
 def test_every_mcp_tool_has_a_vocabulary_token(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.telemetry import settings
+from slayer.telemetry.payload import USAGE_KEYS
 from tests._telemetry_helpers import (
     build_storage,
     cli,
@@ -92,6 +93,13 @@ def test_cli_leaf_tokens(store: str) -> None:
 def test_parse_errors_and_help_not_counted(store: str, args: list[str]) -> None:
     cli(args)
     assert usage_keys(show(), surface="cli") <= {"cli:telemetry.show"}
+
+
+def test_telemetry_commands_not_counted(store: str) -> None:
+    assert not {key for key in USAGE_KEYS if key.startswith("cli:telemetry")}
+    cli(["telemetry", "status"])
+    cli(["telemetry", "show"])
+    assert usage_keys(show(), surface="cli") == set()
 
 
 def test_parse_error_exits_before_any_telemetry(telemetry_env) -> None:
