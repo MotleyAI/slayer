@@ -44,6 +44,7 @@ from tests._dev1737_fixtures import (
     sql_literal,
 )
 from tests._engine_helpers import disposable_engine
+from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1261,3 +1262,13 @@ class TestTrinoTimeSpine:
     def test_integer_sequence_digits_cover_the_range(self, trino_container, monkeypatch, size: int) -> None:
         monkeypatch.setattr(trino_dialect_module, "_SEQUENCE_MAX", 10)  # 3+ digit factors at small sizes
         self.test_integer_sequence_spans_the_sequence_cap(trino_container, size)
+
+
+@pytest.mark.integration
+def test_every_trino_alias_failure_is_quoted(trino_container) -> None:
+    with _seeded_schema(trino_container, ["CREATE TABLE kw_probe (a INTEGER)"]) as schema:
+        with disposable_engine(_url(trino_container, schema)) as engine:
+            assert unquoted_alias_failures(
+                dialect="trino", words=keyword_universe(), table="kw_probe", column="a",
+                fails=sa_statement_fails(engine), workers=8,
+            ) == []

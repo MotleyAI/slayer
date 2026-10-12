@@ -50,7 +50,8 @@ from slayer.engine.ingestion import (
     _sa_type_to_data_type,
 )
 from slayer.core.errors import AmbiguousJoinPathError, StoredDocumentLoadError
-from slayer.core.join_walker import neighbors, resolve_hop
+from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
+from slayer.core.join_walker import OrientedJoin, neighbors, resolve_hop
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
 from slayer.engine.syntax import (
@@ -87,7 +88,18 @@ class RemoveSpec(BaseModel):
     columns: list[str] = Field(default_factory=list)
     measures: list[str] = Field(default_factory=list)
     aggregations: list[str] = Field(default_factory=list)
+    # Edge references of the dropped joins that have one; ``join_edges`` addresses each exactly.
     joins: list[str] = Field(default_factory=list)
+    join_edges: list[JoinEdgeRef] = Field(default_factory=list)
+
+    def add_join(self, *, model: SlayerModel, join: ModelJoin) -> None:
+        if is_addressable(model=model, join=join):
+            self.joins.append(edge_reference(model=model, join=join))
+        self.join_edges.append(JoinEdgeRef.of(join))
+
+
+#: Model name → exact references of its joins dropped so far.
+_DroppedJoins = dict[str, list[JoinEdgeRef]]
 
 
 class EditModelDelete(BaseModel):
@@ -133,7 +145,10 @@ class ModelAddition(BaseModel):
     data_source: str
     created: bool = False  # True if the model was new
     new_columns: list[str] = Field(default_factory=list)
+    # Added joins by edge reference.
     new_joins: list[str] = Field(default_factory=list)
+    # Edge names this pass generated on the model's joins.
+    named_joins: list[str] = Field(default_factory=list)
     # INT columns widened to DOUBLE/TEXT by the SQLite affinity probe.
     widened_columns: list[str] = Field(default_factory=list)
     # Output-only label; durable record is SlayerModel.source_kind.
@@ -295,9 +310,9 @@ def _diff_sql_table_joins(
     model: SlayerModel,
     live_table: LiveTable,
     available_models_in_ds: set[str],
-) -> tuple[list[str], list[DeleteReason]]:
+) -> tuple[list[ModelJoin], list[DeleteReason]]:
     """Per-join diff of a sql_table-mode model against live FK columns and model availability."""
-    dropped: list[str] = []
+    dropped: list[ModelJoin] = []
     reasons: list[DeleteReason] = []
     for join in model.joins:
         local_cols = [pair[0] for pair in join.join_pairs]
@@ -307,10 +322,10 @@ def _diff_sql_table_joins(
             or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
         ]
         if missing_locals:
-            dropped.append(join.target_model)
+            dropped.append(join)
             reasons.append(
                 DeleteReason(
-                    target=f"join:{join.target_model}",
+                    target=f"join:{edge_reference(model=model, join=join)}",
                     reason=(
                         f"Local FK column(s) {missing_locals} missing from "
                         f"live table"
@@ -319,10 +334,10 @@ def _diff_sql_table_joins(
             )
             continue
         if join.target_model not in available_models_in_ds:
-            dropped.append(join.target_model)
+            dropped.append(join)
             reasons.append(
                 DeleteReason(
-                    target=f"join:{join.target_model}",
+                    target=f"join:{edge_reference(model=model, join=join)}",
                     reason=(
                         f"Join target {join.target_model!r} not present in "
                         f"datasource {model.data_source!r}"
@@ -369,12 +384,15 @@ def diff_sql_table_model(
     if not dropped_cols and not dropped_joins:
         return None, set()
     reasons = col_reasons + join_reasons
+    remove = RemoveSpec(columns=dropped_cols)
+    for join in dropped_joins:
+        remove.add_join(model=model, join=join)
 
     return (
         EditModelDelete(
             model_name=model.name,
             data_source=model.data_source,
-            remove=RemoveSpec(columns=dropped_cols, joins=dropped_joins),
+            remove=remove,
             reasons=reasons,
         ),
         set(dropped_cols),
@@ -651,20 +669,21 @@ def _add_dropped_measure(
 def _add_dropped_join(
     *,
     edit_entries: dict[str, EditModelDelete],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     model: SlayerModel,
-    target_name: str,
+    join: ModelJoin,
     reason: str,
 ) -> bool:
-    if target_name in dropped_joins.get(model.name, set()):
+    ref = JoinEdgeRef.of(join)
+    if ref in dropped_joins.get(model.name, []):
         return False
     entry = _ensure_edit_entry(edit_entries=edit_entries, model=model)
-    if target_name not in entry.remove.joins:
-        entry.remove.joins.append(target_name)
+    if ref not in entry.remove.join_edges:
+        entry.remove.add_join(model=model, join=join)
         entry.reasons.append(
-            DeleteReason(target=f"join:{target_name}", reason=reason)
+            DeleteReason(target=f"join:{edge_reference(model=model, join=join)}", reason=reason)
         )
-    dropped_joins.setdefault(model.name, set()).add(target_name)
+    dropped_joins.setdefault(model.name, []).append(ref)
     return True
 
 
@@ -763,6 +782,12 @@ def _build_stage_graph(
     )
 
 
+def _hop_path(*, ref: str, graph: _StageGraph) -> list[str]:
+    """``ref``'s hop tokens, a leading self-prefix stripped as the binder does."""
+    path = ref.split(".")[:-1]
+    return path[1:] if path and path[0] == graph.stage_source_name else path
+
+
 def _attribute_ref_to_base(
     *,
     ref: str,
@@ -770,33 +795,26 @@ def _attribute_ref_to_base(
     graph: _StageGraph,
 ) -> str | None:
     """Walk ``ref`` through the stage's join graph; the leaf column name when it resolves to ``base_name``, else None (bare refs attribute to the stage source)."""
-    if "." not in ref:
-        return ref if graph.stage_source_name == base_name else None
-    parts = ref.split(".")
-    leaf = parts[-1]
-    path = parts[:-1]
     if graph.stage_source_name is None:
         return None
-    # Root-qualified ref (``orders.amount`` from a stage rooted at orders):
-    # ``orders`` isn't in its own join set, so treat path==[source] as same-model.
-    if path == [graph.stage_source_name]:
+    leaf = ref.rsplit(".", 1)[-1]
+    path = _hop_path(ref=ref, graph=graph)
+    if not path:
         return leaf if graph.stage_source_name == base_name else None
-    terminal = _walk_stage_path(path=path, graph=graph)
+    walked = _walk_stage_chain(path=path, graph=graph)
+    terminal = walked[0] if walked is not None else None
     if terminal is None and len(path) == 1:
         # Short-form auto-routing: a len==1 prefix with no direct join
-        # attributes to its uniquely-routed terminal only (mirroring full paths),
-        # so the stage cascades on the terminal column or terminal-reaching join.
-        # Route-precise attribution (earlier intervening joins, and no over-cascade
-        # on off-route joins to the terminal) is deferred to DEV-1885.
+        # attributes to its uniquely-routed terminal (mirroring full paths).
         terminal = _route_short_form_terminal(target=path[0], graph=graph)
     if terminal is None:
         return None
     return leaf if terminal == base_name else None
 
 
-def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
-    """The short-form target when it is uniquely routable from the stage source
-    over the datasource-scoped join graph (ambiguous / unreachable → None).
+def _short_form_route(*, target: str, graph: _StageGraph) -> list[str] | None:
+    """The hop route to a short-form target uniquely routable from the stage
+    source over the datasource-scoped join graph (ambiguous / unreachable → None).
     Routing triggers only when the first hop resolves to no edge; a parallel pair
     directly off the source is a fail-closed ambiguous hop, not a
     route, so it attributes to nothing — mirroring the binder."""
@@ -813,16 +831,20 @@ def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None
             return None
     except AmbiguousJoinPathError:
         return None
-    route = short_form_route_or_none(
+    return short_form_route_or_none(
         root=root, target_model=target, models_by_name=graph.models_by_name,
     )
-    return target if route is not None else None
 
 
-def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
-    """Terminal model name of ``path`` from the stage source — either
-    traversal direction, stage-extension joins included — or ``None``."""
+def _route_short_form_terminal(*, target: str, graph: _StageGraph) -> str | None:
+    return target if _short_form_route(target=target, graph=graph) is not None else None
+
+
+def _walk_stage_chain(*, path: list[str], graph: _StageGraph) -> tuple[str, list[OrientedJoin]] | None:
+    """Terminal model of ``path`` from the stage source and the stored edges it
+    walks — either traversal direction, stage-extension joins included — or ``None``."""
     current = graph.stage_source_name
+    chain: list[OrientedJoin] = []
     for hop in path:
         # Extension joins live on the stage, not the stored model; their
         # token is the join name when set, else the target name.
@@ -840,67 +862,34 @@ def _walk_stage_path(*, path: list[str], graph: _StageGraph) -> str | None:
             return None
         if edge is None:
             return None
+        chain.append(edge)
         current = edge.target_model
-    return current
+    return (current, chain) if current is not None else None
 
 
-def _measure_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
-    for m in stage.measures or []:
-        formula = getattr(m, "formula", None)
-        if not formula:
-            continue
-        for ref in _measure_formula_refs(formula):
-            attributed = _attribute_ref_to_base(
-                ref=ref, base_name=base_name, graph=graph
-            )
-            if attributed is not None:
-                out.add(attributed)
-    return out
+def _ref_stored_edges(*, ref: str, graph: _StageGraph) -> list[OrientedJoin]:
+    """The stored edges ``ref``'s path walks, a short-form ref along its route."""
+    path = _hop_path(ref=ref, graph=graph)
+    if not path:
+        return []
+    walked = _walk_stage_chain(path=path, graph=graph)
+    if walked is None and len(path) == 1:
+        route = _short_form_route(target=path[0], graph=graph)
+        walked = _walk_stage_chain(path=route, graph=graph) if route else None
+    return walked[1] if walked is not None else []
 
 
-def _dimension_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
-    for d in stage.dimensions or []:
-        full = getattr(d, "full_name", None) or str(d)
-        attributed = _attribute_ref_to_base(
-            ref=full, base_name=base_name, graph=graph
-        )
-        if attributed is not None:
-            out.add(attributed)
-    return out
-
-
-def _time_dimension_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
-    for td in stage.time_dimensions or []:
-        attributed = _attribute_ref_to_base(
-            ref=td.dimension.full_name, base_name=base_name, graph=graph
-        )
-        if attributed is not None:
-            out.add(attributed)
-    return out
-
-
-def _filter_refs_on_base(
-    stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> set[str]:
-    out: set[str] = set()
+def _stage_refs(stage: SlayerQuery) -> list[str]:
+    """Every column reference of one stage: measures, dimensions, time dimensions, filters."""
+    refs = [
+        ref for m in stage.measures or [] if (formula := getattr(m, "formula", None))
+        for ref in _measure_formula_refs(formula)
+    ]
+    refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
+    refs += [td.dimension.full_name for td in stage.time_dimensions or []]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
-    for f in stage.filters or []:
-        for col in _filter_refs_dsl(f):
-            attributed = _attribute_ref_to_base(
-                ref=col, base_name=base_name, graph=graph
-            )
-            if attributed is not None:
-                out.add(attributed)
-    return out
+    refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]
+    return refs
 
 
 def _stage_referenced_columns_for_base(
@@ -921,12 +910,8 @@ def _stage_referenced_columns_for_base(
             reachable={stage_source_name} if stage_source_name else set(),
             models_by_name={},
         )
-    return (
-        _measure_refs_on_base(stage, base_name, graph)
-        | _dimension_refs_on_base(stage, base_name, graph)
-        | _time_dimension_refs_on_base(stage, base_name, graph)
-        | _filter_refs_on_base(stage, base_name, graph)
-    )
+    attributed = (_attribute_ref_to_base(ref=ref, base_name=base_name, graph=graph) for ref in _stage_refs(stage))
+    return {leaf for leaf in attributed if leaf is not None}
 
 
 def _stage_source_joins(stage: SlayerQuery) -> list[ModelJoin]:
@@ -985,21 +970,17 @@ def _stage_uses_dropped_join(
     stage: SlayerQuery,
     base_name: str,
     graph: _StageGraph,
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> str | None:
-    """The conflicting target if ``stage`` references a column under a join dropped on ``base_name``, else None; bounded to ``graph.reachable``."""
-    if base_name not in graph.reachable:
+    """The reference of a join dropped on ``base_name`` that a ``stage`` ref walks, else None."""
+    dropped = dropped_joins.get(base_name, [])
+    if not dropped or base_name not in graph.reachable:
         return None
-    targets = dropped_joins.get(base_name, set())
-    if not targets:
-        return None
-    for target in targets:
-        # Column names the stage references on ``target`` (via the join graph);
-        # non-empty ⇒ the dropped join means those refs no longer resolve.
-        if _stage_referenced_columns_for_base(
-            stage=stage, base_name=target, graph=graph
-        ):
-            return target
+    for ref in _stage_refs(stage):
+        for edge in _ref_stored_edges(ref=ref, graph=graph):
+            hit = next((d for d in dropped if edge.declaring_model == base_name and d.matches_hop(edge)), None)
+            if hit is not None:
+                return hit.name or hit.target_model
     return None
 
 
@@ -1011,7 +992,7 @@ def _check_stage_for_whole_drop(
     graph: _StageGraph,
     whole_dropped_models: set[str],
     dropped_cols: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     pk_per_model: dict[str, set[str]],
     candidate_base_names: set[str],
 ) -> DeleteReason | None:
@@ -1070,7 +1051,7 @@ def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
     dropped_cols: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     whole_dropped_models: set[str],
     pk_per_model: dict[str, set[str]],
     candidate_base_names: set[str] | None = None,
@@ -1139,7 +1120,7 @@ class _CascadeState:
         whole_entries: dict[str, WholeModelDelete],
         dropped_cols: dict[str, set[str]],
         dropped_measures: dict[str, set[str]],
-        dropped_joins: dict[str, set[str]],
+        dropped_joins: _DroppedJoins,
         pk_per_model: dict[str, set[str]],
     ) -> None:
         self.models_by_name = models_by_name
@@ -1276,7 +1257,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rules 3a + 3b: local FK column dropped here, or foreign column dropped on the target."""
     changed = False
     for join in model.joins:
-        if join.target_model in state.dropped_joins.get(model.name, set()):
+        if JoinEdgeRef.of(join) in state.dropped_joins.get(model.name, []):
             continue
         # Raw dropped_cols: a dropped local PK key invalidates the join too.
         local_missing = [
@@ -1288,7 +1269,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
                 edit_entries=state.edit_entries,
                 dropped_joins=state.dropped_joins,
                 model=model,
-                target_name=join.target_model,
+                join=join,
                 reason=f"Local FK column(s) {local_missing} dropped from this model",
             ) or changed
             continue
@@ -1306,7 +1287,7 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
             edit_entries=state.edit_entries,
             dropped_joins=state.dropped_joins,
             model=model,
-            target_name=join.target_model,
+            join=join,
             reason=(
                 f"Foreign column(s) {foreign_missing} dropped on target "
                 f"model {join.target_model!r}"
@@ -1387,7 +1368,7 @@ def _cascade_one_pass(
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
     pk_per_model: dict[str, set[str]],
 ) -> bool:
     """Run one cascade pass; True if anything new was added."""
@@ -1420,26 +1401,37 @@ def _cascade_one_pass(
     return changed
 
 
+def _removed_join_refs(*, model: SlayerModel | None, remove: RemoveSpec) -> list[JoinEdgeRef]:
+    """Exact references of every join ``remove`` drops; a reference-only entry resolves on ``model``."""
+    refs = list(remove.join_edges)
+    for ref in remove.joins:
+        joins = [] if model is None else (
+            [j for j in model.joins if j.name == ref] or [j for j in model.joins if j.target_model == ref]
+        )
+        refs.extend(r for r in map(JoinEdgeRef.of, joins) if r not in refs)
+    return refs
+
+
 def _seed_one_diff_entry(
     *,
     model_name: str,
+    model: SlayerModel | None,
     entry: ToDeleteEntry | None,
     cols: set[str],
     edit_entries: dict[str, EditModelDelete],
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> None:
     """Apply one ``(entry, dropped_columns)`` diff to the cascade state dicts."""
     if isinstance(entry, WholeModelDelete):
         whole_entries[model_name] = entry
     elif isinstance(entry, EditModelDelete):
         edit_entries[model_name] = entry
-        if entry.remove.joins:
-            dropped_joins.setdefault(model_name, set()).update(
-                entry.remove.joins
-            )
+        refs = _removed_join_refs(model=model, remove=entry.remove)
+        if refs:
+            dropped_joins.setdefault(model_name, []).extend(refs)
         if entry.remove.measures:
             dropped_measures.setdefault(model_name, set()).update(
                 entry.remove.measures
@@ -1453,17 +1445,19 @@ def _seed_state_from_diffs(
     diffs_iterables: tuple[
         dict[str, tuple[ToDeleteEntry | None, set[str]]], ...
     ],
+    models_by_name: dict[str, SlayerModel],
     edit_entries: dict[str, EditModelDelete],
     whole_entries: dict[str, WholeModelDelete],
     dropped_cols: dict[str, set[str]],
     dropped_measures: dict[str, set[str]],
-    dropped_joins: dict[str, set[str]],
+    dropped_joins: _DroppedJoins,
 ) -> None:
     """Populate the cascade state dicts from the base per-model diffs."""
     for diffs in diffs_iterables:
         for model_name, (entry, cols) in diffs.items():
             _seed_one_diff_entry(
                 model_name=model_name,
+                model=models_by_name.get(model_name),
                 entry=entry,
                 cols=cols,
                 edit_entries=edit_entries,
@@ -1500,10 +1494,12 @@ def compute_datasource_drops(
     whole_entries: dict[str, WholeModelDelete] = {}
     dropped_cols: dict[str, set[str]] = {}
     dropped_measures: dict[str, set[str]] = {}
-    dropped_joins: dict[str, set[str]] = {}
+    dropped_joins: _DroppedJoins = {}
+    models_by_name = {m.name: m for m in models}
 
     _seed_state_from_diffs(
         diffs_iterables=(sql_table_diffs, sql_diffs),
+        models_by_name=models_by_name,
         edit_entries=edit_entries,
         whole_entries=whole_entries,
         dropped_cols=dropped_cols,
@@ -1511,7 +1507,6 @@ def compute_datasource_drops(
         dropped_joins=dropped_joins,
     )
 
-    models_by_name = {m.name: m for m in models}
     pk_per_model = {m.name: _pk_columns(m) for m in models}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
