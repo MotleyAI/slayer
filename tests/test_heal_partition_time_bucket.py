@@ -62,7 +62,7 @@ class TestProjectedTimeDimension:
 
     async def test_picks_month_among_several_time_dimensions(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(partitioned("month(created_at)", time_dimensions=[MONTH, YEAR], dimensions=()))
-        totals = {str(r["orders.created_at"])[:7]: r["orders.part_total"] for r in resp.data}
+        totals = {str(r["orders.created_at.month"])[:7]: r["orders.part_total"] for r in resp.data}
         assert totals == {"2024-01": 30.0, "2024-02": 70.0, "2024-03": 110.0, "2024-12": 70.0}
 
     async def test_bare_column_among_several_time_dimensions_stays_ambiguous(self, engine: SlayerQueryEngine) -> None:
