@@ -145,7 +145,9 @@ class _Reads:
         for m in models:
             self.by_ds.setdefault(m.data_source, {})[m.name] = m
         self.out: set[Identity] = set()
-        self._seen: set[tuple[str, str, str]] = set()
+        # Keyed by host object, not name: two stages' overlays of one model may define a field differently.
+        self._seen: set[tuple[int, str]] = set()
+        self._hosts: list[SlayerModel] = []  # keeps each visited host alive, so its id is never reused
 
     def holders(self, name: str, *, data_source: str | None) -> list[SlayerModel]:
         """The stored model ``name`` in ``data_source`` if there is one, else every datasource's model of that name."""
@@ -194,10 +196,11 @@ class _Reads:
             self.ref(parts, host=host)
 
     def _first_visit(self, host: SlayerModel, key: str) -> bool:
-        mark = (host.data_source, host.name, key)
+        mark = (id(host), key)
         if mark in self._seen:
             return False
         self._seen.add(mark)
+        self._hosts.append(host)
         return True
 
     def fragment(self, sql: str, *, host: SlayerModel) -> None:

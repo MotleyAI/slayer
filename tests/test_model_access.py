@@ -19,6 +19,7 @@ from tests._model_access_fixtures import (
     DS,
     HIDDEN_FROM_FIN,
     MIXED_QUERY,
+    PRUNED_EDGE,
     UNLOADABLE,
     UNTAGGED_PUBLIC,
     VISIBLE_TO_FIN,
@@ -213,6 +214,16 @@ class TestModelsReadBy:
         reads = self.reads(chained, models)
         assert "hr" in reads
         assert "s1" not in reads
+
+    async def test_overlays_defining_one_column_name_differently_are_each_read(self, models: dict[str, SlayerModel]) -> None:
+        def stage(sql: str, **extra) -> SlayerQuery:
+            return SlayerQuery.model_validate({
+                "source_model": {"source_name": "pub_link", "columns": [{"name": "extra", "sql": sql}]},
+                "dimensions": ["extra"], **extra,
+            })
+
+        dual = SlayerModel(name="dual", source_queries=[stage("label", name="s1"), stage(f"{PRUNED_EDGE}.dept")])
+        assert "hr" in self.reads(dual, models)
 
     async def test_saved_measure_reads_are_followed_recursively(self, models: dict[str, SlayerModel]) -> None:
         relay = models["pub"].model_copy(update={
