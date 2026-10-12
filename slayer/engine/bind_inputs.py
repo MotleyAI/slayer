@@ -19,7 +19,7 @@ from slayer.core.errors import (
 from slayer.core.format import NumberFormat
 from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.time_spine import is_spine, is_spine_query, names_spine
-from slayer.core.join_walker import canonical_path, resolve_hop, terminal_model, walk
+from slayer.core.join_walker import resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -749,7 +749,7 @@ def _joined_column_type(
     if not parts:
         return None
     *hops, leaf = parts
-    current = terminal_model(
+    current = resolved_terminal(
         root=source_model, path=tuple(hops),
         models_by_name=bundle.models_by_name,
     )
@@ -793,18 +793,11 @@ def _opaque_dim_type(
 def _walk_dotted(
     *, source_model: SlayerModel, hops: List[str], bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[SlayerModel, Tuple[str, ...]]]:
-    """``(terminal_model, canonical hops)`` of ``hops`` from ``source_model`` via the
-    shared walker (None on a missing/circular/ambiguous hop), mirroring the binder."""
-    models = bundle.models_by_name
-    models.setdefault(source_model.name, source_model)
+    """``(terminal_model, canonical hops)`` of ``hops`` from ``source_model`` (None on a missing/circular/ambiguous hop)."""
     try:
-        chain = walk(root=source_model, path=tuple(hops), models_by_name=models)
+        return walk_terminal(root=source_model, path=hops, models_by_name=bundle.models_by_name)
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
-    if chain is None:
-        return None
-    terminal = models.get(chain[-1].target_model) if chain else source_model
-    return (terminal, canonical_path(chain)) if terminal is not None else None
 
 
 def _route_short_form_saved_measure(

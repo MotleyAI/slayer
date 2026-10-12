@@ -64,7 +64,8 @@ class TestEdgeNameShadowsModelToken:
         models = edge_graph(nodes={"a", "b", "c"}, edges=[("a", "b", "c"), ("a", "c", None)])
         assert shortest_route(root=models["a"], target="c", models_by_name=models) is None
         route = shortest_route(root=models["a"], target="b", models_by_name=models)
-        assert route is not None and list(route.tokens) == ["c"]
+        assert route is not None
+        assert list(route.tokens) == ["c"]
 
 
 async def _engine_for(models, tmpdir: str) -> SlayerQueryEngine:

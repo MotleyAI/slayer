@@ -203,14 +203,14 @@ def osi_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 
 
 def _expr(sql: str) -> OSIExpression:
-    return OSIExpression(dialects=[OSIDialectExpression(dialect="ANSI_SQL", expression=sql)])
+    return OSIExpression(dialects=[OSIDialectExpression.model_validate({"dialect": "ANSI_SQL", "expression": sql})])
 
 
 class TestOsiConversion:
     def test_unaddressable_pair_in_the_no_join_path_report(self, osi_engine: sa.Engine) -> None:
         def rel(name: str, src: str, dst: str) -> OSIRelationship:
-            return OSIRelationship(name=name, **{"from": src}, to=dst,
-                                   from_columns=["customer_id"], to_columns=["customer_id"])
+            return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
+                                                   "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
         doc = OSIDocument(version="0.2.0.dev0", semantic_model=[OSISemanticModel(
             name="s",
             datasets=[
@@ -232,8 +232,9 @@ class TestOsiConversion:
 class TestPopulationInference:
     async def test_unaddressable_pair_in_the_candidate_reason(self, make_engine) -> None:
         engine = await make_engine(_unnamed_pair())
+        query = SlayerQuery.model_validate({"dimensions": ["orders.status", "addresses.city"]})
         with pytest.raises(PopulationInferenceError) as ei:
-            await engine.execute(SlayerQuery(dimensions=["orders.status", "addresses.city"]))
+            await engine.execute(query)
         assert _names_pair(str(ei.value), a="orders", b="addresses"), str(ei.value)
 
 
@@ -263,12 +264,13 @@ async def cycle_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 class TestDirectedCycle:
     async def test_inference_needs_an_explicit_population(self, cycle_engine) -> None:
+        query = SlayerQuery.model_validate({"dimensions": ["x.v", "y.v", "z.v"]})
         with pytest.raises(PopulationInferenceError) as ei:
-            await cycle_engine.execute(SlayerQuery(dimensions=["x.v", "y.v", "z.v"]))
+            await cycle_engine.execute(query)
         assert ei.value.reason == PopulationErrorReason.NO_VIABLE_CANDIDATE
 
     async def test_the_named_population_executes(self, cycle_engine) -> None:
-        resp = await cycle_engine.execute(SlayerQuery(source_model="x", dimensions=["v", "y.v", "y.z.v"]))
+        resp = await cycle_engine.execute(SlayerQuery.model_validate({"source_model": "x", "dimensions": ["v", "y.v", "y.z.v"]}))
         assert len(resp.data) == 1
         assert sorted(resp.data[0].values()) == ["x1", "y1", "z1"]
 

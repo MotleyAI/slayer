@@ -22,7 +22,7 @@ from slayer.core.errors import (
 from slayer.core.join_walker import (
     aggregation_owner,
     cancelling_revisit,
-    terminal_model,
+    resolved_terminal,
     walk_cancelling,
 )
 from slayer.core.keys import (
@@ -335,7 +335,7 @@ def resolve_default_qualifier_path(
         if len(quals) == 1:
             raise_if_legacy_split_alias(
                 qualifier=quals[0], leaf=leaf, models_by_name=models_by_name,
-                source_model=terminal_model(
+                source_model=resolved_terminal(
                     root=root_model, path=owner_path, models_by_name=models_by_name,
                 ) or root_model,
             )

@@ -445,8 +445,8 @@ class TestCoordinateSystemInvariant:
             "reachability must be anchor-relative; identical results for two "
             "different anchors means the summary is not being recomputed"
         )
-        assert ("regions",) in from_customers
-        assert ("customers", "regions") in from_orders
+        assert ("regions",) in (from_customers or ())
+        assert ("customers", "regions") in (from_orders or ())
 
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its

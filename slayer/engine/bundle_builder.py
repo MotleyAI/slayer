@@ -7,10 +7,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import QueryBackedCycleError
+from slayer.core.join_walker import incident_model_names
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_joins, spine_model
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -350,7 +351,7 @@ async def _bfs_connected_component(
     *,
     seeds: List[str],
     all_models: Dict[str, SlayerModel],
-    incoming: Dict[str, List[str]],
+    universe: Dict[str, SlayerModel],
     storage: "StorageBackend",
     ds: Optional[str],
 ) -> Dict[str, SlayerModel]:
@@ -369,9 +370,10 @@ async def _bfs_connected_component(
         if model is None:
             continue
         collected.setdefault(name, model)
-        neighbors = [j.target_model for j in model.joins]
-        neighbors.extend(incoming.get(name, ()))
-        frontier.extend(n for n in neighbors if n not in visited)
+        frontier.extend(
+            n for n in incident_model_names(model=model, models_by_name={**universe, name: model})
+            if n not in visited
+        )
     return collected
 
 
@@ -400,15 +402,11 @@ async def _collect_referenced_models(
     all_models = await _load_datasource_peers(
         preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
-    incoming: Dict[str, List[str]] = {}
     universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
-    for m in all_models.values():
-        for join in spine_joins(m, models_by_name=universe):
-            incoming.setdefault(join.target_model, []).append(m.name)
     collected = await _bfs_connected_component(
         # The spine reaches every dataset (a query-backed one's axis is known only once spliced).
         seeds=list(all_models if is_spine(source_model) else preseeded),
-        all_models=all_models, incoming=incoming, storage=storage, ds=ds,
+        all_models=all_models, universe=universe, storage=storage, ds=ds,
     )
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)

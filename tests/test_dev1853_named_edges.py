@@ -171,15 +171,16 @@ class TestNamedEdgeValidationConsumers:
         with pytest.raises(AggregationNotAllowedError):
             await named_engine.execute(query)
 
-    async def test_round_trip_measure_rejected_over_the_named_edge(
+    async def test_round_trip_measure_composes_over_the_named_edge(
         self, named_engine,
     ) -> None:
         await self._augment_customers(named_engine)
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "billing_customer.total_b", "name": "r"}])
-        with pytest.raises(ValueError, match="Round-trip"):
-            await named_engine.execute(query)
+        # A second ``orders`` occurrence over every order (10 + 20 + 30), as from ``customers``.
+        resp = await named_engine.execute(query)
+        assert resp.data[0]["orders.r"] == 60.0
 
     async def test_derived_dimension_over_the_named_edge(
         self, named_engine,

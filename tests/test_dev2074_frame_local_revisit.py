@@ -230,8 +230,9 @@ class TestDerivedColumnsCompose:
         assert meta.label == "Latest amount"
 
     async def test_same_chain_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
+        query = _q(dimensions=["id", "customer.last_order.amount"])
         with pytest.raises(CircularJoinPathError) as ei:
-            await ctx.engine.execute(_q(dimensions=["id", "customer.last_order.amount"]))
+            await ctx.engine.execute(query)
         assert ei.value.hop == "last_order"
         assert ei.value.revisited == "orders"
 
@@ -268,13 +269,14 @@ class TestDerivedColumnsCompose:
             "SELECT z.id, z2.v FROM z LEFT JOIN x ON z.x_id = x.id LEFT JOIN y ON x.y_id = y.id "
             "LEFT JOIN z z2 ON y.z_id = z2.id ORDER BY z.id")
         assert oracle == [(100, "z200"), (200, "z100")]
-        resp = await ctx.engine.execute(SlayerQuery(
-            source_model="z", dimensions=["id", "xzv"], order=[{"column": "id", "direction": "asc"}]))
+        resp = await ctx.engine.execute(SlayerQuery.model_validate(
+            {"source_model": "z", "dimensions": ["id", "xzv"], "order": [{"column": "id", "direction": "asc"}]}))
         assert _rows(resp, "z.id", "z.xzv") == oracle
 
     async def test_directed_three_cycle_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
+        query = SlayerQuery.model_validate({"source_model": "z", "dimensions": ["x.y.z.v"]})
         with pytest.raises(CircularJoinPathError) as ei:
-            await ctx.engine.execute(SlayerQuery(source_model="z", dimensions=["x.y.z.v"]))
+            await ctx.engine.execute(query)
         assert ei.value.revisited == "z"
 
     async def test_a_b_a_b_composition(self, ctx: _Ctx) -> None:
@@ -282,8 +284,8 @@ class TestDerivedColumnsCompose:
             "SELECT a.id, b2.w FROM a LEFT JOIN b ON a.b_id = b.id LEFT JOIN a a2 ON b.a_id = a2.id "
             "LEFT JOIN b b2 ON a2.b_id = b2.id ORDER BY a.id")
         assert [(i, _num(w)) for i, w in oracle] == [(1, 200.0), (2, 100.0)]
-        resp = await ctx.engine.execute(SlayerQuery(
-            source_model="a", dimensions=["id", "to_b.abw"], order=[{"column": "id", "direction": "asc"}]))
+        resp = await ctx.engine.execute(SlayerQuery.model_validate(
+            {"source_model": "a", "dimensions": ["id", "to_b.abw"], "order": [{"column": "id", "direction": "asc"}]}))
         assert [(i, _num(w)) for i, w in _rows(resp, "a.id", "a.to_b.abw")] == [
             (i, _num(w)) for i, w in oracle]
 
@@ -326,7 +328,7 @@ class TestSavedMeasuresCompose:
             "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
         assert _num(total) == 35.0
         resp = await ctx.engine.execute(_q(dimensions=["id"], measures=["customer.order_total"]))
-        assert sorted(_num(v) for (v,) in _rows(resp, "orders.customer.order_total")) == [35.0] * 3
+        assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
         assert _broadcasts(resp) != []
 
     async def test_unattributable_host_dimension_associates(self, ctx: _Ctx) -> None:
@@ -351,8 +353,9 @@ class TestSavedMeasuresCompose:
         assert got == oracle
 
     async def test_formula_revisiting_its_own_frame_is_refused(self, ctx: _Ctx) -> None:
+        query = _q(dimensions=["customer.name"], measures=["customer.bad"])
         with pytest.raises(CircularJoinPathError) as ei:
-            await ctx.engine.execute(_q(dimensions=["customer.name"], measures=["customer.bad"]))
+            await ctx.engine.execute(query)
         assert ei.value.hop == "customer"
         assert ei.value.revisited == "customers"
 
@@ -360,11 +363,12 @@ class TestSavedMeasuresCompose:
         resp = await ctx.engine.execute(_q(
             dimensions=["customer.name"], measures=["customer.latest_total"], to_many_handling="associate"))
         assert resp.data
+        query = _q(
+            dimensions=["customer.name"],
+            measures=[{"formula": "sum(customer.last_order.amount)", "name": "h"}],
+            to_many_handling="associate")
         with pytest.raises(CircularJoinPathError):
-            await ctx.engine.execute(_q(
-                dimensions=["customer.name"],
-                measures=[{"formula": "sum(customer.last_order.amount)", "name": "h"}],
-                to_many_handling="associate"))
+            await ctx.engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -376,10 +380,10 @@ class TestComposedOccurrenceMetadata:
             "SELECT c.name, AVG(CAST(lo.big AS DOUBLE)) FROM customers c JOIN orders lo "
             "ON c.last_order_id = lo.id GROUP BY c.name"))
         assert {k: _num(v) for k, v in oracle.items()} == {"ann": 1.0, "bob": 0.0}
-        native = await ctx.engine.execute(SlayerQuery(
-            source_model="customers", dimensions=["name"],
-            measures=[{"formula": "avg(last_order.big)", "name": "s"},
-                      {"formula": "sum(last_order.amount)", "name": "t"}]))
+        native = await ctx.engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers", "dimensions": ["name"],
+            "measures": [{"formula": "avg(last_order.big)", "name": "s"},
+                         {"formula": "sum(last_order.amount)", "name": "t"}]}))
         assert native.attributes.measures["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
         assert native.attributes.measures["customers.t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(
@@ -444,22 +448,24 @@ class TestComposedWalk:
         models = _by_name()
         chain = follow(root=models["orders"], path=("customer", "last_order", "customer"),
                        models_by_name=models)
+        assert chain is not None
         assert [e.target_model for e in chain] == ["customers", "orders", "customers"]
         terminal = resolved_terminal(root=models["orders"], path=("customer", "last_order"),
                                      models_by_name=models)
-        assert terminal is not None and terminal.name == "orders"
+        assert terminal is not None
+        assert terminal.name == "orders"
         with pytest.raises(CircularJoinPathError):
             walk(root=models["orders"], path=("customer", "last_order"), models_by_name=models)
 
     def test_typed_revisit_attributes_to_nothing_in_drift(self) -> None:
         models = _by_name()
-        stage = SlayerQuery(source_model="orders", dimensions=["customer.last_order.amount"])
+        stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_order.amount"]})
         graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
         assert _stage_referenced_columns_for_base(stage=stage, base_name="orders", graph=graph) == set()
 
     def test_composed_reference_attributes_to_its_declaring_model(self) -> None:
         models = _by_name()
-        stage = SlayerQuery(source_model="orders", dimensions=["customer.last_amount"])
+        stage = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customer.last_amount"]})
         graph = _build_stage_graph(stage=stage, stage_source_name="orders", models_by_name=models)
         assert _stage_referenced_columns_for_base(stage=stage, base_name="customers", graph=graph) == {
             "last_amount"}

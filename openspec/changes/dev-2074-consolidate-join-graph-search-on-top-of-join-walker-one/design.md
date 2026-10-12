@@ -71,7 +71,8 @@ reference crossed.
 
 **D9 — `recommend_root_model` column viability = `population.probe_item`.** The population spec already
 requires one rule; `to_one_reachable` diverged (no literal-first, no route ambiguity). Recommend keeps its
-deterministic tie pick, since a recommendation must recommend.
+deterministic tie pick, since a recommendation must recommend. When no candidate is viable only through ambiguity, recommend falls back per ambiguous
+item to the tie-break-best fan-out-free route (inference fails closed there; a recommendation must recommend).
 
 **D10 — Cypher filter isolation.** The query timeout is set once when the cached connection is created; a
 per-cache-entry lock covers execute + full drain inside one `asyncio.to_thread` call and is also taken by

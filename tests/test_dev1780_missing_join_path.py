@@ -209,10 +209,9 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
+        query = SlayerQuery.model_validate(_amount_query(dimensions=["Customer.Consumer.does_not_exist"]))
         with pytest.raises(UnknownReferenceError):
-            await _dry_sql(engine, SlayerQuery(**_amount_query(
-                dimensions=["Customer.Consumer.does_not_exist"],
-            )))
+            await _dry_sql(engine, query)
 
 
 # ===========================================================================
@@ -243,12 +242,13 @@ class TestDiagnosticsPreserved:
                              name="to_b")],
         ))
         engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery.model_validate({
+            "source_model": "A",
+            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "dimensions": ["to_b.to_a.amount"],
+        })
         with pytest.raises(ValueError) as ei:
-            await _dry_sql(engine, SlayerQuery(
-                source_model="A",
-                measures=[{"formula": "amount:sum", "name": "amt"}],
-                dimensions=["to_b.to_a.amount"],
-            ))
+            await _dry_sql(engine, query)
         assert "ircular" in str(ei.value)
 
 

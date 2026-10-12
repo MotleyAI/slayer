@@ -165,7 +165,8 @@ class TestSpineRule:
     def test_routes_may_end_at_the_spine(self) -> None:
         models = self._two_facts()
         route = shortest_route(root=models["orders"], target=TIME_SPINE_MODEL, models_by_name=models)
-        assert route is not None and len(route.edges) == 1
+        assert route is not None
+        assert len(route.edges) == 1
         assert route.fanning == 0
 
     def test_routes_never_cross_the_spine(self) -> None:
@@ -190,7 +191,8 @@ class TestSpineRule:
         models = self._two_facts()
         route = shortest_route(root=models[TIME_SPINE_MODEL], target="customers", models_by_name=models)
         assert _tok(route) == ("customers",)
-        assert route is not None and route.fanning == 1
+        assert route is not None
+        assert route.fanning == 1
         back = shortest_route(root=models["customers"], target=TIME_SPINE_MODEL, models_by_name=models)
         assert _tok(back) == (TIME_SPINE_MODEL,)
 
@@ -199,7 +201,8 @@ class TestSpineRule:
         models["orders"] = models["orders"].as_population_factor()
         route = shortest_route(root=models["orders"], target=TIME_SPINE_MODEL, models_by_name=models)
         assert _tok(route) == (TIME_SPINE_MODEL,)
-        assert route is not None and route.fanning == 1
+        assert route is not None
+        assert route.fanning == 1
 
 
 class TestTieBreak:
@@ -207,7 +210,8 @@ class TestTieBreak:
         models = _named_two_cycle()
         route = shortest_route(root=models["a"], target="b", models_by_name=models)
         assert _tok(route) == ("to_b",)
-        assert route is not None and route.fanning == 0
+        assert route is not None
+        assert route.fanning == 0
         back = shortest_route(root=models["b"], target="a", models_by_name=models)
         assert _tok(back) == ("to_a",)
 
@@ -230,7 +234,8 @@ class TestTieBreak:
         )
         route = shortest_route(root=models["root"], target="t", models_by_name=models)
         assert _tok(route) == ("zzz", "t")
-        assert route is not None and route.fanning == 0
+        assert route is not None
+        assert route.fanning == 0
 
     def test_equal_length_equal_fanning_picks_smallest_tokens(self) -> None:
         models = _by(
@@ -258,7 +263,10 @@ class TestTieBreak:
     def test_root_is_the_empty_route(self) -> None:
         models = _named_two_cycle()
         route = shortest_route(root=models["a"], target="a", models_by_name=models)
-        assert route is not None and route.tokens == () and route.edges == () and route.fanning == 0
+        assert route is not None
+        assert route.tokens == ()
+        assert route.edges == ()
+        assert route.fanning == 0
 
     def test_shortest_routes_covers_every_reachable_model(self) -> None:
         models = _by(

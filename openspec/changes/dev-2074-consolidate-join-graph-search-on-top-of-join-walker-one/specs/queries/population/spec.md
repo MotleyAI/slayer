@@ -110,10 +110,14 @@ infers only the factor P from the remaining items.
 are determination items (determined, counting routed hops); saved measures and
 aggregation-suffixed items are attachments requiring reachability only and reported
 as such. Selection SHALL use the same rule as population inference so the two
-surfaces cannot disagree: a column item is determined from a candidate exactly when
-the inference probe finds it viable from that candidate. A feasible `root_hint`
-(determines all determination items, reaches all attachments) SHALL override
-selection; an infeasible one falls back with a warning; a malformed one raises. The
+surfaces cannot disagree whenever inference succeeds: a column item is determined
+from a candidate exactly when the inference probe finds it viable from that
+candidate. Only when no candidate is viable and an item's probe failed solely because
+a hop or its short-form route is ambiguous — never fanning or unreachable — SHALL
+recommendation resolve that item along its tie-break-best fan-out-free route and emit
+that full canonical path, so the recommended root executes once named as
+`source_model`. A feasible `root_hint` (determines all determination items under
+either rule, reaches all attachments) SHALL override selection; an infeasible one falls back with a warning; a malformed one raises. The
 no-common-root coverage output SHALL be retained with the per-item criterion updated
 to match. A pair whose unaddressable edges keep an item from being reached SHALL be
 named in the response warnings with the remedy to name its edges.
@@ -129,6 +133,16 @@ named in the response warnings with the remedy to name its edges.
 - **WHEN** the same dimension items are given to `recommend_root_model` and queried
   without `source_model`
 - **THEN** the recommended root equals the inferred population
+
+#### Scenario: Ambiguity is resolved by an explicit path
+
+- **WHEN** `orders` reaches `regions` by two fan-out-free routes (via `customers` and
+  via `warehouses`) and `recommend_root_model` is given `orders.status` and
+  `regions.population`
+- **THEN** the root is `orders` and the path for `regions.population` is
+  `customers.regions.population`, while
+  `{"dimensions": ["orders.status", "regions.population"]}` without `source_model`
+  fails with the ambiguous-path error
 
 #### Scenario: Recommendation and inference agree on a directed cycle
 

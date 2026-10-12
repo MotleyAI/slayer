@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, DerivedColumnAmbiguousError
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -82,7 +82,10 @@ class TestModeAAmbiguity:
                 *orders.columns,
                 Column(name="cust_tier", sql="customers.tier"),
             ]
-            await storage.save_model(orders)
+            with pytest.raises(DerivedColumnAmbiguousError):
+                await storage.save_model(orders)
+            # A definition stored without validation (migration write-back) still fails closed at query time.
+            await storage.save_model(orders, _validate=False)
             query = SlayerQuery(source_model="orders", dimensions=["cust_tier"])
             with pytest.raises(AmbiguousJoinPathError):
                 await engine.execute(query)

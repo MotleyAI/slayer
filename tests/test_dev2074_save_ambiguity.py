@@ -134,6 +134,7 @@ class TestAmbiguousDefinitionRejected:
         for exc in await _both_doors(tmp_path, model, _addresses(), expected=AmbiguousJoinPathError):
             assert not isinstance(exc, DerivedColumnAmbiguousError)
             assert "addresses.city = 'Paris'" in str(exc)
+            assert isinstance(exc, AmbiguousJoinPathError)
             _assert_names_both_edges(exc)
 
     async def test_transitive_reference_names_the_inner_column(self, tmp_path) -> None:
@@ -183,6 +184,7 @@ class TestAmbiguousDefinitionRejected:
                    Column(name="rn", type=DataType.TEXT, sql="customers.orders.customers.regions.name"),
                    joins=[_j("customers", "customer_id")])
         for exc in await _both_doors(tmp_path, model, regions, customers, expected=DerivedColumnCircularError):
+            assert isinstance(exc, DerivedColumnCircularError)
             assert exc.revisited == "orders"
 
     async def test_named_hop_through_the_same_pair_saves(self, tmp_path, door) -> None:
@@ -227,7 +229,8 @@ def _assert_dependent_warning(msg: str, *, model: str, definition: str, referenc
     assert f"'{model}'" in msg
     assert definition in msg
     assert reference in msg
-    assert "orders" in msg and "addresses" in msg
+    assert "orders" in msg
+    assert "addresses" in msg
     assert "edge name" in msg.lower()
 
 

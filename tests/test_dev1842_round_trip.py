@@ -14,12 +14,13 @@ from tests._dev1836_fixtures import _seed_duckdb, _seed_sqlite
 from tests._dev1842_fixtures import dev1842_models, q
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
 
-_CUSTOMER_ORDERS = (
-    "FROM customers c JOIN orders o2 ON o2.customer_id = c.id "
-    "WHERE c.id IN (SELECT customer_id FROM orders)"
+# The second ``orders`` occurrence is a virtual model over every order (Axiom 6):
+# its value never depends on the query root, so the orphan order counts, in the NULL tier.
+_TOTAL_SQL = "SELECT SUM(amount) FROM orders"
+_BY_TIER_SQL = (
+    "SELECT c.tier, SUM(o.amount) FROM orders o LEFT JOIN customers c "
+    "ON c.id = o.customer_id GROUP BY c.tier"
 )
-_TOTAL_SQL = f"SELECT SUM(o2.amount) {_CUSTOMER_ORDERS}"
-_BY_TIER_SQL = f"SELECT c.tier, SUM(o2.amount) {_CUSTOMER_ORDERS} GROUP BY c.tier"
 _TIER_CELLS_SQL = "SELECT DISTINCT c.tier FROM orders o LEFT JOIN customers c ON c.id = o.customer_id"
 
 
@@ -42,9 +43,9 @@ async def seeded(request):
 async def test_round_trip_composes_to_the_customers_orders_total(seeded) -> None:
     engine, dialect, db = seeded
     ((oracle,),) = _oracle(dialect, db, _TOTAL_SQL)
-    assert float(oracle) == pytest.approx(110.0)
+    assert float(oracle) == pytest.approx(117.0)
     resp = await engine.execute(q(measures=[{"formula": "customers.order_total", "name": "x"}]))
-    assert [float(r["orders.x"]) for r in resp.data] == pytest.approx([110.0])
+    assert [float(r["orders.x"]) for r in resp.data] == pytest.approx([117.0])
 
 
 async def test_round_trip_is_attributed_per_host_tier(seeded) -> None:
@@ -52,7 +53,7 @@ async def test_round_trip_is_attributed_per_host_tier(seeded) -> None:
     sums = dict(_oracle(dialect, db, _BY_TIER_SQL))
     oracle = {t: (None if sums.get(t) is None else float(sums[t]))
               for (t,) in _oracle(dialect, db, _TIER_CELLS_SQL)}
-    assert oracle == {"gold": 40.0, "silver": 30.0, "bronze": 40.0, None: None}
+    assert oracle == {"gold": 40.0, "silver": 30.0, "bronze": 40.0, None: 7.0}
     resp = await engine.execute(q(
         dimensions=["customers.tier"],
         measures=[{"formula": "customers.order_total", "name": "x"}],
