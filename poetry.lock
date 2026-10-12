@@ -3554,20 +3554,21 @@ utils = ["numpydoc"]
 
 [[package]]
 name = "living-architecture"
-version = "0.3.0"
+version = "0.3.1"
 description = "Spec-driven development with an enforced living architecture, as a Claude Code plugin plus its CLI tools."
 optional = false
 python-versions = ">=3.11"
 groups = ["dev"]
 files = [
-    {file = "living_architecture-0.3.0-py3-none-any.whl", hash = "sha256:91f812a55739c222f72048230c1b54acd64a6567815d7465238164cb64067e91"},
-    {file = "living_architecture-0.3.0.tar.gz", hash = "sha256:53675a478bcc0d3c69da271632bb7c2ca0ae3d861b1348319c44e2035fcfd573"},
+    {file = "living_architecture-0.3.1-py3-none-any.whl", hash = "sha256:d4b060d3a34912188cae4c7323b30e5083ee662020c55af74da456e59ae723ee"},
+    {file = "living_architecture-0.3.1.tar.gz", hash = "sha256:4f0d7027ea3a6cf5b52285c86bd49f63c4f018ce6425e787c6fdcccfb45f062b"},
 ]
 
 [package.dependencies]
 jsonschema = ">=4.18"
 pydantic = ">=2.6"
 pyyaml = ">=6"
+referencing = ">=0.28.4"
 rope = ">=1.13"
 
 [package.extras]
@@ -8281,4 +8282,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "9c0605859a499fe59971ba81876677abc23d543d9a4c9622ae25137eeb2b8cbb"
+content-hash = "b6e6f775928254caf6293c7ef5cb8474686fa374dddb4c3602066fad57ddec79"
