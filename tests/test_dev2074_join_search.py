@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core import join_search
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.join_search import (
     HopFilter,
     Route,
     UnaddressablePair,
     addressable_hops,
+    blocking_pairs,
     count_routes,
     distances,
     paths_from,
@@ -19,7 +21,7 @@ from slayer.core.join_search import (
     shortest_routes,
     unaddressable_pairs,
 )
-from slayer.core.join_walker import observe_traversals, resolve_hop
+from slayer.core.join_walker import neighbors, observe_traversals, resolve_hop
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
 
@@ -349,6 +351,52 @@ class TestRoutes:
         )
         got = routes(root=models["x"], target="z", models_by_name=models, cap=5)
         assert [r.tokens for r in got] == [("z",), ("y", "z")]
+
+
+class TestBlockingPairs:
+    def _shop(self) -> dict[str, SlayerModel]:
+        """``shop → orders ⇉ addresses → cities``."""
+        return _by(
+            _m("shop", joins=[_to("orders")]),
+            _m("orders", joins=[_to("addresses"), _to("addresses", src="fk2")]),
+            _m("addresses", joins=[_to("cities")]),
+            _m("cities"),
+        )
+
+    def test_pair_on_the_way_to_the_target_is_reported(self) -> None:
+        models = self._shop()
+        for target in ("addresses", "cities"):
+            pairs = blocking_pairs(root=models["shop"], target=target, models_by_name=models)
+            assert [{p.source_model, p.target_model} for p in pairs] == [{"orders", "addresses"}]
+
+    def test_reached_target_reports_nothing(self) -> None:
+        models = self._shop()
+        assert blocking_pairs(root=models["shop"], target="orders", models_by_name=models) == []
+
+    def test_pair_reaching_the_target_only_through_the_spine_is_not_reported(self) -> None:
+        ts = [Column(name="at", type=DataType.TIMESTAMP)]
+        models = _by(
+            _m("a", joins=[_to("b"), _to("b", src="fk2")]),
+            _m("b", extra=ts, default_time_dimension="at"),
+            _m("c", extra=ts, default_time_dimension="at"),
+            spine_model(data_source="ds"),
+        )
+        assert blocking_pairs(root=models["a"], target="c", models_by_name=models) == []
+
+    def test_neighbor_reads_do_not_grow_with_the_pair_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        hub = _m("hub", joins=[_to(f"m{i}", src="grp", tgt="grp") for i in range(3)])
+        spokes = [_m(f"m{i}", joins=[_to(f"leaf{i}"), _to(f"leaf{i}", src="fk2")]) for i in range(3)]
+        models = _by(hub, *spokes, _m("leaf0", joins=[_to("far")]), _m("leaf1"), _m("leaf2"), _m("far"))
+        calls: dict[str, int] = {}
+
+        def counting(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]):
+            calls[model.name] = calls.get(model.name, 0) + 1
+            return neighbors(model=model, models_by_name=models_by_name)
+
+        monkeypatch.setattr(join_search, "neighbors", counting)
+        pairs = blocking_pairs(root=models["hub"], target="far", models_by_name=models)
+        assert len(pairs) == 3
+        assert max(calls.values()) <= 3
 
 
 class TestCountRoutes:

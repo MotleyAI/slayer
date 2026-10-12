@@ -111,8 +111,9 @@ class _Graph:
         """A route may continue through ``name``: the root, or anything but the spine."""
         return name == root or not is_spine(self.models[name])
 
-    def relevant(self, *, root: str, target: str) -> set[str]:
-        """Models a simple route ``root → target`` can visit (reverse BFS, never through the root or spine)."""
+    def relevant(self, *, root: str | None, target: str) -> set[str]:
+        """Models a simple route ``root → target`` can visit (reverse BFS, never through the root or spine);
+        with no ``root``, every model with a route to ``target``."""
         seen = {target}
         frontier = deque([target])
         while frontier:
@@ -160,12 +161,12 @@ def blocking_pairs(
     """The unaddressable pairs between what ``root`` routes to and ``target``."""
     models = {**models_by_name, root.name: root}
     reached = set(shortest_routes(root=root, models_by_name=models))
-    if target in reached:
+    if target in reached or target not in models:
         return []
+    reaching = _Graph(models).relevant(root=None, target=target)
     return [
         p for p in unaddressable_pairs(models_by_name=models)
-        if any(a in reached and (b == target or count_routes(root=models[b], target=target,
-                                                             models_by_name=models, cap=1))
+        if any(a in reached and b in reaching
                for a, b in ((p.source_model, p.target_model), (p.target_model, p.source_model)))
     ]
 
