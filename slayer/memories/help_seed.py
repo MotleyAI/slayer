@@ -28,7 +28,7 @@ _DESCRIPTIONS: dict[str, str] = {
     "workflow": "Read before building a non-trivial query: method, filter literals, verifying a result, error decoder, connecting databases.",
     "aggregations": "Read when a measure needs an aggregation beyond sum/count, partition_by, a trailing window, nesting, or empty-input semantics.",
     "transforms": "Read when a measure needs a running total, period-over-period change, time shift, lag/lead, ranking, or a streak.",
-    "time": "Read when a query filters or buckets by time: time-point forms, date_range and look-back, running totals from the start, gaps.",
+    "time": "Read when a query filters or buckets by time: time-point forms, date_range and look-back, running totals from the start.",
     "joins": "Read when a query uses another model's fields: dotted paths, choosing the root, joined aggregates, broadcast vs associate, anti-joins.",
     "queries": "Read when one query object is not enough: query shapes, stages and their column names, raw rows, variables, debugging.",
 }

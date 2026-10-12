@@ -18,7 +18,7 @@ than guessing: which aggregation ("typical" is not automatically avg vs median),
 grouping column and raw vs standardized labels, each aggregate's scope (all rows vs a
 filtered subset), sort column + direction + tie-break, NULL handling, units and
 rounding, exact numeric constants. "How many" is a scalar `count(*)`; "which / list /
-show" is the rows. Project exactly the columns the question names.
+show" is the rows.
 
 Answer with one query whenever the query language can express it (shares, ranks,
 windows, period-over-period, joined aggregates, nesting) instead of combining several

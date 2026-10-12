@@ -101,7 +101,7 @@ claude mcp list
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`). Required. |
+| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`); an invalid argument reports only the errors of the form its JSON type selects. Required. |
 | `variables` | dict | Values for `{var}` placeholder substitution in filters. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
