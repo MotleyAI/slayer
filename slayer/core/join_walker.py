@@ -36,6 +36,8 @@ from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_col
 __all__ = [
     "OrientedJoin",
     "OrientedLike",
+    "addressable_token",
+    "addresses_alone",
     "aggregation_owner",
     "canonical_path",
     "canonical_token",
@@ -353,6 +355,19 @@ def resolve_hop(
         )
     _observe([candidates[0].target_model], strict=True)
     return candidates[0]
+
+
+def addresses_alone(*, edge: OrientedJoin, incident: list[OrientedJoin]) -> bool:
+    """Whether ``edge``'s canonical token names it alone among ``incident`` (its source's edges)."""
+    return matching_edges(incident, canonical_token(edge)) == [edge]
+
+
+def addressable_token(
+    *, current: SlayerModel, edge: OrientedJoin, models_by_name: dict[str, SlayerModel],
+) -> str | None:
+    """``edge``'s hop token from ``current`` (name first), or ``None`` when the hop is unaddressable."""
+    incident = neighbors(model=current, models_by_name=models_by_name)
+    return canonical_token(edge) if addresses_alone(edge=edge, incident=incident) else None
 
 
 class WalkMiss(BaseModel):

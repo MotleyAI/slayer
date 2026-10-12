@@ -1,11 +1,11 @@
-"""DEV-1706 Stage 2 — ``ScopeFrame`` + the single resolver (Laws 1 & 2).
+"""``ScopeFrame`` + the single resolver (Laws 1 & 2).
 
 A query renders as a tree of SELECT scopes, each rooted at one relation. Every
 expression enters a scope through :meth:`ScopeFrame.resolve`, which:
 
 * **Law 1 (anchored rendering):** expands derived refs (reserved-word
-  identifiers prequoted — DEV-1686; multi-term derived expansions parenthesised
-  — DEV-1539), anchors every reference at the scope root or a ``__``-path join
+  identifiers prequoted; multi-term derived expansions parenthesised
+ ), anchors every reference at the scope root or a ``__``-path join
   alias, and REGISTERS each crossed join path into ``join_paths`` in the same
   call. Discovery is a side effect of rendering — it can never be forgotten.
 * **Law 2 (projection boundaries):** when a ``consumer`` scope is named, the
@@ -48,6 +48,7 @@ from slayer.sql.column_expansion import (
     expand_derived_refs_sync,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator, quote_mixed_case_identifiers
 from slayer.sql.render.parse import parse_expression, parse_predicate
@@ -58,8 +59,8 @@ from slayer.sql.reserved_keywords import (
     prequote_reserved_identifiers,
 )
 
-# The resolver relies on sqlglot's reserved-word quoting on emit (DEV-1686).
-install_reserved_keywords()
+# The resolver relies on sqlglot's reserved-word quoting on emit.
+install_reserved_keywords(SQLGLOT_NAMES)
 
 # The two Mode-A grammars. A static property of the surface being read, chosen
 # by the call site — never sniffed from the text (see ``ScopeFrame._enter``).
@@ -123,7 +124,7 @@ class ScopeFrame(BaseModel):
     allocator: AliasAllocator
     join_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
-    # DEV-1825 — reserved-leaf placeholder → its rendered column on an attached
+    # reserved-leaf placeholder → its rendered column on an attached
     # regroup producer CTE. Resolved by EXACT membership before ordinary column
     # anchoring; a prefixed leaf that misses this registry is fail-closed.
     attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
@@ -136,7 +137,7 @@ class ScopeFrame(BaseModel):
         when a ``consumer`` scope is named — materialise it and return the bare
         alias for the consumer.
 
-        DEV-1743: ``_anchor`` registers the crossed join paths STRUCTURALLY
+        ``_anchor`` registers the crossed join paths STRUCTURALLY
         (into ``self.join_paths``) as it resolves — the emitted AST is never
         re-scanned, because an internal ``__`` join alias is indistinguishable
         from a user ``__``-named model once serialized."""
@@ -192,13 +193,13 @@ class ScopeFrame(BaseModel):
 
         One pass, in order:
 
-        1. prequote reserved identifiers (DEV-1686),
+        1. prequote reserved identifiers,
         2. parse the PREQUOTED text and scan it for crossed join paths,
         3. expand derived refs, parse the EXPANDED text and scan that too,
         4. union both scans into ``join_paths``,
         5. Law 2 — materialise for a named ``consumer``, else return the AST.
 
-        Both scans are load-bearing (the DEV-1494 dual-scan contract): a dotted
+        Both scans are load-bearing (the dual-scan contract): a dotted
         ref whose derived column inlines to a constant vanishes from the
         expanded AST, so only the pre-expansion scan sees its join; and a bare
         derived ref only reveals the joins its expansion crosses AFTER
@@ -247,9 +248,9 @@ class ScopeFrame(BaseModel):
         )
         # Scan the RAW (dotted) form for the join paths its references cross;
         # the expansion below additionally registers any joins revealed only by
-        # inlining a derived column (the DEV-1494 dual-discovery contract), now
+        # inlining a derived column (the dual-discovery contract), now
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
-        # the internal-alias output (DEV-1743).
+        # the internal-alias output.
         self._register_join_paths(
             raw_ast, owner_model=owner_model, owner_relation=alias_path,
             owner_path=owner_path,
@@ -316,7 +317,7 @@ class ScopeFrame(BaseModel):
         return self.bundle.models_by_name
 
     def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
-        """The WP3 registry-backed alias resolver for this scope (DEV-1743):
+        """The WP3 registry-backed alias resolver for this scope:
         maps a root-relative join path to the internal JOIN alias the generator
         will emit, so ``expand_derived_refs_sync`` qualifies refs to a matching
         alias even when a chain leaf collides with a literal ``__``-named
@@ -378,7 +379,7 @@ class ScopeFrame(BaseModel):
 
     def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — flat dispatch over the Ref kinds (ColumnKey / ColumnSqlKey / str); each arm is independently simple and splitting would scatter the one-resolver-per-scope contract
         if isinstance(ref, ColumnKey):
-            # DEV-1825: a regroup placeholder resolves from the attach registry
+            # A regroup placeholder resolves from the attach registry
             # by EXACT membership; a reserved-prefix leaf that misses is
             # fail-closed — but ONLY when a regroup is active in this scope
             # (non-empty registry). With nothing attached, a leaf that merely
@@ -394,7 +395,7 @@ class ScopeFrame(BaseModel):
                     f"through the attach registry; reaching column anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
-            # DEV-1743: the allocator is the single join-alias authority
+            # The allocator is the single join-alias authority
             # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
@@ -410,7 +411,7 @@ class ScopeFrame(BaseModel):
             col = next(
                 (c for c in model.columns if c.name == ref.column_name), None,
             )
-            # DEV-1711: a derived column ON a JOINED model (``path`` non-empty,
+            # A derived column ON a JOINED model (``path`` non-empty,
             # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
             # anchors at its ``__``-path alias (``owner_path=ref.path``) so a
             # bare inner ref (``name``) qualifies to ``stores.name`` and a
@@ -435,7 +436,7 @@ class ScopeFrame(BaseModel):
                     crossed_paths=self.join_paths,
                 )
                 return self._parse(expanded or ref.column_name)
-            # DEV-1832: a ``Column.filter`` desugars to CASE WHEN here — the value
+            # A ``Column.filter`` desugars to CASE WHEN here — the value
             # and filter expand through the same door at ``owner_path``.
             expanded = expand_column_definition_sync(
                 column=col,

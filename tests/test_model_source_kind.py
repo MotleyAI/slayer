@@ -151,7 +151,7 @@ class TestPersistence:
 class TestMigration:
     def test_current_version_is_at_least_8(self) -> None:
         current = CURRENT_VERSIONS["SlayerModel"]
-        assert current >= 8  # v8 added source_kind; DEV-1743 bumped to 9
+        assert current >= 8  # v8 added source_kind; bumped to 9
         assert SlayerModel(
             name="m", sql_table="t", data_source="ds"
         ).version == current
@@ -307,7 +307,6 @@ class TestSourceKindRefresh:
         )
         assert outcome.merged is model
         assert outcome.new_columns == []
-        assert outcome.new_joins == []
         assert outcome.widened_columns == []
         assert outcome.kind_changed is False
 

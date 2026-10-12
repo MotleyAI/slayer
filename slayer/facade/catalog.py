@@ -19,7 +19,7 @@ import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.join_search import paths_from, unaddressable_pairs
-from slayer.core.join_walker import OrientedJoin
+from slayer.core.join_walker import OrientedJoin, OrientedLike, neighbors
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
@@ -30,7 +30,6 @@ from slayer.core.enums import (
 from slayer.core.models import (
     Aggregation,
     Column,
-    ModelJoin,
     SlayerModel,
     is_identifier,
 )
@@ -83,6 +82,7 @@ class FacadeJoin(BaseModel):
     join_pairs: list[list[str]]
     join_type: JoinType = JoinType.LEFT
     cardinality: JoinCardinality | None = None
+    name: str | None = None
 
 
 class FacadeTable(BaseModel):
@@ -340,24 +340,24 @@ def _build_table(
 def _facade_joins_for(
     *, model: SlayerModel, models_by_name: dict[str, SlayerModel],
 ) -> list[FacadeJoin]:
-    """Expose every direct (single-hop) join whose target is a non-hidden
-    model in the same catalog. Mirrors the BFS filter so the translator's
-    existence check never matches a join that isn't otherwise addressable."""
+    """Every edge incident to ``model``, oriented from it, whose other end is a
+    non-hidden model in the same catalog (the BFS filter)."""
     out: list[FacadeJoin] = []
-    for j in model.joins:
-        target = models_by_name.get(j.target_model)
-        if target is None or target.hidden:
+    for edge in neighbors(model=model, models_by_name=models_by_name):
+        target = models_by_name.get(edge.target_model)
+        if target is None or target.hidden or not edge.join_pairs:
             continue
-        out.append(_facade_join_from(join=j))
+        out.append(_facade_join_from(join=edge))
     return out
 
 
-def _facade_join_from(*, join: ModelJoin) -> FacadeJoin:
+def _facade_join_from(*, join: OrientedLike) -> FacadeJoin:
     return FacadeJoin(
         target_model=join.target_model,
         join_pairs=[list(pair) for pair in join.join_pairs],
         join_type=join.join_type,
         cardinality=join.cardinality,
+        name=join.name,
     )
 
 

@@ -15,7 +15,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.join_walker import OrientedJoin, canonical_token, matching_edges, neighbors, provably_to_one
+from slayer.core.join_walker import OrientedJoin, addresses_alone, canonical_token, neighbors, provably_to_one
 from slayer.core.models import SlayerModel
 from slayer.core.time_spine import is_spine
 
@@ -96,10 +96,8 @@ class _Graph:
                 target = self.models.get(e.target_model)
                 if target is None:
                     continue
-                token = canonical_token(e)
-                hits = matching_edges(edges, token)
-                hops.append(_Hop(edge=e, token=token, to_one=provably_to_one(edge=e, target_model=target),
-                                 addressable=len(hits) == 1 and hits[0] is e))
+                hops.append(_Hop(edge=e, token=canonical_token(e), to_one=provably_to_one(edge=e, target_model=target),
+                                 addressable=addresses_alone(edge=e, incident=edges)))
             hops.sort(key=lambda h: (h.token, h.edge.target_model))
             self._memo[name] = hops
         return hops

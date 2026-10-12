@@ -14,7 +14,7 @@ No join-related SQL is baked into the models — joins are resolved dynamically 
 
 ## FK graph discovery
 
-The first step is building a directed graph from FK constraints: each edge means "this table has a foreign key pointing to that table." SLayer validates that the graph is acyclic (cycles would create infinite join chains) and raises a `RollupGraphError` if any are found.
+The first step is reading the FK constraints: each one means "this table has a foreign key pointing to that table," and each becomes a join even when the FKs form a cycle.
 
 ## Join generation
 
