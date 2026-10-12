@@ -211,6 +211,9 @@ __marimo__/
 
 .claude/settings.local.json
 
+# Per-contributor living-architecture overrides
+living-architecture.local.yaml
+
 examples/postgres/slayer_data/
 benchmarks/
 

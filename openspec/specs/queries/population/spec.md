@@ -120,6 +120,15 @@ infers only the factor P from the remaining items.
 - **THEN** P is `customers` (not `orders` or `returns`, which also determine the
   spine), and the population is `time_spine × customers`
 
+#### Scenario: A directed cycle needs an explicit population
+
+- **WHEN** `x`, `y` and `z` are joined many-to-one in a directed cycle `x → y → z → x`
+  and a query without `source_model` has `dimensions=[x.v, y.v, z.v]`
+- **THEN** inference fails closed with no viable candidate, because from every
+  candidate one of the items resolves literally across the adjacent edge in its
+  fanning orientation; the same query with `source_model="x"` and the dimension
+  `y.z.v` in place of `z.v` executes
+
 ### Requirement: Inference fails closed
 
 Inference SHALL raise a typed population-inference error — with a stable message
@@ -245,10 +254,17 @@ The REST query endpoint and the MCP query tool SHALL accept a query without
 are determination items (determined, counting routed hops); saved measures and
 aggregation-suffixed items are attachments requiring reachability only and reported
 as such. Selection SHALL use the same rule as population inference so the two
-surfaces cannot disagree. A feasible `root_hint` (determines all determination
-items, reaches all attachments) SHALL override selection; an infeasible one falls
-back with a warning; a malformed one raises. The no-common-root coverage output
-SHALL be retained with the per-item criterion updated to match.
+surfaces cannot disagree whenever inference succeeds: a column item is determined
+from a candidate exactly when the inference probe finds it viable from that
+candidate. Only when no candidate is viable and an item's probe failed solely because
+a hop or its short-form route is ambiguous — never fanning or unreachable — SHALL
+recommendation resolve that item along its tie-break-best fan-out-free route and emit
+that full canonical path, so the recommended root executes once named as
+`source_model`. A feasible `root_hint` (determines all determination items under
+either rule, reaches all attachments) SHALL override selection; an infeasible one falls back with a warning; a malformed one raises. The
+no-common-root coverage output SHALL be retained with the per-item criterion updated
+to match. A pair whose unaddressable edges keep an item from being reached SHALL be
+named in the response warnings with the remedy to name its edges.
 
 #### Scenario: Saved measure does not steer the recommendation
 
@@ -261,6 +277,30 @@ SHALL be retained with the per-item criterion updated to match.
 - **WHEN** the same dimension items are given to `recommend_root_model` and queried
   without `source_model`
 - **THEN** the recommended root equals the inferred population
+
+#### Scenario: Ambiguity is resolved by an explicit path
+
+- **WHEN** `orders` reaches `regions` by two fan-out-free routes (via `customers` and
+  via `warehouses`) and `recommend_root_model` is given `orders.status` and
+  `regions.population`
+- **THEN** the root is `orders` and the path for `regions.population` is
+  `customers.regions.population`, while
+  `{"dimensions": ["orders.status", "regions.population"]}` without `source_model`
+  fails with the ambiguous-path error
+
+#### Scenario: Recommendation and inference agree on a directed cycle
+
+- **WHEN** `recommend_root_model` is given `x.v`, `y.v` and `z.v` on the directed
+  cycle `x → y → z → x`
+- **THEN** no root is recommended, matching inference's failure, and the coverage
+  output reports which items each candidate determines
+
+#### Scenario: An unaddressable pair is named in the warnings
+
+- **WHEN** `orders` declares two unnamed joins to `addresses` and
+  `recommend_root_model` is given `orders.id` and `addresses.city`
+- **THEN** the response warnings name `orders`↔`addresses` and the remedy to name
+  the edges
 
 ### Requirement: Population specs are typed at construction
 

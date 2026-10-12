@@ -6,9 +6,11 @@ from ``StorageBackend.save_model`` (skipped under ``_validate=False``), this
 early-failure layer rejects a path that revisits a model already on it
 (``DerivedColumnCircularError``) or provably fans (``DerivedColumnFanningError``),
 warns on an unproven hop (query-time input-safety gate is the backstop), and
-rejects a derived-column cycle (``ColumnCycleError``). Best-effort, same-datasource,
-saved model only; unresolved/unloaded/ambiguous targets are skipped and the
-compile-time/query-time guards remain authoritative.
+rejects a derived-column cycle (``ColumnCycleError``). A reference crossing an ambiguous hop is rejected
+(``DerivedColumnAmbiguousError``); a save that changes the model's edges warns
+about other models' definitions it breaks. Best-effort, same-datasource;
+unresolved/unloaded targets are skipped and the compile-time/query-time guards
+remain authoritative.
 """
 from __future__ import annotations
 
@@ -21,10 +23,11 @@ from slayer.core.errors import (
     AmbiguousJoinPathError,
     CircularJoinPathError,
     ColumnCycleError,
+    DerivedColumnAmbiguousError,
     DerivedColumnCircularError,
     DerivedColumnFanningError,
 )
-from slayer.core.join_walker import provably_to_one, resolve_hop, walk
+from slayer.core.join_walker import provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.join_safety import provably_fans
 from slayer.sql.column_expansion import (
@@ -139,36 +142,25 @@ def _filter_ref_target(
 ) -> SlayerModel | None:
     """The model a filter reference resolves to; a leading hop naming no join edge
     on ``host`` fails the save (a known-but-unloaded target returns ``None`` — its
-    reverse join may exist but is invisible here — only an unknown token raises)."""
-    first = _first_hop(quals=quals, host=host)
-    if first is None:
+    reverse join may exist but is invisible here — only an unknown token raises).
+    An ambiguous or revisiting path is judged elsewhere and skipped here."""
+    path = _hop_path(quals=quals, host=host)
+    if not path:
         return host
-    if not _is_join_hop(host=host, token=first, reachable=reachable):
-        if first in known_but_unloaded:
-            return None
+    try:
+        walked = walk_terminal(root=host, path=path, models_by_name=reachable)
+        miss = walk_miss(root=host, path=path, models_by_name=reachable) if walked is None else None
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if walked is not None:
+        return walked[0]
+    if miss is not None and miss.index == 0 and miss.kind == "no_edge" and path[0] not in known_but_unloaded:
         raise ValueError(
             f"Column {column.name!r} on model {host.name!r} has a filter "
             f"referencing {'.'.join((*quals, leaf))!r}, which does not "
             f"resolve to a joined model from {host.name!r}."
         )
-    return resolve_ref_target(
-        qualifiers=quals, source_model=host, models_by_name=reachable,
-    )
-
-
-def _first_hop(*, quals, host: SlayerModel):
-    """The leading join-hop token of a reference, or ``None`` when host-local."""
-    path = _hop_path(quals=quals, host=host)
-    return path[0] if path else None
-
-
-def _is_join_hop(*, host: SlayerModel, token: str, reachable: dict[str, SlayerModel]) -> bool:
-    """Whether ``token`` names a join edge incident to ``host`` (its own declared
-    joins, resolvable without loading the target); ambiguous counts as a hop."""
-    try:
-        return resolve_hop(current=host, token=token, models_by_name=reachable) is not None
-    except AmbiguousJoinPathError:
-        return True
+    return None
 
 
 def _node_dependencies(
@@ -255,15 +247,12 @@ def _classify_hop_path(
     """Classify a reference's hop ``path`` from ``host``: ``("fanning", token)`` on
     the first fanning hop (beats any later hop), ``("unproven", token)`` on the first
     hop neither provably to-one nor fanning, else ``None``. Empty/unresolvable/
-    ambiguous/unloaded → ``None`` (``walk`` returns ``None`` for a target absent from
+    unloaded → ``None`` (``walk`` returns ``None`` for a target absent from
     ``reachable``, so arity is never proven on topology this prefetch cannot see); a
     revisit propagates its ``CircularJoinPathError`` (caught one level up)."""
     if not path:
         return None
-    try:
-        chain = walk(root=host, path=path, models_by_name=reachable)
-    except AmbiguousJoinPathError:
-        return None
+    chain = walk(root=host, path=path, models_by_name=reachable)
     if chain is None:
         return None
     unproven: str | None = None
@@ -345,6 +334,99 @@ def _check_reference_arity(
         )
 
 
+def _definitions(model: SlayerModel) -> Iterator[tuple[Column | None, str]]:
+    """``(column or None for a model filter, fragment)`` for every Mode-A definition on ``model``."""
+    for column in model.columns:
+        for fragment in _arity_reference_sources(column):
+            yield column, fragment
+    for sql in model.filters or []:
+        yield None, sql
+
+
+def _definition_label(*, column: Column | None, fragment: str) -> str:
+    return f"column {column.name!r}" if column is not None else f"model filter {fragment!r}"
+
+
+def check_definition_ambiguity(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> None:
+    """Reject a Mode-A definition on ``model`` whose path crosses an ambiguous hop: a column's
+    as :class:`DerivedColumnAmbiguousError`, a model filter's as the base error naming it. A
+    revisit met first on the path is left to the circular verdict."""
+    models = {**reachable, model.name: model}
+    for column, fragment in _definitions(model):
+        for quals, leaf in _fragment_refs(fragment) or []:
+            reference = ".".join((*quals, leaf))
+            try:
+                walk(root=model, path=_hop_path(quals=quals, host=model), models_by_name=models)
+            except CircularJoinPathError:
+                continue
+            except AmbiguousJoinPathError as exc:
+                if column is not None:
+                    raise DerivedColumnAmbiguousError(
+                        column=column.name, model=model.name, reference=reference, error=exc,
+                    ) from exc
+                raise AmbiguousJoinPathError(
+                    source_model=exc.source_model, target_model=exc.target_model,
+                    candidates=exc.candidates, token=exc.token,
+                    context=f"Model filter {fragment!r} on model {model.name!r} references {reference!r}",
+                ) from exc
+
+
+def _ref_break(
+    *, host: SlayerModel, path: tuple[str, ...], before: dict[str, SlayerModel], after: dict[str, SlayerModel],
+) -> str | None:
+    """How a reference path that resolved under ``before`` breaks under ``after``, else ``None``."""
+    try:
+        if walk_terminal(root=before[host.name], path=path, models_by_name=before) is None:
+            return None
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    try:
+        if walk_terminal(root=after[host.name], path=path, models_by_name=after) is not None:
+            return None
+        miss = walk_miss(root=after[host.name], path=path, models_by_name=after)
+    except AmbiguousJoinPathError as exc:
+        return (f"crosses {exc.source_model!r}↔{exc.target_model!r}, which two or more edges now connect; "
+                f"spell that hop by an edge name")
+    except CircularJoinPathError:
+        return None
+    assert miss is not None
+    return (f"is no longer resolvable: the hop {miss.token!r} no longer exists; reconnect it, "
+            f"or spell the path through the remaining joins (by edge name where a pair has several)")
+
+
+def warn_broken_dependents(
+    *, model: SlayerModel, stored: SlayerModel | None, peers: dict[str, SlayerModel],
+) -> None:
+    """When ``model``'s edges differ from ``stored``, warn once per other model's Mode-A
+    definition reference that resolved before the save and breaks after it."""
+    def edge_set(m: SlayerModel | None) -> list[str]:
+        return sorted(j.model_dump_json() for j in (m.joins if m is not None else []))
+
+    if edge_set(model) == edge_set(stored):
+        return
+    others = {n: p for n, p in peers.items() if n != model.name}
+    before = {**others, **({model.name: stored} if stored is not None else {})}
+    after = {**others, model.name: model}
+    for name in sorted(others):
+        for label, reference, broken in _broken_references(host=others[name], before=before, after=after):
+            warnings.warn(
+                f"Saving model {model.name!r}: {label} on model {name!r} references {reference!r}, which {broken}.",
+                UserWarning, stacklevel=3,
+            )
+
+
+def _broken_references(
+    *, host: SlayerModel, before: dict[str, SlayerModel], after: dict[str, SlayerModel],
+) -> Iterator[tuple[str, str, str]]:
+    """``(definition label, reference, how it broke)`` for each of ``host``'s references broken by the save."""
+    for column, fragment in _definitions(host):
+        for quals, leaf in _fragment_refs(fragment) or []:
+            path = _hop_path(quals=quals, host=host)
+            broken = _ref_break(host=host, path=path, before=before, after=after) if path else None
+            if broken is not None:
+                yield _definition_label(column=column, fragment=fragment), ".".join((*quals, leaf)), broken
+
+
 def validate_derived_columns(
     *,
     model: SlayerModel,
@@ -357,6 +439,7 @@ def validate_derived_columns(
     failed to load, whose reverse joins can't be proved absent. Best-effort; the
     compile-time / query-time guards remain authoritative."""
     reachable = {**peers, model.name: model}
+    check_definition_ambiguity(model=model, reachable=reachable)
     _check_reference_arity(model=model, reachable=reachable)
     # Iterate roots in a deterministic order so the reported cycle is
     # stable across runs.

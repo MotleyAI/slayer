@@ -89,6 +89,13 @@ async def _engine(*extra_models: SlayerModel) -> Tuple[SlayerQueryEngine, tempfi
     return engine, tmp
 
 
+async def _dry_run_sql(engine: SlayerQueryEngine, name: str) -> str:
+    """The SQL a dry run of the saved model ``name`` renders."""
+    sql = (await engine.execute(name, dry_run=True)).sql
+    assert sql is not None
+    return sql
+
+
 # ---------------------------------------------------------------------------
 # Topo-sort acceptance on STORED source_queries (decision #1)
 # ---------------------------------------------------------------------------
@@ -171,8 +178,7 @@ class TestStoredSourceQueriesTopoSort:
         engine, tmp = await _engine()
         try:
             saved = await engine.save_model(non_ordered)
-            assert saved.backing_query_sql is not None
-            assert "orders_t" in saved.backing_query_sql.lower()
+            assert "orders_t" in (await _dry_run_sql(engine, saved.name)).lower()
         finally:
             tmp.cleanup()
 
@@ -492,7 +498,7 @@ class TestVirtualModelColumns:
 
         Save-time persisted ``data_source.default_time_dimension`` follows
         whatever the user passes on construction — the cache populator
-        only updates ``columns`` / ``backing_query_sql`` / ``data_source``,
+        only updates ``columns`` / ``data_source``,
         consistent with legacy behaviour.
         """
         m = SlayerModel(
@@ -732,9 +738,8 @@ class TestNestedQueryBackedSavePath:
         engine, tmp = await _engine(_customers_model(), qb_b)
         try:
             saved = await engine.save_model(qb_a)
-            assert saved.backing_query_sql is not None
-            # Both inner tables must appear in the rendered backing SQL.
-            sql_lower = saved.backing_query_sql.lower()
+            # Both inner tables must appear in the rendered SQL.
+            sql_lower = (await _dry_run_sql(engine, saved.name)).lower()
             assert "orders_t" in sql_lower
             assert "customers_t" in sql_lower
         finally:
@@ -794,13 +799,13 @@ class TestSavePath:
         engine, tmp = await _engine()
         try:
             saved = await engine.save_model(m)
-            assert saved.backing_query_sql is not None
+            sql = await _dry_run_sql(engine, saved.name)
             # The sibling's filter ``amount > {threshold}`` must
             # substitute to ``amount > 100`` (the outer model default),
             # not to ``amount > 0`` (the dry-run placeholder fallback).
-            assert "> 100" in saved.backing_query_sql, (
+            assert "> 100" in sql, (
                 f"Sibling filter must inherit outer model.query_variables; "
-                f"placeholder fill leaked into:\n{saved.backing_query_sql}"
+                f"placeholder fill leaked into:\n{sql}"
             )
         finally:
             tmp.cleanup()
@@ -853,7 +858,7 @@ class TestSavePath:
 
     async def test_create_model_from_query_save_false_populates_cache(self) -> None:
         """``create_model_from_query(..., save=False)`` returns a model
-        whose ``columns`` / ``backing_query_sql`` / ``data_source`` are
+        whose ``columns`` / ``data_source`` are
         populated by the migrated ``_validate_and_populate_cache``.
         """
         engine, tmp = await _engine()
@@ -868,7 +873,6 @@ class TestSavePath:
                 save=False,
             )
             assert built.columns, "save=False must still populate columns"
-            assert built.backing_query_sql is not None
             assert built.data_source == "ds"
         finally:
             tmp.cleanup()

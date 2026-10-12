@@ -12,8 +12,8 @@ Callbacks (so the transform is model-agnostic and unit-testable in isolation):
 import sqlglot
 
 from slayer.core.enums import DataType
+from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.join_graph import JoinGraph
 from slayer.osi.expression import convert_expression
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
@@ -230,7 +230,7 @@ def test_unreachable_ref_clean_fails():
 
 def test_multihop_ref_backed_by_real_join_graph():
     # Prove the expression layer builds the SAME dotted path the converter would,
-    # driven by JoinGraph.shortest_path (orders -> customers -> regions).
+    # driven by join_search.shortest_route (orders -> customers -> regions).
     models = [
         SlayerModel(name="orders", sql_table="orders", data_source="d",
                     columns=[Column(name="customer_id", type=DataType.INT)],
@@ -243,14 +243,14 @@ def test_multihop_ref_backed_by_real_join_graph():
         SlayerModel(name="regions", sql_table="regions", data_source="d",
                     columns=[Column(name="population", type=DataType.INT)]),
     ]
-    graph = JoinGraph.build_from_models(models)
+    by_name = {m.name: m for m in models}
     anchor = "orders"
 
     def ref_of(model: str, column: str):
-        path = graph.shortest_path(anchor, model)
-        if path is None:
+        route = shortest_route(root=by_name[anchor], target=model, models_by_name=by_name)
+        if route is None:
             return None
-        return ".".join([*path, column])
+        return ".".join([*route.tokens, column])
 
     r = _run("SUM(regions.population)", owner_of=lambda q, c: "regions", ref_of=ref_of)
     assert r.ok

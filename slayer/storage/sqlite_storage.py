@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sqlite3
+from collections.abc import Hashable
 from typing import Any
 
 from slayer.core.errors import StoredDocumentLoadError
@@ -22,6 +23,7 @@ from slayer.storage.base import (
     _validate_path_component,
     _write_sample_fields,
 )
+from slayer.storage.content_fingerprint import stat_key
 from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
@@ -173,17 +175,21 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 "ON memory_entities(entity)"
             )
 
-    # ---- graph fingerprint -------------------------------------------------
+    # ---- cache keys --------------------------------------------------------
 
-    async def graph_fingerprint(self) -> str:
-        """mtime of the SQLite database file as a string.
+    async def cache_identity(self) -> Hashable:
+        return os.path.abspath(self.db_path)
 
-        Any write to the database changes the file's mtime, so this is
-        an O(1) staleness check — no table scans required.
-        """
-        return str(os.path.getmtime(self.db_path))
+    async def graph_fingerprint(self) -> str | None:
+        """The header's file change counter, which every committed write bumps (rollback-journal mode), plus the file's stat."""
+        return await asyncio.to_thread(self._fingerprint_sync)
 
     # --- Sync helpers (run in thread to avoid blocking the event loop) ---
+
+    def _fingerprint_sync(self) -> str:
+        with open(self.db_path, "rb") as f:
+            counter = f.read(28)[24:28]
+        return f"{counter.hex()}:{stat_key(self.db_path)}"
 
     def _save_model_sync(self, model: SlayerModel) -> None:
         data = json.dumps(model.model_dump(mode="json", exclude_none=True))

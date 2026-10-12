@@ -6,26 +6,26 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel
 
-from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS, invert_cardinality
-from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS
+from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.join_search import HopFilter, routes
 from slayer.core.join_walker import (
     OrientedJoin,
     OrientedLike,
     canonical_path,
+    edges_between,
+    follow,
     is_product_edge,
-    neighbors,
     provably_to_one,
     resolve_hop,
     reverse_token,
     unique_key_sets,
-    walk,
 )
-from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
+from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
@@ -94,13 +94,10 @@ def safe_reachable(
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
 ) -> bool:
-    """Is ``path`` a reachable chain of provably many-to-one hops from ``root``?
-    Any declared edge traverses in either orientation; an unresolvable
-    or revisiting hop fails the walk. Empty path is safe. An ambiguous hop raises."""
-    try:
-        chain = walk(root=root, path=path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return False
+    """Is the (possibly composed) ``path`` a reachable chain of provably many-to-one hops
+    from ``root``? Any declared edge traverses in either orientation; an unresolvable
+    hop fails the walk. Empty path is safe. An ambiguous hop raises."""
+    chain = follow(root=root, path=path, models_by_name=models_by_name)
     if chain is None:
         return False
     for edge in chain:
@@ -179,24 +176,15 @@ def _key_findings(
 
 
 def _edge_finding(
-    *, model: SlayerModel, join, target: SlayerModel
+    *, model: SlayerModel, join: ModelJoin, target: SlayerModel
 ) -> JoinSafetyFinding:
-    """Provability of one declared edge in both orientations. Orients THIS
-    declaration directly (never searches by pairs — parallel edges may share
-    them)."""
-    fwd_edge = OrientedJoin(
-        source_model=model.name, target_model=join.target_model,
-        join_pairs=[list(p) for p in join.join_pairs],
-        join_type=join.join_type, cardinality=join.cardinality,
-        name=join.name, declaring_model=model.name,
-    )
-    rev_edge = OrientedJoin(
-        source_model=join.target_model, target_model=model.name,
-        join_pairs=[[p[1], p[0]] for p in join.join_pairs],
-        join_type=join.join_type,
-        cardinality=invert_cardinality(join.cardinality),
-        name=join.name, declaring_model=model.name,
-    )
+    """Provability of one declared edge in both orientations. Picks THIS
+    declaration by position (never by pairs — parallel edges may share them)."""
+    idx = next(i for i, j in enumerate(j for j in model.joins if j.target_model == join.target_model)
+               if j is join)
+    fwd_edge = edges_between(source=model, target=target)[idx]
+    back = edges_between(source=target, target=model)
+    rev_edge = back[len(back) - sum(1 for j in model.joins if j.target_model == join.target_model) + idx]
     fwd_ok = provably_to_one(edge=fwd_edge, target_model=target)
     rev_ok = provably_to_one(edge=rev_edge, target_model=model)
     if fwd_ok:
@@ -268,16 +256,12 @@ def _route_via_common_prefix(
     host-coordinate ``host_path`` (both canonical): step back only to the two paths'
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
     it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
-    the reverse path back to the host); an ambiguous reverse hop propagates from
-    ``walk``, a revisiting one keeps the round trip."""
+    the reverse path back to the host); an ambiguous reverse hop propagates."""
     host_model = models_by_name.get(host_name)
     host_token = host_model.spelling if host_model is not None else host_name
     if host_model is None or not target_path:
         return (host_token, *host_path)
-    try:
-        chain = walk(root=host_model, path=target_path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return (host_token, *host_path)
+    chain = follow(root=host_model, path=target_path, models_by_name=models_by_name)
     if chain is None:
         return (host_token, *host_path)
     cp = _common_prefix_len(target_path, host_path)
@@ -285,113 +269,14 @@ def _route_via_common_prefix(
     return (*reverse_suffix, *host_path[cp:])
 
 
-def _safe_hops_for_neighbor(
-    *, nbr: str, edges: list, target: SlayerModel, name_counts: dict[str, int],
-    stage_spellings: set,
-) -> list[Tuple[str, str]]:
-    """Executable to-one hop tokens from a model to one neighbour: its bare
-    spelling for a lone unshadowed edge (a model name is shadowed by a stage
-    spelling too), else one entry per uniquely-named parallel edge; each kept
-    only if provably many-to-one on its orientation."""
-    token = target.spelling
-    shadowed = token in name_counts or (
-        target.explicit_spelling is None and token in stage_spellings
-    )
-    if len(edges) == 1 and not shadowed:
-        return (
-            [(token, nbr)]
-            if provably_to_one(edge=edges[0], target_model=target)
-            else []
-        )
-    return [
-        (e.name, nbr)
-        for e in edges
-        if e.name is not None
-        and name_counts[e.name] == 1
-        and provably_to_one(edge=e, target_model=target)
-    ]
-
-
-def safe_hops(
-    *, model: SlayerModel, models_by_name: dict[str, SlayerModel]
-) -> list[Tuple[str, str]]:
-    """Oriented provably-to-one executable hops off ``model`` as ``(token,
-    target_model)``. Token resolution mirrors ``resolve_hop`` /
-    ``JoinGraph._executable_tokens``: a single unshadowed edge yields the bare
-    neighbour name, parallel edges yield one entry per uniquely-named edge, and
-    an unnamed parallel hop is dropped. Each candidate is then kept only if it is
-    provably many-to-one on its traversal orientation."""
-    incident = neighbors(model=model, models_by_name=models_by_name)
-    name_counts: dict[str, int] = {}
-    for e in incident:
-        if e.name is not None:
-            name_counts[e.name] = name_counts.get(e.name, 0) + 1
-    by_nbr: dict[str, list] = {}
-    for e in incident:
-        by_nbr.setdefault(e.target_model, []).append(e)
-    stage_spellings = {
-        models_by_name[n].explicit_spelling for n in by_nbr
-        if n in models_by_name and models_by_name[n].explicit_spelling
-    }
-    out: list[Tuple[str, str]] = []
-    for nbr, edges in by_nbr.items():
-        target = models_by_name.get(nbr)
-        if target is None:
-            continue
-        out.extend(
-            _safe_hops_for_neighbor(
-                nbr=nbr, edges=edges, target=target, name_counts=name_counts,
-                stage_spellings=stage_spellings,
-            )
-        )
-    return out
-
-
-def _hop_distances(*, dataset: SlayerModel, models_by_name: dict[str, SlayerModel]) -> dict[str, int]:
-    """Safe-hop BFS distance from ``dataset`` to every reachable model (the spine is a sink)."""
-    dist: dict[str, int] = {dataset.name: 0}
-    frontier: deque[str] = deque([dataset.name])
-    while frontier:
-        node = frontier.popleft()
-        model = models_by_name.get(node)
-        if model is None or is_spine(model):
-            continue
-        for _, nbr in safe_hops(model=model, models_by_name=models_by_name):
-            if nbr not in dist:
-                dist[nbr] = dist[node] + 1
-                frontier.append(nbr)
-    return dist
-
-
-def _extend_routes(
-    *, model: SlayerModel, chain: list[OrientedJoin], dist: dict[str, int],
-    models_by_name: dict[str, SlayerModel], routes: list[list[OrientedJoin]], cap: int,
-) -> None:
-    """Append to ``routes`` (up to ``cap``) every shortest continuation of ``chain`` reaching the spine."""
-    if len(routes) >= cap:
-        return
-    if is_spine(model):
-        routes.append(chain)
-        return
-    for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
-        if dist.get(nbr) != dist[model.name] + 1 or dist[nbr] > dist[TIME_SPINE_MODEL]:
-            continue
-        edge = resolve_hop(current=model, token=token, models_by_name=models_by_name)
-        if edge is not None:
-            _extend_routes(model=models_by_name[nbr], chain=[*chain, edge], dist=dist,
-                           models_by_name=models_by_name, routes=routes, cap=cap)
-
-
 def spine_routes(
     *, dataset: SlayerModel, models_by_name: dict[str, SlayerModel], cap: int = 2,
 ) -> list[list[OrientedJoin]]:
-    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one executable hops."""
-    dist = _hop_distances(dataset=dataset, models_by_name=models_by_name)
-    if TIME_SPINE_MODEL not in dist:
-        return []
-    routes: list[list[OrientedJoin]] = []
-    _extend_routes(model=dataset, chain=[], dist=dist, models_by_name=models_by_name, routes=routes, cap=cap)
-    return routes
+    """Up to ``cap`` minimal routes ``dataset → time_spine`` over provably to-one addressable hops."""
+    return [list(r.edges) for r in routes(
+        root=dataset, target=TIME_SPINE_MODEL, models_by_name=models_by_name,
+        hop_filter=HopFilter.TO_ONE, cap=cap, shortest_only=True,
+    )]
 
 
 def spine_route_error(*, dataset: str, routes: list[list[OrientedJoin]], leaf: str) -> UnresolvableDimensionJoinError:
@@ -450,7 +335,9 @@ def attributable_from_root(
         )
     if host_name is None or (tp and host_name == tp[0]):
         return False
-    if hp and safe_reachable(root=root_model, path=hp, models_by_name=models_by_name):
+    if hp and not _common_prefix_len(tp, hp) and safe_reachable(
+        root=root_model, path=hp, models_by_name=models_by_name,
+    ):
         return True
     route = _route_via_common_prefix(
         host_name=host_name, target_path=tp, host_path=hp,
@@ -549,7 +436,7 @@ def _reroot_leaf_via_host(
     )
     if not safe_reachable(
         root=root_model, path=via_host, models_by_name=models_by_name,
-    ) and hp and safe_reachable(
+    ) and hp and not _common_prefix_len(target_path, hp) and safe_reachable(
         root=root_model, path=hp, models_by_name=models_by_name,
     ):
         return None  # resolved through the root's own join to the sibling
@@ -600,8 +487,8 @@ def lower_axis_hops(
         if not (isinstance(r, ColumnKey) and r.path and r.leaf == TIME_SPINE_COLUMN):
             continue
         try:
-            chain = walk(root=root, path=r.path, models_by_name=universe)
-        except (AmbiguousJoinPathError, CircularJoinPathError):
+            chain = follow(root=root, path=r.path, models_by_name=universe)
+        except AmbiguousJoinPathError:
             continue
         if not chain or chain[-1].target_model != TIME_SPINE_MODEL or is_product_edge(chain[-1]):
             continue
@@ -625,8 +512,8 @@ def _hop_walk_reason(
     fanning/unproven-hop reason if the path resolves but a hop is not provably
     many-to-one, else ``None`` (an unresolvable/ambiguous path is unreachable)."""
     try:
-        chain = walk(root=root_model, path=path, models_by_name=models_by_name)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = follow(root=root_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
         return None
     if chain is None:
         return None
@@ -919,8 +806,8 @@ def _path_grain_determined(
     """One closure path of ``grain_determines``: pinned from the host over provably
     to-one hops, each hop reseeded by an entity or FK key in the grain."""
     try:
-        chain = walk(root=host_model, path=path, models_by_name=models_by_name)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = follow(root=host_model, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
         return False
     if path and chain is None:
         return False

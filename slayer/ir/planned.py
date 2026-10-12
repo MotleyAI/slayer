@@ -240,7 +240,6 @@ class FilterReachability(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     filter_id: BoundFilterId
-    crossed_join_paths: Tuple[Tuple[str, ...], ...] = ()
     has_host_local_ref: bool = False
 
 

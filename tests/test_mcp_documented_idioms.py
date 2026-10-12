@@ -104,6 +104,19 @@ async def test_root_model_keeps_every_row(engine: SlayerQueryEngine) -> None:
     }
 
 
+async def test_inferred_root_keeps_rows_without_facts(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "dimensions": ["regions.name"], "measures": [{"formula": "count(customers.id)", "name": "n_customers"}],
+    })
+    rows = fx.rows_by(resp, key=".name")
+    assert {k: fx.value(r, ".n_customers") for k, r in rows.items()} == {"North": 2, "South": 2, "East": 1, "West": 0}
+
+
+def test_source_model_guidance_drops_factless_rows_only_at_a_fact_root() -> None:
+    text = SlayerQuery.model_fields["source_model"].description or ""
+    assert text.index("drop out") < text.index("omit to infer")
+
+
 async def test_order_by_an_undisplayed_aggregate_with_limit(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "source_model": "orders", "dimensions": ["customers.name"], "measures": ["count(*)"],

@@ -36,8 +36,9 @@ and table B (union semantics — LadybugDB behaviour).
 from __future__ import annotations
 
 import asyncio
-import os
 import re
+import threading
+from collections.abc import Hashable
 from functools import lru_cache
 from typing import Any
 
@@ -46,8 +47,6 @@ from pydantic import BaseModel
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.storage.sqlite_storage import SQLiteStorage
-from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
@@ -476,28 +475,26 @@ async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures
 # ---------------------------------------------------------------------------
 
 
+#: Wall-clock limit on one ``cypher_filter``, set on each cached connection when it is created.
+CYPHER_FILTER_TIMEOUT_MS = 10_000
+
+
 class _GraphCache(BaseModel):
     fingerprint: str
     db: Any
     conn: Any
+    # Serialises filters on the connection and its close; ``closed`` is set under it.
+    lock: Any
+    closed: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
 
-_cache: dict[str, _GraphCache] = {}
-_locks: dict[str, asyncio.Lock] = {}
+_cache: dict[Hashable, _GraphCache] = {}
+_locks: dict[Hashable, asyncio.Lock] = {}
 
 
-def _storage_key(storage: StorageBackend) -> str:
-    """Stable path key for cache lookups."""
-    if isinstance(storage, YAMLStorage):
-        return os.path.abspath(storage.base_dir)
-    if isinstance(storage, SQLiteStorage):
-        return os.path.abspath(storage.db_path)
-    return str(id(storage))
-
-
-def _get_lock(key: str) -> asyncio.Lock:
+def _get_lock(key: Hashable) -> asyncio.Lock:
     """Return the per-key asyncio.Lock, creating it if absent.
 
     Safe without an outer lock because no ``await`` separates the
@@ -509,12 +506,14 @@ def _get_lock(key: str) -> asyncio.Lock:
 
 
 def _close_entry(entry: "_GraphCache") -> None:
-    """Best-effort close of a cached graph entry to release LadybugDB handles."""
-    for obj in (entry.conn, entry.db):
-        try:
-            obj.close()
-        except Exception:  # noqa: BLE001
-            pass
+    """Best-effort close of a cached graph entry, after any in-flight filter on it."""
+    with entry.lock:
+        entry.closed = True
+        for obj in (entry.conn, entry.db):
+            try:
+                obj.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def clear_cache() -> None:
@@ -527,9 +526,9 @@ def clear_cache() -> None:
 
 async def _get_or_rebuild(
     storage: StorageBackend, *, failures: DocumentLoadFailures | None = None,
-) -> tuple[Any, Any]:
-    """Return cached (db, conn) if the fingerprint matches; else rebuild."""
-    key = _storage_key(storage)
+) -> _GraphCache:
+    """Return the cached graph if the fingerprint matches; else rebuild. Keyed by the store's view."""
+    key = await storage.cache_identity()
 
     try:
         current_fp: str | None = await storage.graph_fingerprint()
@@ -539,25 +538,54 @@ async def _get_or_rebuild(
     # Fast path: no lock needed when cache is warm and fingerprint matches.
     cached = _cache.get(key)
     if cached is not None and current_fp is not None and cached.fingerprint == current_fp:
-        return cached.db, cached.conn
+        return cached
 
     lock = _get_lock(key)
     async with lock:
         # Double-check under the lock so only one rebuild fires.
         cached = _cache.get(key)
         if cached is not None and current_fp is not None and cached.fingerprint == current_fp:
-            return cached.db, cached.conn
+            return cached
 
         old = _cache.get(key)
         db, conn = await build_graph(storage, failures=failures)
+        conn.set_query_timeout(CYPHER_FILTER_TIMEOUT_MS)
         if old is not None:
-            _close_entry(old)
-        _cache[key] = _GraphCache(
+            await asyncio.to_thread(_close_entry, old)
+        entry = _GraphCache(
             fingerprint=current_fp if current_fp is not None else "",
-            db=db,
-            conn=conn,
+            db=db, conn=conn, lock=threading.Lock(),
         )
-        return db, conn
+        _cache[key] = entry
+        return entry
+
+
+def _run_filter(entry: _GraphCache, cypher: str, limit_ms: int) -> frozenset[str] | None:
+    """Execute and drain ``cypher`` on ``entry``'s connection; ``None`` when the entry was closed meanwhile."""
+    with entry.lock:
+        if entry.closed:
+            return None
+        try:
+            result = entry.conn.execute(cypher)
+            col_names: list[str] = result.get_column_names()
+            if "id" not in col_names:
+                raise ValueError(
+                    "cypher_filter must return a column named 'id'; "
+                    f"got columns: {col_names!r}."
+                )
+            id_idx = col_names.index("id")
+            ids: set[str] = set()
+            while result.has_next():
+                row = result.get_next()
+                if row and row[id_idx] is not None:
+                    ids.add(str(row[id_idx]))
+        except ValueError:
+            raise
+        except Exception as exc:
+            if "interrupt" in str(exc).lower():
+                raise ValueError(f"cypher_filter timed out after {limit_ms} ms.") from exc
+            raise ValueError(f"cypher_filter execution failed: {exc}") from exc
+        return frozenset(ids)
 
 
 async def get_filtered_ids(
@@ -578,23 +606,8 @@ async def get_filtered_ids(
             "install with: pip install motley-slayer[advanced_search]"
         )
     _validate_cypher(cypher)
-    _db, conn = await _get_or_rebuild(storage, failures=failures)
-    try:
-        result = conn.execute(cypher)
-        col_names: list[str] = result.get_column_names()
-        if "id" not in col_names:
-            raise ValueError(
-                "cypher_filter must return a column named 'id'; "
-                f"got columns: {col_names!r}."
-            )
-        id_idx = col_names.index("id")
-    except ValueError:
-        raise
-    except Exception as exc:
-        raise ValueError(f"cypher_filter execution failed: {exc}") from exc
-    ids: set[str] = set()
-    while result.has_next():
-        row = result.get_next()
-        if row and row[id_idx] is not None:
-            ids.add(str(row[id_idx]))
-    return frozenset(ids)
+    while True:
+        entry = await _get_or_rebuild(storage, failures=failures)
+        ids = await asyncio.to_thread(_run_filter, entry, cypher, CYPHER_FILTER_TIMEOUT_MS)
+        if ids is not None:
+            return ids

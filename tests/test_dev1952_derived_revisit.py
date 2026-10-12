@@ -21,7 +21,9 @@ import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import (
+    AmbiguousJoinPathError,
     CircularJoinPathError,
+    DerivedColumnAmbiguousError,
     DerivedColumnCircularError,
     DerivedColumnFanningError,
     SlayerError,
@@ -236,24 +238,24 @@ class TestBestEffortConsumersUnchanged:
             root=models["regions"], path=("customers", "regions"),
             models_by_name=models) is False
 
-    def test_reverse_route_falls_back_to_host(self) -> None:
+    def test_reverse_route_steps_back_along_the_composed_path(self) -> None:
         models = _chain()
         assert join_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
-            host_path=(), models_by_name=models) == ("regions",)
+            host_path=(), models_by_name=models) == ("customers", "regions")
 
-    def test_route_via_common_prefix_falls_back_to_round_trip(self) -> None:
-        # A revisit keeps the round-trip fallback, never raises.
+    def test_route_via_common_prefix_steps_back_along_the_composed_path(self) -> None:
+        # A composed target path is followed (revisits are frame-local), never raises.
         models = _chain()
         assert join_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
-            host_path=("name",), models_by_name=models) == ("regions", "name")
+            host_path=("name",), models_by_name=models) == ("customers", "regions", "name")
 
-    def test_hop_walk_reason_none(self) -> None:
+    def test_hop_walk_reason_names_the_fanning_hop(self) -> None:
         models = _chain()
         assert join_safety._hop_walk_reason(
             root_model=models["regions"], path=("customers", "regions"),
-            models_by_name=models) is None
+            models_by_name=models) == "crosses a fanning or unproven join hop to customers"
 
     def test_path_grain_determined_false(self) -> None:
         models = _chain()
@@ -441,9 +443,9 @@ class TestSaveTimeStorageDoor:
         await storage.save_model(model, _validate=False)  # migration write-back path
         assert await storage.get_model("customers", data_source=DS) is not None
 
-    async def test_ambiguous_hop_on_revisit_path_skipped(self, tmp_path) -> None:
+    async def test_ambiguous_hop_on_revisit_path_rejected(self, tmp_path) -> None:
         # Two parallel customers→regions edges make the leading `regions` hop
-        # ambiguous, so the revisit is unprovable and the save skips (no error).
+        # ambiguous: rejected as ambiguous before the revisit is judged.
         storage = _storage(tmp_path)
         await storage.save_model(_regions())
         model = SlayerModel(
@@ -462,8 +464,12 @@ class TestSaveTimeStorageDoor:
                           name="r2", cardinality=JoinCardinality.MANY_TO_ONE),
             ],
         )
-        await storage.save_model(model)  # must not raise
-        assert await storage.get_model("customers", data_source=DS) is not None
+        with pytest.raises(DerivedColumnAmbiguousError) as ei:
+            await storage.save_model(model)
+        assert isinstance(ei.value, AmbiguousJoinPathError)
+        assert not isinstance(ei.value, CircularJoinPathError)
+        assert "revisit_spend" in str(ei.value)
+        assert "regions.customers.spend" in str(ei.value)
 
 
 # --------------------------------------------------------------------------- #

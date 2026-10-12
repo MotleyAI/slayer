@@ -2,29 +2,22 @@
 
 A short-form dotted ref names only ``Target.column``; this module resolves the
 join route from the query root to ``Target`` over the datasource's bidirectional
-multigraph. Trichotomy from :meth:`JoinGraph.count_simple_paths`:
+multigraph (:mod:`slayer.core.join_search`). Trichotomy from route counting:
 unreachable, unique route, or ambiguous (>=2 routes). Ambiguity resolves iff
-exactly one route is fan-out-free — every hop provably many-to-one on its
-traversal orientation — judged on a *directed* safe-hop set (:func:`_safe_hops`),
-since one orientation of an edge may be to-one while the other fans out.
-
-Routed and suggested paths are executable token sequences (edge-name token where
-parallel edges need disambiguation, bare model name otherwise; a hop across an
-unnamed parallel pair is inexecutable and never routed or suggested), mirroring
-:meth:`JoinGraph.shortest_path` / ``join_walker.resolve_hop``.
+exactly one addressable route is fan-out-free — every hop provably many-to-one on
+its traversal orientation. Routed and suggested paths are canonical token sequences.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Optional, Tuple
 
 from slayer.core.errors import UnresolvableDimensionJoinError
+from slayer.core.join_search import HopFilter, blocking_pairs, count_routes, routes, shortest_route
 from slayer.core.join_walker import reverse_token
 from slayer.core.models import SlayerModel
 from slayer.core.time_spine import is_spine
-from slayer.engine.join_graph import JoinGraph
-from slayer.engine.join_safety import safe_hops, spine_route_error, spine_routes
+from slayer.engine.join_safety import spine_route_error, spine_routes
 
 __all__ = [
     "resolve_route",
@@ -32,82 +25,6 @@ __all__ = [
     "short_form_route_or_none",
     "route_dotted_target",
 ]
-
-
-def _safe_routes(
-    *,
-    root: SlayerModel,
-    target_model: str,
-    models_by_name: dict[str, SlayerModel],
-    cap: int = 2,
-) -> list[list[str]]:
-    """Up to ``cap`` distinct simple fan-out-free token routes ``root ->
-    target_model`` over the directed safe-hop set."""
-    routes: list[list[str]] = []
-
-    def dfs(*, current: str, tokens: list[str], visited: set[str]) -> None:
-        if len(routes) >= cap:
-            return
-        model = models_by_name.get(current)
-        if model is None:
-            return
-        for token, nbr in safe_hops(model=model, models_by_name=models_by_name):
-            if len(routes) >= cap:
-                return
-            if nbr == target_model:
-                routes.append([*tokens, token])
-                continue
-            if nbr in visited:
-                continue
-            dfs(current=nbr, tokens=[*tokens, token], visited=visited | {nbr})
-
-    dfs(current=root.name, tokens=[], visited={root.name})
-    return routes
-
-
-def _safe_bfs_dist(
-    *, root: SlayerModel, models_by_name: dict[str, SlayerModel]
-) -> dict[str, int]:
-    """BFS layer distances from ``root`` over the directed safe-hop set."""
-    dist: dict[str, int] = {root.name: 0}
-    frontier: deque[str] = deque([root.name])
-    while frontier:
-        node = frontier.popleft()
-        model = models_by_name.get(node)
-        if model is None:
-            continue
-        for _, nbr in safe_hops(model=model, models_by_name=models_by_name):
-            if nbr not in dist:
-                dist[nbr] = dist[node] + 1
-                frontier.append(nbr)
-    return dist
-
-
-def _shortest_safe_route(
-    *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
-) -> Optional[list[str]]:
-    """Lexicographically-smallest shortest fan-out-free token route, or ``None``."""
-    dist = _safe_bfs_dist(root=root, models_by_name=models_by_name)
-    if target_model not in dist:
-        return None
-    best: dict[str, list[str]] = {root.name: []}
-    nodes_by_dist: dict[int, list[str]] = {}
-    for node, d in dist.items():
-        nodes_by_dist.setdefault(d, []).append(node)
-    for d in range(1, dist[target_model] + 1):
-        for v in nodes_by_dist.get(d, []):
-            cands = [
-                [*best[u], token]
-                for u in nodes_by_dist.get(d - 1, [])
-                if u in best
-                for token, nbr in safe_hops(
-                    model=models_by_name[u], models_by_name=models_by_name
-                )
-                if nbr == v
-            ]
-            if cands:
-                best[v] = min(cands)
-    return best.get(target_model)
 
 
 def resolve_route(
@@ -118,24 +35,21 @@ def resolve_route(
     among two or more routes, the sole fan-out-free one resolves."""
     if is_spine(root):
         dataset = models_by_name.get(target_model)
-        routes = spine_routes(dataset=dataset, models_by_name=models_by_name) if dataset is not None else []
-        if not routes:
+        found = spine_routes(dataset=dataset, models_by_name=models_by_name) if dataset is not None else []
+        if not found:
             return None, "unreachable"
-        if len(routes) > 1:
+        if len(found) > 1:
             return None, "ambiguous"
-        return [reverse_token(e) for e in reversed(routes[0])], "ok"
-    graph = JoinGraph.build_from_models(list(models_by_name.values()))
-    n = graph.count_simple_paths(root=root.name, target=target_model, cap=2)
+        return [reverse_token(e) for e in reversed(found[0])], "ok"
+    n = count_routes(root=root, target=target_model, models_by_name=models_by_name)
     if n == 0:
         return None, "unreachable"
     if n == 1:
-        route = graph.shortest_path(root=root.name, target=target_model)
-        return (route, "ok") if route is not None else (None, "ambiguous")
-    safe = _safe_routes(
-        root=root, target_model=target_model, models_by_name=models_by_name, cap=2
-    )
+        route = shortest_route(root=root, target=target_model, models_by_name=models_by_name)
+        return (list(route.tokens), "ok") if route is not None else (None, "ambiguous")
+    safe = routes(root=root, target=target_model, models_by_name=models_by_name, hop_filter=HopFilter.TO_ONE)
     if len(safe) == 1:
-        return safe[0], "ok"
+        return list(safe[0].tokens), "ok"
     return None, "ambiguous"
 
 
@@ -143,7 +57,8 @@ def safe_route_reachable(
     *, root: SlayerModel, target_model: str, models_by_name: dict[str, SlayerModel]
 ) -> bool:
     """Whether at least one fan-out-free executable route reaches ``target_model``."""
-    return target_model in _safe_bfs_dist(root=root, models_by_name=models_by_name)
+    return shortest_route(root=root, target=target_model, models_by_name=models_by_name,
+                          hop_filter=HopFilter.TO_ONE) is not None
 
 
 def short_form_route_or_none(
@@ -180,19 +95,18 @@ def route_dotted_target(
         )
     suggested: Optional[str] = None
     if status == "ambiguous":
-        base = _shortest_safe_route(
-            root=root, target_model=target_model, models_by_name=models_by_name
-        )
-        if base is None:
-            graph = JoinGraph.build_from_models(list(models_by_name.values()))
-            base = graph.shortest_path(root=root.name, target=target_model)
+        base = (shortest_route(root=root, target=target_model, models_by_name=models_by_name,
+                               hop_filter=HopFilter.TO_ONE)
+                or shortest_route(root=root, target=target_model, models_by_name=models_by_name))
         if base is not None:
-            suggested = ".".join([*base, leaf])
+            suggested = ".".join([*base.tokens, leaf])
+    reason = "ambiguous route" if status == "ambiguous" else "no route to target"
+    if suggested is None:
+        pairs = blocking_pairs(root=root, target=target_model, models_by_name=models_by_name)
+        reason = "; ".join([reason, *(p.describe() for p in pairs)])
     raise UnresolvableDimensionJoinError(
         reference=f"{target_model}.{leaf}",
         root_model=root.name,
-        reason=(
-            "ambiguous route" if status == "ambiguous" else "no route to target"
-        ),
+        reason=reason,
         suggested_path=suggested,
     )

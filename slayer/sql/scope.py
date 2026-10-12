@@ -29,7 +29,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
-from slayer.core.join_walker import model_column_type, terminal_model
+from slayer.core.join_walker import model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -224,7 +224,7 @@ class ScopeFrame(BaseModel):
         is the scope root, byte-identical to before.
         """
         if owner_path:
-            owner_model = terminal_model(
+            owner_model = resolved_terminal(
                 root=self.root_model, path=owner_path,
                 models_by_name=self._models_by_name(),
             )
