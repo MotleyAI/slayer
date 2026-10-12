@@ -63,6 +63,20 @@ def test_errors_are_typed() -> None:
     assert issubclass(AccessTagsEditError, SlayerError)
 
 
+@pytest.mark.parametrize("name", ["pub", "fin"], ids=["nothing-withheld", "pruned-join-reattached"])
+async def test_backend_failure_propagates_unchanged(
+    store: AccessStore, monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    async def broken_save(*_args, **_kwargs) -> None:  # NOSONAR(S7503) — stub matches the awaited hook
+        raise OSError("disk full")
+
+    fin = view(store, "fin")
+    model = await must_get(fin, name)
+    monkeypatch.setattr(store.storage, "save_model", broken_save)
+    with pytest.raises(OSError, match="disk full"):
+        await fin.save_model(model)
+
+
 @pytest.mark.parametrize("saver", SAVERS)
 class TestMergedModelWrites:
     async def test_edit_keeps_pruned_join(self, store: AccessStore, saver: str) -> None:

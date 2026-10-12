@@ -204,11 +204,12 @@ class TagFilteredStorage(StorageBackend):
                     raise UnknownJoinTargetError(model=model.name, target=join.target_model)
             await self.validate_for_save(model, failures=failures)
         merged = self._merged(model, view=view)
+        if merged is model:
+            await self._inner.save_model(model, _validate=_validate)
+            return
         try:
-            if merged is not model:
-                merged = SlayerModel.model_validate(merged.model_dump())
-            await self._inner.save_model(merged, _validate=_validate)
-        except Exception:  # noqa: BLE001 — valid in the view but not merged, so the cause names hidden parts
+            await self._inner.save_model(SlayerModel.model_validate(merged.model_dump()), _validate=_validate)
+        except ValueError:  # valid in the view, invalid with the reattached joins — the cause may name hidden parts
             raise HiddenContentConflictError(kind="model", name=model.name) from None
 
     def _merged(self, model: SlayerModel, *, view: _View) -> SlayerModel:
