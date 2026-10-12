@@ -35,10 +35,11 @@ from pydantic import BaseModel
 
 from slayer.core.errors import (
     AmbiguousModelError,
+    CircularJoinPathError,
     EntityResolutionError,
     UnknownFunctionError,
 )
-from slayer.core.join_walker import resolve_hop
+from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.syntax import (
@@ -165,20 +166,19 @@ async def _resolve_join_path(
     """
     peers = DocumentLoadFailures().skip(await storage.load_models(data_source=starting_model.data_source))
     models_by_name = {**{m.name: m for m in peers}, starting_model.name: starting_model}
-    current = starting_model
-    for seg in path:
-        # Tokens resolve in either direction, edge name first.
-        edge = resolve_hop(
-            current=current, token=seg, models_by_name=models_by_name,
-        )
-        target = models_by_name.get(edge.target_model) if edge else None
-        if target is None:
-            raise EntityResolutionError(
-                f"'{seg}' is not a join target on model "
-                f"'{current.name}'."
-            )
-        current = target
-    return current
+    try:
+        walked = walk_terminal(root=starting_model, path=path, models_by_name=models_by_name)
+        miss = walk_miss(root=starting_model, path=path, models_by_name=models_by_name) if walked is None else None
+    except CircularJoinPathError as exc:
+        raise EntityResolutionError(str(exc)) from exc
+    if walked is not None:
+        return walked[0]
+    assert miss is not None
+    via = walk_terminal(root=starting_model, path=path[:miss.index], models_by_name=models_by_name)
+    raise EntityResolutionError(
+        f"'{miss.token}' is not a join target on model "
+        f"'{via[0].name if via is not None else starting_model.name}'."
+    )
 
 
 async def _resolve_dotted_against_model(

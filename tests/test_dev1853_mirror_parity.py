@@ -13,8 +13,8 @@ import tempfile
 import pytest
 
 from slayer.core.enums import JoinType
+from slayer.core.join_search import count_routes, reachable
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_graph import JoinGraph
 from slayer.engine.join_safety import safe_reachable
 
 from tests._dev1853_fixtures import chain_engine, chain_models
@@ -56,13 +56,14 @@ async def test_declaring_side_gives_identical_sql_and_values(
 
 
 def test_reachability_parity() -> None:
-    graph_f = JoinGraph.build_from_models(chain_models(declare="forward"))
-    graph_r = JoinGraph.build_from_models(chain_models(declare="reverse"))
+    fwd = {m.name: m for m in chain_models(declare="forward")}
+    rev = {m.name: m for m in chain_models(declare="reverse")}
     for node in ("orders", "customers", "regions"):
-        assert graph_f.reachable_from(node) == graph_r.reachable_from(node)
+        assert reachable(root=fwd[node], models_by_name=fwd) == \
+            reachable(root=rev[node], models_by_name=rev)
     for src, dst in (("customers", "orders"), ("orders", "regions")):
-        assert graph_f.count_simple_paths(src, dst) == \
-            graph_r.count_simple_paths(src, dst)
+        assert count_routes(root=fwd[src], target=dst, models_by_name=fwd) == \
+            count_routes(root=rev[src], target=dst, models_by_name=rev)
 
 
 def test_safety_parity() -> None:

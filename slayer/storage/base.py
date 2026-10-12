@@ -23,7 +23,7 @@ from slayer.core.errors import (
     StoredDocumentLoadError,
     UnknownGranularityError,
 )
-from slayer.engine.column_dependency import validate_derived_columns
+from slayer.engine.column_dependency import validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
 from slayer.core.models import (
     DatasourceConfig,
@@ -433,6 +433,9 @@ class StorageBackend(ABC):
             await self._validate_aggregations(model)
             await self._validate_column_granularities(model)
             _validate_default_time_dimension(model)
+            warn_broken_dependents(
+                model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
+            )
         await self._save_model_impl(model)
         self._forget_raw(data_source=model.data_source, name=model.name)
 

@@ -1092,9 +1092,9 @@ class SlayerQuery(BaseModel):
             "{\"formula\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
             '"name": "orders_2025"} list every region, including those without orders (a count '
             "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
-            "Otherwise root where the facts are, or omit to infer the smallest model determining "
-            "every dimension and row-level condition column (reported in the response); rows "
-            'without facts then drop out. A saved model or stage name, an inline extension '
+            "Otherwise root where the facts are (rows without facts then drop out), or omit to "
+            "infer the smallest model determining every dimension and row-level condition column "
+            '(reported in the response). A saved model or stage name, an inline extension '
             '{"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query '
             "columns, or a full inline model."
         ),

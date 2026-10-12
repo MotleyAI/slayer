@@ -41,12 +41,12 @@ def _named_chain() -> dict[str, SlayerModel]:
 
 def _edge_name_collision() -> dict[str, SlayerModel]:
     """regions carries an edge NAMED ``customers`` (→ plans) and an edge ``loop``
-    (→ customers) — an unvalidated bundle save-time rules would forbid."""
+    (→ orders) — an unvalidated bundle save-time rules would forbid."""
     M = _named_chain()
     M["regions"] = _m("regions", ["id", "pop", "plan_id", "cust_id"], [
         ModelJoin(target_model="plans", join_pairs=[["plan_id", "id"]],
                   cardinality=JoinCardinality.MANY_TO_ONE, name="customers"),
-        ModelJoin(target_model="customers", join_pairs=[["cust_id", "id"]],
+        ModelJoin(target_model="orders", join_pairs=[["cust_id", "id"]],
                   cardinality=JoinCardinality.MANY_TO_ONE, name="loop")])
     return M
 
@@ -97,7 +97,7 @@ class TestCancels:
 
 class TestEdgeNames:
     def test_edge_name_token_never_cancels_hop_onto_visited_is_none(self):
-        # `loop` is an edge name (regions → customers); customers is visited → None.
+        # `loop` is an edge name (regions → orders); orders is visited → None.
         M = _edge_name_collision()
         assert walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
                                tokens=("loop",), models_by_name=M) is None

@@ -48,13 +48,15 @@ class AmbiguousJoinPathError(SlayerError):
         target_model: str,
         candidates: "Sequence[OrientedJoin]",
         token: str | None = None,
+        context: str | None = None,
     ) -> None:
         self.source_model = source_model
         self.target_model = target_model
         self.candidates = list(candidates)
         self.token = token
         lines = [
-            f"Ambiguous join hop {source_model!r} → {target_model!r}: "
+            (f"{context}: " if context else "")
+            + f"Ambiguous join hop {source_model!r} → {target_model!r}: "
             f"{len(self.candidates)} edges connect these models and no edge "
             f"name resolves it."
         ]
@@ -185,6 +187,22 @@ class DerivedColumnCircularError(CircularJoinPathError):
             f"it, so this is not a column of {self.model!r}. Reference the column on "
             f"{self.revisited!r} directly if you mean this row's value, or declare the "
             f"aggregate on {self.via!r}, which reaches {self.revisited!r} forward."
+        )
+
+
+class DerivedColumnAmbiguousError(AmbiguousJoinPathError):
+    """A derived ``Column.sql``/``Column.filter`` reference crossing a hop that two or more edges span."""
+
+    def __init__(
+        self, *, column: str, model: str, reference: str, error: AmbiguousJoinPathError,
+    ) -> None:
+        self.column = column
+        self.model = model
+        self.reference = reference
+        super().__init__(
+            source_model=error.source_model, target_model=error.target_model,
+            candidates=error.candidates, token=error.token,
+            context=f"Derived column {column!r} on model {model!r} references {reference!r}",
         )
 
 

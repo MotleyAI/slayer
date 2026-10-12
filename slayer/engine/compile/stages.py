@@ -29,7 +29,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
-from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
 from slayer.core.refs import key_display
@@ -47,11 +47,10 @@ from slayer.engine.reference_closure import (
 from slayer.core.join_walker import (
     aggregation_owner,
     canonical_token,
+    follow,
     physical_join_pairs,
-    resolve_hop,
     reverse_token,
     unique_key_sets,
-    walk,
 )
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
@@ -109,7 +108,6 @@ from slayer.engine.compile.discovery import RootDisposition, discover_roots, row
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate
 from slayer.engine.filter_reachability import (
-    compute_key_join_paths,
     key_has_host_local_ref,
 )
 from slayer.ir.planned import (
@@ -1406,19 +1404,10 @@ def _path_edges_exist(
     model: SlayerModel, path: Tuple[str, ...],
     models_by_name: Dict[str, SlayerModel],
 ) -> bool:
-    current = model
-    for name in path:
-        try:
-            edge = resolve_hop(
-                current=current, token=name, models_by_name=models_by_name,
-            )
-        except AmbiguousJoinPathError:
-            return False
-        nxt = models_by_name.get(edge.target_model) if edge is not None else None
-        if edge is None or nxt is None:
-            return False
-        current = nxt
-    return True
+    try:
+        return follow(root=model, path=path, models_by_name=models_by_name) is not None
+    except AmbiguousJoinPathError:
+        return False
 
 
 def _register_hop(
@@ -1444,25 +1433,25 @@ def _forward_hops(
     ``target_model``) so two spellings of one physical edge share one node and
     one alias; the hop's ``target_model`` is the resolved model.
     An ambiguous hop raises (fail closed)."""
-    current = start_model
-    node_path = base_node_path
-    for hop_name in rel_path:
-        edge = resolve_hop(
-            current=current, token=hop_name, models_by_name=models_by_name,
+    models = {**models_by_name, start_model.name: models_by_name.get(start_model.name, start_model)}
+    chain = follow(root=start_model, path=rel_path, models_by_name=models)
+    if chain is None:
+        i = next(i for i in range(len(rel_path))
+                 if follow(root=start_model, path=rel_path[:i + 1], models_by_name=models) is None)
+        via = follow(root=start_model, path=rel_path[:i], models_by_name=models) or []
+        raise _PushBlocked(
+            f"unreachable from the aggregate's root (no join edge from "
+            f"{via[-1].target_model if via else start_model.name} to {rel_path[i]})"
         )
-        target = models_by_name.get(edge.target_model) if edge is not None else None
-        if edge is None or target is None:
-            raise _PushBlocked(
-                f"unreachable from the aggregate's root (no join edge from "
-                f"{current.name} to {hop_name})"
-            )
+    node_path = base_node_path
+    for edge in chain:
         node_path = (*node_path, canonical_token(edge))
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
-            pairs=physical_join_pairs(edge=edge, source=current, target=target),
+            pairs=physical_join_pairs(edge=edge, source=models[edge.source_model],
+                                      target=models[edge.target_model]),
             declared_left=edge.join_type == JoinType.LEFT,
         )
-        current = target
     return node_path
 
 
@@ -1476,10 +1465,7 @@ def _reverse_hops(
     through the exact edge the aggregate's path selected, never a re-parsed
     model name. An ambiguous forward hop raises (fail closed in both modes);
     an unresolvable one blocks the push. Returns the host node's path."""
-    try:
-        fwd = walk(root=host_model, path=target_path, models_by_name=models_by_name)
-    except CircularJoinPathError:
-        fwd = None  # a revisiting reverse chain blocks the push (one raise site)
+    fwd = follow(root=host_model, path=target_path, models_by_name=models_by_name)
     if fwd is None:
         raise _PushBlocked(
             f"unreachable from the aggregate's root (join path "
@@ -1999,10 +1985,7 @@ def _canonical_path(
 ) -> Tuple[str, ...]:
     """A join path in canonical hop tokens (edge name, else target model — D3),
     so closure paths and push nodes compare regardless of spelling."""
-    try:
-        edges = walk(root=root, path=tuple(path), models_by_name=models_by_name)
-    except CircularJoinPathError:
-        return tuple(path)
+    edges = follow(root=root, path=tuple(path), models_by_name=models_by_name)
     if edges is None:
         return tuple(path)
     return tuple(canonical_token(e) for e in edges)
@@ -4136,13 +4119,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     for key, mask in zip(mask_keys, masks):
         filter_reachability.append(FilterReachability(
             filter_id=mask.slot_id,
-            crossed_join_paths=compute_key_join_paths(
-                key=key,
-                anchor_model=reachability_anchor_model,
-                anchor_relation=source_relation,
-                bundle=bundle,
-                cache=reachability_cache,
-            ),
             has_host_local_ref=key_has_host_local_ref(
                 key=key,
                 anchor_model=reachability_anchor_model,
@@ -4407,8 +4383,8 @@ def _respellings(
     if root is None or not flat.startswith(prefix):
         return ()
     try:
-        chain = walk(root=root, path=path, models_by_name=models_by_name)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = follow(root=root, path=path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
         return ()
     if not chain:
         return ()
@@ -4534,8 +4510,8 @@ def _source_column(
     if root is None:
         return None
     try:
-        chain = walk(root=root, path=key.path, models_by_name=models_by_name)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = follow(root=root, path=key.path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
         return None
     if chain is None:
         return None

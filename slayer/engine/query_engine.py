@@ -63,11 +63,15 @@ from slayer.core.query import (
     refine_query,
     render_probe_text,
 )
+from slayer.core.join_search import blocking_pairs, shortest_routes
+from slayer.engine.column_dependency import check_definition_ambiguity
 from slayer.engine.population import (
+    ambiguity_resolved_path,
+    determined_path,
     infer_population,
     infer_spine_population,
+    item_blockers,
     spine_datasource,
-    to_one_reachable,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
@@ -134,7 +138,6 @@ from slayer.ir.variables import (
 )
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
-from slayer.engine.join_graph import JoinGraph
 from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
@@ -239,29 +242,26 @@ def _resolve_root_hint(
 
 def _build_recommend_coverage(
     all_names: list[str],
-    det_items: list["_ResolvedItem"],
-    reach_by_candidate: dict[str, dict[str, list[str]]],
+    items: list["_ResolvedItem"],
+    reach_by_candidate: dict[str, dict[str, tuple[str, ...]]],
     *,
     force_include: set[str] | None = None,
 ) -> list[CandidateCoverage]:
-    """Pareto frontier of partial-root candidates over the determination items.
+    """Pareto frontier of partial-root candidates over ``items``.
 
-    Reach is provably-to-one determination (``reach_by_candidate`` = target →
-    to-one token path); ``force_include`` rows appear even if dominated.
+    ``reach_by_candidate`` maps each candidate to input item → its path;
+    ``force_include`` rows appear even if dominated.
     """
     forced = force_include or set()
-    items_in_order = [r.input_item for r in det_items]
-    model_of_item = {r.input_item: r.model for r in det_items}
-    det_models = {r.model for r in det_items}
+    items_in_order = [r.input_item for r in items]
 
     candidates: list[tuple[str, set[str], dict[str, int]]] = []
     for name in all_names:
-        to_one = reach_by_candidate[name]
-        reach = {m for m in det_models if m in to_one}
+        paths = reach_by_candidate[name]
+        reach = {it for it in items_in_order if it in paths}
         if not reach and name not in forced:
             continue
-        hops = {m: len(to_one[m]) for m in reach}
-        candidates.append((name, reach, hops))
+        candidates.append((name, reach, {it: len(paths[it]) for it in reach}))
 
     def dominates(a: tuple, b: tuple) -> bool:
         _an, ar, ah = a
@@ -280,18 +280,17 @@ def _build_recommend_coverage(
 
     entries: list[tuple[CandidateCoverage, int]] = []
     for name, reach, hops in frontier:
-        reachable_items = [it for it in items_in_order if model_of_item[it] in reach]
-        unreachable_items = [it for it in items_in_order if model_of_item[it] not in reach]
         entries.append((
             CandidateCoverage(
                 model_name=name,
-                reachable_items=reachable_items,
-                unreachable_items=unreachable_items,
+                reachable_items=[it for it in items_in_order if it in reach],
+                unreachable_items=[it for it in items_in_order if it not in reach],
             ),
             sum(hops.values()),
         ))
     entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
     return [e[0] for e in entries]
+
 
 def _merge_query_variables(
     *,
@@ -2070,35 +2069,43 @@ class SlayerQueryEngine:
         ds = resolved[0].data_source
         models = await _all_models_in_datasource(self.storage, ds)
         models_by_name = {m.name: m for m in models}
-        graph = JoinGraph.build_from_models(models)
         all_names = sorted(models_by_name)
         warnings = list(base_warnings)
 
         det = [r for r in resolved if not r.attachment]
         attach = [r for r in resolved if r.attachment]
         mentioned = {r.model for r in resolved}
-        reach = {name: to_one_reachable(name, models_by_name) for name in all_names}
+        # Columns: the population probe; attachments: the shortest route. ``lenient`` adds the
+        # fan-out-free path of an item blocked only by ambiguity (used when nothing is viable, or by a hint).
+        strict: dict[str, dict[str, tuple[str, ...]]] = {}
+        lenient: dict[str, dict[str, tuple[str, ...]]] = {}
+        for name in all_names:
+            routed = shortest_routes(root=models_by_name[name], models_by_name=models_by_name)
+            paths = {r.input_item: routed[r.model].tokens for r in attach if r.model in routed}
+            fallback: dict[str, tuple[str, ...]] = {}
+            for r in det:
+                item = f"{r.model}.{r.leaf}"
+                path = determined_path(root=name, item=item, models_by_name=models_by_name)
+                if path is not None:
+                    paths[r.input_item] = path
+                elif (alt := ambiguity_resolved_path(root=name, item=item, models_by_name=models_by_name)) is not None:
+                    fallback[r.input_item] = alt
+            strict[name] = paths
+            lenient[name] = {**paths, **fallback}
+
+        def valid_under(reach: dict[str, dict[str, tuple[str, ...]]], root: str) -> bool:
+            return all(r.input_item in reach[root] for r in resolved)
+
+        reach = strict if any(valid_under(strict, n) for n in all_names) else lenient
 
         def det_hops(root: str) -> int:
-            return sum(len(reach[root].get(r.model, ())) for r in det)
-
-        def item_hops(root: str, item: "_ResolvedItem") -> list[str]:
-            # Determination items ride the recorded to-one path; attachments only
-            # need reachability, so they take the cardinality-blind shortest route.
-            if item.attachment:
-                return graph.shortest_path(root, item.model) or []
-            return reach[root].get(item.model, [])
-
-        def reaches_attachments(root: str) -> bool:
-            return all(graph.shortest_path(root, r.model) is not None for r in attach)
+            return sum(len(reach[root][r.input_item]) for r in det)
 
         def is_valid(root: str) -> bool:
-            return all(r.model in reach[root] for r in det) and reaches_attachments(root)
+            return valid_under(reach, root)
 
         def unmet(root: str) -> list[str]:
-            missing = [r.model for r in det if r.model not in reach[root]]
-            missing += [r.model for r in attach if graph.shortest_path(root, r.model) is None]
-            return sorted(set(missing))
+            return sorted({r.model for r in resolved if r.input_item not in lenient[root]})
 
         hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
         hint_model = hint[0] if hint is not None else None
@@ -2113,8 +2120,8 @@ class SlayerQueryEngine:
                 valid,
                 key=lambda n: (det_hops(n), 0 if n in mentioned else 1, n),
             )
-            if hint_model is not None and is_valid(hint_model):
-                root = hint_model
+            if hint_model is not None and valid_under(lenient, hint_model):
+                root, reach = hint_model, lenient
                 message = f"All items are reachable from '{root}' (requested via root_hint)."
             else:
                 root = auto
@@ -2128,7 +2135,7 @@ class SlayerQueryEngine:
             item_paths = [
                 ItemPath(
                     input_item=r.input_item,
-                    path=_emit_recommend_path(item_hops(root, r), r),
+                    path=_emit_recommend_path(list(reach[root][r.input_item]), r),
                     attachment=r.attachment,
                 )
                 for r in resolved
@@ -2139,21 +2146,17 @@ class SlayerQueryEngine:
             )
 
         force_include = {hint_model} if hint_model is not None else None
-        if det:
-            coverage = _build_recommend_coverage(all_names, det, reach, force_include=force_include)
-        else:
-            # Attachment-only request with no common reacher: rank partial roots by
-            # attachment reachability (cardinality-blind) so `coverage` isn't empty
-            # when the message directs callers to it.
-            attach_reach = {
-                name: {
-                    r.model: p
-                    for r in attach
-                    if (p := graph.shortest_path(name, r.model)) is not None
-                }
-                for name in all_names
-            }
-            coverage = _build_recommend_coverage(all_names, attach, attach_reach, force_include=force_include)
+        # An attachment-only request ranks partial roots by attachment reachability.
+        coverage = _build_recommend_coverage(all_names, det or attach, reach, force_include=force_include)
+        for entry in coverage:
+            root_model = models_by_name[entry.model_name]
+            for r in resolved:
+                if r.input_item in entry.unreachable_items or r.attachment and r.input_item not in reach[root_model.name]:
+                    pairs = (blocking_pairs(root=root_model, target=r.model, models_by_name=models_by_name)
+                             if r.attachment else
+                             item_blockers(root=root_model.name, item=f"{r.model}.{r.leaf}",
+                                           models_by_name=models_by_name))
+                    warnings.extend(p.describe() for p in pairs if p.describe() not in warnings)
         if hint_model is not None:
             missing = ", ".join(unmet(hint_model))
             warnings.append(
@@ -2822,6 +2825,7 @@ class SlayerQueryEngine:
         datasource = await self.storage.get_datasource(model.data_source)
         dialect = self._dialect_for_type(datasource.type if datasource else None)
         models_by_name = {k: v for k, v in loaded.items() if v is not None}
+        check_definition_ambiguity(model=model, reachable=models_by_name)
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(
