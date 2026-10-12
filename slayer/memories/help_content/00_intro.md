@@ -22,9 +22,6 @@ aggregates of joined models and aggregates of aggregates. The syntax is on the
 3. **Count rows with `count(*)`**, never by counting a primary-key column.
 4. **Never write joins yourself.** Reference joined data by dotted path
    (`customers.regions.name`) and let the engine route it.
-5. **Fill time gaps with `time_spine`.** A time dimension on `time_spine.timestamp`
-   (with a lower `date_range` bound) returns every bucket, empty ones included, and
-   lines several facts up on one time axis.
 
 ## Deep dives
 
@@ -35,7 +32,7 @@ Read several at once with
   `window`, nesting.
 - `memory:help.transforms` — every transform, the time axis, ranking.
 - `memory:help.time` — time points, `date_range` and look-back, running totals,
-  granularities, gaps.
+  granularities.
 - `memory:help.joins` — dotted paths, choosing the root, joined aggregates,
   anti-joins.
 - `memory:help.queries` — query shapes, stages, raw rows, variables, debugging.

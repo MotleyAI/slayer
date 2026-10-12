@@ -101,7 +101,7 @@ claude mcp list
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`). Required. |
+| `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`); an invalid argument reports only the errors of the form its JSON type selects. Required. |
 | `variables` | dict | Values for `{var}` placeholder substitution in filters. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
@@ -232,4 +232,4 @@ To explore first without auto-ingesting:
    )
 ```
 
-Upsert semantics: if a column/measure/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"columns"`, `"measures"`, `"aggregations"`, `"joins"`). `measures` here are named formulas (`{formula, name, label, description}`) — the row-level `sql` definitions live under `columns`.
+Upsert semantics: if a column/measure/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"columns"`, `"measures"`, `"aggregations"`, `"joins"`, `"join_edges"`); a join is matched by its name, else its target and `join_pairs`, else the only join to its target, and two joins to one target need edge names (removable by name, or exactly via `join_edges: [{target_model, name, join_pairs}]`). `measures` here are named formulas (`{formula, name, label, description}`) — the row-level `sql` definitions live under `columns`.

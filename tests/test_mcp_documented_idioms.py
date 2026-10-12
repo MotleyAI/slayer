@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, AsyncIterator
 
 import pytest
@@ -18,6 +19,18 @@ _YEAR_2025 = [{"dimension": "order_date", "granularity": "month", "date_range": 
 @pytest.fixture
 async def engine() -> AsyncIterator[SlayerQueryEngine]:
     async for e in fx.make_idiom_engine():
+        yield e
+
+
+@pytest.fixture
+async def child_engine() -> AsyncIterator[SlayerQueryEngine]:
+    async for e in fx.make_child_engine():
+        yield e
+
+
+@pytest.fixture
+async def child_engine_all_regioned() -> AsyncIterator[SlayerQueryEngine]:
+    async for e in fx.make_child_engine(with_regionless=False):
         yield e
 
 
@@ -155,6 +168,62 @@ async def test_nested_aggregation_averages_inner_values(engine: SlayerQueryEngin
     assert {k: fx.value(r, ".avg_customer_total") for k, r in rows.items()} == {
         1: pytest.approx(150), 2: pytest.approx(190),
     }
+
+
+async def test_time_spine_returns_every_bucket_of_the_range(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "time_dimensions": [json.loads(fx.SPINE_TIME_DIMENSION)],
+        "measures": [{"formula": fx.SPINE_MEASURE, "name": "total"}, {"formula": "count(orders.id)", "name": "n"}],
+    })
+    col = next(c for c in resp.columns if c.endswith("timestamp"))
+    by_month = {str(r[col])[:7]: (fx.value(r, ".total"), fx.value(r, ".n")) for r in resp.data}
+    assert len(resp.data) == 12
+    assert sorted(by_month) == [f"2025-{m:02d}" for m in range(1, 13)]
+    assert by_month["2025-05"] == (None, 0)
+    assert by_month["2025-01"] == (150, 2)
+    assert by_month["2025-06"] == (105, 3)
+
+
+async def test_several_child_models_each_over_their_own_rows(child_engine: SlayerQueryEngine) -> None:
+    measures = [
+        {"formula": "sum(orders.amount)", "name": "ordered"},
+        {"formula": fx.SECOND_CHILD, "name": "returned"},
+    ]
+    resp = await _run(child_engine, {"source_model": "customers", "dimensions": ["name"], "measures": measures})
+    assert {
+        fx.value(r, ".name"): (fx.value(r, ".ordered"), fx.value(r, ".returned")) for r in resp.data
+    } == {"Alice": (30, 7), "Bob": (35, None), "Carol": (40, 8), "Dan": (50, None)}
+    total = await _run(child_engine, {"source_model": "customers", "measures": measures})
+    assert [(fx.value(r, ".ordered"), fx.value(r, ".returned")) for r in total.data] == [(168, 15)]
+
+
+async def test_parentless_child_rows_land_in_the_null_parent_row(child_engine: SlayerQueryEngine) -> None:
+    measures = [{"formula": "sum(orders.amount)", "name": "ordered"}]
+    resp = await _run(child_engine, {"source_model": "customers", "dimensions": ["regions.name"], "measures": measures})
+    assert {fx.value(r, ".name"): fx.value(r, ".ordered") for r in resp.data} == {
+        "North": 65, "South": 40, None: 63,
+    }
+    total = await _run(child_engine, {"source_model": "customers", "measures": measures})
+    assert [fx.value(r, ".ordered") for r in total.data] == [168]
+
+
+async def test_parentless_child_rows_without_a_null_population_row(
+    child_engine_all_regioned: SlayerQueryEngine,
+) -> None:
+    measures = [{"formula": "sum(orders.amount)", "name": "ordered"}]
+    resp = await _run(child_engine_all_regioned, {
+        "source_model": "customers", "dimensions": ["regions.name"], "measures": measures,
+    })
+    assert {fx.value(r, ".name"): fx.value(r, ".ordered") for r in resp.data} == {"North": 65, "South": 40}
+    total = await _run(child_engine_all_regioned, {"source_model": "customers", "measures": measures})
+    assert [fx.value(r, ".ordered") for r in total.data] == [168]
+
+
+async def test_cross_model_ratio(child_engine: SlayerQueryEngine) -> None:
+    resp = await _run(child_engine, {
+        "source_model": "customers", "measures": [{"formula": fx.CROSS_MODEL_RATIO, "name": "per_customer"}],
+    })
+    assert [fx.value(r, ".per_customer") for r in resp.data] == [pytest.approx(168 / 4)]
 
 
 async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEngine) -> None:

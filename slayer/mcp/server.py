@@ -10,7 +10,7 @@ from inspect import cleandoc
 from typing import Annotated, Any
 
 import sqlalchemy as sa
-from pydantic import Field
+from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__
@@ -30,6 +30,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.granularity import CustomGranularity
+from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning
@@ -78,6 +79,11 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET: Any = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
+
+def _unset() -> Any:
+    """``_UNSET`` as a default factory: JSON schemas skip factory defaults."""
+    return _UNSET
+
 # Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
 _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
@@ -94,12 +100,26 @@ _MCP_REMEDY = (
 MAX_TOOL_DESCRIPTION_CHARS = 2048
 
 SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
-One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it.
+One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it. Aggregates over several joined models in one query are each computed over their own rows, so one query cannot fan out or double count; split only when a stage must re-query a whole result.
 The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
 Typical workflow: search(question='...') → inspect the model → query.
 To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
 
 _ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+
+
+def _query_form(value: Any) -> str:
+    """The ``query`` argument's form, chosen by its JSON type."""
+    if isinstance(value, str):
+        return "name"
+    return "stages" if isinstance(value, list) else "object"
+
+
+#: Validates only the chosen form, so an error never lists the other forms' mismatches.
+QueryArgument = Annotated[
+    Annotated[str, Tag("name")] | Annotated[SlayerQuery, Tag("object")] | Annotated[list[SlayerQuery], Tag("stages")],
+    Discriminator(_query_form),
+]
 
 
 def _check_budget(*, what: str, text: str) -> None:
@@ -230,6 +250,7 @@ def _addition_has_changes(a: Any) -> bool:
     return bool(
         a.new_columns
         or a.new_joins
+        or getattr(a, "named_joins", None)
         or getattr(a, "widened_columns", None)
         or getattr(a, "kind_change", None)
         or getattr(a, "described_columns", None)
@@ -258,6 +279,9 @@ def _addition_update_details(a: Any) -> list[str]:
         details.append(f"+columns: {', '.join(a.new_columns)}")
     if a.new_joins:
         details.append(f"+joins: {', '.join(a.new_joins)}")
+    named = getattr(a, "named_joins", []) or []
+    if named:
+        details.append(f"named joins: {', '.join(named)}")
     widened = getattr(a, "widened_columns", []) or []
     if widened:
         details.append(f"widened: {', '.join(widened)}")
@@ -469,7 +493,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
-        query: Annotated[str | SlayerQuery | list[SlayerQuery], Field(
+        query: Annotated[QueryArgument, Field(
             description="A query object, a list of query objects (stages), or a saved query-backed model's name.",
         )],
         variables: Annotated[dict[str, Any] | None, Field(
@@ -810,11 +834,44 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             changes.append(f"created {label} '{entity_id}'")
         return None
 
-    VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins"}
+    def _upsert_join(*, joins: list[ModelJoin], spec: dict, changes: list) -> str | None:
+        """Upsert one join: match by name, else target + key pairs, else the sole join to the target."""
+        target = spec.get("target_model", "")
+        if not target:
+            return "Missing 'target_model' in join specification."
+        name = spec.get("name")
+        pairs = {tuple(p) for p in spec.get("join_pairs") or [] if isinstance(p, list)}
+        to_target = [j for j in joins if j.target_model == target]
+        existing = (
+            next((j for j in joins if name and j.name == name), None)
+            or next((j for j in to_target if pairs and {tuple(p) for p in j.join_pairs} == pairs), None)
+            # A differently named sole join is another edge, never this one.
+            or (to_target[0] if len(to_target) == 1 and not (name and to_target[0].name) else None)
+        )
+        label = f"join '{name or target}'"
+        if existing is None and not name and to_target:
+            return (
+                f"Model already joins '{target}'; give the new join a 'name' so the "
+                f"parallel edges stay addressable."
+            )
+        try:
+            updated = ModelJoin.model_validate({**(existing.model_dump() if existing else {}), **spec})
+        except Exception as exc:
+            return f"Invalid {label}: {exc}"
+        if existing is None:
+            joins.append(updated)
+            changes.append(f"created {label}")
+        else:
+            joins[joins.index(existing)] = updated
+            changes.append(f"updated {label}")
+        return None
+
+    VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins", "join_edges"}
 
     @tool()
     async def edit_model(
         model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+        *,
         description: Annotated[str | None, Field(description="New model description.")] = None,
         data_source: Annotated[str | None, Field(
             description="The model's datasource; required when the name exists in several datasources.",
@@ -832,8 +889,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
         query_variables: Annotated[Any, Field(
+            default_factory=_unset,
             description="Replace the backing query's default {var} values; null clears them.",
-        )] = _UNSET,
+        )],
         hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
@@ -858,8 +916,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         joins: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Joins to upsert by target_model, {"target_model": "customers", "join_pairs": '
-                '[["customer_id", "id"]], "cardinality": "many_to_one", "description", "meta"}. '
+                'Joins to upsert, {"target_model": "customers", "join_pairs": [["customer_id", "id"]], '
+                '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
+                "target and join_pairs, else the sole join to the target; a second join to a target needs a name. "
                 "Keys name columns by name; a composite key is one join with several pairs. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
                 "source->target) is descriptive only; omit it when unknown."
@@ -869,15 +928,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description='SQL conditions always applied to the model, e.g. ["deleted_at IS NULL"].',
         )] = None,
         remove_filters: Annotated[list[str] | None, Field(description="Model filters to remove (exact text).")] = None,
-        remove: Annotated[dict[str, list[str]] | None, Field(
+        remove: Annotated[dict[str, list[str | dict[str, Any]]] | None, Field(
             description=(
                 'Entities to delete before the upserts: {"columns": [...], "measures": [...], '
-                '"aggregations": [...], "joins": [target_model, ...]}.'
+                '"aggregations": [...], "joins": [target_model or edge name, ...], '
+                '"join_edges": [{"target_model", "name", "join_pairs"}, ...]}.'
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
+            default_factory=_unset,
             description="JSON metadata replacing the model's meta; null clears it.",
-        )] = _UNSET,
+        )],
     ) -> str:
         """Edit an existing model in one call: metadata, upserts of columns / measures / aggregations / joins (by name; only the given fields change), model filters, and removals (applied first).
 
@@ -1008,12 +1069,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 changes.append(f"removed aggregation '{name}'")
                 model_doc_changed = True
 
-            for target in remove.get("joins", []):
-                match = next((j for j in model.joins if j.target_model == target), None)
-                if match is None:
-                    return f"Join to '{target}' not found on model '{model_name}'."
-                model.joins.remove(match)
-                changes.append(f"removed join to '{target}'")
+            try:
+                removed = resolve_join_refs(model=model, refs=[
+                    r if isinstance(r, str) else JoinEdgeRef.model_validate(r)
+                    for r in (*remove.get("joins", []), *remove.get("join_edges", []))
+                ])
+            except ValueError as exc:
+                return str(exc)
+            for join in removed:
+                changes.append(f"removed join '{edge_reference(model=model, join=join)}'")
+            if removed:
+                model.joins = without_joins(model=model, joins=removed)
                 model_doc_changed = True
 
         # --- Phase 3: Entity upserts ---
@@ -1047,10 +1113,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model_doc_changed = True
 
         for spec in joins or []:
-            err = _upsert_entity(
-                entity_list=model.joins, spec=spec, entity_cls=ModelJoin,
-                id_field="target_model", changes=changes, label="join",
-            )
+            err = _upsert_join(joins=model.joins, spec=spec, changes=changes)
             if err:
                 return err
             model_doc_changed = True

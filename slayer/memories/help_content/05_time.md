@@ -45,9 +45,3 @@ incomplete bucket.
 `month(created_at)` in `dimensions`, `time_dimensions`, filters or order buckets the
 column: second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter,
 year, or a custom granularity defined on the datasource (fiscal years and the like).
-
-## Gaps
-
-Buckets without rows are absent. A time dimension on `time_spine.timestamp` (with a
-lower `date_range` bound) returns every bucket, empty ones included, and lines up
-several models on one time axis.

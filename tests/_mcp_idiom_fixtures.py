@@ -14,11 +14,22 @@ orders (id, customer, status, date, amount):
 Monthly sum: 2024-10 10, -11 20, -12 45, 2025-01 150, -02 70, -03 30, -04 60, -06 105.
 Per customer: Alice 170 (5), Bob 130 (3), Carol 190 (3); total 490. Status: paid 345 (7), open 145 (4);
 every ordering customer has both statuses, so their credit (600) attributes to each status.
+
+Child dataset (``make_child_engine``): ``orders`` and ``returns`` both join ``customers``.
+
+regions:   1 North | 2 South
+customers: 1 Alice R1 | 2 Bob R1 | 3 Carol R2 | 4 Dan (no region; omitted when ``with_regionless=False``)
+orders (id, customer, amount): 1 Alice 10 | 2 Alice 20 | 3 Bob 35 | 4 Carol 40 | 5 Dan 50
+   | 6 NULL 6 | 7 #99 (no such customer) 7
+returns (id, customer, amount): 1 Alice 1 | 2 Alice 2 | 3 Alice 4 | 4 Carol 8
+
+Orders: Alice 30, Bob 35, Carol 40, Dan 50, parentless 13; total 168. Returns: Alice 7, Carol 8; total 15.
+By region: North 65, South 40, NULL 63 (Dan + parentless).
 """
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import pytest
 
@@ -50,6 +61,10 @@ ORDER_UNDISPLAYED = '{"column": "sum(amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
 STAGE_COLUMN = "customers__region_id"
+SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
+SPINE_MEASURE = "sum(orders.amount)"
+SECOND_CHILD = "sum(returns.amount)"
+CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
 
 #: Example text → (owning $defs model, field) in the query tool's input schema.
 EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
@@ -68,6 +83,9 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     POPULATION_COUNT: ("SlayerQuery", "source_model"),
     CONDITIONAL: ("SlayerQuery", "source_model"),
     STAGE_COLUMN: ("SlayerQuery", "name"),
+    SPINE_TIME_DIMENSION: ("SlayerQuery", "time_dimensions"),
+    SECOND_CHILD: ("SlayerQuery", "measures"),
+    CROSS_MODEL_RATIO: ("SlayerQuery", "measures"),
 }
 
 
@@ -148,6 +166,71 @@ def _seed_duckdb(db_path: str) -> None:
 async def make_idiom_engine() -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
     async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb, models=idiom_models()) as (engine, _):
+        yield engine
+
+
+def _child_models(*, data_source: str = "test") -> list[SlayerModel]:
+    def child(name: str) -> SlayerModel:
+        return SlayerModel(
+            name=name, sql_table=name, data_source=data_source,
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="amount", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    return [
+        child("orders"),
+        child("returns"),
+        SlayerModel(
+            name="customers", sql_table="customers", data_source=data_source,
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+                Column(name="region_id", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ),
+        SlayerModel(
+            name="regions", sql_table="regions", data_source=data_source,
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+            ],
+        ),
+    ]
+
+
+def _child_seed(*, with_regionless: bool) -> Callable[[str], None]:
+    customers = "(1, 'Alice', 1), (2, 'Bob', 1), (3, 'Carol', 2)" + (", (4, 'Dan', NULL)" if with_regionless else "")
+
+    def seed(db_path: str) -> None:
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect(db_path)
+        for stmt in (
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR)",
+            "INSERT INTO regions VALUES (1, 'North'), (2, 'South')",
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER)",
+            f"INSERT INTO customers VALUES {customers}",
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER)",
+            "INSERT INTO orders VALUES (1, 1, 10), (2, 1, 20), (3, 2, 35), (4, 3, 40), (5, 4, 50), "
+            "(6, NULL, 6), (7, 99, 7)",
+            "CREATE TABLE returns (id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER)",
+            "INSERT INTO returns VALUES (1, 1, 1), (2, 1, 2), (3, 1, 4), (4, 3, 8)",
+        ):
+            con.execute(stmt)
+        con.close()
+
+    return seed
+
+
+async def make_child_engine(*, with_regionless: bool = True) -> AsyncIterator[SlayerQueryEngine]:
+    pytest.importorskip("duckdb")
+    async with seeded_exec_engine(
+        dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), models=_child_models(),
+    ) as (engine, _):
         yield engine
 
 

@@ -33,6 +33,7 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
 )
 from tests._engine_helpers import disposable_engine
+from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -1554,3 +1555,29 @@ def _mysql_spine_storage(mysql_container, tmp_path_factory):
 class TestMySQLTimeSpine:
     async def test_scenarios(self, _mysql_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_mysql_spine_storage), data_source="my", ts_data_source="my_ts")
+
+
+@pytest.mark.integration
+def test_every_mysql_alias_failure_is_quoted(mysql_container) -> None:
+    db_name = _create_module_db(mysql_container)
+    conn = _admin_connect(mysql_container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE TABLE kw_probe (a INTEGER)")
+            cur.execute("SELECT LOWER(WORD) FROM information_schema.KEYWORDS")
+            words = keyword_universe(row[0] for row in cur.fetchall())
+
+            def fails(sql: str) -> bool:
+                try:
+                    cur.execute(sql)
+                    cur.fetchall()
+                except pymysql.Error:
+                    return True
+                return False
+
+            assert unquoted_alias_failures(
+                dialect="mysql", words=words, table="kw_probe", column="a", fails=fails,
+            ) == []
+    finally:
+        conn.close()
+        _drop_module_db(mysql_container, db_name)
