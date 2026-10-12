@@ -1305,7 +1305,6 @@ class SlayerQueryEngine:
                 attributes=prepared.attributes, warnings=prepared.slack_warnings,
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
-                datasource=prepared.datasource,
             )
 
         use_cache = cache and not dry_run and not explain and not prepared.reads_clock

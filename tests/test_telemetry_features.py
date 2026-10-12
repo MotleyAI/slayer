@@ -119,6 +119,11 @@ def test_queries_counted_per_dialect(store: str) -> None:
     assert _run_query(store, _PLAIN)["dialects"]["queries"] == {"sqlite": 1}
 
 
+def test_dry_run_not_counted_as_executed(store: str) -> None:
+    cli(["query", json.dumps(_PLAIN), "--storage", store, "--dry-run"])
+    assert show()["dialects"]["queries"] == {}
+
+
 @pytest.mark.parametrize(("extra", "bucket"), [(0, "1"), (1, "2-5"), (4, "2-5"), (5, "6+")])
 def test_datasources_per_dialect_bucketed(store: str, telemetry_env, extra: int, bucket: str) -> None:
     async def add() -> None:
