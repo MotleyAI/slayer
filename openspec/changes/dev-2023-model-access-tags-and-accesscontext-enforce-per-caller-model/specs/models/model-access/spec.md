@@ -56,7 +56,7 @@ A model SHALL read every model that one of the following references, and every m
 - every dotted reference path in its stages' fields: dimensions, time dimensions, measures, filters and order;
 - every dotted reference path in its own definitions: column SQL, column filters, model filters, saved measure formulas (including saved measures they reference), and aggregation parameters.
 
-Paths SHALL be resolved against the full store, in which a stored model that cannot be loaded resolves as a model with no columns or joins; a path reaching it SHALL read it and every model before it. A path that does not resolve even in the full store SHALL add no read. Declaring a join SHALL NOT by itself count as reading its target.
+Paths SHALL be resolved against the full store, in which a stored model that cannot be loaded resolves as a model with no columns or joins; a path reaching it SHALL read it and every model before it. A bare model name that several datasources hold, none of them preferred, SHALL read every holder. A path that does not resolve even in the full store SHALL add no read. Declaring a join SHALL NOT by itself count as reading its target.
 
 #### Scenario: A query-backed model on a hidden model is hidden
 
@@ -87,6 +87,11 @@ Paths SHALL be resolved against the full store, in which a stored model that can
 
 - **WHEN** an untagged model has a column that reads, through a join, a stored model that cannot be loaded
 - **THEN** the model is absent for a non-bypass caller
+
+#### Scenario: An ambiguous bare name reads every holder
+
+- **WHEN** a memory's only link is a query whose source is `hr`, and two datasources each hold an `hr` hidden from `{fin}`
+- **THEN** the memory is absent for a `{fin}` caller
 
 #### Scenario: A declared but unused join does not hide
 

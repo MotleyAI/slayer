@@ -48,6 +48,20 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> TagFilteredSto
     return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
+TWIN_DS = "acme2"
+HR_QUERY = SlayerQuery.model_validate({"source_model": "hr", "measures": [{"formula": "sum(salary)"}]})
+
+
+async def _twin_hr(store: AccessStore) -> None:
+    """A second datasource holding its own ``hr`` copy, so a bare ``hr`` is ambiguous."""
+    ds = await store.storage.get_datasource(DS)
+    assert ds is not None
+    await store.storage.save_datasource(ds.model_copy(update={"name": TWIN_DS}))
+    hr = await store.storage.get_model("hr", data_source=DS)
+    assert hr is not None
+    await store.storage.save_model(hr.model_copy(update={"data_source": TWIN_DS}), _validate=False)
+
+
 class TestMemoryVisibility:
     async def test_fin_caller_memories(self, store: AccessStore) -> None:
         assert {m.id for m in await view(store, "fin").list_memories()} == FIN_MEMORIES
@@ -80,6 +94,19 @@ class TestMemoryVisibility:
         await store.storage.save_memory(id="broken-note", learning="Broken counts", entities=[], query=query)
         assert "broken-note" not in {m.id for m in await view(store, "fin").list_memories()}
         assert "broken-note" in {m.id for m in await view(store, bypass=True).list_memories()}
+
+    async def test_query_on_an_ambiguous_hidden_name_hides_the_memory(self, store: AccessStore) -> None:
+        await _twin_hr(store)
+        await store.storage.save_memory(id="twin-hr", learning="Payroll total", entities=[], query=HR_QUERY)
+        assert "twin-hr" not in {m.id for m in await view(store, "fin").list_memories()}
+        assert "twin-hr" in {m.id for m in await view(store, bypass=True).list_memories()}
+
+    async def test_mixed_memory_withholds_a_query_on_an_ambiguous_hidden_name(self, store: AccessStore) -> None:
+        await _twin_hr(store)
+        await store.storage.save_memory(id="twin-mix", learning="Ledger", entities=[f"{DS}.fin"], query=HR_QUERY)
+        memory = await view(store, "fin").get_memory("twin-mix")
+        assert memory.query is None
+        assert memory.entities == [f"{DS}.fin"]
 
 
 class TestMemoryStripping:

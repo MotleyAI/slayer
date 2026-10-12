@@ -147,12 +147,11 @@ class _Reads:
         self.out: set[Identity] = set()
         self._seen: set[tuple[str, str, str]] = set()
 
-    def resolve(self, name: str, *, data_source: str | None) -> SlayerModel | None:
-        """A stored model by name, preferring ``data_source``, else the only datasource holding it."""
+    def holders(self, name: str, *, data_source: str | None) -> list[SlayerModel]:
+        """The stored model ``name`` in ``data_source`` if there is one, else every datasource's model of that name."""
         if data_source is not None and name in self.by_ds.get(data_source, {}):
-            return self.by_ds[data_source][name]
-        holders = [peers[name] for peers in self.by_ds.values() if name in peers]
-        return holders[0] if len(holders) == 1 else None
+            return [self.by_ds[data_source][name]]
+        return [peers[name] for peers in self.by_ds.values() if name in peers]
 
     def peers(self, host: SlayerModel) -> dict[str, SlayerModel]:
         return {**self.by_ds.get(host.data_source, {}), host.name: host}
@@ -249,47 +248,45 @@ class _Reads:
                 spec = follow_sibling_chain(spec=query.source_model, named_queries=named)
             except ValueError:
                 continue
-            host = self.source(spec, data_source=data_source)
+            hosts = self.source(spec, data_source=data_source)
             if source_name_if_sibling(spec=query.source_model, sibling_names=named) is not None:
                 continue  # fields name the sibling's flat columns
             for parts in query_reference_parts(query):
-                self.query_ref(parts, host=host, data_source=data_source)
+                for host in hosts:
+                    self.ref(parts, host=host)
+                if not hosts:
+                    self.unhosted_ref(parts, data_source=data_source)
 
-    def source(self, spec: SourceSpec | None, *, data_source: str | None) -> SlayerModel | None:
-        """The host a stage source resolves to, recording what it reads."""
+    def source(self, spec: SourceSpec | None, *, data_source: str | None) -> list[SlayerModel]:
+        """The hosts a stage source may resolve to (every holder of an ambiguous name), recording what they read."""
         if isinstance(spec, str):
-            model = self.resolve(spec, data_source=data_source)
-            if model is not None:
+            models = self.holders(spec, data_source=data_source)
+            for model in models:
                 self.read(model)
-            return model
+            return models
         if isinstance(spec, ModelExtension):
             self.written_joins(spec, data_source=data_source)
-            base = self.resolve(spec.source_name, data_source=data_source)
-            if base is None:
-                return None
-            self.read(base)
-            host = apply_extension_overlay(base, spec)
-            self.definitions(host)
-            return host
+            hosts = []
+            for base in self.holders(spec.source_name, data_source=data_source):
+                self.read(base)
+                host = apply_extension_overlay(base, spec)
+                self.definitions(host)
+                hosts.append(host)
+            return hosts
         if isinstance(spec, SlayerModel):
             self.written_joins(spec, data_source=spec.data_source or data_source)
             self.definitions(spec)
-            return spec
-        return None
+            return [spec]
+        return []
 
     def written_joins(self, spec: ModelExtension | SlayerModel, *, data_source: str | None) -> None:
         for join in spec.joins or []:
-            target = self.resolve(join.target_model, data_source=data_source)
-            if target is not None:
+            for target in self.holders(join.target_model, data_source=data_source):
                 self.read(target)
 
-    def query_ref(self, parts: tuple[str, ...], *, host: SlayerModel | None, data_source: str | None) -> None:
-        if host is not None:
-            self.ref(parts, host=host)
-            return
+    def unhosted_ref(self, parts: tuple[str, ...], *, data_source: str | None) -> None:
         if len(parts) < 2:
             return
-        root = self.resolve(parts[0], data_source=data_source)
-        if root is not None:
+        for root in self.holders(parts[0], data_source=data_source):
             self.read(root)
             self.ref(parts[1:], host=root)

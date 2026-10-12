@@ -34,3 +34,4 @@
 ## 4. Review fixes
 
 - [x] 4.1 Reads walk: unloadable models resolve as empty placeholders, and a path stopping at one records its hops. Verify: a column reading `broken` through a join hides its model for `{fin}`; a memory whose query reads only `broken` is hidden.
+- [x] 4.2 Reads walk: a bare name held by several datasources, none preferred, reads every holder. Verify: the scenario above, and a mixed memory whose query names such an `hr` keeps no query for `{fin}`.
