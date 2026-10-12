@@ -1002,18 +1002,17 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
     assert derived != "_rev_0"
 
 
-def test_metric_named_after_transform_clean_fails(shop_engine):
-    # A metric named after a reserved transform (cumsum) must clean-fail, not
-    # crash the whole import at ModelMeasure construction.
+@pytest.mark.parametrize("name", ["cumsum", "rank"])
+def test_metric_named_after_transform_is_imported(shop_engine, name):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
-        metrics=[OSIMetric(name="cumsum", expression=_expr("SUM(amount)"))],
+        metrics=[OSIMetric(name=name, expression=_expr("SUM(amount)"))],
     )
-    result = _convert(shop_engine, doc)  # must not raise
+    result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
-    assert "cumsum" not in {m.name for m in orders.measures}
-    assert _reported(result)
+    assert name in {m.name for m in orders.measures}
+    assert not any(u.metric_name == name for u in result.unconverted_metrics)
 
 
 def test_ambiguous_unqualified_column_clean_fails(shop_engine):

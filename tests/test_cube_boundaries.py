@@ -5,6 +5,8 @@ A naive converter would let collisions / reserved names / broken SQL throw a
 them to the report and emit what it safely can — `convert()` never raises.
 """
 
+import pytest
+
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -22,17 +24,15 @@ def _convert(project: CubeProject):
     return {m.name: m for m in result.models}, result.report
 
 
-def test_measure_named_after_transform_is_routed_to_report():
+@pytest.mark.parametrize("name", ["cumsum", "rank"])
+def test_measure_named_after_transform_is_imported(name):
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
-        measures=[CubeMeasure(name="cumsum", type="sum", sql="{CUBE}.amount")],
+        measures=[CubeMeasure(name=name, type="sum", sql="{CUBE}.amount")],
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
-    # Must not raise; the reserved-name measure is dropped (or safely renamed).
-    models, report = _convert(project)
-    assert "orders" in models
-    assert report.issues  # something was reported about it
-    assert models["orders"].get_measure("cumsum") is None
+    models, _ = _convert(project)
+    assert models["orders"].get_measure(name) is not None
 
 
 def test_dimension_measure_name_overlap_does_not_raise():

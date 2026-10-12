@@ -122,7 +122,7 @@ class TestNonRegression:
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome
-                assert "Unknown aggregation" not in str(exc), exc
+                assert "Unknown function" not in str(exc), exc
                 return type(exc)
             return sorted(r["orders.status"] for r in resp.data)
 

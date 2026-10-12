@@ -159,7 +159,7 @@ class TestCrossModelGating:
         assert "AVG" in sql.upper()
 
     async def test_cross_model_unknown_aggregation_rejected(self) -> None:
-        """Unknown aggregation name raises with the same message style as local."""
+        """Unknown function name raises with the same message style as local."""
         with pytest.raises(ValueError, match="bogus_agg|not.*aggregation"):
             await _generate_sql(
                 orders=_orders_model(),
@@ -371,7 +371,7 @@ class TestDev1576UnknownVsDisallowed:
     """
 
     async def test_unknown_name_raises_unknown_aggregation(self) -> None:
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=_orders_with_status(),
                 customers=_customers_model(),
@@ -413,7 +413,7 @@ class TestDev1576UnknownVsDisallowed:
                 customers=_customers_model(),
                 measures=[{"formula": "status:sum", "name": "result"}],
             )
-        assert "Unknown aggregation" not in str(exc.value)
+        assert "Unknown function" not in str(exc.value)
 
     async def test_star_unknown_gets_standard_message(self) -> None:
         # DEV-1826: the binder validates the aggregation NAME globally before
@@ -422,7 +422,7 @@ class TestDev1576UnknownVsDisallowed:
         # used to surface as the star-specific message).
         orders = _orders_with_status()
         customers = _customers_model()
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
@@ -432,7 +432,7 @@ class TestDev1576UnknownVsDisallowed:
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
         # A custom aggregation known model-wide but absent from a column's
         # allowed_aggregations whitelist → 'not allowed for column', NOT
-        # 'Unknown aggregation'.
+        # 'Unknown function'.
         orders = SlayerModel(
             name="orders",
             sql_table="public.orders",
@@ -457,7 +457,7 @@ class TestDev1576UnknownVsDisallowed:
                 customers=_customers_model(),
                 measures=[{"formula": "rating:myagg", "name": "result"}],
             )
-        assert "Unknown aggregation" not in str(exc.value)
+        assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
 
     async def test_custom_agg_allowed_when_no_whitelist(self) -> None:
@@ -484,7 +484,7 @@ class TestDev1576UnknownVsDisallowed:
 
     async def test_healed_alias_does_not_trigger_unknown(self) -> None:
         # ``countd`` heals to count_distinct in §1 — it must reach SQL, not
-        # the §3 'Unknown aggregation' error.
+        # the §3 'Unknown function' error.
         sql = await _generate_sql(
             orders=_orders_with_status(),
             customers=_customers_model(),
@@ -599,9 +599,9 @@ class TestDev1576UnknownNamePrecedence:
         self, column: str,
     ) -> None:
         # rating has a whitelist, id is PK, status is TEXT — for an unknown
-        # aggregation name all three must surface 'Unknown aggregation', not
+        # aggregation name all three must surface 'Unknown function', not
         # the whitelist / PK / type-applicability message.
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=self._orders_pk_whitelist_custom(),
                 customers=_customers_model(),
