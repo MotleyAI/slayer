@@ -92,7 +92,9 @@ class TestCountDistinctParse:
 
     @pytest.mark.parametrize("expr", [
         "sum(distinct amount)", "count(distinct *)", "count(distinct a, b)", "AVG(DISTINCT amount)",
-        "coalesce(distinct amount, 0)", "count(distinct)",
+        "coalesce(distinct amount, 0)", "count(distinct)", "sum(amount, distinct tax)",
+        "coalesce(a, distinct b)", "count(a, distinct b)", "count(distinct a, distinct b)",
+        "count(a, partition_by=distinct b)",
     ])
     def test_other_distinct_rejected(self, expr: str) -> None:
         with pytest.raises(ValueError) as info:

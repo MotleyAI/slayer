@@ -467,13 +467,38 @@ def _single_distinct_operand(toks: List[_Token], i: int, rp: int) -> bool:
     return all(toks[c + 1][0] == "id" and toks[c + 2][1] == "=" for c in commas)
 
 
+def _in_call_top_level(toks: List[_Token], i: int) -> bool:
+    """Whether ``toks[i]`` sits directly inside a call's parentheses."""
+    depth = 0
+    for j in range(i - 1, -1, -1):
+        kind = toks[j][0]
+        if kind == "rp":
+            depth += 1
+        elif kind == "lp":
+            if depth == 0:
+                return j > 0 and toks[j - 1][0] == "id"
+            depth -= 1
+    return False
+
+
+def _is_later_distinct_arg(text: str, toks: List[_Token], i: int) -> bool:
+    """Whether ``toks[i]`` is a ``distinct`` keyword opening a non-first call argument or a keyword value."""
+    opens_arg = 0 < i < len(toks) - 1 and (toks[i - 1][0] == "comma" or toks[i - 1][1] == "=")
+    if not (opens_arg and _is_word(text, toks, i, "distinct")):
+        return False
+    kind, val = toks[i + 1][:2]
+    return (kind in ("id", "str", "lp") or val.isdigit() or val == "*") and _in_call_top_level(toks, i)
+
+
 def _rewrite_count_distinct(text: str, *, original: str) -> str:
-    """``count(distinct x, …)`` → ``count_distinct(x, …)``; any other call-leading ``distinct`` raises."""
+    """``count(distinct x, …)`` → ``count_distinct(x, …)``; any other ``distinct`` keyword in a call raises."""
     if "distinct" not in text.lower():
         return text
     toks = _call_tokens(text)
     edits: List[Tuple[int, int, str]] = []
     for i in range(2, len(toks)):
+        if _is_later_distinct_arg(text, toks, i):
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {_DISTINCT_ONLY}.")
         if not (_is_word(text, toks, i, "distinct") and toks[i - 1][0] == "lp" and toks[i - 2][0] == "id"):
             continue
         rp = _matching_rp(toks, i - 1)
