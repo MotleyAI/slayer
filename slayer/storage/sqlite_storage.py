@@ -182,12 +182,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def graph_fingerprint(self) -> str | None:
         """The header's file change counter, which every committed write bumps (rollback-journal mode), plus the file's stat."""
-        await asyncio.sleep(0)
+        return await asyncio.to_thread(self._fingerprint_sync)
+
+    # --- Sync helpers (run in thread to avoid blocking the event loop) ---
+
+    def _fingerprint_sync(self) -> str:
         with open(self.db_path, "rb") as f:
             counter = f.read(28)[24:28]
         return f"{counter.hex()}:{stat_key(self.db_path)}"
-
-    # --- Sync helpers (run in thread to avoid blocking the event loop) ---
 
     def _save_model_sync(self, model: SlayerModel) -> None:
         data = json.dumps(model.model_dump(mode="json", exclude_none=True))

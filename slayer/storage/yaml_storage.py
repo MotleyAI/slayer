@@ -301,8 +301,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def graph_fingerprint(self) -> str | None:
         """Content digest of every YAML and memory ``.md`` file; ``OSError`` propagates (callers force a rebuild)."""
-        await asyncio.sleep(0)
-        return tree_fingerprint(self.base_dir, suffixes=(*_YAML_EXTS, ".md"))
+        return await asyncio.to_thread(tree_fingerprint, self.base_dir, suffixes=(*_YAML_EXTS, ".md"))
 
     # ---- internal helpers --------------------------------------------------
 
