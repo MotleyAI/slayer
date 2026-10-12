@@ -100,7 +100,7 @@ class TestDunderTableIngestion:
     def test_dunder_table_is_modelled_under_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """DEV-1743: the ``__`` ban is lifted — the model keeps the faithful
+        """The ``__`` ban is lifted — the model keeps the faithful
         object name, and ``sql_table`` matches."""
         ds = _sqlite_ds(
             workspace,
@@ -164,7 +164,7 @@ class TestDunderTableIngestion:
 
 
 class TestCollisionPolicy:
-    """DEV-1743: ``__`` is a legal model-name character now, so ``a__b`` and
+    """``__`` is a legal model-name character now, so ``a__b`` and
     ``a_b`` (and ``a___b``) are DISTINCT models — the old sanitize-collapse
     collision between them no longer exists. A genuine collision is now only two
     objects sharing one raw name across different schemas (covered in
@@ -476,7 +476,7 @@ class TestWrapperContract:
 class TestJoinTargetsUseModelNames:
     """A join must name the persisted MODEL, not the live object.
 
-    DEV-1743: model names keep ``__``, so an FK pointing at
+    Model names keep ``__``, so an FK pointing at
     ``reports__patient__drug`` binds to the faithful ``reports__patient__drug``.
     """
 
@@ -505,7 +505,7 @@ class TestJoinTargetsUseModelNames:
         self, workspace: Path
     ) -> None:
         """An out-of-scope target is not ingested, so a join to it is dropped
-        rather than left dangling (DEV-1743: no longer a sanitize-collision, but
+        rather than left dangling (no longer a sanitize-collision, but
         the exclude filter still yields a target with no model)."""
         ds = _sqlite_ds(
             workspace,
@@ -526,14 +526,8 @@ class TestJoinTargetsUseModelNames:
         assert all(j.target_model in models for j in refs_it.joins)
 
 
-class TestEmptyJoinListIsNotNoJoinList:
-    """An empty join list means every join was dropped, not "none generated".
-
-    Conflating the two sent the fallback to introspect the skipped object and
-    emit `a__b.label` — a column name the SQL generator reads as a join path.
-    (`_columns_to_model` drops dotted names, so no bad model reached storage;
-    the cost was pointless introspection against an object with no model.)
-    """
+class TestIntrospectionReadsOnlyTheOwnTable:
+    """Column introspection never reaches into a referenced object (no dotted `a__b.label`)."""
 
     def _fixture(self, workspace: Path):
         ds = _sqlite_ds(
@@ -550,31 +544,12 @@ class TestEmptyJoinListIsNotNoJoinList:
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         return sa_engine, sa.inspect(sa_engine)
 
-    def _introspect(self, workspace: Path, joins):
+    def test_introspects_no_referenced_table(self, workspace: Path) -> None:
         sa_engine, inspector = self._fixture(workspace)
-        return [
-            c.name
-            for c in _introspect_query_columns_via_inspector(
-                sa_engine=sa_engine,
-                inspector=inspector,
-                table_name="refs_it",
-                ref=None,
-                referenced_tables={"a__b"},
-                fk_columns_by_table={"refs_it": {"x"}},
-                joins=joins,
-            )
-        ]
-
-    def test_empty_joins_introspects_no_referenced_table(
-        self, workspace: Path
-    ) -> None:
-        assert self._introspect(workspace, []) == ["id", "x"]
-
-    def test_none_joins_still_falls_back(self, workspace: Path) -> None:
-        """`None` means joins were never generated — the fallback must stay."""
-        assert self._introspect(workspace, None) == [
-            "id", "x", "a__b.id", "a__b.label",
-        ]
+        columns = _introspect_query_columns_via_inspector(
+            sa_engine=sa_engine, inspector=inspector, table_name="refs_it", ref=None,
+        )
+        assert [c.name for c in columns] == ["id", "x"]
 
 
 class TestSanitizedNamesDoNotLeakIntoColumns:
@@ -596,7 +571,7 @@ class TestSanitizedNamesDoNotLeakIntoColumns:
         )
         models = {m.name: m for m in ingest_datasource(datasource=ds)}
         refs_it = models["refs_it"]
-        # DEV-1743: a__b is a valid model now, so the FK becomes a real join
+        # ``a__b`` is a valid model now, so the FK becomes a real join
         # (not dropped) targeting the faithful name.
         assert [j.target_model for j in refs_it.joins] == ["a__b"]
         # No qualified column names leaked in from the join target.
