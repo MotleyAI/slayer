@@ -105,6 +105,14 @@ class TestSaveWarning:
         assert mentions(text, "hr")
 
 
+async def test_sync_create_from_query_forwards_tags_and_warnings(store: AccessStore, engine: SlayerQueryEngine) -> None:
+    notes: list = []
+    query = {"source_model": "hr", "measures": [{"formula": "sum(salary)", "name": "v"}]}
+    engine.create_model_from_query_sync(query=query, name="hr_sync", access_tags=["ops"], warnings_out=notes)
+    assert (await must_get(store.storage, "hr_sync")).access_tags == ["ops"]
+    assert any(mentions(n.model_dump_json(), "hr") for n in notes)
+
+
 class TestRetagWarning:
     async def test_retagging_warns_per_newly_narrowed_reader(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
         await engine.save_model(query_backed("pub_count", source="pub", formula="count(*)"))

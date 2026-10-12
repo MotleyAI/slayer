@@ -2616,6 +2616,8 @@ class SlayerQueryEngine:
         description: Optional[str] = None,
         variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
+        access_tags: Optional[List[str]] = None,
+        warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
 
@@ -2626,6 +2628,8 @@ class SlayerQueryEngine:
                 description=description,
                 variables=variables,
                 save=save,
+                access_tags=access_tags,
+                warnings_out=warnings_out,
             )
         )
 
