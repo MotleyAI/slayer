@@ -20,6 +20,7 @@ NARROWED = {
     "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg",
 }
 NEVER_NARROWED = {"pub", "pub_link", "dangling"}
+OTHER_DS = "acme2"
 
 
 @pytest.fixture(params=ACCESS_PARAMS)
@@ -41,6 +42,15 @@ async def engine(store: AccessStore) -> AsyncGenerator[SlayerQueryEngine]:
 def query_backed(name: str, *, source: str, formula: str, access_tags: list[str] | None = None) -> SlayerModel:
     stage = SlayerQuery.model_validate({"source_model": source, "measures": [{"formula": formula, "name": "v"}]})
     return SlayerModel(name=name, source_queries=[stage], access_tags=access_tags or [])
+
+
+async def reader_in_other_datasource(store: AccessStore, *, name: str, source: str, formula: str) -> None:
+    """Query-backed ``name`` stored in ``OTHER_DS``, reading ``source`` in ``DS`` by bare name."""
+    ds = await store.storage.get_datasource(DS)
+    assert ds is not None
+    await store.storage.save_datasource(ds.model_copy(update={"name": OTHER_DS}))
+    model = query_backed(name, source=source, formula=formula).model_copy(update={"data_source": OTHER_DS})
+    await store.storage.save_model(model, _validate=False)
 
 
 def mentions(text: str, name: str) -> bool:
@@ -110,6 +120,12 @@ class TestRetagWarning:
         payloads = await narrowed_payloads(engine.save_model(hr.model_copy(update={"description": "roster"})))
         assert payloads == []
 
+    async def test_retagging_warns_readers_in_other_datasources(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
+        await reader_in_other_datasource(store, name="far_count", source="pub", formula="count(*)")
+        pub = await must_get(store.storage, "pub")
+        payloads = await narrowed_payloads(engine.save_model(pub.model_copy(update={"access_tags": ["ops"]})))
+        assert any(mentions(p, "far_count") for p in payloads)
+
 
 class TestValidateModels:
     async def test_lists_every_narrowed_model(self, engine: SlayerQueryEngine) -> None:
@@ -125,3 +141,9 @@ class TestValidateModels:
         findings = [d for d in (json.dumps(e.model_dump(mode="json")) for e in entries) if "narrowed" in d]
         assert any(mentions(f, "hr_summary") and mentions(f, "hr") for f in findings)
         assert any(mentions(f, "fin_report") and mentions(f, "fin") for f in findings)
+
+    async def test_reader_in_another_datasource_is_listed(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
+        await reader_in_other_datasource(store, name="far_pay", source="hr", formula="sum(salary)")
+        entries = await engine.validate_models(data_source=OTHER_DS)
+        findings = [d for d in (json.dumps(e.model_dump(mode="json")) for e in entries) if "narrowed" in d]
+        assert any(mentions(f, "far_pay") and mentions(f, "hr") for f in findings)

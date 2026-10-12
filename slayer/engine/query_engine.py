@@ -2582,9 +2582,11 @@ class SlayerQueryEngine:
                 models=models,
                 sql_clients=self._sql_clients,
             )
+            everything, _ = await self.storage.load_models()  # a reader's narrowing models may live elsewhere
             narrowed = [
                 NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
-                for (ds_name, name), by in sorted(narrowing_models(models).items())
+                for (ds_name, name), by in sorted(narrowing_models(everything).items())
+                if ds_name == data_source
             ]
             return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *narrowed]
 
@@ -2767,8 +2769,8 @@ class SlayerQueryEngine:
     async def _narrowed_access(
         self, *, model: SlayerModel, prior: Optional[SlayerModel],
     ) -> List[NarrowedAccessWarning]:
-        """The saved model, if narrowed, and — when its tags changed — each reader it newly narrows."""
-        loaded, _ = await self.storage.load_models(data_source=model.data_source)
+        """The saved model, if narrowed, and — when its tags changed — each reader it newly narrows, in any datasource."""
+        loaded, _ = await self.storage.load_models()
         retagged = prior if prior is not None and prior.access_tags != model.access_tags else None
         if retagged is None and not any(m.access_tags for m in loaded):
             return []
