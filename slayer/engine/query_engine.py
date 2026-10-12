@@ -47,6 +47,7 @@ from slayer.engine.cardinality import (
 )
 from slayer.core.policy import SessionPolicy
 from slayer.core.format import format_number
+from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
     ModelMeasure,
@@ -2199,8 +2200,9 @@ class SlayerQueryEngine:
         remove_aggregations: Optional[List[str]] = None,
         remove_joins: Optional[List[str]] = None,
         remove_filters: Optional[List[str]] = None,
+        remove_join_edges: Optional[List[JoinEdgeRef]] = None,
     ) -> SlayerModel:
-        """Apply surgical removals (by name, plus verbatim filters) to a persisted model."""
+        """Apply surgical removals (by name; joins by edge reference or exact ref; filters verbatim) to a persisted model."""
         existing = await self.storage.get_model(model_name, data_source=data_source)
         if existing is None:
             raise ValueError(
@@ -2217,7 +2219,9 @@ class SlayerQueryEngine:
         cols_to_remove = set(remove_columns or [])
         measures_to_remove = set(remove_measures or [])
         aggs_to_remove = set(remove_aggregations or [])
-        joins_to_remove = set(remove_joins or [])
+        joins_to_remove = resolve_join_refs(
+            model=existing, refs=[*(remove_joins or []), *(remove_join_edges or [])],
+        )
         filters_to_remove = list(remove_filters or [])
 
         new_columns = [c for c in existing.columns if c.name not in cols_to_remove]
@@ -2225,9 +2229,7 @@ class SlayerQueryEngine:
             m for m in existing.measures if m.name not in measures_to_remove
         ]
         new_aggs = [a for a in existing.aggregations if a.name not in aggs_to_remove]
-        new_joins = [
-            j for j in existing.joins if j.target_model not in joins_to_remove
-        ]
+        new_joins = without_joins(model=existing, joins=joins_to_remove)
         new_filters = [f for f in existing.filters if f not in filters_to_remove]
 
         updated = existing.model_copy(
@@ -2287,6 +2289,7 @@ class SlayerQueryEngine:
                         remove_aggregations=list(entry.remove.aggregations),
                         remove_joins=list(entry.remove.joins),
                         remove_filters=list(entry.remove_filters),
+                        remove_join_edges=list(entry.remove.join_edges),
                     )
                 else:
                     raise ValueError(f"Unknown delete tool: {entry.tool!r}")

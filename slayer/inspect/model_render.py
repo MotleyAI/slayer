@@ -13,7 +13,8 @@ from typing import Any
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer.core.enums import DataType
-from slayer.core.join_walker import OrientedJoin, neighbors
+from slayer.core.join_edges import edge_reference
+from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors
 from slayer.core.models import Column, SlayerModel, is_identifier
 from slayer.core.query import (
     SlayerQuery,
@@ -461,7 +462,7 @@ def model_skeleton_fields(
         "column_names": [c.name for c in model.columns if not c.hidden],
         "measure_names": [m.name for m in model.measures if m.name is not None],
         "aggregation_names": [a.name for a in model.aggregations],
-        "joins_to": sorted({j.target_model for j in model.joins}),
+        "joins_to": sorted({edge_reference(model=model, join=j) for j in model.joins}),
         "variables": {"required": mv.required, "optional": mv.optional},
     }
     if saved_queries:
@@ -716,6 +717,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         for h in hops:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in h.join_pairs)
             join_rows.append({
+                "name": h.name or "",
                 "target_model": h.target_model,
                 "join_pairs": pairs,
                 "cardinality": str(h.cardinality) if h.cardinality else "",
@@ -724,11 +726,11 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             f"## Joins ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
-                columns=["target_model", "join_pairs", "cardinality"],
+                columns=["name", "target_model", "join_pairs", "cardinality"],
             )
         )
     elif hops:
-        csv = ", ".join(_md_code_span(h.target_model) for h in hops)
+        csv = ", ".join(_md_code_span(canonical_token(h)) for h in hops)
         out_sections.append(
             f"## Joins ({len(hops)} — names only)\n\n{csv}"
         )
@@ -943,6 +945,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         if "joins" in included_set:
             payload["joins"] = [
                 {
+                    "name": h.name,
                     "target_model": h.target_model,
                     "join_pairs": h.join_pairs,
                     "cardinality": h.cardinality,
@@ -950,7 +953,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 for h in hops
             ]
         elif hops:
-            payload["joins_names"] = [h.target_model for h in hops]
+            payload["joins_names"] = [canonical_token(h) for h in hops]
 
         # Samples
         if "samples" in included_set:
