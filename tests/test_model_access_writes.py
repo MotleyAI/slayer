@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import AsyncGenerator, Callable
 
 import pytest
@@ -21,6 +22,7 @@ from tests._model_access_fixtures import (
     HR_ONLY_MEMORY,
     MIXED_MEMORY,
     PRUNED_EDGE,
+    UNLOADABLE,
     AccessStore,
     access_store,
     mcp_text,
@@ -61,6 +63,17 @@ def foreign_leaks(text: str, *, own: str | None = None) -> list[str]:
 def test_errors_are_typed() -> None:
     assert issubclass(HiddenContentConflictError, SlayerError)
     assert issubclass(AccessTagsEditError, SlayerError)
+
+
+@pytest.mark.parametrize("saver", SAVERS)
+@pytest.mark.parametrize("name", ["pub", "fin"], ids=["nothing-withheld", "pruned-join-reattached"])
+async def test_save_warns_about_no_model_outside_the_view(store: AccessStore, saver: str, name: str) -> None:
+    fin = view(store, "fin")
+    model = await must_get(fin, name)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await save(fin, model.model_copy(update={"description": "edited"}), saver=saver)
+    assert [str(w.message) for w in caught if UNLOADABLE in str(w.message)] == []
 
 
 @pytest.mark.parametrize("name", ["pub", "fin"], ids=["nothing-withheld", "pruned-join-reattached"])
@@ -108,6 +121,12 @@ def _edge_named_like_hidden_model(fin: SlayerModel, _: SlayerModel) -> SlayerMod
     return fin.model_copy(update={"joins": [ModelJoin(target_model="pub", name="hr", join_pairs=[["staff_id", "id"]])]})
 
 
+def _new_model_with_edge_named_like_hidden_model(_: SlayerModel, __: SlayerModel) -> SlayerModel:
+    return SlayerModel(name="pub_edge", sql_table="pub_items", data_source=DS,
+                       columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                       joins=[ModelJoin(target_model="pub", name="hr", join_pairs=[["id", "id"]])])
+
+
 def _edge_named_like_pruned_edge(_: SlayerModel, pub_link: SlayerModel) -> SlayerModel:
     return pub_link.model_copy(update={"joins": [ModelJoin(target_model="fin", name=PRUNED_EDGE, join_pairs=[["id", "id"]])]})
 
@@ -124,6 +143,7 @@ def _key_column(fin: SlayerModel, **update) -> SlayerModel:
 CONFLICTS: dict[str, tuple[Callable[[SlayerModel, SlayerModel], SlayerModel], str | None, str]] = {
     "hidden-model-name": (_new_model_named_hr, "hr", "hr"),
     "edge-named-like-hidden-model": (_edge_named_like_hidden_model, "hr", "fin"),
+    "new-model-edge-named-like-hidden-model": (_new_model_with_edge_named_like_hidden_model, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_column, None, "fin"),
     "expression-key-column": (lambda fin, _: _key_column(fin, sql="id + 0"), None, "fin"),

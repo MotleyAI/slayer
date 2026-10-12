@@ -26,11 +26,12 @@ def stored_document_boundary(
 
 
 class DocumentLoadFailures:
-    """Unloadable documents met by one operation; each is warned once."""
+    """Unloadable documents met by one operation; each is warned once, unless ``report`` is off."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, report: bool = True) -> None:
         self._errors: dict[str, StoredDocumentLoadError] = {}
         self.warnings: list[UnloadableDocumentWarning] = []
+        self._report = report
 
     @property
     def errors(self) -> list[StoredDocumentLoadError]:
@@ -40,6 +41,8 @@ class DocumentLoadFailures:
         if error.document in self._errors:
             return
         self._errors[error.document] = error
+        if not self._report:
+            return
         payload = UnloadableDocumentWarning(
             document_kind="memory" if error.data_source is None else "model",
             data_source=error.data_source, name=error.name, cause=error.cause_text,
