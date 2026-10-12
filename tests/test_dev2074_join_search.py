@@ -317,6 +317,11 @@ class TestRoutes:
         got = routes(root=models["root"], target="t", models_by_name=models, cap=5, shortest_only=True)
         assert [r.tokens for r in got] == [("aaa", "t"), ("zzz", "t")]
 
+    def test_shortest_only_with_no_route_is_empty(self) -> None:
+        models = _unnamed_parallel()
+        got = routes(root=models["orders"], target="addresses", models_by_name=models, cap=5, shortest_only=True)
+        assert got == []
+
     def test_to_one_filter_applies_to_route_enumeration(self) -> None:
         models = self._diamond()
         models["root"] = _m("root", joins=[_to("t", src="grp", tgt="grp"),

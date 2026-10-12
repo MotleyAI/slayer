@@ -9,8 +9,9 @@ among equal-length routes break by fewer fanning hops, then the smallest token s
 from __future__ import annotations
 
 import heapq
+import itertools
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
@@ -205,18 +206,24 @@ def shortest_routes(
     while layer:
         found: dict[str, Route] = {}
         for node in layer:
-            if not graph.passes(node, root=root.name):
-                continue
-            for hop in graph.hops(node, hop_filter):
-                nxt = hop.edge.target_model
-                if nxt in best:
-                    continue
-                cand = _extend(best[node], hop)
+            for nxt, cand in _successors(graph, node=node, route=best[node], root=root.name,
+                                         hop_filter=hop_filter, admit=lambda n: n not in best):
                 if nxt not in found or cand.rank() < found[nxt].rank():
                     found[nxt] = cand
         best.update(found)
         layer = sorted(found)
     return best
+
+
+def _successors(
+    graph: _Graph, *, node: str, route: Route, root: str, hop_filter: HopFilter, admit: Callable[[str], bool],
+) -> Iterator[tuple[str, Route]]:
+    """``route`` extended by each filtered addressable hop off ``node`` into a model ``admit`` accepts."""
+    if not graph.passes(node, root=root):
+        return
+    for hop in graph.hops(node, hop_filter):
+        if admit(hop.edge.target_model):
+            yield hop.edge.target_model, _extend(route, hop)
 
 
 def shortest_route(
@@ -240,7 +247,7 @@ def routes(
     relevant = graph.relevant(root=root.name, target=target)
     out: list[Route] = []
     heap: list[tuple[tuple[int, int, tuple[str, ...]], int, Route, str]] = [((0, 0, ()), 0, Route(), root.name)]
-    pushed = 1
+    tie = itertools.count(1)
     while heap and len(out) < cap:
         _rank, _n, route, node = heapq.heappop(heap)
         if node == target:
@@ -248,16 +255,10 @@ def routes(
                 break
             out.append(route)
             continue
-        if not graph.passes(node, root=root.name):
-            continue
         visited = {root.name, *(e.target_model for e in route.edges)}
-        for hop in graph.hops(node, hop_filter):
-            nxt = hop.edge.target_model
-            if nxt in visited or nxt not in relevant:
-                continue
-            ext = _extend(route, hop)
-            heapq.heappush(heap, (ext.rank(), pushed, ext, nxt))
-            pushed += 1
+        for nxt, ext in _successors(graph, node=node, route=route, root=root.name, hop_filter=hop_filter,
+                                    admit=lambda n: n not in visited and n in relevant):
+            heapq.heappush(heap, (ext.rank(), next(tie), ext, nxt))
     return out
 
 

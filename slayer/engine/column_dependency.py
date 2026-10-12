@@ -408,18 +408,23 @@ def warn_broken_dependents(
     before = {**others, **({model.name: stored} if stored is not None else {})}
     after = {**others, model.name: model}
     for name in sorted(others):
-        host = others[name]
-        for column, fragment in _definitions(host):
-            for quals, leaf in _fragment_refs(fragment) or []:
-                path = _hop_path(quals=quals, host=host)
-                broken = _ref_break(host=host, path=path, before=before, after=after) if path else None
-                if broken is None:
-                    continue
-                warnings.warn(
-                    f"Saving model {model.name!r}: {_definition_label(column=column, fragment=fragment)} "
-                    f"on model {name!r} references {'.'.join((*quals, leaf))!r}, which {broken}.",
-                    UserWarning, stacklevel=3,
-                )
+        for label, reference, broken in _broken_references(host=others[name], before=before, after=after):
+            warnings.warn(
+                f"Saving model {model.name!r}: {label} on model {name!r} references {reference!r}, which {broken}.",
+                UserWarning, stacklevel=3,
+            )
+
+
+def _broken_references(
+    *, host: SlayerModel, before: dict[str, SlayerModel], after: dict[str, SlayerModel],
+) -> Iterator[tuple[str, str, str]]:
+    """``(definition label, reference, how it broke)`` for each of ``host``'s references broken by the save."""
+    for column, fragment in _definitions(host):
+        for quals, leaf in _fragment_refs(fragment) or []:
+            path = _hop_path(quals=quals, host=host)
+            broken = _ref_break(host=host, path=path, before=before, after=after) if path else None
+            if broken is not None:
+                yield _definition_label(column=column, fragment=fragment), ".".join((*quals, leaf)), broken
 
 
 def validate_derived_columns(
