@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: orders
 sql_table: orders
 source_kind: table
@@ -139,3 +139,4 @@ description: "Customer orders \u2014 one row per order. Monetary amounts are in 
   \ The fact table at the center of the demo: joins to customers and stores, and is\
   \ referenced by items."
 hidden: false
+access_tags: []

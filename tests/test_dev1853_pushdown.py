@@ -20,6 +20,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1853_fixtures import (
     CHAIN_PUSHDOWN_OK_SPEND,
+    CHAIN_REVERSE_AGG_TOTAL,
     PARALLEL_PUSHDOWN_BILLING_OK_POP,
     chain_engine,
     parallel_engine,
@@ -124,7 +125,7 @@ class TestNamedEdgeCarriesTheCorrelation:
             pytest.approx(PARALLEL_PUSHDOWN_BILLING_OK_POP)
 
 
-class TestReverseRoundTripStaysRejected:
+class TestReverseRoundTripComposes:
     async def test_saved_measure_crossing_back_over_the_reverse_hop(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
@@ -139,11 +140,6 @@ class TestReverseRoundTripStaysRejected:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[{"formula": "customers.order_total", "name": "x"}])
-            with pytest.raises(ValueError) as ei:
-                await engine.execute(query, dry_run=True)
-            message = str(ei.value)
-            assert "order_total" in message
-            assert "orders" in message
-            low = message.lower()
-            assert ("circular" in low or "round" in low or "revisit" in low
-                    or "again" in low)
+            # A second ``orders`` occurrence over every order, orphan included (mirror parity).
+            resp = await engine.execute(query)
+            assert resp.data[0]["orders.x"] == CHAIN_REVERSE_AGG_TOTAL

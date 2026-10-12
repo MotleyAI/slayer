@@ -17,7 +17,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
 )
-from slayer.core.join_walker import terminal_model
+from slayer.core.join_walker import resolved_terminal
 from slayer.core.models import SlayerModel
 from slayer.engine.reference_closure import column_default_key
 from slayer.ir.planned import (
@@ -54,7 +54,7 @@ def _temporal_row_dimension_key(
     for key in row_keys:
         if not isinstance(key, ColumnKey):
             continue
-        model = terminal_model(
+        model = resolved_terminal(
             root=source_model, path=key.path, models_by_name=models_by_name,
         )
         if model is None:

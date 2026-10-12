@@ -44,10 +44,10 @@ from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.filter_reachability import (
     UnhandledValueKindError,
-    compute_key_join_paths,
     filter_reachability_for,
     recompute_filter_reachability,
 )
+from slayer.engine.reference_closure import key_closure
 from slayer.ir.bound import bound_filter_from_key
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.compile.stages import (
@@ -146,12 +146,12 @@ def _bundle() -> ResolvedSourceBundle:
 
 def _paths_for(key):
     """Anchored crossed-join-path set for one ValueKey, at plan time."""
-    return compute_key_join_paths(
+    return key_closure(
         key=key,
         anchor_model=_orders(),
         anchor_relation="orders",
         bundle=_bundle(),
-    )
+    ) or ()
 
 
 def _derived(name: str) -> ColumnSqlKey:
@@ -269,7 +269,7 @@ class TestCompositeKeyKindsAreTotal:
 
         bogus, model, bundle = _Bogus(), _orders(), _bundle()
         with pytest.raises(UnhandledValueKindError) as excinfo:
-            compute_key_join_paths(
+            key_closure(
                 key=bogus, anchor_model=model,
                 anchor_relation="orders", bundle=bundle,
             )
@@ -432,12 +432,12 @@ class TestCoordinateSystemInvariant:
         ('regions',) when the anchor IS customers. A summary that were copied
         rather than recomputed would report the parent's paths."""
         key = ColumnKey(path=("customers", "regions"), leaf="population")
-        from_orders = compute_key_join_paths(
+        from_orders = key_closure(
             key=key, anchor_model=_orders(), anchor_relation="orders",
             bundle=_bundle(),
         )
         rerooted = key.model_copy(update={"path": ("regions",)})
-        from_customers = compute_key_join_paths(
+        from_customers = key_closure(
             key=rerooted, anchor_model=_customers(),
             anchor_relation="customers", bundle=_bundle(),
         )
@@ -445,8 +445,8 @@ class TestCoordinateSystemInvariant:
             "reachability must be anchor-relative; identical results for two "
             "different anchors means the summary is not being recomputed"
         )
-        assert ("regions",) in from_customers
-        assert ("customers", "regions") in from_orders
+        assert ("regions",) in (from_customers or ())
+        assert ("customers", "regions") in (from_orders or ())
 
     def test_nested_plan_recomputes_rather_than_inherits(self) -> None:
         """The nested (rerooted) plan a cross-model CTE compiles must carry its

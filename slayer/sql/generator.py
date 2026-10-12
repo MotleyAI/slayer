@@ -41,7 +41,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
-from slayer.core.join_walker import aggregation_owner, model_column_type, physical_join_pairs, resolve_hop, terminal_model
+from slayer.core.join_walker import aggregation_owner, follow, model_column_type, physical_join_pairs, resolved_terminal
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
@@ -4339,32 +4339,16 @@ class SQLGenerator:
         return ordered
 
     def _oriented_hop_chain(self, *, source_model, path, bundle):
-        """Resolve ``path`` tokens into ``(OrientedJoin, next_model)`` hops through
-        the shared bidirectional walker — reverse hops and edge-name tokens
-        included. Raises ``ValueError`` on a missing hop (its own message) and
-        propagates ``AmbiguousJoinPathError`` on an ambiguous one."""
+        """``(OrientedJoin, next_model)`` hops of a bound (possibly composed) join ``path``;
+        ``ValueError`` when it does not resolve, ``AmbiguousJoinPathError`` on an ambiguous hop."""
         models_by_name = bundle.models_by_name
         models_by_name.setdefault(source_model.name, source_model)
-        current = source_model
-        chain = []
-        for hop in path:
-            edge = resolve_hop(
-                current=current, token=hop, models_by_name=models_by_name
+        chain = follow(root=source_model, path=tuple(path), models_by_name=models_by_name)
+        if chain is None:
+            raise ValueError(
+                f"Joined path {tuple(path)!r} does not resolve from model {source_model.name!r}.",
             )
-            if edge is None:
-                raise ValueError(
-                    f"Model {current.name!r} has no join to "
-                    f"{hop!r}; needed for joined path {path!r}.",
-                )
-            next_model = models_by_name.get(edge.target_model)
-            if next_model is None:
-                raise ValueError(
-                    f"Join target {edge.target_model!r} not in resolved "
-                    f"source bundle.",
-                )
-            chain.append((edge, next_model))
-            current = next_model
-        return chain
+        return [(edge, models_by_name[edge.target_model]) for edge in chain]
 
     def _build_from_and_joins(
         self,
@@ -5629,7 +5613,7 @@ class SQLGenerator:
     def _walk_join_path_model(self, *, source_model, path, bundle):
         """The terminal model of a join ``path`` walked from ``source_model``
         via the shared walker (tokens may be edge names or reverse hops)."""
-        return terminal_model(
+        return resolved_terminal(
             root=source_model, path=tuple(path),
             models_by_name=bundle.models_by_name,
         )
@@ -6303,7 +6287,7 @@ def _user_authored_exemptions(
     in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
     ``name``/``sql``/``filter`` across the source, referenced, per-stage source and
     inline-extension models. These pass through emission
-    unfitted; SLayer-generated ``backing_query_sql`` and synthetic stage-schema
+    unfitted; SLayer-generated query-backed model SQL and synthetic stage-schema
     models (built later) are deliberately excluded."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     limit = d.max_identifier_bytes

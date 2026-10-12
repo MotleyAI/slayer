@@ -290,11 +290,10 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 
 ## Adding a new dialect
 
-1. Add the mapping to `slayer/engine/query_engine.py:_dialect_for_type()`.
-2. Override the date hooks on the dialect class (`build_date_add`, `build_date_part`,
-   `build_date_diff`, …) where the Postgres-shaped defaults don't apply.
-3. Add parameterized tests in `TestMultiDialectGeneration` in
-   `tests/test_sql_generator.py`.
-4. For median/percentile, decide whether the native syntax already works
-   (sqlglot may handle it) or whether a branch in `_build_median` /
-   `_build_percentile` is needed.
+1. Subclass `SqlDialect` (`slayer/sql/dialects/base.py`), setting `sqlglot_name` and
+   `ds_type_aliases`.
+2. Import the subclass in `slayer/sql/dialects/__init__.py`.
+3. Register it in `_ALL_DIALECTS`, or in `_DS_TYPE_ONLY_DIALECTS` when it shares another
+   dialect's `sqlglot_name` (as MariaDB does). Otherwise it silently overwrites that
+   dialect's entry in `_BY_SQLGLOT_NAME`.
+4. Add tests to `tests/dialects/test_multi_dialect_generation.py`.

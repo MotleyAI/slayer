@@ -1,4 +1,4 @@
-version: 14
+version: 15
 name: items
 sql_table: items
 source_kind: table
@@ -51,3 +51,4 @@ joins:
 filters: []
 description: "Order line items \u2014 one row per unit sold on an order."
 hidden: false
+access_tags: []

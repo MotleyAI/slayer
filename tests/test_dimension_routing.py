@@ -2,8 +2,9 @@
 ``slayer/engine/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
 ``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
-route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (oriented
-provably-to-one executable hops off a model as ``(token, target_model)`` pairs).
+route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (the
+oriented provably-to-one addressable hops off a model, ``join_search.addressable_hops``
+with ``HopFilter.TO_ONE``, as ``(token, target_model)`` pairs).
 """
 
 from __future__ import annotations
@@ -12,12 +13,13 @@ import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import UnresolvableDimensionJoinError
+from slayer.core.join_search import HopFilter, addressable_hops
+from slayer.core.join_walker import canonical_token
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.dimension_routing import (
     route_dotted_target,
     short_form_route_or_none,
 )
-from slayer.engine.join_safety import safe_hops as _safe_hops
 
 
 def _pk() -> Column:
@@ -46,6 +48,13 @@ def _by_name(*models: SlayerModel) -> dict[str, SlayerModel]:
 
 def _join(target: str, pairs: list[list[str]], **kw) -> ModelJoin:
     return ModelJoin(target_model=target, join_pairs=pairs, **kw)
+
+
+def _safe_hops(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[tuple[str, str]]:
+    return [
+        (canonical_token(e), e.target_model)
+        for e in addressable_hops(model=model, models_by_name=models_by_name, hop_filter=HopFilter.TO_ONE)
+    ]
 
 
 # short_form_route_or_none / route_dotted_target
@@ -305,10 +314,9 @@ class TestSafeHops:
         targets = {t for _tok, t in _safe_hops(model=models["Mid"], models_by_name=models)}
         assert targets == {"Other"}
 
-    def test_duplicate_name_across_neighbors_leaves_model_tokens(self) -> None:
-        """A name shared by two edges to DIFFERENT neighbors is a dead (ambiguous)
-        token, but each neighbor's bare model-name token still resolves — both
-        PK-safe hops survive under their model names."""
+    def test_duplicate_name_across_neighbors_is_unaddressable(self) -> None:
+        """A name shared by two edges to different neighbors is each edge's canonical
+        token and resolves to both, so neither hop is addressable."""
         leaf = _model("Leaf", [_pk(), _t("x")])
         other = _model("Other", [_pk(), _t("y")])
         mid = _model(
@@ -321,4 +329,4 @@ class TestSafeHops:
         )
         models = _by_name(mid, leaf, other)
         targets = {t for _tok, t in _safe_hops(model=models["Mid"], models_by_name=models)}
-        assert targets == {"Leaf", "Other"}
+        assert targets == set()

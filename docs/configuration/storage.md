@@ -132,6 +132,8 @@ class MyCustomStorage(StorageBackend):
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `save_datasource`.
 
+Caches derived from stored content (the search graph, the SQL facade catalog) are keyed by `cache_identity()` (default: one per instance) and reused only while `graph_fingerprint()` returns the same string, so override it to report content changes — the default `None` means a cache is never reused.
+
 Register it for URI-based resolution:
 
 ```python
@@ -156,3 +158,9 @@ app = create_app(storage=my_storage)
 mcp = create_mcp_server(storage=my_storage)
 client = SlayerClient(storage=my_storage)
 ```
+
+## Tag-filtered storage
+
+Wrap a store as `TagFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.tag_filtered`) to serve one caller: every model whose [`access_tags`](../concepts/models.md#fields-at-a-glance) it cannot access, every model reading one, and every memory linked only to such models reads as deleted, joins into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
+
+Saving a model that reads a tagged model whose tags do not cover its own emits a `narrowed_access` warning, and `validate_models` reports every such model as a `narrowed_access` finding.

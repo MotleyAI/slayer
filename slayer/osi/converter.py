@@ -26,7 +26,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, joi
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.engine.ingestion import introspect_table_to_model
-from slayer.engine.join_graph import JoinGraph, min_hops_root
+from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.sql.client import get_column_types_sync
 from slayer.osi.expression import SQL_DIALECTS, convert_expression
@@ -214,9 +214,8 @@ class OsiToSlayerConverter:
         self._validate_cross_model_field_refs()
         self._type_cross_model_columns()
 
-        graph = JoinGraph.build_from_models(list(self._models.values()))
         for sm in semantic_models:
-            self._build_measures_for(sm, graph)
+            self._build_measures_for(sm)
 
         return ConversionResult(
             models=list(self._models.values()),
@@ -224,10 +223,10 @@ class OsiToSlayerConverter:
             warnings=self._warnings,
         )
 
-    def _build_measures_for(self, sm: OSISemanticModel, graph: JoinGraph) -> None:
+    def _build_measures_for(self, sm: OSISemanticModel) -> None:
         sm_model_names = [d.name for d in sm.datasets if d.name in self._models]
         for metric in sm.metrics or []:
-            self._build_measure(metric=metric, sm_model_names=sm_model_names, graph=graph)
+            self._build_measure(metric=metric, sm_model_names=sm_model_names)
 
     def _check_duplicate_dataset_names(self, sms: list[OSISemanticModel]) -> None:
         seen: set[str] = set()
@@ -738,8 +737,7 @@ class OsiToSlayerConverter:
 
     # ---- metrics -> measures ----
 
-    def _build_measure(self, metric: OSIMetric, sm_model_names: list[str],
-                       graph: JoinGraph) -> None:
+    def _build_measure(self, metric: OSIMetric, sm_model_names: list[str]) -> None:
         if not _legal_measure_name(metric.name):
             self._unconv(
                 f"Metric name {metric.name!r} is not a valid SLayer identifier.",
@@ -756,7 +754,7 @@ class OsiToSlayerConverter:
             return
 
         owner_of = self._make_owner_of(sm_model_names)
-        anchor = self._select_anchor(metric_name=metric.name, expr=expr, sm_model_names=sm_model_names, owner_of=owner_of, graph=graph)
+        anchor = self._select_anchor(metric_name=metric.name, expr=expr, sm_model_names=sm_model_names, owner_of=owner_of)
         if anchor is None:
             return  # already reported
 
@@ -779,7 +777,7 @@ class OsiToSlayerConverter:
             )
             return
 
-        ref_of = self._make_ref_of(graph=graph, anchor=anchor)
+        ref_of = self._make_ref_of(anchor=anchor)
         percentile_unsupported = (
             self.target_dialect is not None
             and self.target_dialect.lower() in _NO_PERCENTILE_DIALECTS
@@ -832,14 +830,20 @@ class OsiToSlayerConverter:
                        category="dialect", severity="info")
 
     def _select_anchor(self, metric_name: str, expr: str, sm_model_names: list[str],
-                       owner_of, graph: JoinGraph) -> str | None:
+                       owner_of) -> str | None:
         owners = self._referenced_owners(expr, owner_of)
         if owners:
-            anchor = min_hops_root(graph=graph, candidates=sm_model_names, mentioned=owners)
+            anchor = self._min_hops_root(candidates=sm_model_names, mentioned=owners)
             if anchor is None:
+                pairs = {
+                    p.describe(): None
+                    for c in sm_model_names for m in sorted(owners)
+                    for p in blocking_pairs(root=self._models[c], target=m, models_by_name=self._models)
+                }
                 self._unconv(
                     f"Metric {metric_name!r} references models {sorted(owners)} "
-                    f"with no single model reaching all of them via joins.",
+                    f"with no single model reaching all of them via joins."
+                    + "".join(f" {d}." for d in pairs),
                     metric_name=metric_name, category="no_join_path",
                     suggestion="Add the required relationship(s), or split the "
                                "metric across a multi-stage query.",
@@ -903,12 +907,22 @@ class OsiToSlayerConverter:
             return matches[0] if len(matches) == 1 else None
         return owner_of
 
-    def _make_ref_of(self, graph: JoinGraph, anchor: str):
+    def _min_hops_root(self, *, candidates: list[str], mentioned: set[str]) -> str | None:
+        """Among ``candidates`` routing to every ``mentioned`` model, the fewest total
+        hops; ties prefer a mentioned candidate, then the smallest name."""
+        keyed = []
+        for c in candidates:
+            routed = shortest_routes(root=self._models[c], models_by_name=self._models)
+            if all(m in routed for m in mentioned):
+                keyed.append((sum(len(routed[m].edges) for m in mentioned), 0 if c in mentioned else 1, c))
+        return min(keyed)[2] if keyed else None
+
+    def _make_ref_of(self, anchor: str):
         def ref_of(model: str, column: str) -> Optional[str]:
-            path = graph.shortest_path(anchor, model)
-            if path is None:
+            route = shortest_route(root=self._models[anchor], target=model, models_by_name=self._models)
+            if route is None:
                 return None
-            return ".".join([*path, column])
+            return ".".join([*route.tokens, column])
         return ref_of
 
     def _materialize_columns(self, materialized) -> None:

@@ -26,8 +26,7 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import resolve_hop
+from slayer.core.join_walker import resolved_terminal
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerModel
 from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec
@@ -169,29 +168,5 @@ class StrictQueryCarrier(BaseModel):
 def walk_key_path(
     *, model: SlayerModel, path: Tuple[str, ...], bundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` as join hops from ``model``; ``None`` on any miss.
-
-    The structural counterpart to binding a dotted reference: it answers
-    "is this join path traversable?" without a parser and without raising,
-    which is what re-rooting needs to decide reachability. Traversal is
-    bidirectional (DEV-1853); an ambiguous hop reads as non-traversable here.
-    """
-    models_by_name = bundle.models_by_name
-    models_by_name.setdefault(model.name, model)
-    current = model
-    visited = {current.name}
-    for hop in path:
-        try:
-            edge = resolve_hop(
-                current=current, token=hop, models_by_name=models_by_name,
-            )
-        except AmbiguousJoinPathError:
-            return None
-        if edge is None:
-            return None
-        nxt = models_by_name.get(edge.target_model)
-        if nxt is None or nxt.name in visited:
-            return None
-        visited.add(nxt.name)
-        current = nxt
-    return current
+    """The terminal model of a bound (possibly composed) key ``path`` from ``model``; ``None`` on any miss."""
+    return resolved_terminal(root=model, path=path, models_by_name=bundle.models_by_name)

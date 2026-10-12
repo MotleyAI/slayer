@@ -22,7 +22,7 @@ from slayer.core.errors import (
 from slayer.core.join_walker import (
     aggregation_owner,
     cancelling_revisit,
-    terminal_model,
+    resolved_terminal,
     walk_cancelling,
 )
 from slayer.core.keys import (
@@ -335,7 +335,7 @@ def resolve_default_qualifier_path(
         if len(quals) == 1:
             raise_if_legacy_split_alias(
                 qualifier=quals[0], leaf=leaf, models_by_name=models_by_name,
-                source_model=terminal_model(
+                source_model=resolved_terminal(
                     root=root_model, path=owner_path, models_by_name=models_by_name,
                 ) or root_model,
             )
@@ -366,6 +366,21 @@ def _raise_if_circular(
             reference=".".join((*qualifiers, leaf)), root_model=root_model.name,
             revisited=revisited, hop=hop, via=via,
         )
+
+
+def default_reference_sites(definition: Aggregation) -> List[Tuple[Path, str]]:
+    """``(qualifiers, leaf)`` of each root-scope reference in ``definition``'s parameter defaults; an unparseable default has none."""
+    out: List[Tuple[Path, str]] = []
+    for param in definition.params:
+        if not param.sql:
+            continue
+        try:
+            parsed = cast(Expression, sqlglot.parse_one(
+                prequote_reserved_identifiers(param.sql, dialect="postgres"), dialect="postgres"))
+        except (SqlglotError, ValueError):
+            continue
+        out.extend((tuple(quals), leaf) for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed)))
+    return out
 
 
 def resolve_default_reference_paths(

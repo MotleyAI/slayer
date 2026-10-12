@@ -1,4 +1,4 @@
-"""DEV-1853 — edge-aware ``JoinGraph`` and executable root recommendation.
+"""DEV-1853 — edge-aware route search (``slayer.core.join_search``) and executable root recommendation.
 
 The graph spans the bidirectional edge set: parallel edges are distinct
 routes, recommendations emit edge-name tokens where a hop needs one, and an
@@ -16,39 +16,44 @@ from typing import cast
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.join_search import count_routes, reachable, shortest_route
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
+from tests._edge_graph_fixtures import edge_graph
 import slayer.engine.bundle_builder
 
 
 
+def _by(models: list[SlayerModel]) -> dict[str, SlayerModel]:
+    return {m.name: m for m in models}
+
+
 class TestBidirectionalReachability:
     def test_reverse_neighbors_are_reachable(self) -> None:
-        graph = JoinGraph.build_from_models(chain_models())
-        assert "orders" in graph.reachable_from("customers")
-        assert "orders" in graph.reachable_from("regions")
+        models = _by(chain_models())
+        assert "orders" in reachable(root=models["customers"], models_by_name=models)
+        assert "orders" in reachable(root=models["regions"], models_by_name=models)
 
     def test_reverse_route_is_unique_on_a_single_edge(self) -> None:
-        graph = JoinGraph.build_from_models(chain_models())
-        assert graph.count_simple_paths("customers", "orders") == 1
+        models = _by(chain_models())
+        assert count_routes(root=models["customers"], target="orders", models_by_name=models) == 1
 
 
 class TestParallelEdgesAreDistinctRoutes:
     def test_route_counting_reports_ambiguous(self) -> None:
-        graph = JoinGraph.build_from_models(parallel_models(named=False))
-        assert graph.count_simple_paths("orders", "customers", cap=5) == 2
-        assert graph.count_simple_paths("customers", "orders", cap=5) == 2
+        models = _by(parallel_models(named=False))
+        assert count_routes(root=models["orders"], target="customers", models_by_name=models, cap=5) == 2
+        assert count_routes(root=models["customers"], target="orders", models_by_name=models, cap=5) == 2
 
     def test_named_parallel_edges_also_count_as_two_routes(self) -> None:
-        graph = JoinGraph.build_from_models(parallel_models(named=True))
-        assert graph.count_simple_paths("orders", "customers", cap=5) == 2
+        models = _by(parallel_models(named=True))
+        assert count_routes(root=models["orders"], target="customers", models_by_name=models, cap=5) == 2
 
 
 class TestEdgeNameShadowsModelToken:
@@ -56,10 +61,11 @@ class TestEdgeNameShadowsModelToken:
         # Edge a↔b named "c" shadows the bare model token "c" (names resolve
         # first), so the a↔c hop has no executable token — unroutable, never
         # a path that would land on the wrong endpoint.
-        graph = JoinGraph(nodes={"a", "b", "c"},
-                          edges=[("a", "b", "c"), ("a", "c", None)])
-        assert graph.shortest_path("a", "c") is None
-        assert graph.shortest_path("a", "b") == ["b"]
+        models = edge_graph(nodes={"a", "b", "c"}, edges=[("a", "b", "c"), ("a", "c", None)])
+        assert shortest_route(root=models["a"], target="c", models_by_name=models) is None
+        route = shortest_route(root=models["a"], target="b", models_by_name=models)
+        assert route is not None
+        assert list(route.tokens) == ["c"]
 
 
 async def _engine_for(models, tmpdir: str) -> SlayerQueryEngine:
