@@ -1086,16 +1086,17 @@ class SlayerQuery(BaseModel):
     source_model: SourceSpec | None = Field(
         default=None,
         description=(
-            "The population: every row of this model appears in the result unless a condition "
-            "removes it, so root the query at the model whose rows the answer lists. A saved "
-            'model or stage name, an inline extension {"source_name": ..., "columns" / "measures" '
-            '/ "joins": [...]} adding per-query columns, or a full inline model. Rooted at '
-            "regions, the measures count(customers.orders.id) and "
+            "The population: the rows the result lists. When the question asks for every X (each "
+            "region, zero included), root at X so rows without facts appear: rooted at regions, "
+            "the measures count(customers.orders.id) and "
             "{\"formula\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
             '"name": "orders_2025"} list every region, including those without orders (a count '
             "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
-            "Omit to infer the smallest model determining every dimension and row-level "
-            "condition column (the choice is reported in the response)."
+            "Otherwise root where the facts are, or omit to infer the smallest model determining "
+            "every dimension and row-level condition column (reported in the response); rows "
+            'without facts then drop out. A saved model or stage name, an inline extension '
+            '{"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query '
+            "columns, or a full inline model."
         ),
     )
     measures: MeasuresField = Field(
@@ -1103,7 +1104,8 @@ class SlayerQuery(BaseModel):
         description=(
             'Values to return: formula strings or {"formula": ..., "name": ...} (name sets the '
             "result key; a bare name references a saved model measure). Formulas combine "
-            "aggregations with arithmetic.\n"
+            "aggregations with arithmetic, also across models: rooted at customers, "
+            "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
             "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
             "avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
@@ -1128,7 +1130,12 @@ class SlayerQuery(BaseModel):
             "- A joined model's aggregate such as sum(customers.credit) from orders is computed "
             "over that model's own rows, each customer once. Sliced by a dimension it cannot "
             "be attributed to (an order's status), it repeats its total on every row with a "
-            "warning; to_many_handling='associate' splits it per group.\n"
+            "warning; to_many_handling='associate' splits it per group. Rooted at customers, "
+            "sum(orders.amount) and sum(returns.amount) in one query are each computed over their "
+            "own rows: several child models never fan out or double count. A child row without a "
+            "parent (an order with no customer) has NULL parent columns: it counts in the NULL "
+            "row of a parent dimension when that row exists, and in an ungrouped total; never add "
+            "it again.\n"
             "More (every aggregation, empty-input values, nesting and transform rules): "
             'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
             'entity_type="memory").'
@@ -1193,7 +1200,12 @@ class SlayerQuery(BaseModel):
         description=(
             "Time-bucketed group-bys — one result row per bucket. Each entry is a "
             "TimeDimension dict or the functional string gran(col), e.g. "
-            "\"month(created_at)\"."
+            "\"month(created_at)\". Buckets without rows are absent. To return every bucket, "
+            "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
+            "measure models by dotted path: "
+            '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} '
+            "with sum(orders.amount) returns all twelve months. It also lines several models up "
+            "on one time axis."
         ),
     )
     main_time_dimension: str | None = Field(
@@ -1238,7 +1250,8 @@ class SlayerQuery(BaseModel):
             'Sort keys, [{"column": ..., "direction": "asc" | "desc"}]. column is a result '
             "column name or any aggregate or transform expression, displayed or not: with "
             'measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by '
-            "an amount it does not return. Add limit for the top N."
+            "an amount it does not return. Add limit for the top N. Return only the columns the "
+            "question asks for: never add the sort value to measures just to sort by it."
         ),
     )
     limit: int | None = Field(

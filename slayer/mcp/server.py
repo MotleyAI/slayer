@@ -10,7 +10,7 @@ from inspect import cleandoc
 from typing import Annotated, Any
 
 import sqlalchemy as sa
-from pydantic import Field
+from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__
@@ -79,6 +79,11 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET: Any = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
+
+def _unset() -> Any:
+    """``_UNSET`` as a default factory: JSON schemas skip factory defaults."""
+    return _UNSET
+
 # Response row cap when the caller passes no limit; an explicit limit is trusted verbatim.
 _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
@@ -95,12 +100,26 @@ _MCP_REMEDY = (
 MAX_TOOL_DESCRIPTION_CHARS = 2048
 
 SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
-One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it.
+One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it. Aggregates over several joined models in one query are each computed over their own rows, so one query cannot fan out or double count; split only when a stage must re-query a whole result.
 The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
 Typical workflow: search(question='...') → inspect the model → query.
 To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
 
 _ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
+
+
+def _query_form(value: Any) -> str:
+    """The ``query`` argument's form, chosen by its JSON type."""
+    if isinstance(value, str):
+        return "name"
+    return "stages" if isinstance(value, list) else "object"
+
+
+#: Validates only the chosen form, so an error never lists the other forms' mismatches.
+QueryArgument = Annotated[
+    Annotated[str, Tag("name")] | Annotated[SlayerQuery, Tag("object")] | Annotated[list[SlayerQuery], Tag("stages")],
+    Discriminator(_query_form),
+]
 
 
 def _check_budget(*, what: str, text: str) -> None:
@@ -474,7 +493,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
-        query: Annotated[str | SlayerQuery | list[SlayerQuery], Field(
+        query: Annotated[QueryArgument, Field(
             description="A query object, a list of query objects (stages), or a saved query-backed model's name.",
         )],
         variables: Annotated[dict[str, Any] | None, Field(
@@ -852,6 +871,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @tool()
     async def edit_model(
         model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+        *,
         description: Annotated[str | None, Field(description="New model description.")] = None,
         data_source: Annotated[str | None, Field(
             description="The model's datasource; required when the name exists in several datasources.",
@@ -869,8 +889,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
         query_variables: Annotated[Any, Field(
+            default_factory=_unset,
             description="Replace the backing query's default {var} values; null clears them.",
-        )] = _UNSET,
+        )],
         hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
@@ -915,8 +936,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
+            default_factory=_unset,
             description="JSON metadata replacing the model's meta; null clears it.",
-        )] = _UNSET,
+        )],
     ) -> str:
         """Edit an existing model in one call: metadata, upserts of columns / measures / aggregations / joins (by name; only the given fields change), model filters, and removals (applied first).
 
