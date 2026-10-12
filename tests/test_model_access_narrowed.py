@@ -120,6 +120,20 @@ class TestRetagWarning:
         payloads = await narrowed_payloads(engine.save_model(hr.model_copy(update={"description": "roster"})))
         assert payloads == []
 
+    async def test_moving_and_retagging_warns_its_readers(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
+        await engine.save_model(query_backed("pc", source="pub", formula="count(*)"))
+        reader = SlayerQuery.model_validate({"source_model": "pc", "measures": [{"formula": "sum(v)", "name": "total"}]})
+        await engine.save_model(SlayerModel(name="pc_reader", source_queries=[reader]))
+        pub = await must_get(store.storage, "pub")
+        ds = await store.storage.get_datasource(DS)
+        assert ds is not None
+        await store.storage.save_datasource(ds.model_copy(update={"name": OTHER_DS}))
+        await store.storage.save_model(pub.model_copy(update={"name": "pub2", "data_source": OTHER_DS}), _validate=False)
+        moved = query_backed("pc", source="pub2", formula="count(*)", access_tags=["ops"])
+        payloads = await narrowed_payloads(engine.save_model(moved))
+        assert await store.storage.get_model("pc", data_source=OTHER_DS) is not None
+        assert any(mentions(p, "pc_reader") for p in payloads)
+
     async def test_retagging_warns_readers_in_other_datasources(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
         await reader_in_other_datasource(store, name="far_count", source="pub", formula="count(*)")
         pub = await must_get(store.storage, "pub")

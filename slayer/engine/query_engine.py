@@ -2745,7 +2745,7 @@ class SlayerQueryEngine:
         await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
         try:
-            prior = await self.storage.get_model(model.name, data_source=model.data_source)
+            prior = await self.storage.get_model(model.name, data_source=prior_data_source or model.data_source)
         except StoredDocumentLoadError:
             prior = None
         await self.storage.save_model(model, failures=failures)
@@ -2778,7 +2778,8 @@ class SlayerQueryEngine:
         after = narrowing_models(loaded)
         flagged = {key} & set(after)
         if retagged is not None:
-            before = narrowing_models([retagged if (m.data_source, m.name) == key else m for m in loaded])
+            replaced = {key, (retagged.data_source, retagged.name)}
+            before = narrowing_models([*(m for m in loaded if (m.data_source, m.name) not in replaced), retagged])
             flagged |= set(after) - set(before)
         return [
             NarrowedAccessWarning(data_source=ds, model=name, narrowed_by=[f"{d}.{n}" for d, n in after[(ds, name)]])
