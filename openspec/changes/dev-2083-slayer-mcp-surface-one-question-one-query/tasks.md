@@ -6,14 +6,14 @@
 
 ## 2. Query schema field descriptions
 
-- [ ] 2.1 `slayer/core/query.py`: `name`, `dimensions`, `measures`, `filters`, `date_range` per design D2. Verify: 1.2, 1.3, `test_query_schema_within_size_budget` (if over budget: STOP and ask).
+- [x] 2.1 `slayer/core/query.py`: `name`, `dimensions`, `measures`, `filters`, `date_range` per design D2. Verify: 1.2, 1.3, `test_query_schema_within_size_budget` (if over budget: STOP and ask).
 
 ## 3. Instructions, query description, help topics
 
-- [ ] 3.1 `slayer/mcp/server.py`: `SERVER_INSTRUCTIONS` second line and the `query` docstring opening + third bullet per design D2. Verify: 1.3, instructions and description budget tests.
-- [ ] 3.2 Help topics per design D3: `07_queries.md`, `02_workflow.md`, `04_transforms.md`, `05_time.md`. Verify: 1.3, `tests/test_help_seed.py`, `tests/test_functional_emission.py`.
+- [x] 3.1 `slayer/mcp/server.py`: `SERVER_INSTRUCTIONS` second line and the `query` docstring opening + third bullet per design D2. Verify: 1.3, instructions and description budget tests.
+- [x] 3.2 Help topics per design D3: `07_queries.md`, `02_workflow.md`, `04_transforms.md`, `05_time.md`. Verify: 1.3, `tests/test_help_seed.py`, `tests/test_functional_emission.py`.
 
 ## 4. Gates and verification
 
-- [ ] 4.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
-- [ ] 4.2 Before opening the PR: in Claude Code with this branch's `slayer mcp`, confirm no SLayer tool description or the instructions end in `[truncated]`; record on DEV-2083. Eval re-runs (both SLayer profiles; single-query passes, share of trials with more than one query, stages where the reference needs one) are driven from slayer-evals.
+- [x] 4.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
+- [x] 4.2 Before opening the PR: in Claude Code with this branch's `slayer mcp`, confirm no SLayer tool description or the instructions end in `[truncated]`; record on DEV-2083. Eval re-runs (both SLayer profiles; single-query passes, share of trials with more than one query, stages where the reference needs one) are driven from slayer-evals.

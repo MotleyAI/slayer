@@ -23,9 +23,8 @@ a computation may read: `change`, `change_pct`, `time_shift` and `window=` aggre
 read rows before the range, so the first returned bucket already has its comparison.
 Never widen the range to feed them.
 
-`cumsum` accumulates from the first returned bucket. For a running total since the
-first row, compute it in a named stage without `date_range`, then filter the time in
-an outer stage:
+`cumsum` accumulates from the first returned bucket. A running total since the first
+row, in two stages:
 
 ```json
 [
