@@ -31,8 +31,8 @@ flowchart TD
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
-  subgraph telemetry["Usage telemetry"]
-    telemetry__features["Features"]
+  subgraph usage_reporting["Usage reporting"]
+    usage_reporting__features["Features"]
   end
   surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
@@ -47,9 +47,9 @@ flowchart TD
   sql --> ir
   storage --> sql
   surfaces --> sql
-  telemetry__features --> sql
+  usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,telemetry__features,surfaces leaf;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,usage_reporting__features,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->

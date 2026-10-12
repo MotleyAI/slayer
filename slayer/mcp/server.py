@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
-from slayer import __version__, telemetry
+from slayer import __version__, usage_reporting
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -181,7 +181,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
     class CountedFastMCP(fastmcp_cls):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self._telemetry_sessions: weakref.WeakSet = weakref.WeakSet()
+            self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         async def call_tool(self, name: str, arguments: dict[str, Any]):
             self._observe_client()
@@ -189,24 +189,24 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
                 result = await super().call_tool(name, arguments)
             except BaseException as exc:
                 # FastMCP re-raises a tool's exception as ToolError from the original.
-                telemetry.record(surface="mcp", token=name, error=exc.__cause__ or exc)
+                usage_reporting.record(surface="mcp", token=name, error=exc.__cause__ or exc)
                 raise
-            telemetry.record(surface="mcp", token=name)
+            usage_reporting.record(surface="mcp", token=name)
             return result
 
         def _observe_client(self) -> None:
-            if not telemetry.is_active():
+            if not usage_reporting.is_active():
                 return
             try:
                 session = self.get_context().session
-                if session in self._telemetry_sessions:
+                if session in self._usage_reporting_sessions:
                     return
-                self._telemetry_sessions.add(session)
+                self._usage_reporting_sessions.add(session)
                 info = session.client_params.clientInfo if session.client_params else None
             except Exception:
-                logger.debug("telemetry: no MCP session to identify", exc_info=True)
+                logger.debug("usage reporting: no MCP session to identify", exc_info=True)
                 return
-            telemetry.observe_mcp_client(
+            usage_reporting.observe_mcp_client(
                 name=getattr(info, "name", None), version=getattr(info, "version", None),
             )
 
@@ -577,7 +577,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # opaque (its stored SQL can't take a pushed-down limit) — cap
             # response-side only.
             exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
-            telemetry.observe_query(query)
+            usage_reporting.observe_query(query)
             result = await engine.execute(
                 query=exec_query,
                 variables=variables,
@@ -585,7 +585,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 explain=explain,
                 refine=refine,
             )
-            telemetry.observe_executed(result)
+            usage_reporting.observe_executed(result)
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if capped:

@@ -8,8 +8,8 @@ import sys
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
-from slayer.telemetry.payload import EXTRAS, VERSION_PATTERN, ArchToken, Env, ExtraToken, OsToken
-from slayer.telemetry.settings import DIST_NAME
+from slayer.usage_reporting.payload import EXTRAS, VERSION_PATTERN, ArchToken, Env, ExtraToken, OsToken
+from slayer.usage_reporting.settings import DIST_NAME
 
 _UNKNOWN_VERSION = "0.0.0+unknown"
 _OS: dict[str, OsToken] = {"linux": "linux", "darwin": "darwin", "win32": "windows"}

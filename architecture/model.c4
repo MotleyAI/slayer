@@ -82,11 +82,11 @@ model {
         specs ['facade']
       }
     }
-    telemetry = node 'Usage telemetry' {
+    usage_reporting = node 'Usage reporting' {
       metadata {
-        package 'slayer.telemetry'
-        arc42 'architecture/telemetry.arc42.md'
-        specs ['telemetry']
+        package 'slayer.usage_reporting'
+        arc42 'architecture/usage_reporting.arc42.md'
+        specs ['usage-reporting']
       }
       features = node 'Features'
     }
@@ -154,9 +154,9 @@ model {
     surfaces -> search
     surfaces -> sql
     surfaces -> storage
-    protocols -> telemetry
-    surfaces -> telemetry
-    telemetry.features -> core
-    telemetry.features -> sql
+    protocols -> usage_reporting
+    surfaces -> usage_reporting
+    usage_reporting.features -> core
+    usage_reporting.features -> sql
   }
 }

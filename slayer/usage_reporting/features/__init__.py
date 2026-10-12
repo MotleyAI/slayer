@@ -1,4 +1,4 @@
-"""Turn the queries and datasources SLayer has already loaded into telemetry tokens."""
+"""Turn the queries and datasources SLayer has already loaded into usage tokens."""
 
 import io
 import tokenize

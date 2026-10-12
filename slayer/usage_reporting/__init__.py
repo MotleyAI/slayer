@@ -1,6 +1,6 @@
-"""Anonymous usage telemetry for processes started by the ``slayer`` CLI."""
+"""Anonymous usage reporting for processes started by the ``slayer`` CLI."""
 
-from slayer.telemetry.recorder import (
+from slayer.usage_reporting.recorder import (
     HttpError,
     counting,
     flush,

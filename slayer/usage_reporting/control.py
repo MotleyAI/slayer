@@ -1,14 +1,14 @@
-"""``slayer telemetry status|enable|disable|show``."""
+"""``slayer usage-reporting status|enable|disable|show``."""
 
-from slayer.telemetry import recorder, sender, settings, spool
-from slayer.telemetry.payload import UsageReport
+from slayer.usage_reporting import recorder, sender, settings, spool
+from slayer.usage_reporting.payload import UsageReport
 
 
 def status() -> str:
     state = settings.resolve_state()
     install_id = settings.read_config().install_id
     return "\n".join([
-        f"Telemetry is {'on' if state.enabled else 'off'} (decided by: {state.rule.value}).",
+        f"Usage reporting is {'on' if state.enabled else 'off'} (decided by: {state.rule.value}).",
         f"Install ID: {install_id or 'none'}",
         f"Config: {settings.config_path()}",
     ])

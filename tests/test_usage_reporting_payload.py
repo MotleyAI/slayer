@@ -1,4 +1,4 @@
-"""telemetry.arc42.md principle 2: a usage report carries only SLayer-defined vocabulary."""
+"""usage_reporting.arc42.md principle 2: a usage report carries only SLayer-defined vocabulary."""
 
 from __future__ import annotations
 
@@ -16,15 +16,15 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import Implementation
 
 import slayer.cli
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.api.server import create_app
 from slayer.core.enums import BUILTIN_AGGREGATIONS
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.flight.translator import TranslationError
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.telemetry.payload import SCHEMA_VERSION, VERSION_PATTERN, UsageReport
-from tests._telemetry_helpers import (
+from slayer.usage_reporting.payload import SCHEMA_VERSION, VERSION_PATTERN, UsageReport
+from tests._usage_reporting_helpers import (
     HOSTILE,
     SENT,
     assert_clean_everywhere,
@@ -137,10 +137,10 @@ def test_every_cli_command_has_a_vocabulary_token(monkeypatch: pytest.MonkeyPatc
     vocabulary = usage_key_vocabulary()
     tokens = {}
     for path, parser in _sub_parsers(_cli_parser(monkeypatch)):
-        if not _runs_bare(parser) or path[0] == "telemetry":
+        if not _runs_bare(parser) or path[0] == "usage-reporting":
             continue
-        token = parser.get_default("telemetry_token")
-        assert isinstance(token, str), f"slayer {' '.join(path)} has no telemetry token"
+        token = parser.get_default("usage_token")
+        assert isinstance(token, str), f"slayer {' '.join(path)} has no usage token"
         assert token
         assert f"cli:{token}" in vocabulary, token
         tokens[path] = token
@@ -180,12 +180,12 @@ def test_feature_vocabulary_covers_builtins() -> None:
 
 
 @pytest.fixture
-def sentinel_store(telemetry_env) -> str:
+def sentinel_store(usage_reporting_env) -> str:
     quiet_config()
-    return build_sentinel_storage(telemetry_env.root)
+    return build_sentinel_storage(usage_reporting_env.root)
 
 
-def test_cli_arguments_and_names_never_leave(sentinel_store: str, telemetry_env) -> None:
+def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reporting_env) -> None:
     query = {
         "source_model": f"{SENT}_model",
         "dimensions": [{"expression": f"{SENT}_col * 2", "name": SENT}],
@@ -211,7 +211,7 @@ def test_cli_arguments_and_names_never_leave(sentinel_store: str, telemetry_env)
 
 
 async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) -> None:
-    telemetry.start()
+    usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
@@ -230,7 +230,7 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
 
 
 def test_rest_paths_bodies_and_errors_never_leave(sentinel_store: str) -> None:
-    telemetry.start()
+    usage_reporting.start()
     client = TestClient(create_app(storage=YAMLStorage(base_dir=sentinel_store)))
     client.get(f"/models/{SENT}_model")
     client.get(f"/models/{SENT}missing")
@@ -251,9 +251,9 @@ class _HostileEngine:
         raise _HostileError(f"SELECT {HOSTILE} FROM {SENT}_table")
 
 
-async def test_pg_sql_and_engine_errors_never_leave(telemetry_env) -> None:
+async def test_pg_sql_and_engine_errors_never_leave(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
+    usage_reporting.start()
     await _run(
         _startup(user=SENT, database=SENT)
         + _query(f"SELECT revenue_sum FROM orders WHERE status = '{HOSTILE}'")
@@ -269,9 +269,9 @@ async def test_pg_sql_and_engine_errors_never_leave(telemetry_env) -> None:
     assert_clean_everywhere()
 
 
-def test_flight_sql_never_leaves(telemetry_env) -> None:
+def test_flight_sql_never_leaves(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
+    usage_reporting.start()
     handlers = _make_handlers()
     handlers.do_get_for_sql(f"SELECT revenue_sum FROM jaffle.orders WHERE status = '{HOSTILE.replace(chr(39), chr(39) * 2)}'")
     with pytest.raises(TranslationError):
@@ -280,12 +280,12 @@ def test_flight_sql_never_leaves(telemetry_env) -> None:
     assert_clean_everywhere()
 
 
-def test_sent_report_never_carries_a_sentinel(sentinel_store: str, telemetry_env) -> None:
+def test_sent_report_never_carries_a_sentinel(sentinel_store: str, usage_reporting_env) -> None:
     cli(["query", json.dumps({"source_model": HOSTILE, "measures": ["count(*)"]}), "--storage", sentinel_store])
     cli(["models", "--storage", sentinel_store, "show", HOSTILE])
     make_due()
     cli(["models", "--storage", sentinel_store, "list"])
-    requests = telemetry_env.capture.wait_for(count=1)
+    requests = usage_reporting_env.capture.wait_for(count=1)
     assert len(requests) == 1
     assert_no_sentinel(requests[0].body)
 
@@ -297,18 +297,18 @@ class _UnlistedError(Exception):
     pass
 
 
-def test_unknown_exception_class_counts_as_other(telemetry_env) -> None:
+def test_unknown_exception_class_counts_as_other(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query", error=_UnlistedError("boom"))
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query", error=_UnlistedError("boom"))
     end_process()
     assert usage(show(), "mcp:query")["errors"] == {"other": 1}
 
 
-def test_error_message_is_never_sent(telemetry_env) -> None:
+def test_error_message_is_never_sent(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query", error=ValueError(f"no such table {SENT}_table: SELECT {HOSTILE}"))
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query", error=ValueError(f"no such table {SENT}_table: SELECT {HOSTILE}"))
     end_process()
     report = show()
     entry = usage(report, "mcp:query")
@@ -320,10 +320,10 @@ def test_error_message_is_never_sent(telemetry_env) -> None:
 # --- identity and time resolution ----------------------------------------------------------------
 
 
-def test_report_identity_fields(telemetry_env) -> None:
+def test_report_identity_fields(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     end_process()
     report = show()
     assert report["schema"] == SCHEMA_VERSION
@@ -333,14 +333,14 @@ def test_report_identity_fields(telemetry_env) -> None:
     assert show()["batch_id"] != report["batch_id"]
 
 
-def test_period_holds_dates_only(telemetry_env) -> None:
+def test_period_holds_dates_only(usage_reporting_env) -> None:
     day_one = datetime.datetime(2026, 3, 1, 9, 30, tzinfo=datetime.timezone.utc)
     day_two = datetime.datetime(2026, 3, 2, 8, 45, tzinfo=datetime.timezone.utc)
     quiet_config(last_sent=day_one)
     for day in (day_one, day_two):
-        telemetry_env.set_now(day)
-        telemetry.start()
-        telemetry.record(surface="mcp", token="query")
+        usage_reporting_env.set_now(day)
+        usage_reporting.start()
+        usage_reporting.record(surface="mcp", token="query")
         end_process()
     report = show()
     assert report["period"] == {"first": "2026-03-01", "last": "2026-03-02"}

@@ -12,7 +12,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -245,7 +245,7 @@ class _UsageMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = scope.get("path", "")
-        if scope["type"] != "http" or not telemetry.is_active() or path == self.mounted or path.startswith(f"{self.mounted}/"):
+        if scope["type"] != "http" or not usage_reporting.is_active() or path == self.mounted or path.startswith(f"{self.mounted}/"):
             await self.app(scope, receive, send)
             return
         status: list[int] = []
@@ -260,13 +260,13 @@ class _UsageMiddleware:
         except BaseException as exc:
             self._record(scope, error=exc)
             raise
-        self._record(scope, error=telemetry.HttpError(status[0]) if status and status[0] >= 400 else None)
+        self._record(scope, error=usage_reporting.HttpError(status[0]) if status and status[0] >= 400 else None)
 
     @staticmethod
     def _record(scope: Scope, *, error: BaseException | None) -> None:
         route = scope.get("route")
         token = route.path if isinstance(route, APIRoute) else "other"
-        telemetry.record(surface="rest", token=token, error=error)
+        usage_reporting.record(surface="rest", token=token, error=error)
 
 
 def _slayer_version() -> str:
@@ -383,11 +383,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
                 run_query = SlayerQuery.model_validate(payload)
-            telemetry.observe_query(run_query)
+            usage_reporting.observe_query(run_query)
             result = await engine.execute(
                 query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,
             )
-            telemetry.observe_executed(result)
+            usage_reporting.observe_executed(result)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:

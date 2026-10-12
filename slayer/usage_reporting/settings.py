@@ -1,4 +1,4 @@
-"""Where telemetry state lives and whether telemetry is on."""
+"""Where usage-reporting state lives and whether usage reporting is on."""
 
 import calendar
 import datetime
@@ -21,20 +21,20 @@ _ID_LIFETIME_MONTHS = 13
 
 class DecidingRule(StrEnum):
     DO_NOT_TRACK = "DO_NOT_TRACK"
-    ENV = "SLAYER_TELEMETRY"
+    ENV = "SLAYER_USAGE_REPORTING"
     CI = "CI"
     EDITABLE = "editable install"
     UNWRITABLE = "unwritable config directory"
-    PERSISTED = "slayer telemetry enable/disable"
+    PERSISTED = "slayer usage-reporting enable/disable"
     DEFAULT = "default"
 
 
-class TelemetryState(BaseModel):
+class UsageReportingState(BaseModel):
     enabled: bool
     rule: DecidingRule
 
 
-class TelemetryConfig(BaseModel):
+class UsageReportingConfig(BaseModel):
     setting: Literal["enabled", "disabled"] | None = None
     install_id: uuid.UUID | None = None
     install_id_created: datetime.date | None = None
@@ -53,15 +53,15 @@ def config_dir() -> Path:
 
 
 def config_path() -> Path:
-    return config_dir() / "telemetry.json"
+    return config_dir() / "usage-reporting.json"
 
 
 def spool_dir() -> Path:
-    return config_dir() / "telemetry-spool"
+    return config_dir() / "usage-reporting-spool"
 
 
 def lease_path() -> Path:
-    return config_dir() / "telemetry-send.lease"
+    return config_dir() / "usage-reporting-send.lease"
 
 
 def is_editable_install(dist: Distribution | None = None) -> bool:
@@ -85,37 +85,37 @@ def _set(value: str | None) -> bool:
     return value is not None and value.strip().lower() not in _FALSY
 
 
-def resolve_state() -> TelemetryState:
+def resolve_state() -> UsageReportingState:
     """The effective state and the first rule (highest precedence first) that decided it."""
     if (os.environ.get("DO_NOT_TRACK") or "").strip().lower() in _TRUTHY:
-        return TelemetryState(enabled=False, rule=DecidingRule.DO_NOT_TRACK)
-    explicit = (os.environ.get("SLAYER_TELEMETRY") or "").strip().lower()
+        return UsageReportingState(enabled=False, rule=DecidingRule.DO_NOT_TRACK)
+    explicit = (os.environ.get("SLAYER_USAGE_REPORTING") or "").strip().lower()
     if explicit in ("on", "off"):
-        return TelemetryState(enabled=explicit == "on", rule=DecidingRule.ENV)
+        return UsageReportingState(enabled=explicit == "on", rule=DecidingRule.ENV)
     if _set(os.environ.get("CI")):
-        return TelemetryState(enabled=False, rule=DecidingRule.CI)
+        return UsageReportingState(enabled=False, rule=DecidingRule.CI)
     if is_editable_install():
-        return TelemetryState(enabled=False, rule=DecidingRule.EDITABLE)
+        return UsageReportingState(enabled=False, rule=DecidingRule.EDITABLE)
     if not _writable(config_dir()):
-        return TelemetryState(enabled=False, rule=DecidingRule.UNWRITABLE)
+        return UsageReportingState(enabled=False, rule=DecidingRule.UNWRITABLE)
     setting = read_config().setting
     if setting is not None:
-        return TelemetryState(enabled=setting == "enabled", rule=DecidingRule.PERSISTED)
-    return TelemetryState(enabled=True, rule=DecidingRule.DEFAULT)
+        return UsageReportingState(enabled=setting == "enabled", rule=DecidingRule.PERSISTED)
+    return UsageReportingState(enabled=True, rule=DecidingRule.DEFAULT)
 
 
-def read_config(path: Path | None = None) -> TelemetryConfig:
+def read_config(path: Path | None = None) -> UsageReportingConfig:
     """The stored config; missing or corrupt reads as empty."""
     try:
-        config = TelemetryConfig.model_validate_json((path or config_path()).read_bytes())
+        config = UsageReportingConfig.model_validate_json((path or config_path()).read_bytes())
     except Exception:
-        return TelemetryConfig()
+        return UsageReportingConfig()
     if config.last_sent is not None and config.last_sent.tzinfo is None:
         config.last_sent = config.last_sent.replace(tzinfo=datetime.timezone.utc)
     return config
 
 
-def write_config(config: TelemetryConfig, path: Path | None = None) -> None:
+def write_config(config: UsageReportingConfig, path: Path | None = None) -> None:
     write_private(path or config_path(), config.model_dump_json().encode())
 
 
@@ -139,7 +139,7 @@ def _add_months(day: datetime.date, months: int) -> datetime.date:
     return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def with_install_id(config: TelemetryConfig, *, today: datetime.date) -> TelemetryConfig:
+def with_install_id(config: UsageReportingConfig, *, today: datetime.date) -> UsageReportingConfig:
     """``config`` with a current install ID: created on first use, replaced once 13 months old."""
     created = config.install_id_created
     if config.install_id is not None and created is None:

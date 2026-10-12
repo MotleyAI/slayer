@@ -1,15 +1,15 @@
 ## Purpose
 
-Defines how recorded usage is stored locally, when and where it is sent, and the guarantee that telemetry never affects the process it runs in.
+Defines how recorded usage is stored locally, when and where it is sent, and the guarantee that usage reporting never affects the process it runs in.
 
 ## ADDED Requirements
 
-### Requirement: Telemetry never affects the host process
-No telemetry failure — file I/O, network, timeout, non-2xx response, corrupt or foreign files — SHALL change a command's result, exit code or stdout, or raise into the host process. Telemetry SHALL NOT write to stdout, and SHALL NOT block the process except for the bounded exit wait defined below.
+### Requirement: Usage reporting never affects the host process
+No usage reporting failure — file I/O, network, timeout, non-2xx response, corrupt or foreign files — SHALL change a command's result, exit code or stdout, or raise into the host process. Usage reporting SHALL NOT write to stdout, and SHALL NOT block the process except for the bounded exit wait defined below.
 
 #### Scenario: Endpoint down
-- **WHEN** the telemetry endpoint refuses connections, times out or returns 500 during a command
-- **THEN** the command's output and exit code are identical to a run with telemetry off
+- **WHEN** the usage-reporting endpoint refuses connections, times out or returns 500 during a command
+- **THEN** the command's output and exit code are identical to a run with usage reporting off
 
 #### Scenario: Corrupt spool file
 - **WHEN** a spool file contains invalid JSON
@@ -31,7 +31,7 @@ Each process SHALL keep its counters in memory and write them to its own spool f
 - **THEN** the child's report does not repeat the parent's counts
 
 ### Requirement: Send at most once per 24 hours, only when SLayer runs
-A report SHALL be sent only when a `slayer` process starts or records an action, at least 24 hours have passed since the last successful send, and telemetry is on. The report SHALL merge all spool files and the sending process's live counters. An idle process SHALL send nothing. A last-send time in the future SHALL count as due.
+A report SHALL be sent only when a `slayer` process starts or records an action, at least 24 hours have passed since the last successful send, and usage reporting is on. The report SHALL merge all spool files and the sending process's live counters. An idle process SHALL send nothing. A last-send time in the future SHALL count as due.
 
 #### Scenario: Idle server
 - **WHEN** a server records no action for 48 hours
@@ -72,10 +72,10 @@ Only one process SHALL send at a time. Spool files included in a send SHALL be d
 - **THEN** a later send includes those files
 
 ### Requirement: Destination and request shape
-A report SHALL be sent as one event to the PostHog EU capture API (`https://eu.i.posthog.com/i/v0/e/`), with event name `slayer_usage`, the install ID as distinct ID, the batch ID as event UUID, GeoIP enrichment disabled and person-profile processing off. `SLAYER_TELEMETRY_ENDPOINT` SHALL override the URL.
+A report SHALL be sent as one event to the PostHog EU capture API (`https://eu.i.posthog.com/i/v0/e/`), with event name `slayer_usage`, the install ID as distinct ID, the batch ID as event UUID, GeoIP enrichment disabled and person-profile processing off. `SLAYER_USAGE_REPORTING_ENDPOINT` SHALL override the URL.
 
 #### Scenario: Endpoint override
-- **WHEN** `SLAYER_TELEMETRY_ENDPOINT` points to a local test server and a send is due
+- **WHEN** `SLAYER_USAGE_REPORTING_ENDPOINT` points to a local test server and a send is due
 - **THEN** the report is posted to that server with the event name `slayer_usage` and GeoIP disabled
 
 ### Requirement: Install identity and rotation

@@ -1,4 +1,4 @@
-"""Opt-out precedence, the ``slayer telemetry`` command and the one-time notice."""
+"""Opt-out precedence, the ``slayer usage-reporting`` command and the one-time notice."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from slayer import telemetry
-from slayer.telemetry import settings
-from slayer.telemetry.payload import SCHEMA_VERSION
-from slayer.telemetry.settings import DecidingRule
-from tests._telemetry_helpers import (
+from slayer import usage_reporting
+from slayer.usage_reporting import settings
+from slayer.usage_reporting.payload import SCHEMA_VERSION
+from slayer.usage_reporting.settings import DecidingRule
+from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
     cli,
@@ -28,17 +28,17 @@ from tests._telemetry_helpers import (
     write_config,
 )
 
-_NOTICE_URL = "docs.motley.ai/slayer/reference/telemetry"
-_ENV_VARS = ("DO_NOT_TRACK", "SLAYER_TELEMETRY", "CI")
+_NOTICE_URL = "docs.motley.ai/slayer/reference/usage-reporting"
+_ENV_VARS = ("DO_NOT_TRACK", "SLAYER_USAGE_REPORTING", "CI")
 
 
 @pytest.fixture
-def clean_env(telemetry_env, monkeypatch: pytest.MonkeyPatch):
+def clean_env(usage_reporting_env, monkeypatch: pytest.MonkeyPatch):
     """No control variable set, not an editable install, writable config dir."""
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(settings, "is_editable_install", lambda *args, **kwargs: False)
-    return telemetry_env
+    return usage_reporting_env
 
 
 def _make_unwritable(env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,13 +53,13 @@ def _make_unwritable(env, monkeypatch: pytest.MonkeyPatch) -> None:
 
 _MATRIX = [
     # env, editable, unwritable, persisted -> enabled, rule
-    ({"DO_NOT_TRACK": "1", "SLAYER_TELEMETRY": "on"}, False, False, None, False, DecidingRule.DO_NOT_TRACK),
+    ({"DO_NOT_TRACK": "1", "SLAYER_USAGE_REPORTING": "on"}, False, False, None, False, DecidingRule.DO_NOT_TRACK),
     ({"DO_NOT_TRACK": "true"}, False, False, "enabled", False, DecidingRule.DO_NOT_TRACK),
     ({"DO_NOT_TRACK": "0"}, False, False, None, True, DecidingRule.DEFAULT),
-    ({"SLAYER_TELEMETRY": "on", "CI": "true"}, False, False, None, True, DecidingRule.ENV),
-    ({"SLAYER_TELEMETRY": "on"}, True, False, "disabled", True, DecidingRule.ENV),
-    ({"SLAYER_TELEMETRY": "off"}, False, False, "enabled", False, DecidingRule.ENV),
-    ({"SLAYER_TELEMETRY": "maybe"}, False, False, None, True, DecidingRule.DEFAULT),
+    ({"SLAYER_USAGE_REPORTING": "on", "CI": "true"}, False, False, None, True, DecidingRule.ENV),
+    ({"SLAYER_USAGE_REPORTING": "on"}, True, False, "disabled", True, DecidingRule.ENV),
+    ({"SLAYER_USAGE_REPORTING": "off"}, False, False, "enabled", False, DecidingRule.ENV),
+    ({"SLAYER_USAGE_REPORTING": "maybe"}, False, False, None, True, DecidingRule.DEFAULT),
     ({"CI": "true"}, False, False, None, False, DecidingRule.CI),
     ({"CI": "true"}, False, False, "enabled", False, DecidingRule.CI),
     ({}, True, False, "enabled", False, DecidingRule.EDITABLE),
@@ -125,11 +125,11 @@ def test_config_dir_follows_platform_convention(monkeypatch: pytest.MonkeyPatch,
 
 
 @pytest.fixture
-def store(telemetry_env) -> str:
-    return build_storage(telemetry_env.root)
+def store(usage_reporting_env) -> str:
+    return build_storage(usage_reporting_env.root)
 
 
-@pytest.mark.parametrize("env", [{"SLAYER_TELEMETRY": "off"}, {"DO_NOT_TRACK": "1"}, {"CI": "true"}])
+@pytest.mark.parametrize("env", [{"SLAYER_USAGE_REPORTING": "off"}, {"DO_NOT_TRACK": "1"}, {"CI": "true"}])
 def test_off_records_writes_prints_and_sends_nothing(
     clean_env, store: str, monkeypatch: pytest.MonkeyPatch, env: dict[str, str],
 ) -> None:
@@ -152,12 +152,12 @@ def test_unwritable_config_dir_is_silent(clean_env, store: str, monkeypatch: pyt
     assert clean_env.capture.arrivals == 0
 
 
-# --- slayer telemetry status|enable|disable|show ----------------------------------------------
+# --- slayer usage-reporting status|enable|disable|show ----------------------------------------------
 
 
 def test_status_names_ci_as_the_deciding_rule(clean_env, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CI", "true")
-    result = cli(["telemetry", "status"])
+    result = cli(["usage-reporting", "status"])
     assert result.returncode == 0, result.stderr
     assert "off" in result.stdout.lower()
     assert "CI" in result.stdout
@@ -166,65 +166,65 @@ def test_status_names_ci_as_the_deciding_rule(clean_env, monkeypatch: pytest.Mon
 def test_status_reports_default_on_and_install_id(clean_env) -> None:
     install_id = uuid.uuid4()
     write_config(install_id=install_id)
-    result = cli(["telemetry", "status"])
+    result = cli(["usage-reporting", "status"])
     assert result.returncode == 0, result.stderr
     assert "on" in result.stdout.lower()
     assert str(install_id) in result.stdout
 
 
 def test_enable_and_disable_persist(clean_env) -> None:
-    assert cli(["telemetry", "disable"]).returncode == 0
+    assert cli(["usage-reporting", "disable"]).returncode == 0
     assert config().setting == "disabled"
     assert (settings.resolve_state().enabled, settings.resolve_state().rule) == (False, DecidingRule.PERSISTED)
-    assert cli(["telemetry", "enable"]).returncode == 0
+    assert cli(["usage-reporting", "enable"]).returncode == 0
     assert config().setting == "enabled"
     assert settings.resolve_state().enabled
 
 
 def test_disable_removes_spool_and_install_id_and_stops_sending(clean_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     end_process()
     assert spool_files()
     assert config().install_id is not None
 
-    assert cli(["telemetry", "disable"]).returncode == 0
+    assert cli(["usage-reporting", "disable"]).returncode == 0
     assert spool_files() == []
     assert config().install_id is None
 
     make_due()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     end_process()
     time.sleep(0.3)
     assert clean_env.capture.arrivals == 0
     assert spool_files() == []
 
 
-def test_show_prints_pending_report_and_does_not_send(telemetry_env) -> None:
+def test_show_prints_pending_report_and_does_not_send(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     end_process()
     make_due()
-    result = cli(["telemetry", "show"])
+    result = cli(["usage-reporting", "show"])
     assert result.returncode == 0, result.stderr
     assert usage(json.loads(result.stdout), "mcp:query")["ok"] == 1
     time.sleep(0.5)
-    assert telemetry_env.capture.arrivals == 0
+    assert usage_reporting_env.capture.arrivals == 0
 
 
-def test_show_matches_the_next_send(telemetry_env) -> None:
+def test_show_matches_the_next_send(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
-    telemetry.record(surface="mcp", token="search", error=ValueError("x"))
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
+    usage_reporting.record(surface="mcp", token="search", error=ValueError("x"))
     end_process()
     shown = show()
     make_due()
-    telemetry.start()
-    body = telemetry_env.capture.wait_for(count=1)[0].json()
+    usage_reporting.start()
+    body = usage_reporting_env.capture.wait_for(count=1)[0].json()
     end_process()
     for key in ("mcp:query", "mcp:search"):
         assert body["properties"]["usage"][key] == shown["usage"][key]
@@ -238,10 +238,10 @@ def _assert_notice(stderr: str) -> None:
     assert _NOTICE_URL in stderr
     assert "anonymous" in stderr.lower()
     assert "usage" in stderr.lower()
-    assert "SLAYER_TELEMETRY=off" in stderr or "slayer telemetry disable" in stderr
+    assert "SLAYER_USAGE_REPORTING=off" in stderr or "slayer usage-reporting disable" in stderr
 
 
-def test_notice_once_on_stderr(telemetry_env, store: str) -> None:
+def test_notice_once_on_stderr(usage_reporting_env, store: str) -> None:
     write_config(last_sent=None)
     first = cli(["models", "--storage", store, "list"])
     second = cli(["models", "--storage", store, "list"])
@@ -251,7 +251,7 @@ def test_notice_once_on_stderr(telemetry_env, store: str) -> None:
     assert config().notice_shown_schema == SCHEMA_VERSION
 
 
-def test_notice_again_after_schema_major_bump(telemetry_env, store: str) -> None:
+def test_notice_again_after_schema_major_bump(usage_reporting_env, store: str) -> None:
     quiet_config()
     write_config(notice_shown_schema=SCHEMA_VERSION - 1)
     first = cli(["models", "--storage", store, "list"])
@@ -260,8 +260,8 @@ def test_notice_again_after_schema_major_bump(telemetry_env, store: str) -> None
     assert _NOTICE_URL not in second.stderr
 
 
-def test_stdio_mcp_notice_goes_to_stderr_only(telemetry_env, store: str) -> None:
-    session = McpStdio(args=["--storage", store], env=telemetry_env.subprocess_env())
+def test_stdio_mcp_notice_goes_to_stderr_only(usage_reporting_env, store: str) -> None:
+    session = McpStdio(args=["--storage", store], env=usage_reporting_env.subprocess_env())
     try:
         session.initialize()
         session.request("tools/list", {})
@@ -287,7 +287,7 @@ def _mcp_transcript(*, env: dict[str, str], store: str) -> list[bytes]:
     return session.stdout_lines
 
 
-def test_stdio_mcp_stdout_identical_with_telemetry_on_and_off(telemetry_env, store: str) -> None:
-    on = _mcp_transcript(env=telemetry_env.subprocess_env(), store=store)
-    off = _mcp_transcript(env=telemetry_env.subprocess_env(SLAYER_TELEMETRY="off"), store=store)
+def test_stdio_mcp_stdout_identical_with_usage_reporting_on_and_off(usage_reporting_env, store: str) -> None:
+    on = _mcp_transcript(env=usage_reporting_env.subprocess_env(), store=store)
+    off = _mcp_transcript(env=usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off"), store=store)
     assert on == off

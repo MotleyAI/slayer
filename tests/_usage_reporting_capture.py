@@ -1,4 +1,4 @@
-"""Local HTTP server standing in for the telemetry endpoint (stdlib only)."""
+"""Local HTTP server standing in for the usage-reporting endpoint (stdlib only)."""
 
 from __future__ import annotations
 

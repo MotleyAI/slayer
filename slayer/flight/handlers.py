@@ -18,7 +18,7 @@ import slayer as _slayer
 import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.models import SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -302,7 +302,7 @@ class FlightHandlers:
         """Execute ``sql`` and return the record-batch stream."""
         result = self._translate(sql)
         if isinstance(result, (ProbeResult, InfoSchemaResult)):
-            telemetry.record(surface="flight", token="probe")
+            usage_reporting.record(surface="flight", token="probe")
             return _table_to_record_batch_stream(result.table)
         if isinstance(result, NoOpResult):
             return _table_to_record_batch_stream(pa.Table.from_pylist([]))
@@ -376,10 +376,10 @@ class FlightHandlers:
         async def execute_full():
             return await self._engine.execute(query=result.query)
 
-        telemetry.observe_query(result.query)
-        with telemetry.counting(surface="flight", token="query"):
+        usage_reporting.observe_query(result.query)
+        with usage_reporting.counting(surface="flight", token="query"):
             response = run_sync(execute_full())
-        telemetry.observe_executed(response)
+        usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [
             self._rewrite_row(row, result.column_name_mapping)

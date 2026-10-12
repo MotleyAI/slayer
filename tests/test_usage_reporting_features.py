@@ -17,7 +17,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._saved_query_refinement_fixtures import AVG_CUSTOMER_REVENUE, MONTH_TD
-from tests._telemetry_helpers import (
+from tests._usage_reporting_helpers import (
     build_storage,
     cli,
     quiet_config,
@@ -35,9 +35,9 @@ _FLAGS = (
 
 
 @pytest.fixture
-def store(telemetry_env) -> str:
+def store(usage_reporting_env) -> str:
     quiet_config()
-    return build_storage(telemetry_env.root)
+    return build_storage(usage_reporting_env.root)
 
 
 def _run_query(store: str, query: Any) -> dict:
@@ -125,12 +125,12 @@ def test_dry_run_not_counted_as_executed(store: str) -> None:
 
 
 @pytest.mark.parametrize(("extra", "bucket"), [(0, "1"), (1, "2-5"), (4, "2-5"), (5, "6+")])
-def test_datasources_per_dialect_bucketed(store: str, telemetry_env, extra: int, bucket: str) -> None:
+def test_datasources_per_dialect_bucketed(store: str, usage_reporting_env, extra: int, bucket: str) -> None:
     async def add() -> None:
         storage = YAMLStorage(base_dir=store)
         for i in range(extra):
             await storage.save_datasource(DatasourceConfig(
-                name=f"extra_{i}", type="sqlite", database=str(telemetry_env.root / f"extra_{i}.db"),
+                name=f"extra_{i}", type="sqlite", database=str(usage_reporting_env.root / f"extra_{i}.db"),
             ))
 
     asyncio.run(add())
@@ -149,9 +149,9 @@ def test_model_count_is_bucketed(store: str) -> None:
     assert context["storage"] == {"yaml": 1}
 
 
-def test_demo_datasource_in_use(telemetry_env) -> None:
+def test_demo_datasource_in_use(usage_reporting_env) -> None:
     quiet_config()
-    store = str(telemetry_env.storage_dir)
+    store = str(usage_reporting_env.storage_dir)
     cli(["datasources", "--storage", store, "list"])
     assert show()["context"]["demo"] == 0
     cli(["datasources", "--storage", store, "create", "demo", "--years", "1", "--ingest", "-y"])
@@ -205,7 +205,7 @@ def _storage_and_connection_calls(args: list[str], monkeypatch: pytest.MonkeyPat
     ["datasources", "list"],
     ["serve"],
 ])
-def test_telemetry_makes_no_storage_call_or_connection(
+def test_usage_reporting_makes_no_storage_call_or_connection(
     store: str, monkeypatch: pytest.MonkeyPatch, command: list[str],
 ) -> None:
     fake_uvicorn = type(sys)("uvicorn")
@@ -215,7 +215,7 @@ def test_telemetry_makes_no_storage_call_or_connection(
         else [*command, "--storage", store]
     _storage_and_connection_calls(args, monkeypatch)  # warm-up: the first run seeds help memories
     on = _storage_and_connection_calls(args, monkeypatch)
-    monkeypatch.setenv("SLAYER_TELEMETRY", "off")
+    monkeypatch.setenv("SLAYER_USAGE_REPORTING", "off")
     off = _storage_and_connection_calls(args, monkeypatch)
     assert on == off
 
@@ -250,7 +250,7 @@ def run(*args):
     return out.getvalue()
 
 run("models", "--storage", {store!r}, "list")
-shown = run("telemetry", "show")
+shown = run("usage-reporting", "show")
 print(json.dumps({{"modules": sorted(sys.modules), "shown": shown}}))
 """
 
@@ -261,9 +261,9 @@ def _imports_and_show(store: str, env: dict[str, str]) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_extras_detected_without_importing_them(store: str, telemetry_env) -> None:
-    on = _imports_and_show(store, telemetry_env.subprocess_env())
-    off = _imports_and_show(store, telemetry_env.subprocess_env(SLAYER_TELEMETRY="off"))
+def test_extras_detected_without_importing_them(store: str, usage_reporting_env) -> None:
+    on = _imports_and_show(store, usage_reporting_env.subprocess_env())
+    off = _imports_and_show(store, usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off"))
     added = set(on["modules"]) - set(off["modules"])
     foreign = sorted(m for m in added if m.split(".")[0] not in sys.stdlib_module_names | {"slayer"})
     assert foreign == []

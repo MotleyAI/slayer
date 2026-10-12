@@ -1,4 +1,4 @@
-"""Telemetry's clock (a seam: tests replace ``now``)."""
+"""The usage reporter's clock (a seam: tests replace ``now``)."""
 
 import datetime
 

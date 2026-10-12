@@ -10,9 +10,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from slayer.telemetry import environment, spool
-from slayer.telemetry.payload import Batch, UsageReport, merge
-from slayer.telemetry.settings import TelemetryConfig, read_config, write_config
+from slayer.usage_reporting import environment, spool
+from slayer.usage_reporting.payload import Batch, UsageReport, merge
+from slayer.usage_reporting.settings import UsageReportingConfig, read_config, write_config
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ SEND_INTERVAL = datetime.timedelta(hours=24)
 
 
 class Paths(BaseModel):
-    """Telemetry file locations, fixed when a process starts."""
+    """Usage-reporting file locations, fixed when a process starts."""
 
     config: Path
     spool: Path
@@ -33,7 +33,7 @@ class Paths(BaseModel):
 
 
 def endpoint() -> str:
-    return os.environ.get("SLAYER_TELEMETRY_ENDPOINT") or DEFAULT_ENDPOINT
+    return os.environ.get("SLAYER_USAGE_REPORTING_ENDPOINT") or DEFAULT_ENDPOINT
 
 
 def is_due(last_sent: datetime.datetime | None, *, now: datetime.datetime) -> bool:
@@ -41,7 +41,7 @@ def is_due(last_sent: datetime.datetime | None, *, now: datetime.datetime) -> bo
     return last_sent is not None and (last_sent > now or now - last_sent >= SEND_INTERVAL)
 
 
-def build_report(*, config: TelemetryConfig, batches: list[Batch]) -> UsageReport:
+def build_report(*, config: UsageReportingConfig, batches: list[Batch]) -> UsageReport:
     merged = merge(batches)
     return UsageReport(
         install_id=config.install_id, batch_id=uuid.uuid4(), env=environment.current(),
@@ -78,7 +78,7 @@ def send(paths: Paths, *, now: datetime.datetime, url: str) -> None:
         finally:
             spool.release_lease(paths.lease, token)
     except Exception:
-        logger.debug("telemetry: send failed", exc_info=True)
+        logger.debug("usage reporting: send failed", exc_info=True)
 
 
 def _send_leased(paths: Paths, *, now: datetime.datetime, url: str) -> None:

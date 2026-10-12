@@ -19,14 +19,14 @@ from mcp.client.sse import sse_client
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import Implementation
 
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.api.server import create_app
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.telemetry import settings
-from slayer.telemetry.payload import USAGE_KEYS
-from tests._telemetry_helpers import (
+from slayer.usage_reporting import settings
+from slayer.usage_reporting.payload import USAGE_KEYS
+from tests._usage_reporting_helpers import (
     build_storage,
     cli,
     end_process,
@@ -57,15 +57,15 @@ _FLIGHT_QUERY = "SELECT revenue_sum FROM jaffle.orders"
 
 
 @pytest.fixture
-def store(telemetry_env) -> str:
+def store(usage_reporting_env) -> str:
     quiet_config()
-    return build_storage(telemetry_env.root)
+    return build_storage(usage_reporting_env.root)
 
 
 @pytest.fixture
-def started(telemetry_env) -> None:
+def started(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
+    usage_reporting.start()
 
 
 # --- CLI ---------------------------------------------------------------------------------------
@@ -92,17 +92,17 @@ def test_cli_leaf_tokens(store: str) -> None:
 ])
 def test_parse_errors_and_help_not_counted(store: str, args: list[str]) -> None:
     cli(args)
-    assert usage_keys(show(), surface="cli") <= {"cli:telemetry.show"}
+    assert usage_keys(show(), surface="cli") <= {"cli:usage-reporting.show"}
 
 
-def test_telemetry_commands_not_counted(store: str) -> None:
-    assert not {key for key in USAGE_KEYS if key.startswith("cli:telemetry")}
-    cli(["telemetry", "status"])
-    cli(["telemetry", "show"])
+def test_usage_reporting_commands_not_counted(store: str) -> None:
+    assert not {key for key in USAGE_KEYS if key.startswith("cli:usage-reporting")}
+    cli(["usage-reporting", "status"])
+    cli(["usage-reporting", "show"])
     assert usage_keys(show(), surface="cli") == set()
 
 
-def test_parse_error_exits_before_any_telemetry(telemetry_env) -> None:
+def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> None:
     cli(["query"])
     assert not settings.config_dir().exists()
 
@@ -196,9 +196,9 @@ def _tool_schemas(store: str) -> str:
     return json.dumps([t.model_dump(mode="json") for t in tools])
 
 
-def test_mcp_tool_schemas_identical_with_telemetry_on_and_off(store: str) -> None:
+def test_mcp_tool_schemas_identical_with_usage_reporting_on_and_off(store: str) -> None:
     off = _tool_schemas(store)
-    telemetry.start()
+    usage_reporting.start()
     on = _tool_schemas(store)
     end_process()
     assert on == off
@@ -225,7 +225,7 @@ def test_rest_unmatched_maps_to_a_fixed_token(store: str, started) -> None:
     client.get("/health")
     end_process()
     before = usage_keys(show(), surface="rest")
-    telemetry.start()
+    usage_reporting.start()
     client.get("/no/such/path/42")
     client.get("/another/unknown")
     end_process()

@@ -1,4 +1,4 @@
-"""telemetry.arc42.md principle 1: fail-silent — telemetry never affects the host process."""
+"""usage_reporting.arc42.md principle 1: fail-silent — usage reporting never affects the host process."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from collections.abc import Callable
 
 import pytest
 
-from slayer import telemetry
-from slayer.telemetry import sender, settings
-from tests._telemetry_capture import RefusedEndpoint
-from tests._telemetry_helpers import (
+from slayer import usage_reporting
+from slayer.usage_reporting import sender, settings
+from tests._usage_reporting_capture import RefusedEndpoint
+from tests._usage_reporting_helpers import (
     SENT,
     assert_no_sentinel,
     build_storage,
@@ -32,9 +32,9 @@ _QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
 
 
 @pytest.fixture
-def store(telemetry_env) -> str:
+def store(usage_reporting_env) -> str:
     quiet_config()
-    return build_storage(telemetry_env.root)
+    return build_storage(usage_reporting_env.root)
 
 
 def _commands(store: str) -> list[list[str]]:
@@ -56,12 +56,12 @@ def _outcomes(commands: list[list[str]]) -> list[tuple[int, str, str]]:
 
 def _baseline(store: str, monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, str]]:
     with monkeypatch.context() as mp:
-        mp.setenv("SLAYER_TELEMETRY", "off")
+        mp.setenv("SLAYER_USAGE_REPORTING", "off")
         return _outcomes(_commands(store))
 
 
 def _refused(env, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SLAYER_TELEMETRY_ENDPOINT", RefusedEndpoint().url)
+    monkeypatch.setenv("SLAYER_USAGE_REPORTING_ENDPOINT", RefusedEndpoint().url)
 
 
 def _timeout(env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,8 +75,8 @@ def _server_error(env, monkeypatch: pytest.MonkeyPatch) -> None:
 def _corrupt_spool(env, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = settings.spool_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     end_process()
     for path in directory.iterdir():
         path.write_bytes(b"\x00{not json")
@@ -92,7 +92,7 @@ def _clock_raises(env, monkeypatch: pytest.MonkeyPatch) -> None:
     def broken() -> datetime.datetime:
         raise RuntimeError("clock broken")
 
-    monkeypatch.setattr("slayer.telemetry.clock.now", broken)
+    monkeypatch.setattr("slayer.usage_reporting.clock.now", broken)
 
 
 _FAILURES: dict[str, Callable] = {
@@ -107,16 +107,16 @@ _FAILURES: dict[str, Callable] = {
 
 @pytest.mark.parametrize("failure", sorted(_FAILURES))
 def test_failures_leave_output_and_exit_code_unchanged(
-    store: str, telemetry_env, monkeypatch: pytest.MonkeyPatch, failure: str,
+    store: str, usage_reporting_env, monkeypatch: pytest.MonkeyPatch, failure: str,
 ) -> None:
     expected = _baseline(store, monkeypatch)
     make_due()
-    _FAILURES[failure](telemetry_env, monkeypatch)
+    _FAILURES[failure](usage_reporting_env, monkeypatch)
     assert _outcomes(_commands(store)) == expected
 
 
 def test_corrupt_config_leaves_stdout_and_exit_code_unchanged(
-    store: str, telemetry_env, monkeypatch: pytest.MonkeyPatch,
+    store: str, usage_reporting_env, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected = [(code, out) for code, out, _ in _baseline(store, monkeypatch)]
     settings.config_path().write_text('{"install_id": 42, "last_sent": "yesterday-ish", "setting": [1]}')
@@ -131,13 +131,13 @@ class _EvilError(Exception):
         raise RuntimeError(SENT)
 
 
-def test_record_never_raises_on_hostile_input(telemetry_env) -> None:
+def test_record_never_raises_on_hostile_input(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query", error=_EvilError())
-    telemetry.record(surface="no-such-surface", token=SENT)
-    telemetry.record(surface="mcp", token=None)  # type: ignore[arg-type]
-    telemetry.record(surface="mcp", token=SENT * 1000, error=KeyboardInterrupt())
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query", error=_EvilError())
+    usage_reporting.record(surface="no-such-surface", token=SENT)
+    usage_reporting.record(surface="mcp", token=None)  # type: ignore[arg-type]
+    usage_reporting.record(surface="mcp", token=SENT * 1000, error=KeyboardInterrupt())
     end_process()
     report = show()
     assert usage(report, "mcp:query")["errors"] == {"other": 1}
@@ -145,45 +145,45 @@ def test_record_never_raises_on_hostile_input(telemetry_env) -> None:
     assert_no_sentinel(spool_bytes())
 
 
-def test_flush_and_shutdown_never_raise_when_storage_vanishes(telemetry_env) -> None:
+def test_flush_and_shutdown_never_raise_when_storage_vanishes(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
     shutil.rmtree(settings.config_dir())
-    telemetry.shutdown()
+    usage_reporting.shutdown()
     end_process()
 
 
 def test_send_never_raises_when_config_dir_vanishes(tmp_path) -> None:
     gone = tmp_path / "gone"
-    paths = sender.Paths(config=gone / "telemetry.json", spool=gone / "spool", lease=gone / "send.lease")
+    paths = sender.Paths(config=gone / "usage-reporting.json", spool=gone / "spool", lease=gone / "send.lease")
     sender.send(paths, now=datetime.datetime.now(datetime.timezone.utc), url="http://127.0.0.1:9/")
 
 
-def test_stalled_send_delays_exit_by_at_most_about_a_second(store: str, telemetry_env) -> None:
+def test_stalled_send_delays_exit_by_at_most_about_a_second(store: str, usage_reporting_env) -> None:
     args = ["models", "--storage", store, "list"]
-    off_env = telemetry_env.subprocess_env(SLAYER_TELEMETRY="off")
+    off_env = usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off")
     started = time.monotonic()
     assert run_slayer(args, env=off_env).returncode == 0
     off_duration = time.monotonic() - started
 
-    run_slayer(args, env=telemetry_env.subprocess_env())
+    run_slayer(args, env=usage_reporting_env.subprocess_env())
     make_due()
-    telemetry_env.capture.behaviour.delay = 10
+    usage_reporting_env.capture.behaviour.delay = 10
     started = time.monotonic()
-    result = run_slayer(args, env=telemetry_env.subprocess_env())
+    result = run_slayer(args, env=usage_reporting_env.subprocess_env())
     on_duration = time.monotonic() - started
     assert result.returncode == 0, result.stderr
-    assert telemetry_env.capture.arrivals == 1
+    assert usage_reporting_env.capture.arrivals == 1
     assert on_duration - off_duration < 2.0
 
-    telemetry_env.set_now(now_utc() + datetime.timedelta(days=1))
+    usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=1))
     assert usage(show(), "cli:models.list")["ok"] == 2
 
 
-def test_first_run_notice_and_send_never_touch_stdout(store: str, telemetry_env) -> None:
+def test_first_run_notice_and_send_never_touch_stdout(store: str, usage_reporting_env) -> None:
     settings.config_path().unlink()
     args = ["models", "--storage", store, "list"]
-    first_run = run_slayer(args, env=telemetry_env.subprocess_env())
-    off = run_slayer(args, env=telemetry_env.subprocess_env(SLAYER_TELEMETRY="off"))
+    first_run = run_slayer(args, env=usage_reporting_env.subprocess_env())
+    off = run_slayer(args, env=usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off"))
     assert (first_run.returncode, first_run.stdout) == (off.returncode, off.stdout)

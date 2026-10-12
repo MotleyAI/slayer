@@ -14,7 +14,7 @@ import sqlalchemy as sa
 import yaml
 from pydantic import BaseModel, Field
 
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -68,7 +68,7 @@ from slayer.storage.type_refinement import (
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
-from slayer.telemetry import control as telemetry_control
+from slayer.usage_reporting import control as usage_reporting_control
 
 _STORAGE_DEFAULT = default_storage_path()
 _DATASOURCE_NAME_HELP = "Datasource name"
@@ -125,24 +125,24 @@ def _resolve_storage(args):
     """Resolve storage backend from --storage or --models-dir flags."""
     path = args.storage or args.models_dir or _STORAGE_DEFAULT
     storage = resolve_storage(path)
-    telemetry.observe_storage(storage)
+    usage_reporting.observe_storage(storage)
     return storage
 
 
-def _assign_telemetry_tokens(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> None:
-    """Give every leaf command except ``slayer telemetry …`` a fixed usage token: its subcommand path."""
+def _assign_usage_tokens(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> None:
+    """Give every leaf command except ``slayer usage-reporting …`` a fixed usage token: its subcommand path."""
     groups = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
     for group in groups:
         for name, sub in group.choices.items():
-            if (*path, name) != ("telemetry",):
-                _assign_telemetry_tokens(sub, (*path, name))
+            if (*path, name) != ("usage-reporting",):
+                _assign_usage_tokens(sub, (*path, name))
     if path and not groups:
-        parser.set_defaults(telemetry_token=".".join(path))
+        parser.set_defaults(usage_token=".".join(path))
 
 
 def main():
     parser = _build_parser()
-    _assign_telemetry_tokens(parser)
+    _assign_usage_tokens(parser)
     args = parser.parse_args()
 
     try:
@@ -151,21 +151,21 @@ def main():
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    if args.command == "telemetry":
-        _run_telemetry(args)
+    if args.command == "usage-reporting":
+        _run_usage_reporting(args)
         return
-    token = getattr(args, "telemetry_token", None)
+    token = getattr(args, "usage_token", None)
     if token is not None:
-        telemetry.start()
+        usage_reporting.start()
     try:
-        with telemetry.counting(surface="cli", token=token):
+        with usage_reporting.counting(surface="cli", token=token):
             _dispatch(parser, args)
     except (SystemExit, KeyboardInterrupt) as exc:
         if args.command == "mcp":
             _exit_stdio_now(exc)
         raise
     finally:
-        telemetry.flush()
+        usage_reporting.flush()
 
 
 def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
@@ -173,8 +173,8 @@ def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
     code = stop.code if isinstance(stop, SystemExit) else 128 + signal.SIGINT
     if code is None:
         code = 0
-    telemetry.flush()
-    telemetry.shutdown()
+    usage_reporting.flush()
+    usage_reporting.shutdown()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code if isinstance(code, int) else 1)
@@ -929,7 +929,7 @@ examples:
     _add_storage_arg(search_parser)
     search_subparsers = search_parser.add_subparsers(dest="search_command")
     # ``slayer search`` (no subcommand) runs the search query directly.
-    search_parser.set_defaults(telemetry_token="search")
+    search_parser.set_defaults(usage_token="search")
     search_parser.add_argument(
         "--entity",
         action="append",
@@ -1019,33 +1019,33 @@ examples:
     # concepts ship as help memories — read them with
     # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
-    # ── telemetry ─────────────────────────────────────────────────────
-    telemetry_parser = subparsers.add_parser(
-        "telemetry",
-        help="Show or change anonymous usage telemetry",
-        epilog="docs: https://docs.motley.ai/slayer/reference/telemetry/",
+    # ── usage reporting ─────────────────────────────────────────────────────
+    usage_reporting_parser = subparsers.add_parser(
+        "usage-reporting",
+        help="Show or change anonymous usage reporting",
+        epilog="docs: https://docs.motley.ai/slayer/reference/usage-reporting/",
     )
-    telemetry_subparsers = telemetry_parser.add_subparsers(dest="telemetry_command", required=True)
-    telemetry_subparsers.add_parser("status", help="Whether telemetry is on, why, and the install ID")
-    telemetry_subparsers.add_parser("enable", help="Turn telemetry on (persisted)")
-    telemetry_subparsers.add_parser(
-        "disable", help="Turn telemetry off (persisted) and delete the install ID and unsent data",
+    usage_reporting_subparsers = usage_reporting_parser.add_subparsers(dest="usage_reporting_command", required=True)
+    usage_reporting_subparsers.add_parser("status", help="Whether usage reporting is on, why, and the install ID")
+    usage_reporting_subparsers.add_parser("enable", help="Turn usage reporting on (persisted)")
+    usage_reporting_subparsers.add_parser(
+        "disable", help="Turn usage reporting off (persisted) and delete the install ID and unsent data",
     )
-    telemetry_subparsers.add_parser("show", help="Print the report the next send would contain, without sending")
+    usage_reporting_subparsers.add_parser("show", help="Print the report the next send would contain, without sending")
     return parser
 
 
-def _run_telemetry(args) -> None:
-    if args.telemetry_command == "status":
-        print(telemetry_control.status())
-    elif args.telemetry_command == "enable":
-        telemetry_control.enable()
-        print("Telemetry enabled.")
-    elif args.telemetry_command == "disable":
-        telemetry_control.disable()
-        print("Telemetry disabled; the install ID and unsent data were deleted.")
+def _run_usage_reporting(args) -> None:
+    if args.usage_reporting_command == "status":
+        print(usage_reporting_control.status())
+    elif args.usage_reporting_command == "enable":
+        usage_reporting_control.enable()
+        print("Usage reporting enabled.")
+    elif args.usage_reporting_command == "disable":
+        usage_reporting_control.disable()
+        print("Usage reporting disabled; the install ID and unsent data were deleted.")
     else:
-        print(telemetry_control.pending_report().model_dump_json(indent=2))
+        print(usage_reporting_control.pending_report().model_dump_json(indent=2))
 
 
 _SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
@@ -1499,7 +1499,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         query = json.loads(query_input)
         if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
-    telemetry.observe_query(query)
+    usage_reporting.observe_query(query)
     result = engine.execute_sync(
         query=query,
         variables=runtime_kwarg or None,
@@ -1507,7 +1507,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         explain=bool(args.explain),
         refine=refine,
     )
-    telemetry.observe_executed(result)
+    usage_reporting.observe_executed(result)
 
     _print_query_warnings(result)
 
@@ -2123,7 +2123,7 @@ def _run_import_osi(args):
 
 def _models_list(storage, args) -> None:
     names = run_sync(storage.list_models())
-    telemetry.observe_model_count(len(names))
+    usage_reporting.observe_model_count(len(names))
     builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
     if not names and not builtins:
         print("No models found.")
@@ -2185,7 +2185,7 @@ def _run_models(args):
 def _datasources_list(storage, args) -> None:
     names = run_sync(storage.list_datasources())
     if not names:
-        telemetry.observe_datasources([])
+        usage_reporting.observe_datasources([])
         print("No datasources found.")
         return
     loaded = []
@@ -2195,7 +2195,7 @@ def _datasources_list(storage, args) -> None:
         print(f"{name}  ({ds_type})")
         if ds is not None:
             loaded.append(ds)
-    telemetry.observe_datasources(loaded)
+    usage_reporting.observe_datasources(loaded)
 
 
 def _datasource_or_exit(storage, name: str):

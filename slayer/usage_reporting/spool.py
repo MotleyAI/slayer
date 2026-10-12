@@ -12,8 +12,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from slayer.telemetry.payload import Batch
-from slayer.telemetry.settings import write_private
+from slayer.usage_reporting.payload import Batch
+from slayer.usage_reporting.settings import write_private
 
 if sys.platform == "win32":
     import msvcrt
@@ -80,7 +80,7 @@ def load(paths: list[Path]) -> list[Batch]:
         try:
             batches.append(Batch.model_validate_json(path.read_bytes()))
         except Exception:
-            logger.debug("telemetry: skipping unreadable spool file", exc_info=True)
+            logger.debug("usage reporting: skipping unreadable spool file", exc_info=True)
     return batches
 
 

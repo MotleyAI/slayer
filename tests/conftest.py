@@ -19,19 +19,19 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
-from tests._telemetry_capture import CaptureServer
+from tests._usage_reporting_capture import CaptureServer
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _telemetry_off_by_default() -> Iterator[None]:
-    """Our own test runs never report usage; ``telemetry_env`` re-enables it."""
+def _usage_reporting_off_by_default() -> Iterator[None]:
+    """Our own test runs never report usage; ``usage_reporting_env`` re-enables it."""
     with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("SLAYER_TELEMETRY", "off")
+        mp.setenv("SLAYER_USAGE_REPORTING", "off")
         yield
 
 
-class TelemetryEnv(BaseModel):
-    """Isolated telemetry environment: tmp config dirs, capture endpoint, injectable clock."""
+class UsageReportingEnv(BaseModel):
+    """Isolated usage-reporting environment: tmp config dirs, capture endpoint, injectable clock."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -41,7 +41,7 @@ class TelemetryEnv(BaseModel):
     monkeypatch: pytest.MonkeyPatch
 
     def set_now(self, now: datetime.datetime) -> None:
-        self.monkeypatch.setattr("slayer.telemetry.clock.now", lambda: now)
+        self.monkeypatch.setattr("slayer.usage_reporting.clock.now", lambda: now)
 
     def subprocess_env(self, **overrides: str | None) -> dict[str, str]:
         env = dict(os.environ)
@@ -54,25 +54,25 @@ class TelemetryEnv(BaseModel):
 
 
 @pytest.fixture
-def telemetry_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TelemetryEnv]:
-    """Telemetry on, config under ``tmp_path``, reports posted to a local capture server."""
+def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[UsageReportingEnv]:
+    """Usage reporting on, config under ``tmp_path``, reports posted to a local capture server."""
     capture = CaptureServer().start()
     for var in ("DO_NOT_TRACK", "CI", "SLAYER_STORAGE", "SLAYER_MODELS_DIR"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("SLAYER_TELEMETRY", "on")
-    monkeypatch.setenv("SLAYER_TELEMETRY_ENDPOINT", capture.url)
+    monkeypatch.setenv("SLAYER_USAGE_REPORTING", "on")
+    monkeypatch.setenv("SLAYER_USAGE_REPORTING_ENDPOINT", capture.url)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     storage_dir = tmp_path / "store"
     storage_dir.mkdir()
-    env = TelemetryEnv(root=tmp_path, storage_dir=storage_dir, capture=capture, monkeypatch=monkeypatch)
+    env = UsageReportingEnv(root=tmp_path, storage_dir=storage_dir, capture=capture, monkeypatch=monkeypatch)
     try:
         yield env
     finally:
-        telemetry = sys.modules.get("slayer.telemetry")
-        if telemetry is not None:
-            telemetry.reset()
+        usage_reporting = sys.modules.get("slayer.usage_reporting")
+        if usage_reporting is not None:
+            usage_reporting.reset()
         capture.stop()
 
 

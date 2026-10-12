@@ -12,8 +12,8 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any, ParamSpec, TypeVar
 
-from slayer.telemetry import clock, features, sender, settings, spool
-from slayer.telemetry.payload import (
+from slayer.usage_reporting import clock, features, sender, settings, spool
+from slayer.usage_reporting.payload import (
     AGGREGATIONS,
     CLIENTS,
     DIALECTS,
@@ -30,8 +30,8 @@ EXIT_WAIT = 1.0
 NOTICE = (
     "SLayer collects anonymous, aggregated usage statistics (command, tool and query-feature counts, "
     "versions, OS) to guide its development - never queries, names, data or credentials. "
-    "Details: https://docs.motley.ai/slayer/reference/telemetry/ - "
-    "opt out with SLAYER_TELEMETRY=off, DO_NOT_TRACK=1 or `slayer telemetry disable`."
+    "Details: https://docs.motley.ai/slayer/reference/usage-reporting/ - "
+    "opt out with SLAYER_USAGE_REPORTING=off, DO_NOT_TRACK=1 or `slayer usage-reporting disable`."
 )
 
 _ERROR_TOKENS = {
@@ -101,7 +101,7 @@ def _silent(fn: Callable[P, R]) -> Callable[P, R | None]:
         try:
             return fn(*args, **kwargs)
         except Exception:
-            logger.debug("telemetry: %s failed", fn.__name__, exc_info=True)
+            logger.debug("usage reporting: %s failed", fn.__name__, exc_info=True)
             return None
 
     return wrapper
@@ -215,7 +215,7 @@ def is_active() -> bool:
 def _send_in_background(paths: sender.Paths, now: datetime.datetime) -> None:
     thread = threading.Thread(
         target=sender.send, args=(paths,), kwargs={"now": now, "url": sender.endpoint()},
-        name="slayer-telemetry-send", daemon=True,
+        name="slayer-usage-reporting-send", daemon=True,
     )
     _recorder.sending = thread
     thread.start()

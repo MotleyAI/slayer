@@ -1,4 +1,4 @@
-"""Shared helpers for the telemetry tests."""
+"""Shared helpers for the usage-reporting tests."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from slayer import telemetry
+from slayer import usage_reporting
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.telemetry import settings
-from slayer.telemetry.payload import SCHEMA_VERSION, UsageReport
+from slayer.usage_reporting import settings
+from slayer.usage_reporting.payload import SCHEMA_VERSION, UsageReport
 from tests._cli_inprocess import CliResult, run_cli_in_process
 from tests._saved_query_refinement_fixtures import build_refine_storage, orders_model
 
@@ -53,21 +53,21 @@ def wait_until(predicate: Callable[[], bool], *, timeout: float = 10.0) -> bool:
 # --- config + spool -------------------------------------------------------------
 
 
-def read_config() -> settings.TelemetryConfig | None:
+def read_config() -> settings.UsageReportingConfig | None:
     path = settings.config_path()
     if not path.is_file():
         return None
-    return settings.TelemetryConfig.model_validate_json(path.read_text())
+    return settings.UsageReportingConfig.model_validate_json(path.read_text())
 
 
-def config() -> settings.TelemetryConfig:
+def config() -> settings.UsageReportingConfig:
     current = read_config()
-    assert current is not None, "no telemetry config written"
+    assert current is not None, "no usage-reporting config written"
     return current
 
 
-def write_config(**fields: Any) -> settings.TelemetryConfig:
-    current = read_config() or settings.TelemetryConfig()
+def write_config(**fields: Any) -> settings.UsageReportingConfig:
+    current = read_config() or settings.UsageReportingConfig()
     config = current.model_copy(update=fields)
     path = settings.config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,7 @@ def write_config(**fields: Any) -> settings.TelemetryConfig:
     return config
 
 
-def quiet_config(*, last_sent: datetime.datetime | None = None) -> settings.TelemetryConfig:
+def quiet_config(*, last_sent: datetime.datetime | None = None) -> settings.UsageReportingConfig:
     """Notice already shown, last send just now (nothing due)."""
     return write_config(
         notice_shown_schema=SCHEMA_VERSION,
@@ -83,7 +83,7 @@ def quiet_config(*, last_sent: datetime.datetime | None = None) -> settings.Tele
     )
 
 
-def make_due() -> settings.TelemetryConfig:
+def make_due() -> settings.UsageReportingConfig:
     return write_config(last_sent=now_utc() - datetime.timedelta(hours=25))
 
 
@@ -145,19 +145,19 @@ def cli(args: list[str], *, stdin: str = "") -> CliResult:
     try:
         return run_cli_in_process(args, stdin=stdin, uncaught_exit=True)
     finally:
-        telemetry.flush()
-        telemetry.reset()
+        usage_reporting.flush()
+        usage_reporting.reset()
 
 
 def show() -> dict:
-    result = cli(["telemetry", "show"])
+    result = cli(["usage-reporting", "show"])
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
 
 def end_process() -> None:
-    telemetry.flush()
-    telemetry.reset()
+    usage_reporting.flush()
+    usage_reporting.reset()
 
 
 def run_slayer(args: list[str], *, env: dict[str, str], timeout: float = SUBPROCESS_TIMEOUT,

@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from slayer import telemetry
-from slayer.telemetry import sender, settings, spool
-from tests._telemetry_helpers import (
+from slayer import usage_reporting
+from slayer.usage_reporting import sender, settings, spool
+from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
     cli,
@@ -42,32 +42,32 @@ posix_only = pytest.mark.skipif(not is_posix(), reason="POSIX signals / file mod
 
 
 @pytest.fixture
-def store(telemetry_env) -> str:
+def store(usage_reporting_env) -> str:
     quiet_config()
-    return build_storage(telemetry_env.root)
+    return build_storage(usage_reporting_env.root)
 
 
 def _spool_one(token: str = "query") -> None:
-    telemetry.start()
-    telemetry.record(surface="mcp", token=token)
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token=token)
     end_process()
 
 
 # --- spooling at process end ---------------------------------------------------------------------
 
 
-def test_normal_exit_spools_without_a_request(store: str, telemetry_env) -> None:
-    result = run_slayer(["models", "--storage", store, "list"], env=telemetry_env.subprocess_env())
+def test_normal_exit_spools_without_a_request(store: str, usage_reporting_env) -> None:
+    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     assert len(spool_files()) == 1
-    assert telemetry_env.capture.arrivals == 0
+    assert usage_reporting_env.capture.arrivals == 0
 
 
-def test_concurrent_processes_each_write_their_own_spool_file(store: str, telemetry_env) -> None:
+def test_concurrent_processes_each_write_their_own_spool_file(store: str, usage_reporting_env) -> None:
     procs = [
         subprocess.Popen(
             [sys.executable, "-m", "slayer", "models", "--storage", store, "list"],
-            env=telemetry_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(5)
     ]
@@ -85,8 +85,8 @@ def _mcp_with_one_call(store: str, env: dict[str, str], *, argv: list[str] | Non
 
 
 @posix_only
-def test_stdio_mcp_sigterm_spools(store: str, telemetry_env) -> None:
-    session = _mcp_with_one_call(store, telemetry_env.subprocess_env())
+def test_stdio_mcp_sigterm_spools(store: str, usage_reporting_env) -> None:
+    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
         session.proc.send_signal(signal.SIGTERM)
         session.wait()
@@ -107,10 +107,10 @@ main()
 
 
 @posix_only
-def test_stdio_mcp_sigterm_chains_existing_handler(store: str, telemetry_env, tmp_path: Path) -> None:
+def test_stdio_mcp_sigterm_chains_existing_handler(store: str, usage_reporting_env, tmp_path: Path) -> None:
     marker = tmp_path / "marker"
     argv = [sys.executable, "-c", _CHAINED_HANDLER_SCRIPT.format(marker=str(marker), store=store)]
-    session = _mcp_with_one_call(store, telemetry_env.subprocess_env(), argv=argv)
+    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env(), argv=argv)
     try:
         session.proc.send_signal(signal.SIGTERM)
         session.wait()
@@ -121,8 +121,8 @@ def test_stdio_mcp_sigterm_chains_existing_handler(store: str, telemetry_env, tm
 
 
 @posix_only
-def test_stdio_mcp_sigint_spools(store: str, telemetry_env) -> None:
-    session = _mcp_with_one_call(store, telemetry_env.subprocess_env())
+def test_stdio_mcp_sigint_spools(store: str, usage_reporting_env) -> None:
+    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
         session.proc.send_signal(signal.SIGINT)
         session.wait()
@@ -131,8 +131,8 @@ def test_stdio_mcp_sigint_spools(store: str, telemetry_env) -> None:
     assert usage(show(), "mcp:list_datasources")["ok"] == 1
 
 
-def test_stdio_mcp_end_of_input_spools(store: str, telemetry_env) -> None:
-    session = _mcp_with_one_call(store, telemetry_env.subprocess_env())
+def test_stdio_mcp_end_of_input_spools(store: str, usage_reporting_env) -> None:
+    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
         session.close_stdin()
         session.wait()
@@ -142,10 +142,10 @@ def test_stdio_mcp_end_of_input_spools(store: str, telemetry_env) -> None:
 
 
 @posix_only
-def test_stdio_mcp_broken_pipe_spools(store: str, telemetry_env) -> None:
+def test_stdio_mcp_broken_pipe_spools(store: str, usage_reporting_env) -> None:
     proc = subprocess.Popen(
         [sys.executable, "-m", "slayer", "mcp", "--storage", store],
-        env=telemetry_env.subprocess_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env=usage_reporting_env.subprocess_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     stdin, stdout = proc.stdin, proc.stdout
     assert stdin is not None
@@ -193,11 +193,11 @@ def _wait_for_port(port: int, *, timeout: float = 60.0) -> bool:
     ("pg-serve", signal.SIGINT),
     ("flight-serve", signal.SIGINT),
 ])
-def test_server_shutdown_spools(store: str, telemetry_env, command: str, sig: signal.Signals) -> None:
+def test_server_shutdown_spools(store: str, usage_reporting_env, command: str, sig: signal.Signals) -> None:
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "slayer", command, "--host", "127.0.0.1", "--port", str(port), "--storage", store],
-        env=telemetry_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
         assert _wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
@@ -212,17 +212,17 @@ def test_server_shutdown_spools(store: str, telemetry_env, command: str, sig: si
 
 
 @posix_only
-def test_serve_sigterm_spools_rest_counts(store: str, telemetry_env) -> None:
+def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> None:
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "slayer", "serve", "--host", "127.0.0.1", "--port", str(port), "--storage", store],
-        env=telemetry_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
         assert _wait_for_port(port)
         result = run_python(
             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/health').read()",
-            env=telemetry_env.subprocess_env(),
+            env=usage_reporting_env.subprocess_env(),
         )
         assert result.returncode == 0, result.stderr
         proc.send_signal(signal.SIGTERM)
@@ -236,21 +236,21 @@ def test_serve_sigterm_spools_rest_counts(store: str, telemetry_env) -> None:
 
 _FORK_SCRIPT = """
 import os, sys
-from slayer import telemetry
-telemetry.start()
-telemetry.record(surface="mcp", token="query")
+from slayer import usage_reporting
+usage_reporting.start()
+usage_reporting.record(surface="mcp", token="query")
 pid = os.fork()
 if pid == 0:
-    telemetry.flush()
+    usage_reporting.flush()
     os._exit(0)
 os.waitpid(pid, 0)
 """
 
 
 @posix_only
-def test_forked_child_does_not_repeat_parent_counts(telemetry_env) -> None:
+def test_forked_child_does_not_repeat_parent_counts(usage_reporting_env) -> None:
     quiet_config()
-    result = run_python(_FORK_SCRIPT, env=telemetry_env.subprocess_env())
+    result = run_python(_FORK_SCRIPT, env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     assert usage(show(), "mcp:query")["ok"] == 1
 
@@ -259,7 +259,7 @@ def test_forked_child_does_not_repeat_parent_counts(telemetry_env) -> None:
 
 
 @posix_only
-def test_spool_files_are_owner_only(telemetry_env) -> None:
+def test_spool_files_are_owner_only(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     files = spool_files()
@@ -268,7 +268,7 @@ def test_spool_files_are_owner_only(telemetry_env) -> None:
 
 
 @posix_only
-def test_non_regular_spool_entries_ignored(telemetry_env) -> None:
+def test_non_regular_spool_entries_ignored(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     (real,) = spool_files()
@@ -279,7 +279,7 @@ def test_non_regular_spool_entries_ignored(telemetry_env) -> None:
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
-def test_corrupt_spool_file_skipped(telemetry_env) -> None:
+def test_corrupt_spool_file_skipped(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     (corrupt,) = spool_files()
@@ -288,7 +288,7 @@ def test_corrupt_spool_file_skipped(telemetry_env) -> None:
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
-def test_spool_is_capped_dropping_oldest(telemetry_env) -> None:
+def test_spool_is_capped_dropping_oldest(usage_reporting_env) -> None:
     quiet_config()
     for _ in range(140):
         _spool_one("query")
@@ -308,38 +308,38 @@ def test_spool_is_capped_dropping_oldest(telemetry_env) -> None:
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 
-def test_not_yet_due_sends_nothing_and_spools(telemetry_env) -> None:
+def test_not_yet_due_sends_nothing_and_spools(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=3))
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=3))
     _spool_one()
     time.sleep(0.5)
-    assert telemetry_env.capture.arrivals == 0
+    assert usage_reporting_env.capture.arrivals == 0
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
-def test_idle_server_sends_nothing(telemetry_env) -> None:
+def test_idle_server_sends_nothing(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=1))
-    telemetry.start()
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=49))
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
+    usage_reporting.start()
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=49))
     time.sleep(0.5)
     end_process()
-    assert telemetry_env.capture.arrivals == 0
+    assert usage_reporting_env.capture.arrivals == 0
 
 
-def test_due_on_activity_sends_once_merging_spool_and_live(telemetry_env) -> None:
+def test_due_on_activity_sends_once_merging_spool_and_live(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=1))
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
     _spool_one("search")
-    telemetry.start()
-    telemetry.record(surface="mcp", token="query")
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=25))
-    telemetry.record(surface="mcp", token="query")
-    requests = telemetry_env.capture.wait_for(count=1)
-    telemetry.record(surface="mcp", token="query")
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=25))
+    usage_reporting.record(surface="mcp", token="query")
+    requests = usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.record(surface="mcp", token="query")
     time.sleep(0.3)
     end_process()
-    assert len(telemetry_env.capture.requests) == 1
+    assert len(usage_reporting_env.capture.requests) == 1
     sent = requests[0].json()["properties"]["usage"]
     assert sent["mcp:search"]["ok"] == 1
     assert sent["mcp:query"]["ok"] == 2
@@ -349,93 +349,93 @@ def test_due_on_activity_sends_once_merging_spool_and_live(telemetry_env) -> Non
     assert usage(remaining, "mcp:query")["ok"] == 1
 
 
-def test_due_at_start_sends_spool(telemetry_env) -> None:
+def test_due_at_start_sends_spool(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=1))
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
     _spool_one()
-    telemetry_env.set_now(_T0 + datetime.timedelta(hours=26))
-    telemetry.start()
-    requests = telemetry_env.capture.wait_for(count=1)
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=26))
+    usage_reporting.start()
+    requests = usage_reporting_env.capture.wait_for(count=1)
     end_process()
     assert len(requests) == 1
     assert requests[0].json()["properties"]["usage"]["mcp:query"]["ok"] == 1
 
 
-def test_last_send_in_the_future_counts_as_due(telemetry_env) -> None:
+def test_last_send_in_the_future_counts_as_due(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0 + datetime.timedelta(days=30))
-    telemetry_env.set_now(_T0)
+    usage_reporting_env.set_now(_T0)
     _spool_one()
-    telemetry.start()
-    assert len(telemetry_env.capture.wait_for(count=1)) == 1
+    usage_reporting.start()
+    assert len(usage_reporting_env.capture.wait_for(count=1)) == 1
     end_process()
 
 
-def test_clock_jump_forward_is_due(telemetry_env) -> None:
+def test_clock_jump_forward_is_due(usage_reporting_env) -> None:
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0)
+    usage_reporting_env.set_now(_T0)
     _spool_one()
-    telemetry_env.set_now(_T0 + datetime.timedelta(days=400))
-    telemetry.start()
-    assert len(telemetry_env.capture.wait_for(count=1)) == 1
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(days=400))
+    usage_reporting.start()
+    assert len(usage_reporting_env.capture.wait_for(count=1)) == 1
     end_process()
 
 
 # --- bookkeeping -----------------------------------------------------------------------------------------------
 
 
-def test_failed_send_keeps_spool_and_last_send(telemetry_env) -> None:
-    telemetry_env.capture.behaviour.status = 500
+def test_failed_send_keeps_spool_and_last_send(usage_reporting_env) -> None:
+    usage_reporting_env.capture.behaviour.status = 500
     quiet_config()
     _spool_one()
     before = make_due().last_sent
-    telemetry.start()
-    assert telemetry_env.capture.wait_for(count=1)
-    telemetry.shutdown()
+    usage_reporting.start()
+    assert usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
     end_process()
     assert config().last_sent == before
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
-def test_timed_out_send_keeps_spool(telemetry_env) -> None:
-    telemetry_env.capture.behaviour.delay = 30
+def test_timed_out_send_keeps_spool(usage_reporting_env) -> None:
+    usage_reporting_env.capture.behaviour.delay = 30
     quiet_config()
     _spool_one()
     before = make_due().last_sent
-    telemetry.start()
-    assert telemetry_env.capture.wait_for_arrival()
+    usage_reporting.start()
+    assert usage_reporting_env.capture.wait_for_arrival()
     started = time.monotonic()
-    telemetry.shutdown()
+    usage_reporting.shutdown()
     assert time.monotonic() - started < 1.5
     end_process()
     assert config().last_sent == before
-    telemetry_env.set_now(now_utc() + datetime.timedelta(days=1))
+    usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=1))
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
-def test_no_wait_at_exit_without_send_in_flight(telemetry_env) -> None:
+def test_no_wait_at_exit_without_send_in_flight(usage_reporting_env) -> None:
     quiet_config()
-    telemetry.start()
+    usage_reporting.start()
     started = time.monotonic()
-    telemetry.shutdown()
+    usage_reporting.shutdown()
     assert time.monotonic() - started < 0.1
     end_process()
 
 
-def test_two_simultaneous_senders_send_one_report(store: str, telemetry_env) -> None:
-    telemetry_env.capture.behaviour.delay = 0.5
-    run_slayer(["models", "--storage", store, "list"], env=telemetry_env.subprocess_env())
+def test_two_simultaneous_senders_send_one_report(store: str, usage_reporting_env) -> None:
+    usage_reporting_env.capture.behaviour.delay = 0.5
+    run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     make_due()
     procs = [
         subprocess.Popen(
             [sys.executable, "-m", "slayer", "datasources", "--storage", store, "list"],
-            env=telemetry_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(2)
     ]
     assert [p.wait(timeout=120) for p in procs] == [0, 0]
     time.sleep(1.5)
-    assert telemetry_env.capture.arrivals == 1
-    assert len(telemetry_env.capture.requests) == 1
+    assert usage_reporting_env.capture.arrivals == 1
+    assert len(usage_reporting_env.capture.requests) == 1
 
 
 def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) -> None:
@@ -457,36 +457,36 @@ def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) 
     assert sum(token is not None for token in (mine, *rival)) == 1
 
 
-def test_sender_crash_recovered_by_a_later_send(store: str, telemetry_env) -> None:
-    telemetry_env.capture.behaviour.stall_first = 60
-    result = run_slayer(["models", "--storage", store, "list"], env=telemetry_env.subprocess_env())
+def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env) -> None:
+    usage_reporting_env.capture.behaviour.stall_first = 60
+    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     make_due()
-    session = McpStdio(args=["--storage", store], env=telemetry_env.subprocess_env())
+    session = McpStdio(args=["--storage", store], env=usage_reporting_env.subprocess_env())
     try:
-        assert telemetry_env.capture.wait_for_arrival(timeout=60)
+        assert usage_reporting_env.capture.wait_for_arrival(timeout=60)
     finally:
         session.kill()
-    telemetry_env.set_now(now_utc() + datetime.timedelta(days=2))
-    telemetry.start()
-    requests = telemetry_env.capture.wait_for(count=1, timeout=20)
+    usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=2))
+    usage_reporting.start()
+    requests = usage_reporting_env.capture.wait_for(count=1, timeout=20)
     end_process()
     assert len(requests) == 1
     assert requests[0].json()["properties"]["usage"]["cli:models.list"]["ok"] == 1
 
 
-def test_disable_racing_a_send_leaves_nothing_behind(store: str, telemetry_env) -> None:
-    telemetry_env.capture.behaviour.delay = 3.0
+def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
+    usage_reporting_env.capture.behaviour.delay = 3.0
     quiet_config()
     _spool_one()
     make_due()
-    telemetry.start()
-    assert telemetry_env.capture.wait_for_arrival()
-    disabled = run_slayer(["telemetry", "disable"], env=telemetry_env.subprocess_env())
+    usage_reporting.start()
+    assert usage_reporting_env.capture.wait_for_arrival()
+    disabled = run_slayer(["usage-reporting", "disable"], env=usage_reporting_env.subprocess_env())
     assert disabled.returncode == 0, disabled.stderr
-    assert not telemetry_env.capture.requests
-    assert telemetry_env.capture.wait_for(count=1, timeout=15)
-    telemetry.shutdown()
+    assert not usage_reporting_env.capture.requests
+    assert usage_reporting_env.capture.wait_for(count=1, timeout=15)
+    usage_reporting.shutdown()
     end_process()
     current = config()
     assert current.setting == "disabled"
@@ -501,12 +501,12 @@ def test_default_endpoint_is_posthog_eu() -> None:
     assert sender.DEFAULT_ENDPOINT == "https://eu.i.posthog.com/i/v0/e/"
 
 
-def test_request_shape(telemetry_env) -> None:
+def test_request_shape(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     make_due()
-    telemetry.start()
-    (request,) = telemetry_env.capture.wait_for(count=1)
+    usage_reporting.start()
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
     end_process()
     assert request.path == "/i/v0/e/"
     assert request.headers.get("Content-Type", "").startswith("application/json")
@@ -524,7 +524,7 @@ def test_request_shape(telemetry_env) -> None:
 # --- install identity -------------------------------------------------------------------------------------------------
 
 
-def test_install_id_created_on_first_use(telemetry_env) -> None:
+def test_install_id_created_on_first_use(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     current = config()
@@ -533,11 +533,11 @@ def test_install_id_created_on_first_use(telemetry_env) -> None:
 
 
 @pytest.mark.parametrize(("age_days", "rotated"), [(14 * 31, True), (12 * 30, False)])
-def test_install_id_rotation(telemetry_env, age_days: int, rotated: bool) -> None:
+def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) -> None:
     old = uuid.uuid4()
     write_config(install_id=old, install_id_created=_T0.date())
     quiet_config(last_sent=_T0)
-    telemetry_env.set_now(_T0 + datetime.timedelta(days=age_days))
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(days=age_days))
     _spool_one()
     current = config()
     assert (current.install_id != old) is rotated
@@ -546,7 +546,7 @@ def test_install_id_rotation(telemetry_env, age_days: int, rotated: bool) -> Non
         assert show()["install_id"] == str(current.install_id)
 
 
-def test_install_id_stored_in_config_dir_not_model_storage(store: str, telemetry_env) -> None:
+def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_reporting_env) -> None:
     cli(["models", "--storage", store, "list"])
     install_id = str(config().install_id)
     for path in Path(store).rglob("*"):

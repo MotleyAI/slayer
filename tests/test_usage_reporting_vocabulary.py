@@ -1,4 +1,4 @@
-"""Telemetry's fixed lookup tables stay within the report vocabulary and name real things."""
+"""The usage reporter's fixed lookup tables stay within the report vocabulary and name real things."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import pytest
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import SQLGLOT_NAMES
-from slayer.telemetry import features, recorder
-from slayer.telemetry.payload import CLIENTS, DIALECTS, EXTRAS, ErrorToken
+from slayer.usage_reporting import features, recorder
+from slayer.usage_reporting.payload import CLIENTS, DIALECTS, EXTRAS, ErrorToken
 
 
 @pytest.mark.parametrize("dotted", sorted(recorder._ERROR_TOKENS))
