@@ -89,4 +89,4 @@ def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
 
 
 # Quote reserved-word identifiers in every dialect's emission; runs at import, idempotent.
-install_reserved_keywords()
+install_reserved_keywords(SQLGLOT_NAMES)

@@ -63,6 +63,7 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
 )
 from tests._engine_helpers import disposable_engine
+from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -1588,3 +1589,18 @@ class TestSQLServerBooleanAggregation:
             dimensions=["region"], measures=[bool_measure("sum(flag)")], filters=["amount > 5 or amount is None", having],
         ))
         assert by_dim(resp, "region") == {"east": 2}
+
+
+@pytest.mark.integration
+def test_every_sqlserver_alias_failure_is_quoted(sqlserver_container) -> None:
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name), isolation_level="AUTOCOMMIT") as engine:
+            with engine.connect() as conn:
+                conn.execute(sa.text("CREATE TABLE kw_probe (a INT)"))
+            assert unquoted_alias_failures(
+                dialect="tsql", words=keyword_universe(), table="kw_probe", column="a",
+                fails=sa_statement_fails(engine), workers=8,
+            ) == []
+    finally:
+        _drop_module_db(sqlserver_container, db_name)

@@ -17,19 +17,24 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("sqlalchemy_bigquery")
-
-from google.api_core.exceptions import Forbidden  # noqa: E402
-from google.auth.exceptions import DefaultCredentialsError  # noqa: E402
-from google.cloud import bigquery  # noqa: E402
-
-from slayer.core.enums import DataType  # noqa: E402
-from slayer.core.models import DatasourceConfig  # noqa: E402
-from slayer.engine.ingestion import (  # noqa: E402
+from slayer.core.enums import DataType
+from slayer.core.models import DatasourceConfig
+from slayer.engine.ingestion import (
     ingest_datasource,
     ingest_datasource_idempotent,
 )
-from slayer.storage.yaml_storage import YAMLStorage  # noqa: E402
+from slayer.storage.yaml_storage import YAMLStorage
+from tests._reserved_alias_probe import (
+    BIGQUERY_KEYWORDS,
+    keyword_universe,
+    unquoted_alias_failures,
+)
+
+pytest.importorskip("sqlalchemy_bigquery")
+bigquery = pytest.importorskip("google.cloud.bigquery")
+_api_errors = pytest.importorskip("google.api_core.exceptions")
+BadRequest, Forbidden = _api_errors.BadRequest, _api_errors.Forbidden
+DefaultCredentialsError = pytest.importorskip("google.auth.exceptions").DefaultCredentialsError
 
 pytestmark = pytest.mark.integration
 
@@ -235,3 +240,20 @@ class TestBigQueryReingest:
         loaded = await storage.get_model("orders", data_source="bqtest")
         discount = next(c for c in loaded.columns if c.name == "discount")
         assert discount.description == "Discount applied"
+
+
+def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
+    client, dataset_id = bq_dataset
+    dry_run = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+
+    def fails(sql: str) -> bool:
+        try:
+            client.query(sql, job_config=dry_run)
+        except BadRequest:
+            return True
+        return False
+
+    assert unquoted_alias_failures(
+        dialect="bigquery", words=keyword_universe(BIGQUERY_KEYWORDS), table=f"{dataset_id}.plain", column="x",
+        fails=fails, workers=8,
+    ) == []
