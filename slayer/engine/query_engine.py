@@ -2574,34 +2574,16 @@ class SlayerQueryEngine:
         self, data_source: Optional[str] = None
     ) -> "List[Any]":
         """Diff persisted models against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
-
-        if data_source is not None:
-            ds = await self.storage.get_datasource(data_source)
-            if ds is None:
-                return []
-            models, unloadable = await self.storage.load_models(data_source=data_source)
-            entries = await validate_datasource(
-                datasource=ds,
-                models=models,
-                sql_clients=self._sql_clients,
-            )
-            everything, _ = await self.storage.load_models()  # a reader's narrowing models may live elsewhere
-            narrowed = [
-                NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
-                for (ds_name, name), by in sorted(narrowing_models(everything).items())
-                if ds_name == data_source
-            ]
-            return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *narrowed]
-
-        ds_names = await self.storage.list_datasources()
+        ds_names = [data_source] if data_source is not None else await self.storage.list_datasources()
         if not ds_names:
             return []
-
-        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
-            return await self.validate_models(data_source=name)
+        everything, _ = await self.storage.load_models()  # a reader's narrowing models may live elsewhere
+        narrowed = narrowing_models(everything)
+        if data_source is not None:
+            return await self._validate_datasource(data_source, narrowed=narrowed)
 
         results = await asyncio.gather(
-            *(_validate_one(n) for n in ds_names), return_exceptions=True
+            *(self._validate_datasource(n, narrowed=narrowed) for n in ds_names), return_exceptions=True
         )
         out: List = []
         for r in results:
@@ -2610,6 +2592,22 @@ class SlayerQueryEngine:
                 continue
             out.extend(r)
         return out
+
+    async def _validate_datasource(
+        self, data_source: str, *, narrowed: Dict[Tuple[str, str], List[Tuple[str, str]]],
+    ) -> "List[Any]":
+        """One datasource's drift deletes, unloadable models and narrowed-access findings."""
+        ds = await self.storage.get_datasource(data_source)
+        if ds is None:
+            return []
+        models, unloadable = await self.storage.load_models(data_source=data_source)
+        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        findings = [
+            NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
+            for (ds_name, name), by in sorted(narrowed.items())
+            if ds_name == data_source
+        ]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
 
     def create_model_from_query_sync(
         self,

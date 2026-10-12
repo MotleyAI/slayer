@@ -156,6 +156,24 @@ class TestValidateModels:
         assert any(mentions(f, "hr_summary") and mentions(f, "hr") for f in findings)
         assert any(mentions(f, "fin_report") and mentions(f, "fin") for f in findings)
 
+    async def test_all_datasources_load_the_store_once(
+        self, store: AccessStore, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await reader_in_other_datasource(store, name="far_pay", source="hr", formula="sum(salary)")
+        unfiltered: list[None] = []
+        load = store.storage.load_models
+
+        async def counting(*args, **kwargs):
+            if kwargs.get("data_source") is None and not args:
+                unfiltered.append(None)
+            return await load(*args, **kwargs)
+
+        monkeypatch.setattr(store.storage, "load_models", counting)
+        entries = await engine.validate_models()
+        findings = [d for d in (json.dumps(e.model_dump(mode="json")) for e in entries) if "narrowed" in d]
+        assert any(mentions(f, "far_pay") for f in findings)
+        assert len(unfiltered) == 1
+
     async def test_reader_in_another_datasource_is_listed(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
         await reader_in_other_datasource(store, name="far_pay", source="hr", formula="sum(salary)")
         entries = await engine.validate_models(data_source=OTHER_DS)

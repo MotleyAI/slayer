@@ -61,6 +61,12 @@ class _View(BaseModel):
             return canonical_id[len(MEMORY_CANONICAL_PREFIX):] in self.hidden_memories
         return entity_model(canonical_id) in self.hidden
 
+    def hides_under(self, prefix: str) -> bool:
+        """Whether a hidden model or memory id is ``prefix`` or descends from it."""
+        hidden = [f"{ds}.{name}" for ds, name in self.hidden]
+        hidden += [f"{MEMORY_CANONICAL_PREFIX}{m}" for m in self.hidden_memories]
+        return any(cid == prefix or cid.startswith(f"{prefix}.") for cid in hidden)
+
     def pruned(self, model: SlayerModel) -> SlayerModel:
         joins = [j for j in model.joins if (model.data_source, j.target_model) not in self.hidden]
         return model if len(joins) == len(model.joins) else model.model_copy(update={"joins": joins})
@@ -407,7 +413,12 @@ class TagFilteredStorage(StorageBackend):
         )
 
     async def delete_embeddings_for_canonical(self, *, canonical_id_prefix: str) -> int:
-        if await self._hides(canonical_id_prefix):
-            return 0
+        """Bypass: the inner delete. Otherwise a hidden prefix is a miss, and one covering hidden rows is refused."""
+        if not self._bypass:
+            view = await self._view()
+            if view.hides(canonical_id_prefix):
+                return 0
+            if view.hides_under(canonical_id_prefix):
+                raise HiddenContentConflictError(kind="embedding", name=canonical_id_prefix)
         return await self._inner.delete_embeddings_for_canonical(canonical_id_prefix=canonical_id_prefix)
 

@@ -339,6 +339,19 @@ class TestEmbeddingWrites:
         assert stored is not None
         assert stored.content_hash != "new"
 
+    async def test_prefix_delete_over_hidden_rows_is_refused(self, store: AccessStore) -> None:
+        fin = view(store, "fin")
+        with pytest.raises(HiddenContentConflictError):
+            await fin.delete_embeddings_for_canonical(canonical_id_prefix=DS)
+        name = embedding_client.current_model()
+        assert await store.storage.get_embedding(canonical_id=f"{DS}.hr", embedding_model_name=name) is not None
+        assert await store.storage.get_embedding(canonical_id=f"{DS}.fin", embedding_model_name=name) is not None
+
+    async def test_prefix_delete_of_a_visible_subtree_lands(self, store: AccessStore) -> None:
+        assert await view(store, "fin").delete_embeddings_for_canonical(canonical_id_prefix=f"{DS}.fin") == 2
+        name = embedding_client.current_model()
+        assert await store.storage.get_embedding(canonical_id=f"{DS}.fin.amount", embedding_model_name=name) is None
+
     async def test_write_for_visible_id_lands(self, store: AccessStore) -> None:
         await view(store, "fin").save_embedding(self.row(f"{DS}.fin"))
         stored = await store.storage.get_embedding(canonical_id=f"{DS}.fin", embedding_model_name=embedding_client.current_model())
