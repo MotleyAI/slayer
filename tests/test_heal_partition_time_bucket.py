@@ -66,8 +66,9 @@ class TestProjectedTimeDimension:
         assert totals == {"2024-01": 30.0, "2024-02": 70.0, "2024-03": 110.0, "2024-12": 70.0}
 
     async def test_bare_column_among_several_time_dimensions_stays_ambiguous(self, engine: SlayerQueryEngine) -> None:
+        query = partitioned("created_at", time_dimensions=[MONTH, YEAR], dimensions=())
         with pytest.raises(PartitionKeyError, match="ambiguous"):
-            await engine.execute(partitioned("created_at", time_dimensions=[MONTH, YEAR], dimensions=()))
+            await engine.execute(query)
 
 
 class TestOtherTimeColumns:
@@ -99,13 +100,15 @@ class TestOtherTimeColumns:
 class TestNoMatchingTimeDimension:
     @pytest.mark.parametrize("key", ["week(created_at)", "month(shipped_at)"])
     async def test_names_bucket_and_remedy(self, engine: SlayerQueryEngine, key: str) -> None:
+        query = partitioned(key, time_dimensions=[MONTH])
         with pytest.raises(PartitionKeyError) as info:
-            await engine.execute(partitioned(key, time_dimensions=[MONTH]))
+            await engine.execute(query)
         message = str(info.value)
         assert key in message
         assert "time_dimensions" in message
 
     async def test_without_time_dimensions(self, engine: SlayerQueryEngine) -> None:
+        query = partitioned("month(created_at)", time_dimensions=[])
         with pytest.raises(PartitionKeyError) as info:
-            await engine.execute(partitioned("month(created_at)", time_dimensions=[]))
+            await engine.execute(query)
         assert "month(created_at)" in str(info.value)

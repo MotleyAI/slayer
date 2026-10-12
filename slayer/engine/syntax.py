@@ -19,7 +19,14 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
+from slayer.core.enums import (
+    AMBIGUOUS_WEEKDAY_NAMES,
+    BUILTIN_AGGREGATIONS,
+    DATE_PART_ALIASES,
+    GRANULARITY_NAMES,
+    ambiguous_weekday_message,
+    normalize_aggregation_name,
+)
 from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
@@ -360,6 +367,126 @@ def _rw_case(text, toks, i):
     return result, i
 
 
+# Tokens of the call-shape rewriters (``extract``, ``count(distinct …)``): literals
+# whole, identifiers Unicode-aware, so keyword text inside either never matches.
+_CALL_TOKEN_RE = re.compile(
+    r"(?P<str>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<id>[^\W\d]\w*)"
+    r"|(?P<lp>\()|(?P<rp>\))|(?P<comma>,)"
+    r"|(?P<op>==|!=|<=|>=|=)"
+    r"|(?P<other>\S)",
+    re.DOTALL,
+)
+_Token = Tuple[str, str, int, int]
+_DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
+
+
+def _call_tokens(text: str) -> List[_Token]:
+    return [(m.lastgroup or "", m.group(), m.start(), m.end()) for m in _CALL_TOKEN_RE.finditer(text)]
+
+
+def _is_word(text: str, toks: List[_Token], i: int, word: str) -> bool:
+    """Whether ``toks[i]`` is the bare ASCII keyword ``word`` (any case), not part of a reference."""
+    kind, val, start, end = toks[i]
+    return (
+        kind == "id" and val.isascii() and val.lower() == word
+        and not _is_ident_adjacent(text, start - 1) and not _continues_ref(text=text, pos=end)
+        and not (i > 0 and toks[i - 1][1] == ".")
+    )
+
+
+def _matching_rp(toks: List[_Token], lp: int) -> Optional[int]:
+    depth = 0
+    for j in range(lp, len(toks)):
+        if toks[j][0] == "lp":
+            depth += 1
+        elif toks[j][0] == "rp":
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
+
+def _top_level(toks: List[_Token], lp: int, rp: int) -> Iterator[int]:
+    """Indices of the tokens directly inside the parens at ``lp`` / ``rp``."""
+    depth = 0
+    for j in range(lp + 1, rp):
+        kind = toks[j][0]
+        if kind == "lp":
+            depth += 1
+        elif kind == "rp":
+            depth -= 1
+        elif depth == 0:
+            yield j
+
+
+def _extract_call(text: str, toks: List[_Token], i: int) -> Optional[Tuple[int, int]]:
+    """``(rp, from)`` token indices when ``toks[i]`` opens ``extract(… from …)``."""
+    if not (_is_word(text, toks, i, "extract") and i + 1 < len(toks) and toks[i + 1][0] == "lp"):
+        return None
+    rp = _matching_rp(toks, i + 1)
+    if rp is None:
+        return None
+    frm = next((j for j in _top_level(toks, i + 1, rp) if _is_word(text, toks, j, "from")), None)
+    return None if frm is None else (rp, frm)
+
+
+def _rewrite_extract(text: str, *, original: str) -> str:
+    """``extract(<part> from x)`` → ``date_part('<part>', x)``."""
+    if "extract" not in text.lower():
+        return text
+    toks = _call_tokens(text)
+    out: List[str] = []
+    last = i = 0
+    while i < len(toks):
+        call = _extract_call(text, toks, i)
+        if call is None:
+            i += 1
+            continue
+        rp, frm = call
+        part = toks[i + 2:frm]
+        operand = text[toks[frm][3]:toks[rp][2]].strip()
+        if len(part) != 1 or part[0][0] not in ("id", "str") or not operand:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: write extract(<part> from <value>), "
+                f"e.g. extract(day from created_at)."
+            )
+        word = part[0][1] if part[0][0] == "str" else f"'{part[0][1]}'"
+        out += [text[last:toks[i][2]], f"date_part({word}, {_rewrite_extract(operand, original=original)})"]
+        last, i = toks[rp][3], rp + 1
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _single_distinct_operand(toks: List[_Token], i: int, rp: int) -> bool:
+    """Whether ``distinct`` at ``toks[i]`` is followed by one non-star operand and only keyword arguments."""
+    commas = [j for j in _top_level(toks, i - 1, rp) if toks[j][0] == "comma"]
+    operand = toks[i + 1:commas[0] if commas else rp]
+    if not operand or [t[1] for t in operand] == ["*"]:
+        return False
+    return all(toks[c + 1][0] == "id" and toks[c + 2][1] == "=" for c in commas)
+
+
+def _rewrite_count_distinct(text: str, *, original: str) -> str:
+    """``count(distinct x, …)`` → ``count_distinct(x, …)``; any other call-leading ``distinct`` raises."""
+    if "distinct" not in text.lower():
+        return text
+    toks = _call_tokens(text)
+    edits: List[Tuple[int, int, str]] = []
+    for i in range(2, len(toks)):
+        if not (_is_word(text, toks, i, "distinct") and toks[i - 1][0] == "lp" and toks[i - 2][0] == "id"):
+            continue
+        rp = _matching_rp(toks, i - 1)
+        if rp is None:
+            continue
+        if not (_is_word(text, toks, i - 2, "count") and _single_distinct_operand(toks, i, rp)):
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {_DISTINCT_ONLY}.")
+        edits += [(toks[i - 2][2], toks[i - 2][3], "count_distinct"), (toks[i][2], toks[i][3], "")]
+    for start, end, repl in reversed(edits):
+        text = text[:start] + repl + text[end:]
+    return text
+
+
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
     r":"
@@ -438,7 +565,8 @@ def parse_expr(text: str) -> ParsedExpr:
             ),
         )
 
-    preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(text))
+    sql_spelled = _rewrite_count_distinct(_rewrite_extract(text, original=text), original=text)
+    preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(sql_spelled))
     # AFTER the legacy colon pass — ``customers.*:count`` must become a
     # placeholder first, so the only ``*`` left in call-first-arg position is
     # the functional spelling (``count(*)`` / ``count(customers.*)``).
@@ -1196,16 +1324,9 @@ def _reject_repeated_keywords(node: ast.Call, *, call: str, original: str) -> No
         seen.add(kw.arg)
 
 
-def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon placeholder → builtin functional aggregation → transform → scalar → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it. first/last carry no grain decision here — they dispatch at bind.
-    node: ast.Call, *, agg_map: Dict, original: str,
-) -> ParsedExpr:
-    if not isinstance(node.func, ast.Name):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: function calls "
-            f"with non-name callee are not supported."
-        )
-    func_name = node.func.id
-
+def _call_arguments(
+    node: ast.Call, *, call: str, agg_map: Dict, original: str,
+) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
     args = tuple(
         _convert(a, agg_map=agg_map, original=original) for a in node.args
     )
@@ -1217,22 +1338,97 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
             f"Invalid Mode-B expression {original!r}: dictionary unpacking "
             f"(**kwargs) is not supported in calls."
         )
-    m = _PLACEHOLDER_RE.match(func_name)
-    _reject_repeated_keywords(
-        node, call=agg_map[int(m.group(1))][1] if m else func_name, original=original,
-    )
+    _reject_repeated_keywords(node, call=call, original=original)
     kwargs = tuple(
         (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
         for kw in node.keywords
         if kw.arg is not None  # guarded above; narrows kw.arg to str
     )
+    return args, kwargs
 
+
+def _convert_call(
+    node: ast.Call, *, agg_map: Dict, original: str,
+) -> ParsedExpr:
+    if isinstance(node.func, ast.Attribute):
+        return _convert_method_call(node, func=node.func, agg_map=agg_map, original=original)
+    if not isinstance(node.func, ast.Name):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: function calls "
+            f"with non-name callee are not supported."
+        )
+    func_name = node.func.id
+    m = _PLACEHOLDER_RE.match(func_name)
+    args, kwargs = _call_arguments(
+        node, call=agg_map[int(m.group(1))][1] if m else func_name, agg_map=agg_map, original=original,
+    )
     # Legacy colon-spelling placeholder?
     if m:
-        idx = int(m.group(1))
-        source, agg = agg_map[idx]
+        source, agg = agg_map[int(m.group(1))]
         return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
+    return _dispatch_call(func_name, args=args, kwargs=kwargs, original=original)
 
+
+def _onto_path(node: Any, *, path: Tuple[str, ...]) -> Any:
+    """``node`` with every column leaf (and ``*``) read under the join ``path``."""
+    if isinstance(node, Ref):
+        return DottedRef(parts=(*path, node.name))
+    if isinstance(node, DottedRef):
+        return DottedRef(parts=(*path, *node.parts))
+    if isinstance(node, StarSource):
+        return DottedRef(parts=(*path, "*"))
+    if isinstance(node, ScalarCall):
+        return node.model_copy(update={"args": tuple(_onto_path(a, path=path) for a in node.args)})
+    if isinstance(node, (Arith, Cmp)):
+        return node.model_copy(update={"left": _onto_path(node.left, path=path), "right": _onto_path(node.right, path=path)})
+    if isinstance(node, UnaryOp):
+        return node.model_copy(update={"operand": _onto_path(node.operand, path=path)})
+    if isinstance(node, BoolOp):
+        return node.model_copy(update={"operands": tuple(_onto_path(o, path=path) for o in node.operands)})
+    return node
+
+
+def _is_literal_arg(node: Any) -> bool:
+    if isinstance(node, UnaryOp) and node.op == "-":
+        return isinstance(node.operand, Literal)
+    return isinstance(node, (Literal, Placeholder))
+
+
+def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> Optional[str]:
+    """Why ``<path>.<name>(args)`` has no single functional reading, else ``None``."""
+    lowered = name.lower()
+    transform_only = name in ALL_TRANSFORMS and normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS
+    if lowered in SCALAR_FUNCTIONS or lowered in DATE_PART_ALIASES or transform_only:
+        return f"calls {name!r}, which is not an aggregation"
+    if not args:
+        return "needs the aggregated value as its first argument"
+    if any(isinstance(leaf, (DottedRef, AggCall, TransformCall)) for leaf in _source_leaves(args[0])):
+        return "may read only bare column names of that path"
+    if any(k == "partition_by" for k, _ in kwargs):
+        return "cannot take partition_by="
+    if not all(_is_literal_arg(v) for v in (*args[1:], *(v for _, v in kwargs))):
+        return "takes only literal further arguments"
+    return None
+
+
+def _convert_method_call(node: ast.Call, *, func: ast.Attribute, agg_map: Dict, original: str) -> ParsedExpr:
+    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``."""
+    *path_parts, name = _flatten_attribute(func, original=original)
+    path = tuple(path_parts)
+    args, kwargs = _call_arguments(node, call=name, agg_map=agg_map, original=original)
+    twin_args = (_onto_path(args[0], path=path), *args[1:]) if args else ()
+    reason = _method_call_refusal(name, args=args, kwargs=kwargs)
+    if reason is not None:
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
+            f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
+        )
+    return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)
+
+
+def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin functional aggregation → transform → scalar → date-part alias → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it. first/last carry no grain decision here — they dispatch at bind.
+    func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
+) -> ParsedExpr:
     # Functional builtin aggregation? Matched via alias/case healing, exactly
     # like legacy colon names heal at binding; ``agg`` stores the RAW token so both
     # spellings collapse to the identical AggCall. ``first``/``last`` dispatch at
@@ -1278,6 +1474,16 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
         name = func_name.lower()
         return ScalarCall(name=name, args=_date_args(name=name, args=args, original=original))
 
+    part = DATE_PART_ALIASES.get(func_name.lower())
+    if part is not None:
+        if kwargs or len(args) != 1:
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: date-part function {func_name!r} "
+                f"takes 1 argument; got {len(args) + len(kwargs)}."
+            )
+        _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+        return ScalarCall(name="date_part", args=(Literal(value=part.value), args[0]))
+
     # Unknown name with an aggregatable first arg → AggCall candidate, validated
     # at binding. A custom aggregation over an
     # attached source is a re-aggregation, validated like any other.
@@ -1292,7 +1498,7 @@ def _convert_call(  # NOSONAR(S3776) — the one call-dispatch ladder (colon pla
     raise UnknownFunctionError(
         name=func_name,
         location=original,
-        suggestion=(
+        suggestion=ambiguous_weekday_message(func_name) if func_name.lower() in AMBIGUOUS_WEEKDAY_NAMES else (
             f"Mode-B accepts the closed scalar allowlist "
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
             f"({sorted(ALL_TRANSFORMS)}), and aggregations "
@@ -1321,6 +1527,10 @@ def _date_args(*, name: str, args: Tuple[Any, ...], original: str) -> Tuple[Any,
                 f"string literal, one of: {accepted}."
             )
         word = arg.value.lower()
+        if name == "date_part":
+            if word in AMBIGUOUS_WEEKDAY_NAMES:
+                raise ValueError(f"Invalid Mode-B expression {original!r}: {ambiguous_weekday_message(arg.value)}")
+            word = DATE_PART_ALIASES[word].value if word in DATE_PART_ALIASES else word
         if word not in {v.value for v in vocab}:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "

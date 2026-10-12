@@ -804,10 +804,8 @@ class OsiToSlayerConverter:
             )
             return
 
-        # Build the measure first so a construction failure (e.g. a metric named
-        # after a reserved transform like ``cumsum``) clean-fails instead of
-        # crashing the import — and before materializing columns, so a rejected
-        # metric leaves no orphan hidden columns.
+        # Build the measure before materializing columns, so a rejected metric
+        # clean-fails and leaves no orphan hidden columns.
         try:
             measure = ModelMeasure(
                 formula=result.formula,

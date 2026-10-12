@@ -1,4 +1,4 @@
-"""Negative validator-boundary tests (Codex test-gap, DEV-1608 §4.6).
+"""Negative validator-boundary tests.
 
 A naive converter would let collisions / reserved names / broken SQL throw a
 `ValidationError` and lose the whole model. The converter must instead route
@@ -15,6 +15,7 @@ from slayer.cube.models import (
     CubeMeasure,
     CubeProject,
 )
+from slayer.cube.report import CubeIssueCategory
 
 DS = "test_ds"
 
@@ -67,7 +68,6 @@ def test_structurally_broken_column_sql_dropped_via_offline_validation():
     """Codex #7: a translated Column.sql that doesn't parse as SQL must be caught
     by the offline validation pass and dropped (complex_sql), not persisted to
     blow up later at enrichment."""
-    from slayer.cube.report import CubeIssueCategory
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
         dimensions=[
@@ -98,7 +98,6 @@ def test_cube_name_with_illegal_chars_is_reported_not_fatal():
 def test_join_on_without_equality_yields_no_empty_join_pairs():
     """An ON with no equality must drop the join (never construct ModelJoin with
     empty join_pairs, which the validator rejects)."""
-    from slayer.cube.report import CubeIssueCategory
     project = CubeProject(cubes=[
         CubeCube(name="orders", sql_table="public.orders",
                  joins=[CubeJoin(name="customers", relationship="many_to_one",

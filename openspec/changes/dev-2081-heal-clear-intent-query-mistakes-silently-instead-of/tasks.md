@@ -16,12 +16,12 @@ executed on SQLite and DuckDB (unit tests, not `integration`).
 ## 2. Implementation (pr-implement stage)
 
 - [ ] 2.1 Delete `ModelMeasure._reject_transform_shadowing` and the importer skips (D9); verify 1.1 passes.
-- [ ] 2.2 Add the date-part alias table and reserved names in core; wire the alias function and `date_part` part (D2); verify the 1.2 alias cases pass.
-- [ ] 2.3 Add the `extract` and `count(distinct …)` token rewriters in `parse_expr` (D3); verify 1.2 extract cases and 1.4 pass.
-- [ ] 2.4 Unknown-function and ambiguous-weekday errors at binding (D4); verify 1.3 and the 1.2 weekday cases pass.
-- [ ] 2.5 Method-call aggregation conversion (D5); verify 1.5 passes.
-- [ ] 2.6 Order column object form and schema hook (D6); verify 1.6 passes.
+- [x] 2.2 Add the date-part alias table and reserved names in core; wire the alias function and `date_part` part (D2); verify the 1.2 alias cases pass.
+- [x] 2.3 Add the `extract` and `count(distinct …)` token rewriters in `parse_expr` (D3); verify 1.2 extract cases and 1.4 pass.
+- [x] 2.4 Unknown-function and ambiguous-weekday errors at binding (D4); verify 1.3 and the 1.2 weekday cases pass.
+- [x] 2.5 Method-call aggregation conversion (D5); verify 1.5 passes.
+- [x] 2.6 Order column object form and schema hook (D6); verify 1.6 passes.
 - [ ] 2.7 Granularity-call partition keys (D7); verify 1.7 passes.
-- [ ] 2.8 Refinement restatement (D8); verify 1.8 passes.
-- [ ] 2.9 Docs, one sentence each: `docs/concepts/references.md` (aliases, `extract`), `docs/concepts/queries.md` (method call, object-form order expression, `partition_by` on a time bucket), the aggregation concept page (`count(distinct x)`), help topic `slayer/memories/help_content/03_aggregations.md` (drop "never `count(distinct x)`"); verify `grep` finds no stale guidance.
+- [x] 2.8 Refinement restatement (D8); verify 1.8 passes.
+- [x] 2.9 Docs, one sentence each: `docs/concepts/references.md` (aliases, `extract`), `docs/concepts/queries.md` (method call, object-form order expression, `partition_by` on a time bucket), the aggregation concept page (`count(distinct x)`), help topic `slayer/memories/help_content/03_aggregations.md` (drop "never `count(distinct x)`"); verify `grep` finds no stale guidance.
 - [ ] 2.10 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`; all green.

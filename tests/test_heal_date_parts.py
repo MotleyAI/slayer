@@ -168,8 +168,9 @@ class TestAmbiguousWeekdays:
     @pytest.mark.parametrize("name", AMBIGUOUS_WEEKDAYS)
     @pytest.mark.parametrize("template", ["date_part('{n}', created_at)", "extract({n} from created_at)"])
     def test_part_names_both_conventions(self, name: str, template: str) -> None:
+        text = template.format(n=name) + " = 1"
         with pytest.raises(ValueError) as info:
-            parse_filter_expr(template.format(n=name) + " = 1")
+            parse_filter_expr(text)
         for remedy in BOTH_CONVENTIONS:
             assert remedy in str(info.value)
 

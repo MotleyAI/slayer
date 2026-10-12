@@ -45,8 +45,9 @@ class TestOrderItemCoercion:
         {"name": "sum(amount)", "model": "orders"}, {"name": "sum(amount)", "label": "Total"}, {"name": "bad name"},
     ])
     def test_object_with_other_keys_or_no_expression_keeps_error(self, column: dict[str, Any]) -> None:
+        query = by_region([{"column": column}])
         with pytest.raises(ValidationError, match="Invalid name"):
-            SlayerQuery.model_validate(by_region([{"column": column}]))
+            SlayerQuery.model_validate(query)
 
 
 class TestExecuted:

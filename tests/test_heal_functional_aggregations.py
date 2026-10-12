@@ -40,8 +40,9 @@ def by_region(*measures: str) -> dict[str, Any]:
 class TestUnknownFunction:
     @pytest.mark.parametrize("formula", ["bogus(amount)", "bogus(*)", "bogus(amount * 2)"])
     async def test_names_function_and_categories(self, engine: SlayerQueryEngine, formula: str) -> None:
+        query = by_region(formula)
         with pytest.raises(UnknownFunctionError) as info:
-            await engine.execute(by_region(formula))
+            await engine.execute(query)
         message = str(info.value)
         assert "Unknown function 'bogus'" in message
         assert "Unknown aggregation" not in message
@@ -49,11 +50,13 @@ class TestUnknownFunction:
             assert category in message.lower()
 
     async def test_close_match_suggested(self, engine: SlayerQueryEngine) -> None:
+        query = by_region("summ(amount)")
         with pytest.raises(UnknownFunctionError, match="Did you mean 'sum'"):
-            await engine.execute(by_region("summ(amount)"))
+            await engine.execute(query)
 
     def test_construction_time_custom_filter_deferred(self) -> None:
-        query = SlayerQuery(source_model="orders", measures=["count(*)"], filters=["my_agg(amount) > 0"])
+        query = SlayerQuery.model_validate(
+            {"source_model": "orders", "measures": ["count(*)"], "filters": ["my_agg(amount) > 0"]})
         assert query.filters == ["my_agg(amount) > 0"]
 
 
@@ -117,7 +120,7 @@ class TestCountDistinctExecuted:
         orders = orders_model()
         orders.columns.append(Column(name="n_customers", sql="COUNT(DISTINCT customer_id)", type=DataType.INT))
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders", measures=["max(n_customers)"]),
+            query=SlayerQuery.model_validate({"source_model": "orders", "measures": ["max(n_customers)"]}),
             model=orders, extra_models=[customers_model(), order_items_model(), products_model()],
         )
         assert "COUNT(DISTINCT" in sql.upper()
