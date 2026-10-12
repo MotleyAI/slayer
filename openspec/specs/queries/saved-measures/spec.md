@@ -17,7 +17,7 @@ A bare identifier in a measure formula or computed-dimension expression that mat
 - THEN every suite passes unchanged, and golden SQL for non-dotted queries stays byte-identical
 
 ### Requirement: Dotted cross-model resolution
-A dotted reference whose join path resolves through the host's join graph and whose terminal segment matches a saved measure on the terminal model (`customers.aov` from an `orders`-rooted query) SHALL resolve by expanding the target measure's formula and re-anchoring every reference into the host's coordinate system. The result MUST be bound-tree-identical to the hand-written host-prefixed formula, so generated SQL, executed values, broadcast metadata, `strict` behavior, and warnings are all identical to that hand-written form.
+A dotted reference whose join path resolves through the host's join graph and whose terminal segment matches a saved measure on the terminal model (`customers.aov` from an `orders`-rooted query) SHALL resolve by binding the target measure's formula in the target's frame and re-anchoring every reference into the host's coordinate system. Whenever the hand-written host-prefixed formula is itself legal, the result MUST be bound-tree-identical to it, so generated SQL, executed values, broadcast metadata, `strict` behavior, and warnings are all identical to that hand-written form. When the host-prefixed spelling would revisit a model within the query's own frame, it is not an equivalent: the dotted reference composes (see "Saved measures compose across frames") while the hand-written spelling stays refused as circular.
 
 #### Scenario: Dotted measure equals hand-expanded formula
 - WHEN an `orders`-rooted query selects `customers.aov` (saved on `customers` as `sum(spend) / count(*)`) and an otherwise-identical query selects `sum(customers.spend) / count(customers.*)`
@@ -38,6 +38,10 @@ A dotted reference whose join path resolves through the host's join graph and wh
 #### Scenario: Dotted measure as a computed-dimension source
 - WHEN a computed-dimension expression references a dotted saved measure in a form legal for aggregation-derived dimensions
 - THEN the dimension behaves exactly as with the hand-expanded formula
+
+#### Scenario: A composing measure has no hand-written equivalent
+- WHEN `customers.latest_total` is saved as `sum(last_order.amount)` and an `orders`-rooted query selects `customer.latest_total`, while another selects `sum(customer.last_order.amount)`
+- THEN the first executes and the second fails with the circular error
 
 ### Requirement: Re-anchoring covers every reference kind
 Re-anchoring SHALL apply to every reference kind in the saved formula: plain columns, star sources (`count(*)`), references crossing the target's own joins (nested paths), `partition_by` members, aggregation args/kwargs, and transform inputs. A measure-level column filter (`Column.filter`) SHALL keep its owner-anchored meaning — it is interpreted relative to the model owning the filtered column, identically to the hand-expanded form. A self-qualified reference inside the saved formula (`customers.spend` written on `customers`) MUST NOT double-prefix.
@@ -76,13 +80,6 @@ Saved-measure references — bare and dotted alike — SHALL be legal in exactly
 - WHEN a query selects `customers.aov` and filters or orders by that name
 - THEN the filter/order resolves to the selected slot, exactly as a selected local measure's name does
 
-### Requirement: Round-trip expansions are rejected
-A dotted saved-measure expansion whose re-anchored references cross a join back toward a model already on the host-to-target join chain SHALL fail with an error naming the saved measure and the revisited model — matching the behavior of the identical hand-written dotted path, which is rejected as circular.
-
-#### Scenario: Target measure crossing back to the host errors
-- WHEN `customers.order_total` is saved as `sum(orders.amount)` (over the reverse orientation of the declared `orders → customers` join) and an `orders`-rooted query references `customers.order_total`
-- THEN the query fails with an error naming `order_total` on `customers` and the revisited `orders` model, not with wrong or double-counted values
-
 ### Requirement: Naming and metadata of dotted references
 An unnamed dotted saved-measure reference SHALL surface under the dotted text as its implicit name, yielding a result key of host-model prefix plus the dotted path (`orders.customers.aov`). An explicit query-level `name` SHALL win. The saved measure's declared `type` SHALL be inherited with the same precedence as for bare references (query-level type, then saved type, then inference); format and description derive from the bound result exactly as for the hand-expanded form.
 
@@ -111,3 +108,32 @@ A dotted reference whose terminal segment matches neither a column nor a saved m
 #### Scenario: Neither column nor measure
 - WHEN a query references `customers.typo` and `typo` matches nothing on `customers`
 - THEN the error names `customers`, mentions both namespaces, and offers close-match suggestions where available
+
+### Requirement: Saved measures compose across frames
+A dotted saved measure's formula SHALL be bound in its declaring model's frame and then composed onto the
+host's path. A reference in that formula that reaches a model already on the host-to-target chain SHALL
+denote a separate occurrence of that model — never a revisit — and SHALL be evaluated, homed and attributed
+exactly like any other cross-model aggregate. A formula that revisits a model within its own frame SHALL
+still be refused with the circular error.
+
+#### Scenario: A measure crossing back to the host is attributed per host cell
+- **WHEN** `orders` joins `customers` by the many-to-one edge `customer`, `customers.order_total` is saved as
+  `sum(customer.amount)` (the reverse traversal reaching the customer's orders), the data holds orders `11`
+  (amount `10`) and `12` (amount `20`) of customer `ann` and order `21` (amount `5`) of customer `bob`, and an
+  `orders`-rooted query selects the dimension `customer.name` and the measure `customer.order_total`
+- **THEN** the rows are `ann → 30` and `bob → 5`, with no broadcast warning
+
+#### Scenario: An unattributable host dimension broadcasts or associates
+- **WHEN** the same measure is selected with the dimension `id` instead
+- **THEN** in the default mode every row carries `35` with the broadcast warning, and in associate mode the
+  rows are `11 → 30`, `12 → 30` and `21 → 5`
+
+#### Scenario: A measure through a pointer back to the host composes
+- **WHEN** `customers` also joins `orders` by the many-to-one edge `last_order` (ann's latest order is `12`,
+  bob's is `21`), `customers.latest_total` is saved as `sum(last_order.amount)`, and the query selects the
+  dimension `customer.name` in associate mode
+- **THEN** the rows are `ann → 20` and `bob → 5`
+
+#### Scenario: A formula revisiting within its own frame is refused
+- **WHEN** `customers.bad` is saved as `count(last_order.customer.id)` and any query references it
+- **THEN** the query fails with the circular error naming the hop `customer` and the revisited `customers`
