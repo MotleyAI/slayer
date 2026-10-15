@@ -20,10 +20,6 @@ filtered subset), sort column + direction + tie-break, NULL handling, units and
 rounding, exact numeric constants. "How many" is a scalar `count(*)`; "which / list /
 show" is the rows.
 
-Answer with one query whenever the query language can express it (shares, ranks,
-windows, period-over-period, joined aggregates, nesting) instead of combining several
-results by hand or in code.
-
 ## Filter literals
 
 Build every `==` / `in` / `like` condition on a text column from that column's
