@@ -33,7 +33,7 @@ Each piece of query-language guidance SHALL appear in exactly one place across t
 - `filters`: routing to row / aggregate / post-aggregation filtering; transforms in filters (top N per group via a rank); the anti-join (a joined model's key `is null`); the time-point forms.
 - `order`: sorting by any aggregate or transform, displayed or not, with `limit` for top N; returning only the columns the question asks for, never adding the sort value to the measures.
 - `time_dimensions`: buckets without rows are absent; a time dimension on `time_spine.timestamp` with a lower `date_range` bound returns every bucket, empty ones included, and lines several models up on one time axis.
-- a time dimension's `date_range`: its forms; that `change`, `time_shift` and `window=` read rows before the range so the range is not widened; that `cumsum` starts at the range start.
+- a time dimension's `date_range`: its forms; that `change`, `change_pct`, `time_shift` and `window=` read rows before the range so the range is not widened; that `cumsum` starts at the range start.
 - `source_model`: rooting at the model whose every row must appear when the question asks for every such row, with a named conditional aggregate; otherwise rooting where the facts are, so rows without facts drop out, or omitting it to infer the smallest model determining every dimension and row-level condition column.
 - `name` (stages): what needs no stage (top N per group, averaging or bucketing per-entity totals, shares and totals); that a filter on a transform's value applies after it, which is computed over every row the other filters keep; that a stage is needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result, because a row filter or `date_range` applies before a running total, `lag` / `lead`, rank, `ntile`, `consecutive_periods` or `partition_by` total while `change`, `change_pct`, `time_shift` and `window=` read past `date_range` or a filter on their own time dimension only; and that an outer stage references inner dotted columns by their flattened `__` names.
 
@@ -63,7 +63,7 @@ Fields that reuse another field's syntax (a refinement's clauses, a measure's `f
 
 #### Scenario: date_range is described
 - **WHEN** a client reads a time dimension's `date_range` description
-- **THEN** it states the accepted forms, that `change` / `time_shift` / `window=` read rows before the range, and that `cumsum` starts at the range start
+- **THEN** it states the accepted forms, that `change` / `change_pct` / `time_shift` / `window=` read rows before the range, and that `cumsum` starts at the range start
 
 ### Requirement: Documented query idioms behave as documented
 Every query idiom given as an example in the tool or schema descriptions SHALL execute and return the documented result:
@@ -82,8 +82,8 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - rooted at customers, `sum(orders.amount)` and `sum(returns.amount)` in one query each equal the sum over that child model's own rows;
 - rooted at customers and grouped by a parent dimension, a child row without a parent counts in that dimension's NULL row when the population has one and in no row otherwise, and an ungrouped aggregate includes it;
 - rooted at customers, `sum(orders.amount) / count(*)` divides the orders' total by the number of customers;
-- a filter on a transform's value (`rank(...) <= N`, `cumsum(...) > X`) applies after the transform, computed over all rows;
-- a time filter on the bucketed time column restricts `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over buckets and `partition_by` totals to the kept buckets, while `change`, `time_shift` and `window=` read past it;
+- a filter on a transform's value (`rank(...) <= N`, `cumsum(...) > X`) applies after the transform, which is computed over every row the other filters keep;
+- a time filter on the bucketed time column restricts `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over buckets and `partition_by` totals to the kept buckets, while `change`, `change_pct`, `time_shift` and `window=` read past it;
 - a filter on a dimension restricts `rank`, `dense_rank`, `ntile`, `partition_by` shares and totals and nested aggregates to the kept peers; a filter on a non-time column restricts the rows `window=` reads, before the range as well;
 - an inner stage computing a rank over all rows and an outer stage filtering one row returns that row's rank among all rows.
 
@@ -129,7 +129,7 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 
 #### Scenario: A time filter restricts cross-row values except calendar look-backs
 - **WHEN** a monthly query filters the bucketed time column to two months and measures one cross-row value
-- **THEN** `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over months and `sum(amount, partition_by=[])` are computed over the two kept months only, while `change`, `time_shift` and `window=` equal their values in the unfiltered query
+- **THEN** `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over months and `sum(amount, partition_by=[])` are computed over the two kept months only, while `change`, `change_pct`, `time_shift` and `window=` equal their values in the unfiltered query
 
 #### Scenario: A dimension filter restricts peer values
 - **WHEN** a query grouped by region name and customer name filters one customer and measures a rank, dense rank, ntile, share of region, grand total or nested average
