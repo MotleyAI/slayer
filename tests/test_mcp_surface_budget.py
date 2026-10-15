@@ -306,7 +306,7 @@ def test_name_describes_when_a_stage_is_needed() -> None:
         "transform's value (`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, over all rows. Stages "
         "ARE needed only to drop rows by a dimension or time condition that a cross-row value must still "
         "see, or to join or reuse a whole result: a row filter or date_range applies before a running "
-        "total, lag / lead, rank, ntile, consecutive_periods or `partition_by` total (change, time_shift and "
+        "total, lag / lead, rank, ntile, consecutive_periods or `partition_by` total (change, change_pct, time_shift and "
         "window= still read past date_range or a filter on their own time dimension, but not past other "
         "filters). Compute the value in an inner stage and filter in the outer one. An outer stage sees the "
         "inner result's columns with dotted paths flattened to __: an inner dimension customers.regions.name "

@@ -25,6 +25,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 @pytest.fixture
+async def namesake_engine() -> AsyncIterator[SlayerQueryEngine]:
+    async for e in fx.make_idiom_engine(with_namesake=True):
+        yield e
+
+
+@pytest.fixture
 async def child_engine() -> AsyncIterator[SlayerQueryEngine]:
     async for e in fx.make_child_engine():
         yield e
@@ -182,6 +188,22 @@ async def test_nested_aggregation_averages_inner_values(engine: SlayerQueryEngin
     rows = fx.rows_by(resp, key="regions.name")
     assert {k: fx.value(r, ".avg_customer_total") for k, r in rows.items()} == {
         "North": pytest.approx(150), "South": pytest.approx(190),
+    }
+
+
+async def test_per_customer_examples_keep_namesakes_apart(namesake_engine: SlayerQueryEngine) -> None:
+    nested = await _run(namesake_engine, {
+        "source_model": "orders", "dimensions": ["customers.regions.name"],
+        "measures": [{"formula": fx.NESTED, "name": "avg_customer_total"}],
+    })
+    rows = fx.rows_by(nested, key="regions.name")
+    assert fx.value(rows["North"], ".avg_customer_total") == pytest.approx((170 + 130 + 40) / 3)
+    bands = await _run(namesake_engine, {
+        "source_model": "orders", "dimensions": [{"expression": fx.SPEND_BAND, "name": "spend_band"}],
+        "measures": ["count(*)"],
+    })
+    assert {k: fx.value(r, "._count") for k, r in fx.rows_by(bands, key=".spend_band").items()} == {
+        "high": 8, "low": 4,
     }
 
 

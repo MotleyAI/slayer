@@ -14,6 +14,7 @@ orders (id, customer, status, date, amount):
 Monthly sum: 2024-10 10, -11 20, -12 45, 2025-01 150, -02 70, -03 30, -04 60, -06 105.
 Per customer: Alice 170 (5), Bob 130 (3), Carol 190 (3); total 490. Status: paid 345 (7), open 145 (4);
 every ordering customer has both statuses, so their credit (600) attributes to each status.
+``with_namesake`` adds customer 6 Alice R1 0 and order 12 (6, paid, 2025-07-01, 40).
 
 Child dataset (``make_child_engine``): ``orders`` and ``returns`` both join ``customers``.
 
@@ -47,9 +48,10 @@ SHARE_OF_GROUP = "sum(amount) / sum(amount, partition_by=customers.regions.name)
 SHARE_OF_TOTAL = "sum(amount) / sum(amount, partition_by=[])"
 TRAILING_WINDOW = "count_distinct(customer_id, window='90d')"
 NESTED = (
-    "avg(sum(amount, partition_by=[customers.regions.name, customers.name]), "
+    "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
     "partition_by=[customers.regions.name])"
 )
+SPEND_BAND = "iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')"
 CHANGE = "change(sum(amount))"
 CHANGE_PCT = "change_pct(sum(amount))"
 TIME_SHIFT = "time_shift(sum(amount), -1)"
@@ -79,6 +81,7 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     SHARE_OF_TOTAL: ("SlayerQuery", "measures"),
     TRAILING_WINDOW: ("SlayerQuery", "measures"),
     NESTED: ("SlayerQuery", "measures"),
+    SPEND_BAND: ("SlayerQuery", "dimensions"),
     CHANGE: ("SlayerQuery", "measures"),
     CHANGE_PCT: ("SlayerQuery", "measures"),
     TIME_SHIFT: ("SlayerQuery", "measures"),
@@ -157,25 +160,33 @@ def _values(rows: list[tuple]) -> str:
     )
 
 
-def _seed_duckdb(db_path: str) -> None:
-    duckdb = pytest.importorskip("duckdb")
-    con = duckdb.connect(db_path)
-    for stmt in (
-        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR)",
-        f"INSERT INTO regions VALUES {_values(_REGION_ROWS)}",
-        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, credit INTEGER)",
-        f"INSERT INTO customers VALUES {_values(_CUSTOMER_ROWS)}",
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status VARCHAR, "
-        "order_date DATE, amount INTEGER)",
-        f"INSERT INTO orders VALUES {_values(_ORDER_ROWS)}",
-    ):
-        con.execute(stmt)
-    con.close()
+def _idiom_seed(*, with_namesake: bool) -> Callable[[str], None]:
+    customers = _CUSTOMER_ROWS + ([(6, "Alice", 1, 0)] if with_namesake else [])
+    orders = _ORDER_ROWS + ([(12, 6, "paid", "2025-07-01", 40)] if with_namesake else [])
+
+    def seed(db_path: str) -> None:
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect(db_path)
+        for stmt in (
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR)",
+            f"INSERT INTO regions VALUES {_values(_REGION_ROWS)}",
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, credit INTEGER)",
+            f"INSERT INTO customers VALUES {_values(customers)}",
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status VARCHAR, "
+            "order_date DATE, amount INTEGER)",
+            f"INSERT INTO orders VALUES {_values(orders)}",
+        ):
+            con.execute(stmt)
+        con.close()
+
+    return seed
 
 
-async def make_idiom_engine() -> AsyncIterator[SlayerQueryEngine]:
+async def make_idiom_engine(*, with_namesake: bool = False) -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb, models=idiom_models()) as (engine, _):
+    async with seeded_exec_engine(
+        dialect="duckdb", seed=_idiom_seed(with_namesake=with_namesake), models=idiom_models(),
+    ) as (engine, _):
         yield engine
 
 
