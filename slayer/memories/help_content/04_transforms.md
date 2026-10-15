@@ -50,6 +50,5 @@ ranks NULL, so a rank filter drops it. Top N per group is a filter:
 
 `partition_by=` is accepted on the rank family only; other transforms partition by
 the query's dimensions. A row-level column that is not a query dimension cannot be
-mixed into a transform's input. A row-level condition applies before transforms, so
-it changes what a rank or running total sees; to keep the transform over all rows and
-drop rows afterwards, filter in an outer stage.
+mixed into a transform's input. Whether a filter needs a stage around a transform:
+the query object's `name` field.

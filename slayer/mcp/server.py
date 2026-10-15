@@ -100,7 +100,7 @@ _MCP_REMEDY = (
 MAX_TOOL_DESCRIPTION_CHARS = 2048
 
 SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
-One SLayer query can compute shares of a group or of the grand total, ranks and top N per group, period-over-period changes, running totals, trailing windows, joined models' aggregates without double counting, and aggregates of aggregates. Do not assemble an answer from several queries or by processing rows yourself unless one query cannot express it. Aggregates over several joined models in one query are each computed over their own rows, so one query cannot fan out or double count; split only when a stage must re-query a whole result.
+ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Do NOT split it into several queries, do NOT combine or recompute query results yourself (by hand or in Python), and do NOT add stages for what one stage can do. One SLayer query computes all of these together: totals at any coarser grain and shares of them, ranks and top N per group, period-over-period changes, running totals, trailing windows, aggregates of aggregates, and aggregates over several joined models. Each aggregate runs over its own model's rows, so one query NEVER fans out or double counts. Explore the data first if you need to; then write the one query.
 The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
 Typical workflow: search(question='...') → inspect the model → query.
 To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
@@ -510,12 +510,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
     ) -> str:
-        """Run a SLayer query: describe the result you want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins.
-
-        One query can usually produce the whole answer. Prefer that to running several queries and combining rows yourself or in Python. A single query can:
+        """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
         - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
         - rank, keep the top N per group, and sort by values it does not display;
-        - compute period-over-period change, running totals and trailing windows (90 days, 3 months); these look back before date_range by themselves;
+        - compute period-over-period changes and trailing windows (90 days, 3 months), which look back before date_range by themselves, and running totals;
         - aggregate fields of joined models over their own rows, without double counting;
         - nest aggregates (the average of per-city totals) and chain stages.
 
