@@ -56,34 +56,45 @@ class RootModelRecommendation(BaseModel):
     warnings: list[str] = []
 
 
+def _render_item_paths(rec: RootModelRecommendation) -> list[str]:
+    lines = [
+        f"Recommended root model: `{rec.root_model}`",
+        "",
+        "| Input item | Path from root |",
+        "|------------|----------------|",
+    ]
+    for ip in rec.item_paths:
+        note = " (unrelated: no join path, aggregated over its own rows)" if ip.unrelated else ""
+        lines.append(f"| `{ip.input_item}` | `{ip.path}`{note} |")
+    return lines
+
+
+def _render_coverage(rec: RootModelRecommendation) -> list[str]:
+    lines = ["Recommended root model: _none_ — no single model reaches every item."]
+    if rec.message:
+        lines.extend(["", rec.message])
+    if rec.coverage:
+        lines.extend([
+            "",
+            "Best partial roots (Pareto frontier):",
+            "",
+            "| Candidate root | Reaches | Cannot reach |",
+            "|----------------|---------|--------------|",
+        ])
+    for c in rec.coverage:
+        reaches = ", ".join(f"`{i}`" for i in c.reachable_items) or "_(none)_"
+        misses = ", ".join(f"`{i}`" for i in c.unreachable_items) or "_(none)_"
+        lines.append(f"| `{c.model_name}` | {reaches} | {misses} |")
+    return lines
+
+
 def render_recommendation_markdown(rec: RootModelRecommendation) -> str:
     """Render a recommendation as human-readable markdown (MCP / CLI)."""
-    lines: list[str] = []
-    lines.append(f"Datasource: `{rec.data_source}`")
+    lines = [f"Datasource: `{rec.data_source}`"]
     if rec.reachable and rec.root_model is not None:
-        lines.append(f"Recommended root model: `{rec.root_model}`")
-        lines.append("")
-        lines.append("| Input item | Path from root |")
-        lines.append("|------------|----------------|")
-        for ip in rec.item_paths:
-            note = " (unrelated: no join path, aggregated over its own rows)" if ip.unrelated else ""
-            lines.append(f"| `{ip.input_item}` | `{ip.path}`{note} |")
+        lines.extend(_render_item_paths(rec))
     else:
-        lines.append("Recommended root model: _none_ — no single model "
-                     "reaches every item.")
-        if rec.message:
-            lines.append("")
-            lines.append(rec.message)
-        if rec.coverage:
-            lines.append("")
-            lines.append("Best partial roots (Pareto frontier):")
-            lines.append("")
-            lines.append("| Candidate root | Reaches | Cannot reach |")
-            lines.append("|----------------|---------|--------------|")
-            for c in rec.coverage:
-                reaches = ", ".join(f"`{i}`" for i in c.reachable_items) or "_(none)_"
-                misses = ", ".join(f"`{i}`" for i in c.unreachable_items) or "_(none)_"
-                lines.append(f"| `{c.model_name}` | {reaches} | {misses} |")
+        lines.extend(_render_coverage(rec))
     if rec.warnings:
         lines.append("")
         lines.append("Warnings:")

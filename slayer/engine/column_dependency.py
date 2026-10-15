@@ -349,6 +349,18 @@ def _definition_label(*, column: Column | None, fragment: str) -> str:
     return f"column {column.name!r}" if column is not None else f"model filter {fragment!r}"
 
 
+def definition_heads(models: list[SlayerModel]) -> list[str]:
+    """The first join hops ``models``' Mode-A definitions spell, deduplicated in order."""
+    heads = (
+        path[0]
+        for model in models
+        for _column, fragment in _definitions(model)
+        for quals, _leaf in _fragment_refs(fragment) or []
+        if (path := _hop_path(quals=quals, host=model))
+    )
+    return list(dict.fromkeys(heads))
+
+
 def check_definition_reach(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> None:
     """Reject a Mode-A definition on ``model`` naming a model no join path reaches from it."""
     models = {**reachable, model.name: model}

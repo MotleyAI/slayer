@@ -138,28 +138,30 @@ class ProductSides:
 
     def _walk(self, node: ValueKey, *, inputs: bool) -> Iterator[Tuple[ValueKey, str]]:
         if isinstance(node, AggregateKey):
-            for pk in node.partition_keys or ():
-                yield from self._walk(pk, inputs=False)
-            for child in (node.source, *node.args, *(v for _, v in node.kwargs)):
-                if isinstance(child, ValueKey):
-                    yield from self._walk(child, inputs=True)
-            return
-        if isinstance(node, TransformKey):
-            yield from self._walk(node.input, inputs=inputs)
-            for k in (*node.partition_keys, node.time_key):
-                if k is not None:
-                    yield from self._walk(k, inputs=False)
-            return
-        if isinstance(node, TimeTruncKey):
+            yield from self._walk_aggregate(node)
+        elif isinstance(node, TransformKey):
+            yield from self._walk_transform(node, inputs=inputs)
+        elif isinstance(node, TimeTruncKey):
             yield from self._walk(node.column, inputs=inputs)
-            return
-        if isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
+        elif isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
             if not inputs:
-                for dataset in sorted(self.crossed(node)):
-                    yield node, dataset
-            return
-        for child in node.children():
-            yield from self._walk(child, inputs=inputs)
+                yield from ((node, dataset) for dataset in sorted(self.crossed(node)))
+        else:
+            for child in node.children():
+                yield from self._walk(child, inputs=inputs)
+
+    def _walk_aggregate(self, node: AggregateKey) -> Iterator[Tuple[ValueKey, str]]:
+        for pk in node.partition_keys or ():
+            yield from self._walk(pk, inputs=False)
+        for child in (node.source, *node.args, *(v for _, v in node.kwargs)):
+            if isinstance(child, ValueKey):
+                yield from self._walk(child, inputs=True)
+
+    def _walk_transform(self, node: TransformKey, *, inputs: bool) -> Iterator[Tuple[ValueKey, str]]:
+        yield from self._walk(node.input, inputs=inputs)
+        for k in (*node.partition_keys, node.time_key):
+            if k is not None:
+                yield from self._walk(k, inputs=False)
 
     def mixed_sides(self, conjunct: ValueKey) -> Optional[frozenset[str]]:
         """The unrelated datasets a row-level conjunct reads when it also reads anything else, else ``None``."""

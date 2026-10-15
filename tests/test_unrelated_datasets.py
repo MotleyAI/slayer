@@ -244,6 +244,14 @@ class TestStoredDefinitionsRefuse:
             assert "events" in str(exc.value)
             assert named in str(exc.value)
 
+    @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
+    async def test_quoted_qualifier(self, engine, sql: str) -> None:
+        model = customers_model(columns=[Column(name="ev_amount", type=DataType.DOUBLE, sql=sql)])
+        await engine.storage.save_model(model, _validate=False)
+        q = query(measures=[m("sum(ev_amount)", "x")])
+        with pytest.raises(SlayerError, match="no join path reaches 'events'"):
+            await engine.execute(q)
+
 
 # ---------------------------------------------------------------------------
 # Aggregates across a product hop
@@ -440,6 +448,12 @@ class TestWarnings:
         resp = await engine.execute(grouped_query())
         assert len(unrelated_warnings(resp)) == 1
         assert len(warnings_of(resp, "broadcast")) == 1
+
+    @pytest.mark.parametrize("build", [grouped_query, query])
+    async def test_nested_producer(self, engine, build) -> None:
+        resp = await engine.execute(build(measures=[m("max(count(events.id), partition_by=[])", "top")]))
+        (w,) = unrelated_warnings(resp)
+        assert w.dataset == "events"
 
     async def test_one_entry_per_dataset_and_stage(self, engine) -> None:
         resp, caught = await execute_capturing(engine, stages(

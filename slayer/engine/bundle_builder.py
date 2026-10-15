@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -13,6 +12,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
+from slayer.engine.column_dependency import definition_heads
 from slayer.engine.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
@@ -46,7 +46,7 @@ async def _referenced_models(
         sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
     ))
     component.extend(await _named_components(
-        names=_definition_heads(component), known=known, storage=storage, data_source=data_source,
+        names=definition_heads(component), known=known, storage=storage, data_source=data_source,
         failures=failures,
     ))
     referenced, query_backed = await _split_query_backed(
@@ -211,17 +211,6 @@ async def _query_written_targets(
     return await _named_components(
         names=names, known=known, storage=storage, data_source=data_source, failures=failures,
     )
-
-
-#: A dotted qualifier's head in a Mode-A fragment (a model a definition may name).
-_QUALIFIER_HEAD = re.compile(r"(?<![\w.\"])([A-Za-z_]\w*)\s*\.\s*[A-Za-z_\"]")
-
-
-def _definition_heads(models: List[SlayerModel]) -> List[str]:
-    """The qualifiers ``models``' Mode-A definitions spell, so an unreachable one is known to the door."""
-    fragments = [f for m in models for c in m.columns for f in (c.sql, c.filter) if f]
-    fragments += [f for m in models for f in m.filters or []]
-    return list(dict.fromkeys(h for f in fragments for h in _QUALIFIER_HEAD.findall(f)))
 
 
 async def _named_components(

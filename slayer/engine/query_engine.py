@@ -423,7 +423,7 @@ def _collect_unrelated_warnings(*, planned_list, labels) -> List[UnrelatedDatase
     """One unrelated-dataset payload per ``(stage location, dataset)``; measures unioned."""
     found: "dict[tuple[str, str], tuple[str, list[str]]]" = {}
     for planned, location in zip(planned_list, labels):
-        for attach in planned.regroup_attach_plans:
+        for attach in _walk_regroup_attaches(planned):
             if attach.unrelated_dataset is None:
                 continue
             _population, measures = found.setdefault(
