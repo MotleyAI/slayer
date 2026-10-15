@@ -18,7 +18,7 @@ from slayer.pg_facade.connection import PgConnection
 from slayer.search import graph as search_graph
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
@@ -74,8 +74,8 @@ def _table_model(name: str) -> SlayerModel:
 
 class TestGraphCache:
     async def test_alternating_tag_sets_never_share_a_graph(self, store: AccessStore) -> None:
-        fin = TagFilteredStorage(store.storage, tags={"fin"}, bypass=False)
-        hr = TagFilteredStorage(store.storage, tags={"hr"}, bypass=False)
+        fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
+        hr = AccessFilteredStorage(store.storage, tags={"hr"}, bypass=False)
         for _ in range(3):
             assert await graph_models(fin) == canonical(VISIBLE_TO_FIN)
             assert await graph_models(hr) == canonical(VISIBLE_TO_HR)
@@ -83,11 +83,11 @@ class TestGraphCache:
 
     async def test_short_lived_wrappers_never_share_a_graph(self, store: AccessStore) -> None:
         for _ in range(3):
-            fin = TagFilteredStorage(store.storage, tags={"fin"}, bypass=False)
+            fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
             assert await graph_models(fin) == canonical(VISIBLE_TO_FIN)
             del fin
             gc.collect()
-            hr = TagFilteredStorage(store.storage, tags={"hr"}, bypass=False)
+            hr = AccessFilteredStorage(store.storage, tags={"hr"}, bypass=False)
             assert await graph_models(hr) == canonical(VISIBLE_TO_HR)
             del hr
             gc.collect()
@@ -98,14 +98,14 @@ class TestGraphCache:
             yaml_store = cast(YAMLStorage, s.storage)
             future = time.time() + 3600
             os.utime(os.path.join(yaml_store.datasources_dir, f"{DS}.yaml"), (future, future))
-            assert f"{DS}.pub" in await graph_models(TagFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+            assert f"{DS}.pub" in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
             pub = await must_get(s.storage, "pub")
             await s.storage.save_model(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
-            assert f"{DS}.pub" not in await graph_models(TagFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+            assert f"{DS}.pub" not in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
 
     async def test_bypass_shares_the_inner_entry(self, store: AccessStore) -> None:
         await graph_models(store.storage)
-        assert await graph_models(TagFilteredStorage(store.storage, tags=set(), bypass=True)) == canonical(ALL_LOADABLE)
+        assert await graph_models(AccessFilteredStorage(store.storage, tags=set(), bypass=True)) == canonical(ALL_LOADABLE)
         assert len(search_graph._cache) == 1
 
     async def test_no_fingerprint_backend_rebuilds_after_a_change(self) -> None:
@@ -135,8 +135,8 @@ class TestCacheIdentity:
     async def test_wrapper_identity_is_the_view(self, store: AccessStore) -> None:
         inner = await store.storage.cache_identity()
 
-        def wrap(*tags: str, bypass: bool = False) -> TagFilteredStorage:
-            return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
+        def wrap(*tags: str, bypass: bool = False) -> AccessFilteredStorage:
+            return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
         assert await wrap("fin").cache_identity() == (inner, frozenset({"fin"}), False)
         fin_a, fin_b = wrap("fin"), wrap("fin")
@@ -149,8 +149,8 @@ class TestCacheIdentity:
             assert await _NoFingerprintYAML(base_dir=tmp).graph_fingerprint() is None
 
     async def test_wrapper_fingerprint_follows_the_inner_one(self, store: AccessStore) -> None:
-        fin = TagFilteredStorage(store.storage, tags={"fin"}, bypass=False)
-        hr = TagFilteredStorage(store.storage, tags={"hr"}, bypass=False)
+        fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
+        hr = AccessFilteredStorage(store.storage, tags={"hr"}, bypass=False)
         before = await fin.graph_fingerprint()
         assert before is not None
         assert before != await hr.graph_fingerprint()
@@ -159,13 +159,13 @@ class TestCacheIdentity:
 
     async def test_wrapper_over_unknown_fingerprint_is_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            fin = TagFilteredStorage(_NoFingerprintYAML(base_dir=tmp), tags={"fin"}, bypass=False)
+            fin = AccessFilteredStorage(_NoFingerprintYAML(base_dir=tmp), tags={"fin"}, bypass=False)
             assert await fin.graph_fingerprint() is None
 
 
 class TestViewFreshness:
     async def test_view_follows_inner_writes(self, store: AccessStore) -> None:
-        fin = TagFilteredStorage(store.storage, tags={"fin"}, bypass=False)
+        fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
         assert set(await fin.list_models(DS)) == VISIBLE_TO_FIN
         await store.storage.save_model(_table_model("extra"), _validate=False)
         assert set(await fin.list_models(DS)) == VISIBLE_TO_FIN | {"extra"}
@@ -195,7 +195,7 @@ async def test_concurrent_first_reads_of_a_pre_v15_store_agree(backend: str) -> 
             backend=backend, base=tmp, datasource=DatasourceConfig(name="shop", type="sqlite", database=os.path.join(tmp, "x.db")),
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
-        fin = TagFilteredStorage(inner, tags={"fin"}, bypass=False)
+        fin = AccessFilteredStorage(inner, tags={"fin"}, bypass=False)
         listings = await asyncio.gather(*(fin.list_models("shop") for _ in range(8)))
         models = await asyncio.gather(*(fin.get_model("orders", data_source="shop") for _ in range(8)))
         assert all(sorted(names) == ["customers", "orders"] for names in listings)

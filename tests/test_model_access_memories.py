@@ -1,4 +1,4 @@
-"""Memories and embeddings through a TagFilteredStorage: hidden, stripped, or untouched."""
+"""Memories and embeddings through an AccessFilteredStorage: hidden, stripped, or untouched."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
     DATASOURCE_MEMORY,
@@ -44,8 +44,8 @@ async def store(request) -> AsyncGenerator[AccessStore]:
         yield s
 
 
-def view(store: AccessStore, *tags: str, bypass: bool = False) -> TagFilteredStorage:
-    return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
+def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFilteredStorage:
+    return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
 TWIN_DS = "acme2"
