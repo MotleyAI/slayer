@@ -1,4 +1,4 @@
-"""DEV-1450 stage 7b.15c — multi-stage DAG rendering for the typed pipeline.
+"""Multi-stage DAG rendering for the typed pipeline.
 
 ``plan_stages`` returns a ``List[PlannedQuery]`` (root last). The legacy
 engine renders a multi-stage DAG as nested rename-subqueries via
@@ -7,7 +7,7 @@ engine renders a multi-stage DAG as nested rename-subqueries via
 these tests are execution-based: render the new SQL, run it against the same
 seeded SQLite the legacy ``engine.execute([...])`` ran against, and assert
 identical result-key columns and row sets — plus structural shape (CTE per
-non-root stage, flat downstream binding, the DEV-1448/1449 contracts).
+non-root stage, flat downstream binding, the stage-alias and flat-schema contracts).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import AsyncIterator, List, Tuple
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalScopeReferenceError
+from slayer.core.errors import UnrelatedDatasetError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -246,7 +246,7 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1448 — user ``name`` on a join-traversed measure governs the stage
+# User ``name`` on a join-traversed measure governs the stage
 # column alias and downstream references resolve it.
 # ---------------------------------------------------------------------------
 
@@ -279,7 +279,7 @@ async def test_dev1448_named_join_measure_alias(harness):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1449 — downstream stage sees the upstream as a FLAT schema.
+# A downstream stage sees the upstream as a FLAT schema.
 # ---------------------------------------------------------------------------
 
 
@@ -314,7 +314,7 @@ async def test_dev1449_dotted_form_raises(harness):
         dimensions=["customers.region"],
         measures=[{"formula": "amount:sum"}],
     )
-    # Dotted form against a flat upstream schema is illegal.
+    # The dotted form reads a model no join path reaches from the flat upstream stage.
     root = SlayerQuery(
         source_model="stage1",
         dimensions=["customers.region"],
@@ -323,12 +323,12 @@ async def test_dev1449_dotted_form_raises(harness):
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
     )
-    with pytest.raises(IllegalScopeReferenceError):
+    with pytest.raises(UnrelatedDatasetError):
         plan_stages(queries=[stage1, root], bundle=bundle)
 
 
 # ---------------------------------------------------------------------------
-# DEV-1716 (Codex test-review High 1) — the terminal emit of the module-level
+# The terminal emit of the module-level
 # ``generate_planned_stages`` (multi-stage root) must also route through the
 # dialect ``rewrite_emitted_sql`` hook. The BigQuery TestBigQueryAliasMangling
 # pins only exercise ``SQLGenerator.generate()`` / single-stage
@@ -399,7 +399,7 @@ async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
     across the ``StageSchema`` boundary, not only at the ``ModelScope`` origin.
 
     Regression for the downstream-grouping gap that allowing raw-row opaque
-    projection (``distinct_dimension_values=False``, DEV-1543) opened: stage 1
+    projection (``distinct_dimension_values=False``) opened: stage 1
     legally projects the opaque ``loc`` as a raw value, but the root stage groups
     by it — which the database would reject (a ``point`` has no equality
     operator), so generation must fail up front with an actionable message.

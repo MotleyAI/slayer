@@ -8,7 +8,7 @@
 
 ## 2. Product hop and resolution
 
-- [ ] 2.1 Add the typed product-hop discriminator (design D1), move the spine product and detached edges onto it, and make join rendering, rerooting, association building, row scopes and semi-join correlation fail closed on an unrelated product hop; verify the full existing suite stays green
+- [x] 2.1 Add the typed product-hop discriminator (design D1), move the spine product and detached edges onto it, and make join rendering, rerooting, association building, row scopes and semi-join correlation fail closed on an unrelated product hop; verify the full existing suite stays green
 - [x] 2.2 Add the pre-binding collection of unresolved first-hop dataset names into the binding bundle (design D4); verify the "references in every position" and "names that are not reachable datasets" scenarios
 - [x] 2.3 Mint the unrelated product hop in strict first-hop resolution only (design D2); verify the resolution scenarios and that route-search / inference / routing suites are unchanged
 
@@ -45,4 +45,4 @@
 ## 6. Gates
 
 - [ ] 6.1 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green
-- [ ] 6.2 Run the integration suite with the CI invocation from `.github/workflows/ci.yml`; green
+- [x] 6.2 Run the integration suite with the CI invocation from `.github/workflows/ci.yml`; green

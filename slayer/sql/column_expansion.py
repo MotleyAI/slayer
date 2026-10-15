@@ -1,6 +1,6 @@
 """Recursive expansion of derived ``Column.sql`` references.
 
-Closes DEV-1333. A ``Column.sql`` may reference any other column on the same
+A ``Column.sql`` may reference any other column on the same
 model or on a joined model — including columns that are themselves derived
 (have their own ``sql`` expression rather than being a bare base-table
 column). The query planner had been emitting such references verbatim, which
@@ -81,7 +81,7 @@ def is_trivial_base(*, column: Column) -> bool:
 
 def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
-    to the root scope of ``parsed`` (DEV-1410).
+    to the root scope of ``parsed``.
 
     Column.sql is contractually a scalar expression, not a SELECT. To re-use
     sqlglot's scope analysis we wrap ``parsed`` in a synthetic
@@ -144,7 +144,7 @@ class _PathSink(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1743 — the shared Mode-A qualifier resolver.
+# The shared Mode-A qualifier resolver.
 #
 # The dotted-canonical flip makes ``.`` the ONLY chain separator in Mode-A free
 # SQL. A qualifier is EITHER an exact name (the host, or a directly-joined model
@@ -256,7 +256,7 @@ def _resolve_qualifiers(
     models_by_name: ModelsByName,
     column: Optional[str] = None,
 ) -> Optional[Tuple[str, ...]]:
-    """Classify a Mode-A qualifier chain (DEV-1743).
+    """Classify a Mode-A qualifier chain.
 
     Returns:
       * ``()`` — the reference is anchored on the host / owner model;
@@ -670,7 +670,7 @@ def expand_derived_refs_sync(
     ``bundle.referenced_models``) — hops resolve through the shared
     bidirectional walker. ``owner_path`` is the
     ROOT-relative path of ``model`` (empty at the scope root). ``alias_resolver``
-    (DEV-1743) threads the WP3 join-alias registry so qualifier strings match
+    threads the WP3 join-alias registry so qualifier strings match
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
     spelling. When ``crossed_paths`` is supplied, every join-path prefix the
     fragment (recursively) crosses is added to it — the structural alternative
@@ -683,7 +683,7 @@ def expand_derived_refs_sync(
     # Reserved-word qualifiers (``grant.amount``) parse as an unsupported
     # ``Command`` unless quoted, so the reference would be invisible to the
     # resolver (no join registered). Prequote first — idempotent, so callers
-    # that already prequoted (the Mode-A door) are unaffected (DEV-1686).
+    # that already prequoted (the Mode-A door) are unaffected.
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     root_scope_ids = root_scope_column_ids(parsed=parsed)

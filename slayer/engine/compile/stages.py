@@ -3432,8 +3432,8 @@ def _synthesize_local_regroup(
         substitutions=substitutions,
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
         # A population semi-join inherited into this producer reports each of
-        # the producer's own public measures, not its stage alias. DEV-1944:
-        # an aggregate selected under two names warns only the first.
+        # the producer's own public measures, not its stage alias; an aggregate
+        # selected under two names warns only the first.
         population_semi_join_measures=(
             [alias_map[a] for a in aggs
              if isinstance(a, AggregateKey) and a in alias_map]

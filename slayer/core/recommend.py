@@ -1,4 +1,4 @@
-"""Result models + rendering for ``recommend_root_model`` (DEV-1626).
+"""Result models + rendering for ``recommend_root_model``.
 
 Given a set of ``model.column`` / ``model.metric`` items an agent wants in
 one query, the engine recommends a root model (query ``source_model``) and
@@ -20,7 +20,7 @@ class ItemPath(BaseModel):
 
     input_item: str
     path: str
-    # DEV-1866: True for a saved measure / aggregation-suffixed item — reachable
+    # True for a saved measure / aggregation-suffixed item — reachable
     # from the root but not a determination item that steers the recommendation.
     attachment: bool = False
     # An attachment on a dataset no join path reaches: its path is the root's product hop.

@@ -17,6 +17,8 @@ from typing import List, Tuple
 from unittest.mock import patch
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
@@ -1195,15 +1197,11 @@ class TestP4ClosureBehavior:
         self,
     ) -> None:
         """A query-backed model that already aggregated ``customers.revenue:sum``
-        exposes the canonical flat name ``customers__revenue_sum``. Outer
-        dotted refs (``customers.revenue:sum``) against the virtual model
-        DO NOT silently re-aggregate via the legacy ``SourceModelOrigin``
-        lineage walk — this is the P4 closure (decision D).
-
-        The exact error surface (``ValueError`` from binder, or empty SQL
-        with no matching ref) depends on the typed pipeline's resolution
-        order; the assertion is that the dotted form does not silently
-        succeed with a duplicate aggregation.
+        exposes the canonical flat name ``customers__revenue_sum``. An outer
+        dotted ref (``customers.revenue:sum``) against the virtual model never
+        re-aggregates that column through the legacy ``SourceModelOrigin``
+        lineage walk (the P4 closure): ``customers``, which no join path
+        reaches from the virtual model, is aggregated over its own rows.
         """
         orders_with_join = _orders_model().model_copy(update={
             "joins": [ModelJoin(
@@ -1241,19 +1239,22 @@ class TestP4ClosureBehavior:
             )
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
-            # The dotted form must surface a clear binder error — not a
-            # silent re-aggregation through the legacy SourceModelOrigin
-            # lineage walk. The error message must reference the failed
-            # ref so callers can correct their query.
             dotted_q = SlayerQuery(
                 source_model="qb_already_aggregated",
                 measures=[{"formula": "customers.revenue:sum"}],
                 dimensions=["status"],
             )
-            with pytest.raises(
-                (ValueError, KeyError),
-                match=r"(customers|revenue|not found|cannot resolve|unknown|join)",
-            ):
-                await engine.execute(dotted_q, dry_run=True)
+            resp = await engine.execute(dotted_q, dry_run=True)
+            assert any(
+                w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []
+            ), resp.warnings
+            assert resp.sql is not None
+            tree = sqlglot.parse_one(resp.sql, dialect="sqlite")
+            assert not [c for c in tree.find_all(exp.Column) if c.name.startswith("customers__revenue")], resp.sql
+            assert any(
+                not sel.args.get("group") and any(t.alias_or_name == "customers" for t in sel.find_all(exp.Table))
+                and any(c.name == "revenue" for agg in sel.find_all(exp.AggFunc) for c in agg.find_all(exp.Column))
+                for sel in tree.find_all(exp.Select)
+            ), resp.sql
         finally:
             tmp.cleanup()
