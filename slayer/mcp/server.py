@@ -455,11 +455,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
+    engine: SlayerQueryEngine | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
-    engine = SlayerQueryEngine(storage=storage)
+    if engine is None:
+        engine = SlayerQueryEngine(storage=storage)
+    elif engine.storage is not storage:
+        raise ValueError("create_mcp_server: 'engine' must be built over the given 'storage'")
     # Seed conceptual-help memories (idempotent; _seed_help=False when
     # create_app already seeds). Best-effort — never abort the build on a
     # seed failure, and skip for metadata-only (non-StorageBackend) builds.

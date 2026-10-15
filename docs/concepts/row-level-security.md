@@ -6,7 +6,7 @@ query-backed stages, and profiling/sample data. The scoping is **immutable
 engine state**: the agent cannot read it, override it, or disable it through
 any query field. Under a policy, column samples are profiled and cached per engine, never read from or written to shared model storage.
 
-A policy carries exactly one **ruleset**, one of two kinds:
+A policy carries a row **ruleset**, one of two kinds:
 
 - A **`ColumnFilterRuleset`** — "every physical table that has column `C` is
   filtered to `C = <value>` (or `C IN (...)`)". This fits the common shape
@@ -58,9 +58,11 @@ client = SlayerClient(storage=storage, policy=policy)
 df = client.query_df({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
 ```
 
-`ruleset` is **required** — the "no filtering" case is simply `policy=None`
-(the default). A bare `SessionPolicy()` raises rather than silently building a
-no-op.
+A policy must restrict something: a `ruleset`, `datasource_rulesets`,
+`column_access` or `allow_inline_sql=False` (see [Column access and inline
+SQL](#column-access-and-inline-sql)). The "no restriction" case is simply
+`policy=None` (the default). A bare `SessionPolicy()` raises rather than
+silently building a no-op.
 
 ## Column ruleset
 
@@ -207,6 +209,39 @@ _rls_j0 WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = '7ef3...')`
 needs no server setting, so join rules work on every server version, for `readonly = 1`
 users, and over sharded `Distributed` tables.
 
+## Column access and inline SQL
+
+The same policy can hide physical columns and block caller-supplied SQL. Both are
+optional and cost nothing when unset.
+
+```python
+from slayer.core.policy import ColumnAccessRule, ColumnFilterRuleset, SessionPolicy
+
+policy = SessionPolicy(
+    ruleset=ColumnFilterRuleset(column="tenant_id", value="acme"),
+    # Replaces `ruleset` for one datasource; None leaves it unfiltered.
+    datasource_rulesets={"per_tenant_db": None},
+    column_access=[
+        ColumnAccessRule(table="customers", deny=["email"]),
+        ColumnAccessRule(table="*", deny=["ssn"]),
+        ColumnAccessRule(table="employees", allow=["id", "name", "department"]),
+    ],
+    allow_inline_sql=False,
+)
+```
+
+- **`column_access`** wraps each matching physical table in a projection of its
+  visible columns: `FROM customers` becomes `FROM (SELECT id, tenant_id, name FROM
+  customers) AS customers`. A hidden column does not exist for the query, so any
+  path to it fails: model columns, derived columns, formulas and `sql`-mode models.
+  The engine lists table columns by introspection and caches them per engine. A
+  table it cannot list fails closed.
+- **`allow_inline_sql=False`** rejects inline models and query-extension columns
+  that carry `sql` or `filter`. Raw SQL can call any database function, so allow
+  it only for trusted callers. Saved models and run-by-name queries are trusted.
+- Model listings still show hidden columns. Hide them there with model
+  `access_tags` or a storage wrapper.
+
 ## How it works
 
 The filter is applied at the final-SQL layer: each physical-table reference is
@@ -233,8 +268,8 @@ returns exactly the SQL that would execute, including the wraps.
 
 ## Scope and limits
 
-- The policy is **engine-global** — it applies to whatever datasource a query
-  targets. Per-model / per-datasource scoping is a future addition.
+- The policy is **engine-global**. `datasource_rulesets` replaces the row
+  ruleset per datasource; per-model scoping is a future addition.
 - It is enforced in the **local engine** only. Passing `policy=` to a
   `SlayerClient` in HTTP mode raises — server-side policy is not yet available.
 - Join paths are **explicit** (authored in the policy), never auto-discovered

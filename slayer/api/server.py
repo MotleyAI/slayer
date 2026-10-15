@@ -243,13 +243,25 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
+    engine: SlayerQueryEngine | None = None,
+    seed_help: bool = True,
 ) -> FastAPI:
+    """Build the REST app with MCP mounted at ``/mcp``.
+
+    Pass ``engine`` to run every query through it, for example one built with a
+    ``SessionPolicy``. Its storage must be ``storage``. Set ``seed_help=False``
+    when the store is read-only or another process seeds it.
+    """
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
-    engine = SlayerQueryEngine(storage=storage)
+    if engine is None:
+        engine = SlayerQueryEngine(storage=storage)
+    elif engine.storage is not storage:
+        raise ValueError("create_app: 'engine' must be built over the given 'storage'")
     # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
-    run_sync(seed_help_memories(storage=storage))
+    if seed_help:
+        run_sync(seed_help_memories(storage=storage))
 
     if ingest_on_startup:
         run_sync(
@@ -264,7 +276,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage, always_load_query=always_load_query, _seed_help=False)
+    mcp = create_mcp_server(
+        storage=storage, always_load_query=always_load_query, engine=engine, _seed_help=False,
+    )
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
 
@@ -633,7 +647,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
-        engine = SlayerQueryEngine(storage=storage)
         try:
             rec = await engine.recommend_root_model(
                 request.items, data_source=request.data_source,
