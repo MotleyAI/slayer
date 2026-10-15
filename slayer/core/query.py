@@ -797,11 +797,10 @@ class TimeDimension(BaseModel):
         description=(
             'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
             "with either bound null (one-sided). change, change_pct, time_shift and window= "
-            "aggregates read rows before the range by themselves, so each month of 2025 with its "
+            "aggregates read rows before the range (a forward time_shift, after it) by themselves, "
+            "so each month of 2025 with its "
             'change vs the previous month is just "2025": never widen the range and drop rows '
-            "afterwards. cumsum starts at the range start; for a running total since the first "
-            "row, accumulate in an inner stage without date_range and filter the time in an "
-            "outer stage."
+            "afterwards. cumsum starts at the range start."
         ),
     )
     label: str | None = None
@@ -1094,10 +1093,22 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "Stage name. In a list of query objects every entry but the last carries a name, and "
-            "later stages use it as their source_model. Use stages to re-query a whole result: "
-            "filter after a window or rank, or aggregate another query's rows. An outer stage sees "
-            "the inner result's columns with dotted paths flattened to __: an inner dimension "
-            "customers.region_id is customers__region_id outside; a measure keeps its name. More: "
+            "later stages use it as their source_model. A STAGE IS NOT NEEDED for top N per group "
+            "(filter on `rank(...)` in the same stage), for averaging or bucketing per-entity "
+            "totals (a nested aggregate, or a computed dimension with `partition_by`), or for "
+            "shares and totals (`partition_by`). A filter on a transform's value "
+            "(`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over "
+            "every row the other filters keep. Stages ARE "
+            "needed only to drop rows by a dimension or time condition that a cross-row value "
+            "must still see, or to join or reuse a whole result: a row filter or date_range "
+            "applies before a running total, lag / lead, rank, ntile, consecutive_periods or "
+            "`partition_by` total (change, change_pct, time_shift and window= still read past "
+            "date_range or a filter on their own time dimension, but not past other filters). "
+            "Compute the value "
+            "in an inner stage and filter in the outer one. An outer stage sees the inner "
+            "result's columns with dotted paths flattened to __: an inner dimension "
+            "customers.regions.name is customers__regions__name outside; a measure keeps its "
+            "name. More: "
             'inspect(reference=["memory:help.queries"], entity_type="memory").'
         ),
     )
@@ -1129,14 +1140,14 @@ class SlayerQuery(BaseModel):
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
             "spell its keys exactly like the query's dimensions (a joined column by its dotted "
             "path; its bare name fails). Share of group: "
-            "sum(amount) / sum(amount, partition_by=customers.region_id); share of the grand "
+            "sum(amount) / sum(amount, partition_by=customers.regions.name); share of the grand "
             "total: sum(amount) / sum(amount, partition_by=[]).\n"
             "- window= turns any aggregation into a trailing time window ending at each time "
             "bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): "
             "count_distinct(customer_id, window='90d').\n"
             "- Nesting aggregates per-group values: "
-            "avg(sum(amount, partition_by=[customers.region_id, customers.name]), "
-            "partition_by=[customers.region_id]) averages the per-customer totals in each region.\n"
+            "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+            "partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n"
             "- Transforms wrap an aggregate; all but the rank family need a time dimension: "
             "cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) "
             "period-over-period delta / ratio; time_shift(sum(amount), -1) the previous "
@@ -1208,8 +1219,10 @@ class SlayerQuery(BaseModel):
             "month(created_at); granularities are second, minute, hour, day, week, week_sunday, "
             "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
             "computed dimension needs partition_by= to fix its grain: "
-            "{\"expression\": \"iif(sum(amount, partition_by=customers.name) > 150, 'high', "
-            "'low')\", \"name\": \"spend_band\"}."
+            "{\"expression\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
+            "'low')\", \"name\": \"spend_band\"}. Group by naturally readable labels: a name "
+            "(customers.regions.name), never by an id alone unless ids are asked for; when a name "
+            "may repeat (people, products), by the id and the name."
         ),
     )
     time_dimensions: list[TimeDimension] | None = Field(
@@ -1242,7 +1255,7 @@ class SlayerQuery(BaseModel):
             "sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
             "sum(amount) > 100; top N per group: "
-            "rank(sum(amount), partition_by=customers.region_id, direction='desc') <= 1.\n"
+            "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
