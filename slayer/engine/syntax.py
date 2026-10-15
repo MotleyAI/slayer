@@ -1543,29 +1543,34 @@ def _date_args(*, name: str, args: Tuple[Any, ...], original: str) -> Tuple[Any,
     unit = DATE_UNIT_ARGS.get(name)
     if unit is not None and unit[0] < len(out):
         pos, vocab = unit
-        accepted = ", ".join(v.value for v in vocab)
-        what = "part" if name == "date_part" else "unit"
-        arg = out[pos]
-        if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: the {what} of {name}() must be a "
-                f"string literal, one of: {accepted}."
-            )
-        word = arg.value.lower()
-        if name == "date_part":
-            if word in AMBIGUOUS_WEEKDAY_NAMES:
-                raise ValueError(f"Invalid Mode-B expression {original!r}: {ambiguous_weekday_message(arg.value)}")
-            word = DATE_PART_ALIASES[word].value if word in DATE_PART_ALIASES else word
-        if word not in {v.value for v in vocab}:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "
-                f"{arg.value!r}; accepted: {accepted}."
-            )
-        out[pos] = Literal(value=word)
+        words = tuple(v.value for v in vocab)
+        out[pos] = Literal(value=_unit_word(out[pos], name=name, words=words, original=original))
     count_pos = _COUNT_ARG.get(name)
     if count_pos is not None and count_pos < len(out):
         out[count_pos] = _folded(out[count_pos])
     return tuple(out)
+
+
+def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) -> str:
+    """The canonical lower-case unit (or ``date_part`` part) word of ``arg``, one of ``words``."""
+    accepted = ", ".join(words)
+    what = "part" if name == "date_part" else "unit"
+    if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: the {what} of {name}() must be a "
+            f"string literal, one of: {accepted}."
+        )
+    word = arg.value.lower()
+    if name == "date_part":
+        if word in AMBIGUOUS_WEEKDAY_NAMES:
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {ambiguous_weekday_message(arg.value)}")
+        word = DATE_PART_ALIASES[word].value if word in DATE_PART_ALIASES else word
+    if word not in words:
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "
+            f"{arg.value!r}; accepted: {accepted}."
+        )
+    return word
 
 
 def _folded(node: Any) -> Any:
