@@ -90,12 +90,12 @@ The `query` tool SHALL support, uniformly across all three input forms: `variabl
 The `query` argument's form SHALL be selected by its JSON type — a string is a saved query-backed model's name, an object is a query object, an array is a list of stages — and a validation failure SHALL report only the errors of the selected form, never the mismatch errors of the other forms.
 
 #### Scenario: Invalid query object
-- **WHEN** the `query` tool is called with a query object whose measure is named `rank`
-- **THEN** the call fails with exactly one validation error, naming `rank` as a reserved transform name, and the error text does not say the input should be a valid string or a valid list
+- **WHEN** the `query` tool is called with a query object whose measure is named `bad name`
+- **THEN** the call fails with exactly one validation error, naming `bad name` as an invalid name, and the error text does not say the input should be a valid string or a valid list
 
 #### Scenario: Invalid stage in a list
-- **WHEN** the `query` tool is called with a list of stages whose second stage names a measure `rank`
-- **THEN** the call fails with exactly one validation error, located at that stage and naming `rank` as a reserved transform name, and the error text does not say the input should be a valid string or a valid dictionary
+- **WHEN** the `query` tool is called with a list of stages whose second stage names a measure `bad name`
+- **THEN** the call fails with exactly one validation error, located at that stage and naming `bad name` as an invalid name, and the error text does not say the input should be a valid string or a valid dictionary
 
 #### Scenario: A name still runs
 - **WHEN** the `query` tool is called with a string
