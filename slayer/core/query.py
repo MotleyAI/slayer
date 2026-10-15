@@ -797,7 +797,8 @@ class TimeDimension(BaseModel):
         description=(
             'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
             "with either bound null (one-sided). change, change_pct, time_shift and window= "
-            "aggregates read rows before the range by themselves, so each month of 2025 with its "
+            "aggregates read rows before the range (a forward time_shift, after it) by themselves, "
+            "so each month of 2025 with its "
             'change vs the previous month is just "2025": never widen the range and drop rows '
             "afterwards. cumsum starts at the range start."
         ),

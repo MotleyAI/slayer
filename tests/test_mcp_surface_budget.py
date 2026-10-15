@@ -417,5 +417,5 @@ def test_measure_formula_points_to_the_measures_field() -> None:
 
 def test_date_range_is_described() -> None:
     text = _tools()["query"].inputSchema["$defs"]["TimeDimension"]["properties"]["date_range"].get("description") or ""
-    for needle in ("change", "time_shift", "window=", "cumsum"):
+    for needle in ("change,", "change_pct", "time_shift", "window=", "cumsum"):
         assert needle in text, needle

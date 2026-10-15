@@ -20,7 +20,8 @@ inside P.
 A time dimension's `date_range` is one period (`"last month"`) or `[lower, upper]`
 with either bound null (one-sided). It decides which buckets come back, not which rows
 a computation may read: `change`, `change_pct`, `time_shift` and `window=` aggregates
-read rows before the range, so the first returned bucket already has its comparison.
+read rows before the range (a forward `time_shift`, after it), so the first returned bucket
+already has its comparison.
 Never widen the range to feed them.
 
 `cumsum` accumulates from the first returned bucket. A running total since the first
