@@ -418,6 +418,11 @@ def test_measure_formula_points_to_the_measures_field() -> None:
     assert len(text) <= 200, text
 
 
+def test_unrelated_aggregate_varies_per_spine_bucket() -> None:
+    text = _tools()["query"].inputSchema["$defs"]["SlayerQuery"]["properties"]["measures"].get("description") or ""
+    assert "repeated on every row (per bucket of a time_spine time dimension)" in text
+
+
 def test_date_range_is_described() -> None:
     text = _tools()["query"].inputSchema["$defs"]["TimeDimension"]["properties"]["date_range"].get("description") or ""
     for needle in ("change,", "change_pct", "time_shift", "window=", "cumsum"):

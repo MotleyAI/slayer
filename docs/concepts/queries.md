@@ -779,7 +779,7 @@ Example: `{"source_model": "orders", "dimensions": ["status"], "measures": [{"fo
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its column-level `filter=` — is traced recursively through derived-column definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
-A model (or query stage) that no join path reaches is read only through aggregates: rooted at `customers`, `{"formula": "count(events.id) / count(*)"}` computes `count(events.id)` over every event, repeats it on every row with a `kind: "unrelated_dataset"` warning, and a filter on it restricts its rows, while grouping, ordering or filtering by its columns alongside other models' is a typed error.
+A model (or query stage) that no join path reaches is read only through aggregates: rooted at `customers`, `{"formula": "count(events.id) / count(*)"}` computes `count(events.id)` over every event, repeats it on every row (per bucket of a `time_spine` time dimension) with a `kind: "unrelated_dataset"` warning, and a filter on it restricts its rows, while grouping, ordering or filtering by its columns alongside other models' is a typed error.
 
 A filter **on** the cross-model value itself (`"avg(customers.score) > 4"`)
 restricts the result rows, uniformly with local aggregate filters — groups that
