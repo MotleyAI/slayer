@@ -45,10 +45,6 @@ async def _referenced_models(
         queries=[*named_queries.values(), query], known=known,
         sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
     ))
-    component.extend(await _named_components(
-        names=definition_heads(component), known=known, storage=storage, data_source=data_source,
-        failures=failures,
-    ))
     referenced, query_backed = await _split_query_backed(
         models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
         failures=failures,
@@ -265,8 +261,9 @@ async def _split_query_backed(
     failures: DocumentLoadFailures,
 ) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
     """Split ``models`` into referenced models and query-backed placeholders, closing
-    over each placeholder's stage bases (and their components). Placeholders keep
-    their stored form with joins dropped; on-chain names are never loaded."""
+    over each placeholder's stage bases and each model's definition-named models (and
+    their components). Placeholders keep their stored form with joins dropped; on-chain
+    names are never loaded."""
     referenced: Dict[str, SlayerModel] = {}
     query_backed: Dict[str, SlayerModel] = {}
     pending = list(models)
@@ -276,6 +273,11 @@ async def _split_query_backed(
             continue
         if not model.source_queries:
             referenced[model.name] = model
+            pending.extend(m for m in await _named_components(
+                names=definition_heads([model]),
+                known={*chain, *referenced, *query_backed, *(p.name for p in pending)},
+                storage=storage, data_source=data_source, failures=failures,
+            ) if not is_spine(m))
             continue
         query_backed[model.name] = model.model_copy(update={"joins": []})
         pending.extend(await _stage_base_components(

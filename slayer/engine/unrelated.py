@@ -97,9 +97,13 @@ def unrelated_targets(
     return frozenset(out)
 
 
-def stamp_unrelated(*, query: SlayerQuery, bundle: ResolvedSourceBundle, host: SlayerModel) -> SlayerModel:
-    """``host`` as ``query``'s population, carrying the unrelated datasets the frame names."""
-    found = unrelated_targets(host=host, names=first_hop_names(query), models_by_name=bundle.models_by_name)
+def stamp_unrelated(
+    *, query: SlayerQuery, bundle: ResolvedSourceBundle, host: SlayerModel, extra: Iterable[SlayerModel] = (),
+) -> SlayerModel:
+    """``host`` as ``query``'s population, carrying the unrelated datasets the frame names
+    among the bundle's models plus ``extra`` (unspliced query-backed placeholders)."""
+    models = {**bundle.models_by_name, **{m.name: m for m in extra}}
+    found = unrelated_targets(host=host, names=first_hop_names(query), models_by_name=models)
     return host.with_unrelated(found) if found != host.unrelated_datasets else host
 
 

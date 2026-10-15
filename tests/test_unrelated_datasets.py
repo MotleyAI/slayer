@@ -11,11 +11,13 @@ from slayer.core.errors import (
     PartitionKeyError,
     SlayerError,
     TimeSpineError,
+    UnknownReferenceError,
+    UnreachableDefinitionError,
     UnrelatedDatasetError,
     UnresolvableDimensionJoinError,
     UnsafeJoinInputError,
 )
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.enums import DataType
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
@@ -251,6 +253,39 @@ class TestStoredDefinitionsRefuse:
         q = query(measures=[m("sum(ev_amount)", "x")])
         with pytest.raises(SlayerError, match="no join path reaches 'events'"):
             await engine.execute(q)
+
+    @pytest.mark.parametrize(("source", "formula"), [("per_city", "max(n)"), ("orgs", "max(per_city.n)")])
+    async def test_stage_base_definition(self, engine, source: str, formula: str) -> None:
+        await engine.storage.save_model(SlayerModel(
+            name="logs", sql_table="orgs", data_source="test",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+        ))
+        stale = customers_model(columns=[Column(name="lx", type=DataType.TEXT, sql="logs.name")])
+        await engine.storage.save_model(stale, _validate=False)
+        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+            query(dimensions=["city"], measures=[m("count(lx)", "n")]),
+        ]), _validate=False)
+        q = SlayerQuery.model_validate({"source_model": source, "measures": [m(formula, "x")]})
+        with pytest.raises(UnreachableDefinitionError, match="no join path reaches 'logs' from 'customers'"):
+            await engine.execute(q)
+
+    async def test_unspliceable_unrelated_query_backed_model(self, engine) -> None:
+        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+            query(dimensions=["city"], measures=[m("count(nope)", "n")]),
+        ]), _validate=False)
+        q = SlayerQuery.model_validate({"source_model": "orgs", "measures": [m("max(per_city.n)", "x")]})
+        with pytest.raises(UnknownReferenceError, match="'nope'"):
+            await engine.execute(q)
+
+    async def test_edge_named_like_an_unspliceable_model(self, engine) -> None:
+        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+            query(dimensions=["city"], measures=[m("count(nope)", "n")]),
+        ]), _validate=False)
+        edge = ModelJoin(target_model="orgs", join_pairs=[["id", "id"]], name="per_city")
+        await engine.storage.save_model(customers_model(joins=[edge]), _validate=False)
+        resp = await engine.execute(query(measures=[m("count(per_city.id)", "n")]))
+        assert only_row(resp, "n") == (2.0,)
+        assert unrelated_warnings(resp) == []
 
 
 # ---------------------------------------------------------------------------

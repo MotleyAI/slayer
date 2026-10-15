@@ -88,25 +88,28 @@ def _stage_scope_and_bundle(
     stage_schemas: Dict[str, StageSchema],
     data_source: str,
     stage_model: Optional[SlayerModel],
+    placeholders: List[SlayerModel],
 ) -> "Tuple[ModelScope | StageSchema, ResolvedSourceBundle]":
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
     scope, sb = _stage_scope_and_bundle_unframed(
         query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
         stage_model=stage_model,
     )
-    framed_scope, framed = _framed(query=query, scope=scope, bundle=sb)
+    framed_scope, framed = _framed(query=query, scope=scope, bundle=sb, placeholders=placeholders)
     assert framed_scope is not None
     return framed_scope, framed
 
 
 def _framed(
     *, query: SlayerQuery, scope: "ModelScope | StageSchema | None", bundle: ResolvedSourceBundle,
+    placeholders: List[SlayerModel],
 ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
-    """The frame's population stamped with the unrelated datasets ``query`` names; dots need a model scope."""
+    """The frame's population stamped with the unrelated datasets ``query`` names (unspliced
+    placeholders included, so a product hop to one is walked); dots need a model scope."""
     host = bundle.source_model
     if host is None:
         return scope, bundle
-    stamped = stamp_unrelated(query=query, bundle=bundle, host=host)
+    stamped = stamp_unrelated(query=query, bundle=bundle, host=host, extra=placeholders)
     if stamped is host:
         return scope, bundle
     return ModelScope(source_model=stamped), bundle.model_copy(update={"source_model": stamped})
@@ -295,11 +298,12 @@ class _StagePlanner:
     ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
-            return _framed(query=query, scope=None, bundle=base)
+            return _framed(query=query, scope=None, bundle=base, placeholders=self._placeholders())
         return _stage_scope_and_bundle(
             query=query, bundle=base, stage_schemas=self.state.schemas,
             data_source=self.data_source,
             stage_model=stage_model or self.bundle.source_model,
+            placeholders=self._placeholders(),
         )
 
     def _placeholders(self) -> List[SlayerModel]:
