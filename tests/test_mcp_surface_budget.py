@@ -317,9 +317,8 @@ def test_name_describes_when_a_stage_is_needed() -> None:
 
 def test_dimensions_require_a_readable_label() -> None:
     assert _query_texts()[_field_path("SlayerQuery", "dimensions")].endswith(
-        "Every result row needs a naturally readable label: group by a name (customers.regions.name), never "
-        "by an id alone unless ids are asked for; when a name may repeat (people, products), group by the "
-        "id and the name."
+        "Group by naturally readable labels: a name (customers.regions.name), never by an id alone unless "
+        "ids are asked for; when a name may repeat (people, products), by the id and the name."
     )
 
 

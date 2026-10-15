@@ -1218,9 +1218,9 @@ class SlayerQuery(BaseModel):
             "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
             "computed dimension needs partition_by= to fix its grain: "
             "{\"expression\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
-            "'low')\", \"name\": \"spend_band\"}. Every result row needs a naturally readable "
-            "label: group by a name (customers.regions.name), never by an id alone unless ids are "
-            "asked for; when a name may repeat (people, products), group by the id and the name."
+            "'low')\", \"name\": \"spend_band\"}. Group by naturally readable labels: a name "
+            "(customers.regions.name), never by an id alone unless ids are asked for; when a name "
+            "may repeat (people, products), by the id and the name."
         ),
     )
     time_dimensions: list[TimeDimension] | None = Field(
