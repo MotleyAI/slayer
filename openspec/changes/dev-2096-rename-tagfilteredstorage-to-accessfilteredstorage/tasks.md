@@ -4,8 +4,8 @@
 
 ## 2. Rename (pr-implement)
 
-- [ ] 2.1 Rename module `slayer/storage/tag_filtered.py` → `slayer/storage/access_filtered.py` and class `TagFilteredStorage` → `AccessFilteredStorage` with `dr-refactor` (design D1, D2; no alias). Verify: `poetry run pytest tests/test_model_access*.py` passes; `la-typecheck` and `dr-mock-lint` clean.
-- [ ] 2.2 `docs/configuration/storage.md`: heading `## Tag-filtered storage` → `## Access-filtered storage`, `TagFilteredStorage(...)` → `AccessFilteredStorage(...)`, `slayer.storage.tag_filtered` → `slayer.storage.access_filtered`; `docs/concepts/models.md` `access_tags` row: "a [tag-filtered store](../configuration/storage.md#tag-filtered-storage)" → "an [access-filtered store](../configuration/storage.md#access-filtered-storage)" (design D4). Verify: the new anchor resolves to the renamed heading.
+- [x] 2.1 Rename module `slayer/storage/tag_filtered.py` → `slayer/storage/access_filtered.py` and class `TagFilteredStorage` → `AccessFilteredStorage` with `dr-refactor` (design D1, D2; no alias). Verify: `poetry run pytest tests/test_model_access*.py` passes; `la-typecheck` and `dr-mock-lint` clean.
+- [x] 2.2 `docs/configuration/storage.md`: heading `## Tag-filtered storage` → `## Access-filtered storage`, `TagFilteredStorage(...)` → `AccessFilteredStorage(...)`, `slayer.storage.tag_filtered` → `slayer.storage.access_filtered`; `docs/concepts/models.md` `access_tags` row: "a [tag-filtered store](../configuration/storage.md#tag-filtered-storage)" → "an [access-filtered store](../configuration/storage.md#access-filtered-storage)" (design D4). Verify: the new anchor resolves to the renamed heading.
 - [ ] 2.3 `architecture/storage.arc42.md` §3 principle 2, the approved edit (class name only, wrapping unchanged): "2. **Access is a view**: a non-bypass `AccessFilteredStorage` reads as the store". Verify: `poetry run la-arch-check` clean.
 
 ## 3. Verification (pr-implement)

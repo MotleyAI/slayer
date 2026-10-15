@@ -89,7 +89,7 @@ def _visible_identities(
     return visible
 
 
-class TagFilteredStorage(StorageBackend):
+class AccessFilteredStorage(StorageBackend):
     """``backend`` as a caller with ``tags`` sees it; ``bypass=True`` sees and writes everything."""
 
     def __init__(self, backend: StorageBackend, *, tags: Iterable[str], bypass: bool) -> None:
