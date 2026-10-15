@@ -1,4 +1,4 @@
-"""Non-bypass writes through a TagFilteredStorage merge onto the full documents and never reveal hidden parts."""
+"""Non-bypass writes through an AccessFilteredStorage merge onto the full documents and never reveal hidden parts."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
     DS,
@@ -40,11 +40,11 @@ async def store(request) -> AsyncGenerator[AccessStore]:
         yield s
 
 
-def view(store: AccessStore, *tags: str, bypass: bool = False) -> TagFilteredStorage:
-    return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
+def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFilteredStorage:
+    return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
-async def save(storage: TagFilteredStorage, model: SlayerModel, *, saver: str) -> None:
+async def save(storage: AccessFilteredStorage, model: SlayerModel, *, saver: str) -> None:
     if saver == "storage":
         await storage.save_model(model)
         return
@@ -360,7 +360,7 @@ class TestEmbeddingWrites:
 
 
 class TestMcpEdits:
-    async def call(self, storage: TagFilteredStorage, **arguments) -> str:
+    async def call(self, storage: AccessFilteredStorage, **arguments) -> str:
         return await mcp_text(storage, "edit_model", **arguments)
 
     async def test_editing_hidden_model_reads_like_missing(self, store: AccessStore) -> None:

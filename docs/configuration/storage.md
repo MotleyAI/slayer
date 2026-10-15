@@ -159,8 +159,8 @@ mcp = create_mcp_server(storage=my_storage)
 client = SlayerClient(storage=my_storage)
 ```
 
-## Tag-filtered storage
+## Access-filtered storage
 
-Wrap a store as `TagFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.tag_filtered`) to serve one caller: every model whose [`access_tags`](../concepts/models.md#fields-at-a-glance) it cannot access, every model reading one, and every memory linked only to such models reads as deleted, joins into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
+Wrap a store as `AccessFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.access_filtered`) to serve one caller: every model whose [`access_tags`](../concepts/models.md#fields-at-a-glance) it cannot access, every model reading one, and every memory linked only to such models reads as deleted, joins into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
 
 Saving a model that reads a tagged model whose tags do not cover its own emits a `narrowed_access` warning, and `validate_models` reports every such model as a `narrowed_access` finding.

@@ -37,7 +37,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `query_variables` | dict | No | Defaults for `{var}` placeholders (query-backed models only) |
 | `description` | string | No | Helps agents and users understand the model |
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
-| `access_tags` | list[str] | No | Access groups: through a [tag-filtered store](../configuration/storage.md#tag-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
+| `access_tags` | list[str] | No | Access groups: through an [access-filtered store](../configuration/storage.md#access-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
 | `version` | int | No | Schema version stamp (currently `15`) |
 

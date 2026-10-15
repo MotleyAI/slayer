@@ -23,7 +23,7 @@ from slayer.inspect.service import InspectService
 from slayer.pg_facade.connection import PgConnection
 from slayer.search import graph as search_graph
 from slayer.search.service import SearchService
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
@@ -50,12 +50,12 @@ class Pair(BaseModel):
     reference: AccessStore
 
     @property
-    def fin(self) -> TagFilteredStorage:
-        return TagFilteredStorage(self.full.storage, tags={"fin"}, bypass=False)
+    def fin(self) -> AccessFilteredStorage:
+        return AccessFilteredStorage(self.full.storage, tags={"fin"}, bypass=False)
 
     @property
-    def everything(self) -> TagFilteredStorage:
-        return TagFilteredStorage(self.full.storage, tags=set(), bypass=True)
+    def everything(self) -> AccessFilteredStorage:
+        return AccessFilteredStorage(self.full.storage, tags=set(), bypass=True)
 
 
 @pytest.fixture(params=ACCESS_PARAMS)
@@ -303,7 +303,7 @@ class TestBareNameAmbiguity:
     async def test_name_resolves_to_the_visible_copy(self, two_datasources: YAMLStorage) -> None:
         with pytest.raises(AmbiguousModelError):
             await two_datasources.resolve_model_identity("shared")
-        fin = TagFilteredStorage(two_datasources, tags={"fin"}, bypass=False)
+        fin = AccessFilteredStorage(two_datasources, tags={"fin"}, bypass=False)
         assert await fin.resolve_model_identity("shared") == ("east", "shared")
         model = await fin.get_model("shared")
         assert model is not None

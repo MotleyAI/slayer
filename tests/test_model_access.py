@@ -1,4 +1,4 @@
-"""TagFilteredStorage visibility: tag intersection, dependents, unloadable documents, bypass."""
+"""AccessFilteredStorage visibility: tag intersection, dependents, unloadable documents, bypass."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.model_reads import models_read_by, placeholder
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 from tests._model_access_fixtures import (
     ACCESS_PARAMS,
     ALL_LOADABLE,
@@ -37,8 +37,8 @@ async def store(request) -> AsyncGenerator[AccessStore]:
         yield s
 
 
-def view(store: AccessStore, *tags: str, bypass: bool = False) -> TagFilteredStorage:
-    return TagFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
+def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFilteredStorage:
+    return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
 def _unloadable_reader(sql: str) -> SlayerModel:
@@ -105,7 +105,7 @@ class TestVisibility:
     @pytest.mark.parametrize("kwargs", [{}, {"tags": {"fin"}}, {"bypass": False}], ids=["neither", "no-bypass", "no-tags"])
     async def test_construction_requires_tags_and_bypass(self, store: AccessStore, kwargs: dict) -> None:
         with pytest.raises(TypeError):
-            TagFilteredStorage(store.storage, **kwargs)
+            AccessFilteredStorage(store.storage, **kwargs)
 
 
 class TestWrapperPlumbing:
