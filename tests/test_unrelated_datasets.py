@@ -20,7 +20,7 @@ from slayer.core.enums import DataType
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.tag_filtered import TagFilteredStorage
+from slayer.storage.access_filtered import AccessFilteredStorage
 
 from tests._unrelated_datasets_fixtures import (
     BACKENDS,
@@ -192,7 +192,7 @@ class TestNamesThatAreNotReachableDatasets:
     async def test_hidden_model_is_reported_as_unknown(self, backend) -> None:
         hidden = events_model().model_copy(update={"access_tags": ["secret"]})
         async with main_engine(backend, models=[customers_model(), hidden, users_model(), orgs_model()]) as eng:
-            scoped = SlayerQueryEngine(storage=TagFilteredStorage(eng.storage, tags=set(), bypass=False))
+            scoped = SlayerQueryEngine(storage=AccessFilteredStorage(eng.storage, tags=set(), bypass=False))
             hidden_q = query(measures=[m("count(events.id)", "n")])
             unknown_q = query(measures=[m("count(evnts.id)", "n")])
             try:
