@@ -53,6 +53,7 @@ from slayer.engine.reference_closure import (
     key_closure,
 )
 from slayer.engine.elaborate_env import check_partition_key_attributable
+from slayer.engine.unrelated import crosses_product_hop
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.cardinality import (
@@ -567,6 +568,8 @@ def assert_partition_key_attributable(
         return
     models_by_name = bundle.models_by_name
     hp = key_host_path(pk)
+    if crosses_product_hop(host=host_m, path=hp, models_by_name=models_by_name):
+        return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
     if not hp:
         # Path-less derived key: a fan from its own host is a mode-invariant safety
         # error; a host-safe key's cross-model-root concern stays the planner's.

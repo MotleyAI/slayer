@@ -14,7 +14,6 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import SlayerError
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -162,6 +161,23 @@ async def _engine_with_real_sqlite(
 # quoting / formatting drift.
 # ---------------------------------------------------------------------------
 
+def _assert_reads_unrelated_customers(resp) -> None:
+    """``customers``, which no join path reaches from ``s1``, is aggregated over its own rows — never
+    by re-aggregating an ``s1`` flat column — and announced as an unrelated dataset."""
+    assert any(
+        w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []
+    ), resp.warnings
+    assert resp.sql is not None
+    tree = sqlglot.parse_one(resp.sql, dialect="sqlite")
+    assert not [c for c in tree.find_all(exp.Column) if c.name.startswith("customers__revenue")], resp.sql
+    own_rows = [
+        s for s in tree.find_all(exp.Select)
+        if not s.args.get("group") and any(t.name == "customers" for t in s.find_all(exp.Table))
+        and any(c.name == "revenue" for agg in s.find_all(exp.AggFunc) for c in agg.find_all(exp.Column))
+    ]
+    assert own_rows, resp.sql
+
+
 def _outermost_select(sql: str, dialect: str = "sqlite") -> exp.Select:
     tree = sqlglot.parse_one(sql, dialect=dialect)
     assert isinstance(tree, exp.Select), f"expected outermost Select, got {type(tree).__name__}"
@@ -226,7 +242,7 @@ class TestReportedCase:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed contract: downstream stages see a FLAT
+                # Typed contract: downstream stages see a FLAT
                 # schema — the inner stage's `customers.regions.name`
                 # dim is projected as `customers__regions__name` on s1.
                 dimensions=["customers__regions__name"],
@@ -272,7 +288,7 @@ class TestReportedCase:
         )
         outer = SlayerQuery(
             source_model="s1",
-            # DEV-1450 typed contract: downstream uses the flat alias.
+            # Typed contract: downstream uses the flat alias.
             dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
         )
@@ -300,7 +316,7 @@ class TestThreeHopDimension:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed contract: flat downstream alias.
+                # Typed contract: flat downstream alias.
                 dimensions=["customers__regions__countries__name"],
                 measures=[{"formula": "*:count"}],
             )
@@ -347,7 +363,7 @@ class TestCrossStageTimeDimension:
             outer = SlayerQuery(
                 source_model="s1",
                 time_dimensions=[TimeDimension(
-                    # DEV-1450 typed contract: flat downstream alias.
+                    # Typed contract: flat downstream alias.
                     dimension=ColumnRef(name="customers__regions__last_activity_at"),
                     granularity=TimeGranularity.MONTH,
                 )],
@@ -390,7 +406,7 @@ class TestCrossStageCrossModelMeasure:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed re-aggregation: outer references the flat
+                # Typed re-aggregation: outer references the flat
                 # inner alias `customers__revenue_sum` directly and sums it.
                 measures=[{"formula": "customers__revenue_sum:sum"}],
             )
@@ -425,7 +441,7 @@ class TestCrossStageCrossModelMeasure:
         )
         outer = SlayerQuery(
             source_model="s1",
-            # DEV-1450 typed re-aggregation: outer references the flat
+            # Typed re-aggregation: outer references the flat
             # inner alias directly.
             measures=[{"formula": "customers__revenue_sum:sum"}],
         )
@@ -436,7 +452,7 @@ class TestCrossStageCrossModelMeasure:
         # SUM per region matches per-customer revenue; outer re-SUM
         # totals 1500.
         row = resp.data[0]
-        # DEV-1450 typed contract: re-aggregating the flat inner alias
+        # Typed contract: re-aggregating the flat inner alias
         # surfaces under the canonical `<col>_sum` shape.
         assert "s1.customers__revenue_sum_sum" in row, (
             f"Re-aggregated flat alias must surface as "
@@ -462,7 +478,7 @@ class TestCrossStageFilter:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed contract: downstream uses flat alias in
+                # Typed contract: downstream uses flat alias in
                 # dimensions AND filters.
                 dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
@@ -502,7 +518,7 @@ class TestCrossStageFilter:
         )
         outer = SlayerQuery(
             source_model="s1",
-            # DEV-1450 typed contract: downstream flat-only refs.
+            # Typed contract: downstream flat-only refs.
             dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
             filters=["customers__regions__name = 'West'"],
@@ -529,7 +545,7 @@ class TestCrossStageOrderBy:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed contract: downstream flat-only refs.
+                # Typed contract: downstream flat-only refs.
                 dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
                 order=[{"column": "customers__regions__name"}],
@@ -572,7 +588,7 @@ class TestCrossStageOrderBy:
         )
         outer = SlayerQuery(
             source_model="s1",
-            # DEV-1450 typed contract: downstream flat-only refs.
+            # Typed contract: downstream flat-only refs.
             dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
             order=[{"column": "customers__regions__name"}],
@@ -647,23 +663,18 @@ class TestNonVirtualModel:
 
 
 # ===========================================================================
-# Test #13 — DEV-1443 rename interaction: colon syntax does NOT auto-resolve.
+# Test #13 — rename interaction: colon syntax does NOT auto-resolve.
 # ===========================================================================
 class TestRenamedInnerMeasureCrossStage:
     async def test_renamed_cmm_colon_syntax_no_longer_resolves_after_rename(
         self,
     ) -> None:
-        """Post-DEV-1448 (main): `_alias_to_short`/cm.name now
-        propagates the user-supplied rename to the wrapped virtual
-        model's column. So `{formula: customers.revenue:sum, name: rev}`
-        on s1 leaves s1.columns with `rev` (not the canonical flat
-        `customers__revenue_sum`). The outer's colon-syntax reference
-        `customers.revenue:sum` no longer matches the intercept's
-        candidate flat name → falls through to the cross-model CTE
-        path → raises on the virtual stage (no joins).
-
-        DEV-1445 territory: users renamed cross-model measures must
-        reference them by the rename on downstream stages."""
+        """The user-supplied rename propagates to the wrapped virtual model's
+        column: `{formula: customers.revenue:sum, name: rev}` on s1 leaves
+        s1.columns with `rev` (not the canonical flat `customers__revenue_sum`).
+        The outer's `customers.revenue:sum` no longer matches the intercept's
+        candidate flat name, so it never re-aggregates s1: `customers`, which no
+        join path reaches from s1, is aggregated over its own rows."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -676,13 +687,13 @@ class TestRenamedInnerMeasureCrossStage:
                 source_model="s1",
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            _assert_reads_unrelated_customers(resp)
         finally:
             tmp.cleanup()
 
     async def test_renamed_cmm_via_rename_resolves(self) -> None:
-        """Post-DEV-1448 (main): the rename propagates to s1.columns,
+        """The rename propagates to s1.columns,
         so `rev:sum` on the outer DOES resolve (s1.get_column('rev')
         finds it as a local column, the standard local-aggregate
         path emits SUM(s1.rev))."""
@@ -709,7 +720,7 @@ class TestRenamedInnerMeasureCrossStage:
                     (c.table, c.name) for c in s.find_all(exp.Column)
                 )
             assert ("s1", "rev") in outer_sum_targets, (
-                f"Outer SUM(s1.rev) expected after DEV-1448 rename "
+                f"Outer SUM(s1.rev) expected after rename "
                 f"propagation.\ngot: {outer_sum_targets}\nSQL:\n{sql}"
             )
         finally:
@@ -739,7 +750,7 @@ class TestCrossStageTimeShift:
             outer = SlayerQuery(
                 source_model="s1",
                 time_dimensions=[TimeDimension(
-                    # DEV-1450 typed contract: downstream flat alias.
+                    # Typed contract: downstream flat alias.
                     dimension=ColumnRef(name="customers__regions__last_activity_at"),
                     granularity=TimeGranularity.MONTH,
                 )],
@@ -863,7 +874,7 @@ class TestCrossModelStarCountCrossStage:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed re-aggregation: outer references the flat
+                # Typed re-aggregation: outer references the flat
                 # inner alias `customers___count` directly and sums it to
                 # roll up total rows. COUNT on the stage rows would
                 # silently return the number of groups instead.
@@ -910,9 +921,8 @@ class TestCrossModelInterceptSemanticsGate:
     async def test_avg_falls_through_to_cte_path(self) -> None:
         """Cross-stage `customers.revenue:avg` must NOT be intercepted —
         averaging an inner-aggregated average is not equal to the overall
-        average. The intercept returns None; the existing cross-model
-        path takes over (which on a virtual stage with no joins raises
-        ValueError — that's still better than silently lying)."""
+        average. `customers`, which no join path reaches from s1, is
+        averaged over its own rows instead."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -925,18 +935,14 @@ class TestCrossModelInterceptSemanticsGate:
                 source_model="s1",
                 measures=[{"formula": "customers.revenue:avg"}],
             )
-            # Falls through to existing CTE path → raises because s1 has
-            # no joins. Pin the existing error rather than asserting the
-            # outer SQL has any specific shape (the fix is: don't
-            # silently re-aggregate).
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            _assert_reads_unrelated_customers(resp)
         finally:
             tmp.cleanup()
 
     async def test_count_distinct_falls_through(self) -> None:
         """Cross-stage `customers.revenue:count_distinct` is also
-        non-distributive — falls through to the CTE path."""
+        non-distributive — `customers` is aggregated over its own rows."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -949,8 +955,8 @@ class TestCrossModelInterceptSemanticsGate:
                 source_model="s1",
                 measures=[{"formula": "customers.revenue:count_distinct"}],
             )
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            _assert_reads_unrelated_customers(resp)
         finally:
             tmp.cleanup()
 
@@ -968,7 +974,7 @@ class TestCrossModelInterceptSemanticsGate:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed re-aggregation via flat inner alias.
+                # Typed re-aggregation via flat inner alias.
                 measures=[{"formula": "customers__revenue_sum:sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1007,7 +1013,7 @@ class TestCrossModelInterceptRenameBookkeeping:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed re-aggregation with rename.
+                # Typed re-aggregation with rename.
                 measures=[{"formula": "customers__revenue_sum:sum", "name": "rev"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1023,7 +1029,7 @@ class TestCrossModelInterceptRenameBookkeeping:
 
     async def test_renamed_intercept_filter_via_colon_form(self) -> None:
         """Outer renames the re-aggregated flat measure to `rev` AND
-        filters via the colon form. Per DEV-1443, the filter may use
+        filters via the colon form. The filter may use
         either the colon form or the user alias; both resolve to the
         rename."""
         engine, tmp = await _engine_with_join_chain()
@@ -1036,7 +1042,7 @@ class TestCrossModelInterceptRenameBookkeeping:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                # DEV-1450 typed re-aggregation with rename.
+                # Typed re-aggregation with rename.
                 measures=[{"formula": "customers__revenue_sum:sum", "name": "rev"}],
                 filters=["customers__revenue_sum:sum > 100"],
             )
@@ -1089,7 +1095,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
         self,
     ) -> None:
-        """DEV-1450 typed contract end-to-end across a 3-stage DAG:
+        """Typed contract end-to-end across a 3-stage DAG:
         stage 1 projects a cross-model measure (legal — has joins),
         stage 2 re-aggregates the flat inner alias, stage 3
         re-aggregates the stage-2 flat alias. The contract requires
@@ -1161,15 +1167,14 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             # candidate computes `customers__revenue_sum` and the
             # column exists on s1, BUT it isn't an auto-derived cross-
             # model canonical-flat (it's the user-renamed local
-            # measure). The intercept must skip it and fall through
-            # to the cross-model CTE path, which raises because s1
-            # has no joins.
+            # measure). The intercept must skip it: `customers`, which no
+            # join path reaches from s1, is aggregated over its own rows.
             outer = SlayerQuery(
                 source_model="s1",
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            _assert_reads_unrelated_customers(resp)
         finally:
             tmp.cleanup()
 
@@ -1183,11 +1188,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         HAVING on the re-aggregated measure.
 
         The fallback gating recognises the aggregation-canonical leaf
-        and skips the dim-style rewrite. The standard strict path
-        then raises (DEV-1445 territory: cross-model measure filters
-        are not yet auto-resolved). The unrenamed case is the same
-        — users must reference via the renamed alias, restructure
-        with multi-stage, or wait for DEV-1445."""
+        and skips the dim-style rewrite: `customers`, which no join path
+        reaches from s1, is aggregated over its own rows and the filter
+        applies to that value."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1201,18 +1204,15 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 measures=[{"formula": "customers.revenue:sum"}],
                 filters=["customers.revenue:sum > 100"],
             )
-            # The strict path raises rather than silently emitting a
-            # WHERE that would clip rows before the outer aggregation.
-            # (The rename path test pins the WORKING case.)
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            _assert_reads_unrelated_customers(resp)
         finally:
             tmp.cleanup()
 
     async def test_intercepted_cmm_order_only_reaggregated_resolves(
         self,
     ) -> None:
-        """DEV-1712 (D-D variant 1): an AGGREGATED outer stage may order by
+        """D-D variant 1: an AGGREGATED outer stage may order by
         an EXPLICIT re-aggregation of an inner-stage column
         (``customers__revenue_sum:max``) that is not re-projected. It
         materialises as a hidden aggregate on s1 and orders at the outer
@@ -1261,7 +1261,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_cmm_order_only_bare_grouped_max_wraps(
         self,
     ) -> None:
-        """DEV-1712 (D-D variant 2), superseded by DEV-1703 Phase 1: an
+        """D-D variant 2, as the typed pipeline resolves it: an
         AGGREGATED outer stage ordering by a BARE inner-stage row column
         (``customers__revenue_sum``, not re-aggregated) is not in the outer
         GROUP BY. Stage 8 rejected it; the sort key now materialises as a
@@ -1269,7 +1269,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 
         The stage boundary is the point of this test: the wrap must resolve
         against the ``s1`` rowset (``MIN(s1.customers__revenue_sum)`` — the
-        order defaults to ASC and DEV-1747 D10 made the wrap direction-aware),
+        order defaults to ASC and the wrap is direction-aware),
         never
         reach back into s1's own source tables, and must not widen the outer
         grain or leak into the public projection."""
@@ -1304,7 +1304,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_cmm_order_only_bare_ungrouped_splits(
         self,
     ) -> None:
-        """DEV-1712 (D-D variant 3): a NON-aggregating outer stage (dedup off)
+        """D-D variant 3: a NON-aggregating outer stage (dedup off)
         ordering by a bare inner-stage column emits a valid SPLIT reference
         against the s1 rowset — resolving on s1, never a bare `customers`
         table."""
@@ -1345,7 +1345,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_cmm_order_only_self_qualified_resolves(
         self,
     ) -> None:
-        """DEV-1712 (Codex): a downstream stage may SELF-qualify an order ref
+        """A downstream stage may SELF-qualify an order ref
         with its own stage name (``s1.customers__revenue_sum``). The
         qualifier-aware host-local check must recognise the stage relation as
         the host, so it resolves identically to the bare form — not
@@ -1388,7 +1388,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 
 
 # ===========================================================================
-# DEV-1779 — the cross-model-INTERCEPT rename site.
+# The cross-model-INTERCEPT rename site.
 #
 # A downstream-stage formula that references an intercepted cross-model
 # aggregate BEFORE that same aggregate is selected+renamed must not orphan
@@ -1406,16 +1406,16 @@ def _dev1779_undeclared(sql: str) -> set[str]:
     return referenced - declared
 
 
-class TestDev1779InterceptRename:
+class TestInterceptRename:
     async def test_formula_before_renamed_intercept_ref(self, tmp_path) -> None:
-        """DEV-1779 across a stage boundary: the outer stage lists a FORMULA
+        """Across a stage boundary: the outer stage lists a FORMULA
         over the re-aggregated intercept measure FIRST (which, on the old
         enrichment pipeline, froze the intercept's flat alias), then selects
         the same aggregate under an explicit rename. The branch's structural
         re-aggregation must keep both references pointing at one column
         regardless of declaration order.
 
-        Downstream stages see a FLAT schema (DEV-1450), so the outer stage
+        Downstream stages see a FLAT schema, so the outer stage
         references the inner cross-model aggregate by its flat path-mangled
         name ``customers__revenue_sum`` — the dotted ``customers.revenue``
         form is intentionally illegal past a stage boundary."""

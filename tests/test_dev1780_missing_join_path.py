@@ -1,5 +1,5 @@
-"""DEV-1780/1856 — a non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
-DEV-1856 turned short-form auto-routing on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
+"""A non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
+Short-form auto-routing is on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     UnknownReferenceError,
+    UnrelatedDatasetError,
     UnresolvableDimensionJoinError,
 )
 from slayer.core.join_search import count_routes
@@ -190,9 +190,10 @@ class TestShortFormRoutingAndBrokenChains:
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
         engine = await _engine(tmp_path, drop_customer_consumer=True)
         q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnrelatedDatasetError) as ei:
             await _dry_sql(engine, q)
-        assert ei.value.suggested_path is None
+        assert "Consumer.name" in str(ei.value)
+        assert "Invoice" in str(ei.value)
 
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
@@ -227,7 +228,7 @@ class TestDiagnosticsPreserved:
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
         )
         # A <-> B cycle over two DISTINCT edges; named so each hop resolves
-        # unambiguously (DEV-1853: two edges on one pair fail closed on a bare
+        # unambiguously (two edges on one pair fail closed on a bare
         # model-name token) and the revisit check still fires.
         await storage.save_model(SlayerModel(
             name="B", sql_table="B", data_source="test",
@@ -276,8 +277,8 @@ class TestInternalEnrichmentsUnaffected:
 
 class TestDownstreamStageScope:
     async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
-        """A named-query stage sees a FLAT schema, so an outer-stage dotted ref is
-        ``IllegalScopeReferenceError``; the inner stage's full-path dim resolves."""
+        """An outer-stage dotted ref names a model no join path reaches from the flat
+        stage: ``UnrelatedDatasetError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
         inner = SlayerQuery(
             name="s1", source_model="Invoice",
@@ -289,7 +290,7 @@ class TestDownstreamStageScope:
             dimensions=["Subscription.Customer.Consumer.email"],
             measures=[{"formula": "*:count"}],
         )
-        with pytest.raises(IllegalScopeReferenceError):
+        with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
 
 

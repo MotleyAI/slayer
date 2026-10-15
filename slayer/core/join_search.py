@@ -34,6 +34,7 @@ __all__ = [
     "shortest_route",
     "shortest_routes",
     "unaddressable_pairs",
+    "unreachable_target",
 ]
 
 
@@ -316,3 +317,14 @@ def paths_from(
 
     dfs(root.name, Route(), {root.name})
     return out
+
+
+def unreachable_target(*, root: SlayerModel, token: str, models_by_name: dict[str, SlayerModel]) -> str | None:
+    """The model ``token`` names when neither an incident edge nor a route reaches it from ``root``."""
+    target = models_by_name.get(token)
+    if target is None or token == root.name or is_spine(target):
+        return None
+    universe = {**models_by_name, root.name: root.with_unrelated(frozenset())}
+    if any(e.name == token or e.target_model == token for e in neighbors(model=root, models_by_name=universe)):
+        return None
+    return token if count_routes(root=root, target=token, models_by_name=universe) == 0 else None

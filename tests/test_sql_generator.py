@@ -606,7 +606,7 @@ class TestFields:
         assert "aov" in sql.lower()
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
-        assert "/ COUNT(*)" in sql
+        assert "/ NULLIF(COUNT(*), 0)" in sql
 
     async def test_no_fields_no_cte(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Without fields, no CTE is generated."""

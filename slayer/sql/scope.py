@@ -28,7 +28,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
+from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
 from slayer.core.join_walker import model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
@@ -256,16 +256,19 @@ class ScopeFrame(BaseModel):
             owner_path=owner_path,
         )
 
-        expanded = expand_derived_refs_sync(
-            sql=prequoted,
-            model=owner_model,
-            alias_path=alias_path,
-            models_by_name=self._models_by_name(),
-            dialect=self.dialect.sqlglot_name,
-            owner_path=owner_path,
-            alias_resolver=self._alias_resolver(),
-            crossed_paths=self.join_paths,
-        )
+        try:
+            expanded = expand_derived_refs_sync(
+                sql=prequoted,
+                model=owner_model,
+                alias_path=alias_path,
+                models_by_name=self._models_by_name(),
+                dialect=self.dialect.sqlglot_name,
+                owner_path=owner_path,
+                alias_resolver=self._alias_resolver(),
+                crossed_paths=self.join_paths,
+            )
+        except UnreachableDefinitionError as exc:
+            raise exc.labelled(f"definition {sql!r}") from None
         if expanded is None or expanded == prequoted:
             final = raw_ast
         else:

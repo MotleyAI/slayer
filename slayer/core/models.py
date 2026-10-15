@@ -570,7 +570,10 @@ class ModelJoin(BaseModel):
     @classmethod
     def _validate_join_pairs(cls, v: list[list[str]]) -> list[list[str]]:
         if not v:
-            raise ValueError("join_pairs must be non-empty")
+            raise ValueError(
+                "join_pairs must be non-empty; to combine a model no join path reaches, drop the join and "
+                "aggregate its columns in the query (e.g. count(events.id) / count(*))"
+            )
         for i, pair in enumerate(v):
             if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
                 raise ValueError(
@@ -723,6 +726,8 @@ class SlayerModel(BaseModel):
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this model is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)
+    # Runtime-only: datasets no join path reaches that this query frame's population names.
+    _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
 
     @field_validator("filters")
     @classmethod
@@ -879,6 +884,16 @@ class SlayerModel(BaseModel):
     def as_population_factor(self, factor: bool = True) -> "SlayerModel":
         out = self.model_copy()
         out._population_spine = factor
+        return out
+
+    @property
+    def unrelated_datasets(self) -> frozenset[str]:
+        """Names of the datasets this query frame's population meets only as a product."""
+        return self._unrelated
+
+    def with_unrelated(self, names: frozenset[str]) -> "SlayerModel":
+        out = self.model_copy()
+        out._unrelated = names
         return out
 
     @property

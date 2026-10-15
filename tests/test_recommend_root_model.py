@@ -458,6 +458,56 @@ class TestNoCommonRoot:
 
 
 # --------------------------------------------------------------------------
+# Attachments on unrelated datasets (no join path from the root)
+# --------------------------------------------------------------------------
+class TestUnrelatedAttachments:
+    async def test_unrelated_attachment_is_reported_through_the_product_hop(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"])
+        assert rec.root_model == "customers"
+        assert rec.reachable is True
+        flags = {ip.input_item: (ip.path, ip.unrelated) for ip in rec.item_paths}
+        assert flags == {"customers.name": ("name", False), "logs.id:count": ("count(logs.id)", True)}
+        resp = await engine.execute(
+            SlayerQuery.model_validate({"source_model": "customers", "measures": [flags["logs.id:count"][0]]}),
+            dry_run=True,
+        )
+        assert resp.sql
+
+    async def test_unrelated_attachment_never_steers_the_choice(self, engine) -> None:
+        items = ["customers.name", "regions.name"]
+        without = await engine.recommend_root_model(items)
+        with_unrelated = await engine.recommend_root_model([*items, "logs.id:count", "agents.id:count"])
+        assert with_unrelated.root_model == without.root_model == "customers"
+        assert {ip.input_item for ip in with_unrelated.item_paths if ip.unrelated} == {
+            "logs.id:count", "agents.id:count",
+        }
+
+    async def test_feasible_root_hint_reaches_an_unrelated_attachment(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.id:count"], root_hint="orders")
+        assert rec.root_model == "orders"
+        assert rec.warnings == []
+        assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == {
+            "customers.name": False, "logs.id:count": True,
+        }
+
+    async def test_unrelated_column_stays_unreachable(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.name", "logs.line"])
+        assert rec.root_model is None
+        assert rec.reachable is False
+        assert rec.item_paths == []
+
+    async def test_attachments_alone_keep_join_path_selection(self, engine) -> None:
+        rec = await engine.recommend_root_model(["customers.id:count", "logs.id:count"])
+        assert rec.root_model is None
+        assert rec.reachable is False
+        assert rec.item_paths == []
+
+    async def test_connected_items_are_never_flagged(self, engine) -> None:
+        rec = await engine.recommend_root_model(["orders.status", "products.price:sum", "orders.aov"])
+        assert [ip.unrelated for ip in rec.item_paths] == [False, False, False]
+
+
+# --------------------------------------------------------------------------
 # data_source scoping & dedup
 # --------------------------------------------------------------------------
 class TestDataSourceAndDedup:
@@ -786,6 +836,10 @@ class TestResultModels:
         ip = ItemPath(input_item="orders.revenue:sum", path="customers.revenue:sum")
         assert ip.input_item == "orders.revenue:sum"
         assert ip.path == "customers.revenue:sum"
+
+    def test_item_path_unrelated_defaults_false(self) -> None:
+        assert ItemPath(input_item="orders.status", path="status").unrelated is False
+        assert ItemPath(input_item="logs.id:count", path="count(logs.id)", unrelated=True).unrelated is True
 
     def test_candidate_coverage_fields(self) -> None:
         cc = CandidateCoverage(

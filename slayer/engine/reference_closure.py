@@ -41,6 +41,7 @@ from slayer.core.errors import (
     AmbiguousJoinPathError,
     CircularJoinPathError,
     SlayerError,
+    UnreachableDefinitionError,
 )
 from slayer.core.join_walker import canonical_path, walk
 from slayer.core.models import Column, SlayerModel
@@ -87,7 +88,7 @@ def _expand_derived_refs_any_dialect(
                 sql=sql, model=model, alias_path=alias_path,
                 models_by_name=bundle.models_by_name, dialect=dialect,
             )
-        except (ColumnCycleError, CircularJoinPathError):
+        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -138,7 +139,7 @@ def fragment_closure(
                 owner_path=tuple(owner_path), models_by_name=bundle.models_by_name,
                 dialect=dialect, crossed_paths=sink,
             )
-        except (ColumnCycleError, CircularJoinPathError):
+        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -189,7 +190,7 @@ def fragment_null_propagates(
                 models_by_name=bundle.models_by_name, dialect=dialect,
             )
             nodes = list(sqlglot.parse_one(expanded or "", dialect=dialect).walk())
-        except (ColumnCycleError, CircularJoinPathError):
+        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -338,10 +339,13 @@ def _column_key_closure(
         return out
     owner_relation = "__".join(path) if path else anchor_relation
     for sql in _definition_fragments(col):
-        frag = fragment_closure(
-            sql=sql, model=terminal, owner_path=path,
-            anchor_relation=owner_relation, bundle=bundle, cache=cache,
-        )
+        try:
+            frag = fragment_closure(
+                sql=sql, model=terminal, owner_path=path,
+                anchor_relation=owner_relation, bundle=bundle, cache=cache,
+            )
+        except UnreachableDefinitionError as exc:
+            raise exc.labelled(f"column {col.name!r}") from None
         if frag is None:
             return None
         out.extend(frag)

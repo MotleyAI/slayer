@@ -45,6 +45,7 @@ __all__ = [
     "follow",
     "incident_model_names",
     "is_product_edge",
+    "is_unrelated_edge",
     "matching_edges",
     "neighbors",
     "observe_traversals",
@@ -62,6 +63,11 @@ __all__ = [
     "walk_miss",
     "walk_terminal",
 ]
+
+
+#: A product hop's kind: the population to its spine, the spine to a dataset with no axis route,
+#: or the population to a dataset no join path reaches (minted only by strict resolution).
+ProductKind = Literal["spine", "detached", "unrelated"]
 
 
 class OrientedJoin(BaseModel):
@@ -85,6 +91,8 @@ class OrientedJoin(BaseModel):
     # A query stage's user spelling of an endpoint (``None`` for an ordinary model).
     source_spelling: str | None = None
     target_spelling: str | None = None
+    # A keyless hop pairing every source row with every target row; ``None`` for a declared join.
+    product: ProductKind | None = None
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -174,7 +182,7 @@ def _product_edge(model: SlayerModel) -> OrientedJoin:
         source_model=model.name, target_model=TIME_SPINE_MODEL, join_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.ONE_TO_MANY,
         name=TIME_SPINE_MODEL, declaring_model=model.name,
-        source_spelling=model.explicit_spelling,
+        source_spelling=model.explicit_spelling, product="spine",
     )
 
 
@@ -232,12 +240,28 @@ def _detached_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
         join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
         name=None, declaring_model=TIME_SPINE_MODEL,
         source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+        product="detached",
+    )
+
+
+def _unrelated_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
+    """The population and a dataset no join path reaches, meeting only as a product."""
+    return OrientedJoin(
+        source_model=source.name, target_model=target.name, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
+        name=None, declaring_model=source.name,
+        source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+        product="unrelated",
     )
 
 
 def is_product_edge(edge: OrientedJoin) -> bool:
-    """The population's hop to the spine (never an axis edge)."""
-    return edge.target_model == TIME_SPINE_MODEL and not edge.join_pairs
+    """A keyless product hop (never a declared or axis edge)."""
+    return edge.product is not None
+
+
+def is_unrelated_edge(edge: OrientedJoin) -> bool:
+    return edge.product == "unrelated"
 
 
 def _declared_toward(model: SlayerModel, target: str, *, spine: bool) -> list[ModelJoin]:
@@ -345,6 +369,8 @@ def resolve_hop(
     """
     candidates = matching_edges(neighbors(model=current, models_by_name=models_by_name), token)
     if not candidates:
+        candidates = _unrelated_hops(current=current, token=token, models_by_name=models_by_name)
+    if not candidates:
         return None
     if len(candidates) > 1:
         raise AmbiguousJoinPathError(
@@ -355,6 +381,14 @@ def resolve_hop(
         )
     _observe([candidates[0].target_model], strict=True)
     return candidates[0]
+
+
+def _unrelated_hops(
+    *, current: SlayerModel, token: str, models_by_name: dict[str, SlayerModel],
+) -> list[OrientedJoin]:
+    """The product hop from a query frame's population to the unrelated dataset ``token`` names."""
+    targets = [models_by_name[n] for n in sorted(current.unrelated_datasets) if n in models_by_name]
+    return matching_edges([_unrelated_edge(source=current, target=t) for t in targets], token)
 
 
 def addresses_alone(*, edge: OrientedJoin, incident: list[OrientedJoin]) -> bool:

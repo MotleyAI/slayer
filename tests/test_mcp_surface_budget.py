@@ -29,6 +29,7 @@ from tests._mcp_idiom_fixtures import (
     SECOND_CHILD,
     STAGE_NEEDED,
     STAGE_NOT_NEEDED,
+    UNRELATED_MODEL,
 )
 
 DESCRIPTION_BUDGET = 2048
@@ -53,6 +54,7 @@ MARKER_OWNERS: dict[str, tuple[str, str]] = {
     "an order with no customer": ("SlayerQuery", "measures"),
     "only the columns the question asks for": ("SlayerQuery", "order"),
     "where the facts are": ("SlayerQuery", "source_model"),
+    UNRELATED_MODEL: ("SlayerQuery", "measures"),
     **EXAMPLE_OWNERS,
 }
 
@@ -71,6 +73,7 @@ SOLE_OWNER_MARKERS: dict[str, frozenset[tuple[str, ...]]] = {
         for marker in (
             "time_spine.timestamp", "an order with no customer", "only the columns the question asks for",
             "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, STAGE_NOT_NEEDED, STAGE_NEEDED,
+            UNRELATED_MODEL,
         )
     },
     ONE_QUERY: frozenset({_INSTRUCTIONS, _TOOL_DESCRIPTION}),
@@ -413,6 +416,11 @@ def test_measure_formula_points_to_the_measures_field() -> None:
     text = _tools()["query"].inputSchema["$defs"]["ModelMeasure"]["properties"]["formula"].get("description") or ""
     assert "measures" in text
     assert len(text) <= 200, text
+
+
+def test_unrelated_aggregate_varies_per_spine_bucket() -> None:
+    text = _tools()["query"].inputSchema["$defs"]["SlayerQuery"]["properties"]["measures"].get("description") or ""
+    assert "repeated on every row (per bucket of a time_spine time dimension)" in text
 
 
 def test_date_range_is_described() -> None:

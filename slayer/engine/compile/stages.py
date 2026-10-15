@@ -147,6 +147,7 @@ from slayer.engine.compile.spine import (
     spine_column,
 )
 from slayer.engine.compile.shift import carried_placeholders
+from slayer.engine.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
@@ -2134,8 +2135,11 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         key=agg, target_path=target_path, root_model=root_model,
         models_by_name=models_by_name, host_name=host_model.name,
     )
+    product = crosses_product_hop(host=host_model, path=target_path, models_by_name=models_by_name)
+    # Across a product hop every cell associates all home rows: the broadcast producer, warned as associated.
+    product_associate = mode == "associate" and product
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
-    associate = mode == "associate" and bool(unattributable)
+    associate = mode == "associate" and bool(unattributable) and not product_associate
     window_td_key: Optional[TimeTruncKey] = None
     semi_joins: List[SemiJoinFilter] = []
     broadcast: List[Tuple[str, str]] = []
@@ -2172,11 +2176,15 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
     else:
         # BROADCAST / ERROR ARM: an unattributable explicit key is a hard error.
-        check_cross_model_partition_keys_attributable(
-            alias=alias, root_name=root_name, explicit=explicit,
-            unattributable=[(u.name, u.reason) for u in unattributable],
-        )
-        broadcast = [(u.name, u.reason) for u in unattributable]
+        if product_associate:
+            associated_measure = None if explicit or not unattributable else alias
+            associated_dimensions = [] if explicit else [u.name for u in unattributable]
+        else:
+            check_cross_model_partition_keys_attributable(
+                alias=alias, root_name=root_name, explicit=explicit,
+                unattributable=[(u.name, u.reason) for u in unattributable],
+            )
+            broadcast = [(u.name, u.reason) for u in unattributable]
         if target_path != source_anchor_path(agg.source):
             # The source sits beyond the home: render inline as a host-locus
             # aggregate joining the to-one path from the home, never a
@@ -2338,8 +2346,25 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         associated_measure=associated_measure,
         associated_dimensions=associated_dimensions,
         association_restricted_filter_texts=restricted_texts,
+        **(_unrelated_attach_fields(agg=agg, alias=alias, dataset=target_path[0], context=context)
+           if product else {}),
         **cm_attach_kwargs,
     )
+
+
+def _unrelated_attach_fields(
+    *, agg: AggregateKey, alias: str, dataset: str, context: _ProducerSynthesisContext,
+) -> Dict[str, Any]:
+    """The ``unrelated_dataset`` warning's fields: the public measures reading ``agg``, else its alias."""
+    measures = [
+        dm.public_name for dm in context.prebound.declared_measures
+        if dm.public_name and agg in walk_value_keys(dm.bound.value_key)
+    ]
+    return {
+        "unrelated_dataset": dataset,
+        "unrelated_population": context.host_model.spelling,
+        "unrelated_measures": measures or [alias],
+    }
 
 
 def _window_endpoints(
@@ -3407,8 +3432,8 @@ def _synthesize_local_regroup(
         substitutions=substitutions,
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
         # A population semi-join inherited into this producer reports each of
-        # the producer's own public measures, not its stage alias. DEV-1944:
-        # an aggregate selected under two names warns only the first.
+        # the producer's own public measures, not its stage alias; an aggregate
+        # selected under two names warns only the first.
         population_semi_join_measures=(
             [alias_map[a] for a in aggs
              if isinstance(a, AggregateKey) and a in alias_map]
@@ -4184,6 +4209,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             sid = projection.registry.find_by_key(sub.placeholder)
             if sid is not None:
                 regroup_combined_slot_ids.add(sid)
+    regroup_combined_slot_ids |= _isolated_composites(
+        slots=[*agg_slots, *combined_slots], isolated={*windowed_slot_ids, *regroup_combined_slot_ids},
+        registry=projection.registry,
+    )
     empty_base_plan = _plan_empty_base_grain(
         projection=projection.public_projection,
         agg_slots=agg_slots,
@@ -4263,6 +4292,16 @@ def _assert_no_inline_kernel_aggregates(
                 f"kernel-requiring aggregate {k!r} left inline in a producer "
                 f"whose kernel answer is {kernel_answer!r}"
             )
+
+
+def _isolated_composites(*, slots: list, isolated: AbstractSet[SlotId], registry) -> set[SlotId]:
+    """Composites built only from isolated aggregates and literals: they too leave ``_base`` empty."""
+    def composed(key: ValueKey) -> bool:
+        if isinstance(key, LiteralKey) or registry.find_by_key(key) in isolated:
+            return True
+        return isinstance(key, SLOT_COMPOSITE_KINDS) and all(composed(c) for c in key.children())
+
+    return {s.id for s in slots if isinstance(s.key, SLOT_COMPOSITE_KINDS) and composed(s.key)}
 
 
 def _plan_empty_base_grain(

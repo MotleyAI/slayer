@@ -23,6 +23,7 @@ customers: 1 Alice R1 | 2 Bob R1 | 3 Carol R2 | 4 Dan (no region; omitted when `
 orders (id, customer, amount): 1 Alice 10 | 2 Alice 20 | 3 Bob 35 | 4 Carol 40 | 5 Dan 50
    | 6 NULL 6 | 7 #99 (no such customer) 7
 returns (id, customer, amount): 1 Alice 1 | 2 Alice 2 | 3 Alice 4 | 4 Carol 8
+events (id, kind), joined to nothing: 1 a | 2 b | 3 a | 4 c | 5 a | 6 b
 
 Orders: Alice 30, Bob 35, Carol 40, Dan 50, parentless 13; total 168. Returns: Alice 7, Carol 8; total 15.
 By region: North 65, South 40, NULL 63 (Dan + parentless).
@@ -67,6 +68,9 @@ SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "mo
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
 CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
+#: Guidance marker for an aggregate over a model no join path reaches; owned by ``measures``.
+UNRELATED_MODEL = "no join path reaches"
+UNRELATED_RATIO = "count(events.id) / count(*)"
 
 # Guidance markers
 STAGE_NOT_NEEDED = "A STAGE IS NOT NEEDED"
@@ -221,6 +225,13 @@ def _child_models(*, data_source: str = "test") -> list[SlayerModel]:
                 Column(name="name", type=DataType.TEXT),
             ],
         ),
+        SlayerModel(
+            name="events", sql_table="events", data_source=data_source,
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="kind", type=DataType.TEXT),
+            ],
+        ),
     ]
 
 
@@ -240,6 +251,8 @@ def _child_seed(*, with_regionless: bool) -> Callable[[str], None]:
             "(6, NULL, 6), (7, 99, 7)",
             "CREATE TABLE returns (id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER)",
             "INSERT INTO returns VALUES (1, 1, 1), (2, 1, 2), (3, 1, 4), (4, 3, 8)",
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, kind VARCHAR)",
+            "INSERT INTO events VALUES (1, 'a'), (2, 'b'), (3, 'a'), (4, 'c'), (5, 'a'), (6, 'b')",
         ):
             con.execute(stmt)
         con.close()

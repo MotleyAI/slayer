@@ -1164,7 +1164,10 @@ class SlayerQuery(BaseModel):
             "own rows: several child models never fan out or double count. A child row without a "
             "parent (an order with no customer) has NULL parent columns: it counts in the NULL "
             "row of a parent dimension when that row exists, and in an ungrouped total; never add "
-            "it again.\n"
+            "it again. An aggregate over a model no join path reaches from the root is computed "
+            "over that model's own rows and repeated on every row (per bucket of a time_spine "
+            "time dimension), with an unrelated_dataset warning: rooted at customers, "
+            "count(events.id) / count(*).\n"
             "More (every aggregation, empty-input values, nesting and transform rules): "
             'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
             'entity_type="memory").'
