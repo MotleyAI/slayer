@@ -1,7 +1,5 @@
 """Column access and the inline-SQL switch of ``SessionPolicy``, end to end on SQLite."""
 
-import sqlite3
-
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +8,7 @@ from slayer.core.models import Column, DataType, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnAccessRule, ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -111,7 +110,7 @@ def test_nothing_visible_fails_closed():
 @pytest.fixture
 async def storage(tmp_path) -> YAMLStorage:
     db = tmp_path / "hr.db"
-    with sqlite3.connect(db) as conn:
+    with transaction(db) as conn:
         conn.execute("CREATE TABLE employees (id INTEGER, org TEXT, name TEXT, salary INTEGER)")
         conn.executemany(
             "INSERT INTO employees VALUES (?, ?, ?, ?)",
