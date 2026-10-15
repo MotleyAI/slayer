@@ -253,7 +253,7 @@ class TestCrossModelExpressions:
     async def test_custom_aggregation_unknown_off_the_anchor(self):
         # wsum is defined on customers, not orders — the orders-anchored spelling is unknown.
         query = orders_q(measures=[ModelMeasure(formula="wsum(amount - cost)", name="m")])
-        with pytest.raises((ValueError,), match="(?i)unknown aggregation"):
+        with pytest.raises((ValueError,), match="(?i)unknown function"):
             await gen(query)
 
     async def test_target_homed_scope_closed_no_placeholder_leak(self):

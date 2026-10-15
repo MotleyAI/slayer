@@ -203,6 +203,8 @@ A sort specification: `column` names a dimension (`status`), a declared measure'
 
 Via MCP: `{"column": "count(*)", "direction": "desc"}`
 
+The object form `{"column": {"name": "sum(amount)"}}` with an expression as its only key is the same as the string form `{"column": "sum(amount)"}`.
+
 ### Ordering by something you don't project
 
 `order` may reference a column or aggregate that is **not** declared as a dimension/measure — the classic "top-N by metric X, display only Y, Z" pattern:
@@ -712,6 +714,8 @@ partition in its suffix (`orders.revenue_sum_partition_by_region`,
 `orders.revenue_sum_partition_by` for the grand total) — name the measure to
 control the key.
 
+A `partition_by` element may also be a time bucket the query groups by, so with time dimension `ordered_at` at month, `partition_by=[month(ordered_at)]` means `partition_by=[ordered_at]`.
+
 ### Cross-model measures
 
 When models have [joins](models.md#joins), you can reference measures from joined models using a dotted path inside the aggregation — `aggregation(model_name.measure_name)`:
@@ -731,6 +735,8 @@ SLayer computes the joined measure in its own sub-query **rooted at the measure'
 model** (here `customers`) and LEFT JOINs it back to the main query — so the
 aggregate runs over the target's rows once, never through a 1:N join that would
 multiply them.
+
+The method-call spelling `order_items.count(*)` or `order_items.sum(price * qty)` (further arguments literals only) means `count(order_items.*)` / `sum(order_items.price * order_items.qty)`.
 
 The sub-query groups by the subset of your dimensions the engine can **prove
 safe** — those reachable from the measure's model over join hops that are

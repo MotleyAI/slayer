@@ -83,10 +83,12 @@ def _orders_with_status() -> SlayerModel:
 class TestCrossModelGating:
     async def test_cross_model_pk_aggregation_rejected(self) -> None:
         """``customers.id:sum`` — PK column, sum is forbidden by the PK rule."""
+        orders = _orders_model()
+        customers = _customers_model()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
-                orders=_orders_model(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "customers.id:sum", "name": "result"}],
             )
 
@@ -101,10 +103,12 @@ class TestCrossModelGating:
 
     async def test_cross_model_string_sum_rejected(self) -> None:
         """``customers.name:sum`` — string + sum is forbidden by type defaults."""
+        orders = _orders_model()
+        customers = _customers_model()
         with pytest.raises(ValueError, match="not applicable|string"):
             await _generate_sql(
-                orders=_orders_model(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "customers.name:sum", "name": "result"}],
             )
 
@@ -132,9 +136,10 @@ class TestCrossModelGating:
                 ),
             ]
         )
+        orders = _orders_model()
         with pytest.raises(ValueError, match="not allowed|allowed_aggregations|whitelist"):
             await _generate_sql(
-                orders=_orders_model(),
+                orders=orders,
                 customers=customers,
                 measures=[{"formula": "customers.rating:sum", "name": "result"}],
             )
@@ -159,11 +164,13 @@ class TestCrossModelGating:
         assert "AVG" in sql.upper()
 
     async def test_cross_model_unknown_aggregation_rejected(self) -> None:
-        """Unknown aggregation name raises with the same message style as local."""
+        """Unknown function name raises with the same message style as local."""
+        orders = _orders_model()
+        customers = _customers_model()
         with pytest.raises(ValueError, match="bogus_agg|not.*aggregation"):
             await _generate_sql(
-                orders=_orders_model(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "customers.name:bogus_agg", "name": "result"}],
             )
 
@@ -267,10 +274,11 @@ class TestStatAggregationEligibility:
     async def test_string_column_rejects_stat_agg(
         self, agg: str, numeric_orders: SlayerModel,
     ) -> None:
+        customers = _customers_model()
         with pytest.raises(ValueError, match="not applicable|string|numeric"):
             await _generate_sql(
                 orders=numeric_orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[{"formula": f"status:{agg}", "name": "result"}],
             )
 
@@ -282,10 +290,11 @@ class TestStatAggregationEligibility:
         self, agg: str, numeric_orders: SlayerModel,
     ) -> None:
         # PK columns are restricted to count/count_distinct regardless of type.
+        customers = _customers_model()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=numeric_orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[{"formula": f"id:{agg}", "name": "result"}],
             )
 
@@ -298,10 +307,11 @@ class TestStatAggregationEligibility:
         already covered string LHS, but `corr`/`covar_samp`/`covar_pop`
         with `other=` slipped past it.
         """
+        customers = _customers_model()
         with pytest.raises(ValueError, match="not applicable|string|numeric"):
             await _generate_sql(
                 orders=numeric_orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[
                     {"formula": f"status:{agg}(other=quantity)", "name": "result"}
                 ],
@@ -311,10 +321,11 @@ class TestStatAggregationEligibility:
     async def test_pk_column_rejects_two_arg_stat(
         self, agg: str, numeric_orders: SlayerModel,
     ) -> None:
+        customers = _customers_model()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=numeric_orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[
                     {"formula": f"id:{agg}(other=quantity)", "name": "result"}
                 ],
@@ -327,10 +338,11 @@ class TestStatAggregationEligibility:
         # Missing required `other=` parameter must raise with a clear message
         # naming the parameter, mirroring weighted_avg's missing-`weight=`
         # behaviour.
+        customers = _customers_model()
         with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
             await _generate_sql(
                 orders=numeric_orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[{"formula": f"amount:{agg}", "name": "result"}],
             )
 
@@ -371,49 +383,59 @@ class TestDev1576UnknownVsDisallowed:
     """
 
     async def test_unknown_name_raises_unknown_aggregation(self) -> None:
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        orders = _orders_with_status()
+        customers = _customers_model()
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "amount:bogus", "name": "result"}],
             )
 
     async def test_unknown_name_lists_known_aggregations(self) -> None:
+        orders = _orders_with_status()
+        customers = _customers_model()
         with pytest.raises(ValueError, match=r"Known:"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "amount:bogus", "name": "result"}],
             )
 
     async def test_unknown_name_suggests_close_match(self) -> None:
         # ``stdev`` is a near-miss for stddev_samp/stddev_pop. It is NOT an
         # alias (so §1 leaves it), and enrichment should offer a suggestion.
+        orders = _orders_with_status()
+        customers = _customers_model()
         with pytest.raises(ValueError, match=r"Did you mean 'stddev_(samp|pop)'"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "amount:stdev", "name": "result"}],
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
         # ``sum`` is a KNOWN aggregation but not eligible for a TEXT column —
         # keep the existing 'not applicable to <TYPE> column' message.
+        orders = _orders_with_status()
+        customers = _customers_model()
         with pytest.raises(ValueError, match=r"not applicable to TEXT column"):
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "status:sum", "name": "result"}],
             )
 
     async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
+        orders = _orders_with_status()
+        customers = _customers_model()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
-                orders=_orders_with_status(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "status:sum", "name": "result"}],
             )
-        assert "Unknown aggregation" not in str(exc.value)
+        assert "Unknown function" not in str(exc.value)
 
     async def test_star_unknown_gets_standard_message(self) -> None:
         # DEV-1826: the binder validates the aggregation NAME globally before
@@ -422,7 +444,7 @@ class TestDev1576UnknownVsDisallowed:
         # used to surface as the star-specific message).
         orders = _orders_with_status()
         customers = _customers_model()
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
@@ -432,7 +454,7 @@ class TestDev1576UnknownVsDisallowed:
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
         # A custom aggregation known model-wide but absent from a column's
         # allowed_aggregations whitelist → 'not allowed for column', NOT
-        # 'Unknown aggregation'.
+        # 'Unknown function'.
         orders = SlayerModel(
             name="orders",
             sql_table="public.orders",
@@ -451,13 +473,14 @@ class TestDev1576UnknownVsDisallowed:
             aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
+        customers = _customers_model()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
-                customers=_customers_model(),
+                customers=customers,
                 measures=[{"formula": "rating:myagg", "name": "result"}],
             )
-        assert "Unknown aggregation" not in str(exc.value)
+        assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
 
     async def test_custom_agg_allowed_when_no_whitelist(self) -> None:
@@ -484,7 +507,7 @@ class TestDev1576UnknownVsDisallowed:
 
     async def test_healed_alias_does_not_trigger_unknown(self) -> None:
         # ``countd`` heals to count_distinct in §1 — it must reach SQL, not
-        # the §3 'Unknown aggregation' error.
+        # the §3 'Unknown function' error.
         sql = await _generate_sql(
             orders=_orders_with_status(),
             customers=_customers_model(),
@@ -599,29 +622,35 @@ class TestDev1576UnknownNamePrecedence:
         self, column: str,
     ) -> None:
         # rating has a whitelist, id is PK, status is TEXT — for an unknown
-        # aggregation name all three must surface 'Unknown aggregation', not
+        # aggregation name all three must surface 'Unknown function', not
         # the whitelist / PK / type-applicability message.
-        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+        orders = self._orders_pk_whitelist_custom()
+        customers = _customers_model()
+        with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
-                orders=self._orders_pk_whitelist_custom(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": f"{column}:bogus", "name": "result"}],
             )
 
     async def test_known_list_includes_custom_aggregations(self) -> None:
+        orders = self._orders_pk_whitelist_custom()
+        customers = _customers_model()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
-                orders=self._orders_pk_whitelist_custom(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "amount:bogus", "name": "result"}],
             )
         assert "myagg" in str(exc.value)
 
     async def test_no_did_you_mean_for_poor_match(self) -> None:
+        orders = self._orders_pk_whitelist_custom()
+        customers = _customers_model()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
-                orders=self._orders_pk_whitelist_custom(),
-                customers=_customers_model(),
+                orders=orders,
+                customers=customers,
                 measures=[{"formula": "amount:zzzzz", "name": "result"}],
             )
         assert "Did you mean" not in str(exc.value)

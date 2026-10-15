@@ -12,7 +12,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 ONE_ERROR = re.compile(r"\b1 validation error for\b")
-_RANK_QUERY = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "rank"}]}
+_BAD_NAME_QUERY = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "bad name"}]}
 _FIRST_STAGE = {"name": "a", "source_model": "orders", "measures": ["count(*)"]}
 
 
@@ -28,17 +28,17 @@ async def _error(server: Any, query: Any) -> str:
 
 
 async def test_invalid_query_object_reports_only_its_errors(server: Any) -> None:
-    message = await _error(server, _RANK_QUERY)
+    message = await _error(server, _BAD_NAME_QUERY)
     assert ONE_ERROR.search(message), message
-    assert "'rank' is a reserved transform name" in message
+    assert "Invalid name 'bad name'" in message
     assert "valid string" not in message
     assert "valid list" not in message
 
 
 async def test_invalid_stage_reports_only_its_errors_at_that_stage(server: Any) -> None:
-    message = await _error(server, [_FIRST_STAGE, _RANK_QUERY])
+    message = await _error(server, [_FIRST_STAGE, _BAD_NAME_QUERY])
     assert ONE_ERROR.search(message), message
-    assert "'rank' is a reserved transform name" in message
+    assert "Invalid name 'bad name'" in message
     assert ".1.measures.0.name" in message
     assert "valid string" not in message
     assert "valid dictionary" not in message

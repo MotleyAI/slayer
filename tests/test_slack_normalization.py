@@ -642,7 +642,7 @@ class TestJoinedCustomAggFunctional:
                 measures=[{"formula": "rolling_avg(qty)"}],
                 dimensions=["id"],
             )
-            with pytest.raises(ValueError, match="Unknown aggregation 'rolling_avg'"):
+            with pytest.raises(ValueError, match="Unknown function 'rolling_avg'"):
                 await engine.execute([reachable, unreachable], dry_run=True)
         finally:
             td.cleanup()

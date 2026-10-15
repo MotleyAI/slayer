@@ -646,8 +646,7 @@ class DbtToSlayerConverter:
     def _emit_model_measure(
         self, measures: list[ModelMeasure], m: DbtMeasure, formula: str, sm_name: str
     ) -> None:
-        """Append a ``ModelMeasure`` for a dbt measure, routing transform-name
-        collisions to the report instead of raising."""
+        """Append a ``ModelMeasure`` for a dbt measure, routing validation failures to the report."""
         try:
             measures.append(ModelMeasure(
                 name=m.name,
@@ -799,9 +798,8 @@ class DbtToSlayerConverter:
     ) -> None:
         """Append a ``ModelMeasure`` to ``slayer_model``.
 
-        Routes transform-name collisions to ``unconverted_metrics`` instead of
-        raising. Skips with a warning if the name collides with an existing
-        column or measure on the model.
+        Routes validation failures to ``unconverted_metrics``; skips with a
+        warning if the name collides with a column or measure on the model.
         """
         if self._metric_name_collides(metric.name, slayer_model):
             return

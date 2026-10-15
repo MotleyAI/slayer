@@ -62,12 +62,12 @@ Disambiguation rules:
   is the transform (`last(sum(revenue))`, `last(rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
-  standard unknown-aggregation error.
+  "Unknown function" error.
 * Scalar-allowlist names always stay scalar calls (`round(price)` is the
   scalar); a custom aggregation may not shadow a scalar-function name
   (rejected at model validation).
-* SQL's `DISTINCT` keyword is not part of the grammar: write
-  `count_distinct(user_id)`, never `count(distinct user_id)`.
+* SQL's `DISTINCT` keyword is accepted only as `count(distinct user_id)`, which
+  means `count_distinct(user_id)`.
 * Mode-A surfaces are unchanged — `SUM(amount)` inside `Column.sql` stays raw
   SQL.
 
@@ -231,6 +231,8 @@ case-insensitively):
 | `date_diff(unit, start, end)` | INT | `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year` |
 | `date_add(ts, n, unit)` | DATE or TIMESTAMP | same units as `date_diff` |
 | `current_date()` / `now()` | DATE / TIMESTAMP | — |
+
+`extract(part from ts)` means `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts, while `dow`, `dayofweek` and `weekday` are rejected because databases number weekdays differently.
 
 ```json
 {

@@ -1,7 +1,6 @@
 """Core enums for SLayer."""
 
 import datetime
-import difflib
 from enum import Enum
 from typing import Any, Literal, Optional
 
@@ -144,6 +143,28 @@ class DatePart(StrEnum):
     HOUR = "hour"
     MINUTE = "minute"
     SECOND = "second"
+
+
+# Lowercased spellings meaning one ``date_part`` part, as ``<alias>(x)`` and as a part word.
+DATE_PART_ALIASES: dict[str, DatePart] = {
+    "isodow": DatePart.DAY_OF_WEEK, "day_of_week": DatePart.DAY_OF_WEEK,
+    "doy": DatePart.DAY_OF_YEAR, "dayofyear": DatePart.DAY_OF_YEAR, "day_of_year": DatePart.DAY_OF_YEAR,
+    "isoyear": DatePart.ISO_YEAR, "iso_year": DatePart.ISO_YEAR,
+    "isoweek": DatePart.WEEK, "iso_week": DatePart.WEEK, "weekofyear": DatePart.WEEK,
+    "dayofmonth": DatePart.DAY, "day_of_month": DatePart.DAY,
+}
+# Weekday names whose numbering differs across databases.
+AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "dayofweek", "weekday"})
+# Date spellings a custom aggregation or granularity may not take (lowercased).
+RESERVED_DATE_SYNTAX_NAMES: frozenset[str] = frozenset({*DATE_PART_ALIASES, "extract"})
+
+
+def ambiguous_weekday_message(name: str) -> str:
+    return (
+        f"{name!r} has conflicting weekday numberings across databases; write "
+        f"date_part('day_of_week', x) (ISO, Monday = 1 … Sunday = 7) or "
+        f"date_part('day_of_week', x) % 7 (Sunday = 0 … Saturday = 6)."
+    )
 
 
 SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({
@@ -339,14 +360,6 @@ def normalize_aggregation_name(name: str) -> str:
     lowered = name.lower()
     candidate = AGGREGATION_ALIASES.get(lowered, lowered)
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
-
-
-def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") -> str:
-    """Shared 'Unknown aggregation' message (both binding gates): close-match
-    hint + known list (builtins ∪ the model's custom aggregations)."""
-    suggestion = difflib.get_close_matches(word=name, possibilities=sorted(known), n=1)
-    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
-    return f"Unknown aggregation '{name}'.{hint} Known: {sorted(known)}."
 
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).

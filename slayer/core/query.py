@@ -832,11 +832,29 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
             option["items"] = {"anyOf": [option["items"], {"type": "string"}]}
 
 
+def _advertise_order_item(schema: dict[str, Any]) -> None:
+    """Publish ``column``'s string form; hide the internal ``raw_formula``."""
+    props = schema.get("properties", {})
+    props.pop("raw_formula", None)
+    if "column" in props:
+        props["column"] = {"anyOf": [{"type": "string"}, props["column"]]}
+
+
+def _order_column_text(col: Any) -> str | None:
+    """The string form of an order ``column``: the string itself, or the expression a ``{"name": …}``-only object carries."""
+    if isinstance(col, str):
+        return col
+    if isinstance(col, dict) and set(col) == {"name"} and isinstance(name := col["name"], str):
+        if not _is_valid_column_ref_name(name) and _order_formula_candidate(name) is not None:
+            return name
+    return None
+
+
 class OrderItem(BaseModel):
     """A sort key."""
     # extra="forbid": reject stray keys so a mixed canonical+shorthand item
     # raises instead of silently dropping the extra key.
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_advertise_order_item)
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
@@ -850,11 +868,11 @@ class OrderItem(BaseModel):
     def _capture_raw_formula(cls, data: Any) -> Any:
         """Capture the raw column formula before coercion normalizes it."""
         if isinstance(data, dict):
-            col = data.get("column")
-            if isinstance(col, str):
+            col = _order_column_text(data.get("column"))
+            if col is not None:
                 candidate = _order_formula_candidate(col)
                 if candidate is not None:
-                    data = {**data, "raw_formula": candidate}
+                    data = {**data, "column": col, "raw_formula": candidate}
         return data
 
     @field_validator("direction")
@@ -1511,6 +1529,29 @@ def _union(
     return merged
 
 
+_RESTATABLE_FIELDS = ("label", "type", "description", "meta")
+
+
+def _drop_restatements(
+    saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None,
+) -> list[ModelMeasure] | None:
+    """``refined`` without the entries restating a saved entry by its bare name; a differing set field conflicts."""
+    by_name = {m.name: m for m in saved or [] if m.name}
+    kept: list[ModelMeasure] = []
+    for entry in refined or []:
+        prior = by_name.get(entry.formula.strip())
+        if prior is None or entry.name not in (None, prior.name):
+            kept.append(entry)
+            continue
+        for field in _RESTATABLE_FIELDS:
+            if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
+                raise RefinementConflictError(
+                    field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
+                    suggestion=_ENTRY_CONFLICT_SUGGESTION,
+                )
+    return kept if refined else refined
+
+
 def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> Any:
     if refined is None or refined == saved:
         return saved
@@ -1570,7 +1611,8 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
             identity=dimension_identity,
         ),
         "measures": _union(
-            saved.measures, refinement.measures, field="measures", canon=lambda m: m,
+            saved.measures, _drop_restatements(saved.measures, refinement.measures), field="measures",
+            canon=lambda m: m,
             identity=lambda m: ("name", m.name) if m.name else ("formula", m.formula),
         ),
         "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, model_name),
