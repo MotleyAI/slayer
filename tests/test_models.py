@@ -377,13 +377,9 @@ class TestSlayerModel:
         assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
-    def test_model_measure_name_cannot_shadow_transform(self) -> None:
-        """A ``ModelMeasure`` named after a built-in transform (``cumsum`` etc.)
-        would shadow the transform in formulas like ``cumsum(...)``. Reject at
-        model-validation time.
-        """
-        with pytest.raises(ValueError, match="reserved"):
-            ModelMeasure(name="cumsum", formula="revenue:sum")
+    def test_model_measure_may_be_named_after_transform(self) -> None:
+        """A transform name acts as a transform only in call position."""
+        assert ModelMeasure(name="cumsum", formula="revenue:sum").name == "cumsum"
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
         """DEV-1336: a ``ModelMeasure`` formula containing raw `OVER (...)` SQL

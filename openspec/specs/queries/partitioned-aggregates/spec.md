@@ -1154,17 +1154,22 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
 ### Requirement: Transform partition keys bind like aggregate partition keys
 A rank-family transform's own `partition_by=` SHALL bind exactly as an aggregation's
 `partition_by=` does: each element — singly or in a list — is a column reference, a
-dotted joined-model reference, or the name of a computed dimension declared in the
-query, which resolves to that dimension's value; the same binding applies in the
-measure, aggregation-parameter, filter, order-target and computed-dimension positions.
+dotted joined-model reference, the name of a computed dimension declared in the
+query, which resolves to that dimension's value, or a granularity call `gran(col)`
+(built-in or custom granularity, `col` local, joined or a stage column) equal to one
+of the query's time dimensions — that column at that granularity — which resolves to
+that time dimension's bucket; the same binding applies in the measure,
+aggregation-parameter, filter, order-target and computed-dimension positions.
 A name that is no declared computed dimension and no column SHALL fail as an unknown
-reference; an element that is neither a column reference nor a computed-dimension name
-SHALL fail with one error naming the construct — `aggregation` or `transform '<op>'` —
-and the offending kind. An attach-carrying computed dimension (one whose expression
-contains an aggregate) binds the same way; its filter and order positions execute, while
-its measure and aggregation-parameter positions fail closed with a planner error, never
-an unknown-reference error (target behaviour, DEV-1960: they execute like the
-aggregation twin).
+reference; a granularity call equal to no query time dimension SHALL fail with a
+partition-key error naming the bucket and suggesting adding it to `time_dimensions`;
+any other element that is neither a column reference nor a computed-dimension name
+SHALL fail with one partition-key error naming the construct — `aggregation` or
+`transform '<op>'` — and stating that the element is an expression. An attach-carrying
+computed dimension (one whose expression contains an aggregate) binds the same way; its
+filter and order positions execute, while its measure and aggregation-parameter
+positions fail closed with a planner error, never an unknown-reference error (target
+behaviour, DEV-1960: they execute like the aggregation twin).
 
 Values below are on the sales graph with `ureg` declared as the computed dimension
 `upper(region)` and `spend_band` banding `sum(amount, partition_by=[city, region]) > 45`.
@@ -1195,7 +1200,7 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 
 #### Scenario: Non-column element names the construct
 - **WHEN** a measure names `rank(sum(amount), partition_by=sum(amount), direction='desc')` or `sum(amount, partition_by=sum(amount))`
-- **THEN** binding fails with "transform 'rank' partition_by must resolve to a column reference; got AggregateKey." or "aggregation partition_by must resolve to a column reference; got AggregateKey." respectively
+- **THEN** binding fails with a partition-key error located at `transform 'rank' partition_by` or `aggregation partition_by` respectively, stating that `sum(amount)` is an expression
 
 #### Scenario: Undeclared name stays unknown
 - **WHEN** a query over `[city]` (no `ureg` dimension) selects `rank(sum(amount), partition_by=ureg, direction='desc')`
@@ -1208,6 +1213,22 @@ Values below are on the sales graph with `ureg` declared as the computed dimensi
 #### Scenario: Attach-carrying computed dimension in measure and parameter positions fails closed
 - **WHEN** a query over `[spend_band, city]` selects `rank(sum(amount), partition_by=spend_band, direction='desc')`, or a query over `[spend_band]` selects `weighted_avg(amount, weight=rank(sum(amount), partition_by=spend_band, direction='desc'))`
 - **THEN** the key binds to the dimension's value and planning fails with a planner error, never an unknown-reference error (target behaviour, DEV-1960: both execute like `sum(amount, partition_by=spend_band)`)
+
+#### Scenario: Granularity call on a projected time dimension
+- **WHEN** a query over `[region]` with time dimension `ordered_at` at month selects `sum(amount, partition_by=[month(ordered_at)])` and `rank(sum(amount), partition_by=[month(ordered_at)], direction='desc')`
+- **THEN** its columns, rows and SQL equal those of the same query with `partition_by=[ordered_at]`
+
+#### Scenario: Granularity call picks one of several time dimensions
+- **WHEN** a query has time dimensions `ordered_at` at month and at year and selects `sum(amount, partition_by=[month(ordered_at)])`
+- **THEN** the partition is the month bucket, while `partition_by=[ordered_at]` in the same query stays ambiguous
+
+#### Scenario: Granularity call on a joined, custom or stage time column
+- **WHEN** the time dimension is a joined model's time column, a custom-granularity bucket, or an inner stage's time column, and `partition_by=` names the matching granularity call
+- **THEN** it equals the same query partitioned by that time dimension's column
+
+#### Scenario: Granularity call matching no time dimension
+- **WHEN** a query with time dimension `ordered_at` at month selects `sum(amount, partition_by=[week(ordered_at)])`
+- **THEN** binding fails with a partition-key error naming `week(ordered_at)` and suggesting adding it to `time_dimensions`
 
 ### Requirement: Re-aggregation over ranked and windowed operands
 A partitioned or bare `first`/`last` aggregation and a windowed aggregation SHALL be legal re-aggregation operands and compute like any other operand, per `queries/semantics` › Second-order aggregation over attached values: each ranked operand picks the value at the earliest/latest ranking timestamp per operand cell — honouring an explicit ranking column, else the model's resolved default — and each windowed operand evaluates its trailing window per operand cell, before the outer aggregation consumes the cells. This SHALL hold for every outer aggregation of the plain scalar family, for operands combining several ranked, windowed and plain constituents (each keeping its own ranking key or window), for local and cross-model operands, with or without a query time dimension, in every consumer position (measure, measure-typed filter, order key, arithmetic, transform input, computed dimension with an explicit outer grain, aggregation parameter, nested re-aggregation), and under every `to_many_handling` mode with the usual attributability rules. A ranked or windowed operand SHALL never fail with an internal error; a shape outside this requirement fails with a typed error.

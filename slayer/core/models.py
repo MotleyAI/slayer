@@ -26,6 +26,7 @@ from slayer.core.enums import (
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
+    RESERVED_DATE_SYNTAX_NAMES,
     _coerce_legacy_datatype,
     builtin_empty_value,
 )
@@ -356,7 +357,9 @@ class ModelMeasure(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # ``type`` declares the formula's result type.
+        # ``type`` declares the formula's result type; an explicit null stays set.
+        if isinstance(data, dict) and "type" in data and data["type"] is None:
+            return data
         return _coerce_legacy_type_field(data)
 
     @field_validator("name")
@@ -369,19 +372,6 @@ class ModelMeasure(BaseModel):
             )
         if v is not None:
             _reject_reserved_prefix(v, "ModelMeasure name")
-        return v
-
-    @field_validator("name")
-    @classmethod
-    def _reject_transform_shadowing(cls, v: str | None) -> str | None:
-        """Reject names that would shadow a built-in transform (``cumsum`` etc.)."""
-        if v is None:
-            return v
-        if v in ALL_TRANSFORMS:
-            raise ValueError(
-                f"ModelMeasure name '{v}' is a reserved transform name. "
-                f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
-            )
         return v
 
     @field_validator("formula")
@@ -482,6 +472,11 @@ class Aggregation(BaseModel):
                 f"Aggregation name '{self.name}' conflicts with a scalar "
                 f"function. Scalar-allowlist names are reserved: "
                 f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
+            )
+        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' is a reserved date function or "
+                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
             )
         # A granularity-named aggregation would shadow the functional ``gran(col)``
         # time-bucket form in a query dimension.
@@ -1087,6 +1082,7 @@ class DatasourceConfig(BaseModel):
 def _reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
     out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
     out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))

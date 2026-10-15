@@ -78,7 +78,7 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import dotted_key_display
+from slayer.core.refs import dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
@@ -1343,6 +1343,12 @@ def check_partition_key_resolves(
             f"ambiguous — it is a time dimension at multiple granularities.",
             location=label,
             suggestion="Partition by a single query dimension instead.",
+        )
+    if isinstance(pk, TimeTruncKey):
+        raise PartitionKeyError(
+            summary=f"The partition_by bucket '{key_display(pk)}' is not one of the query's time dimensions.",
+            location=label,
+            suggestion=f"Add it to time_dimensions, or choose one of: {', '.join(available_dims) or '(none)'}.",
         )
     if maps_to_bucket or lenient:
         return

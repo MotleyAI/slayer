@@ -268,9 +268,9 @@ class TestFunctionalParseErrors:
         with pytest.raises(UnknownFunctionError):
             parse_expr("bogus(p=1)")
 
-    def test_sql_distinct_keyword_is_syntax_error(self) -> None:
-        with pytest.raises(ValueError):
-            parse_expr("count(distinct user_id)")
+    def test_sql_distinct_keyword_outside_count_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"count\(distinct x\)"):
+            parse_expr("sum(distinct user_id)")
 
 
 # ===========================================================================
@@ -333,21 +333,21 @@ class TestGlobalNameValidation:
         e_colon = await _binding_error("price:bogus", model=_orders())
         assert type(e_func) is type(e_colon)
         assert str(e_func) == str(e_colon)
-        assert "Unknown aggregation 'bogus'" in str(e_colon)
+        assert "Unknown function 'bogus'" in str(e_colon)
 
     async def test_star_bogus_colon_gets_standard_error(self) -> None:
         err = await _binding_error("*:bogus", model=_orders())
-        assert "Unknown aggregation 'bogus'" in str(err)
+        assert "Unknown function 'bogus'" in str(err)
 
     async def test_star_bogus_functional_gets_standard_error(self) -> None:
         err = await _binding_error("bogus(*)", model=_orders())
-        assert "Unknown aggregation 'bogus'" in str(err)
+        assert "Unknown function 'bogus'" in str(err)
 
     async def test_dotted_star_bogus_gets_standard_error(self) -> None:
         err = await _binding_error(
             "customers.*:bogus", model=_orders(), extra_models=[_customers()]
         )
-        assert "Unknown aggregation 'bogus'" in str(err)
+        assert "Unknown function 'bogus'" in str(err)
 
     async def test_avg_star_parity_error(self) -> None:
         e_func = await _binding_error("avg(*)", model=_orders())

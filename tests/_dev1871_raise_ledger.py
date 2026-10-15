@@ -160,6 +160,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Partition by a single query dimension instead.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
+         message="The partition_by bucket '…' is not one of the query's time dimensions."
+         + AT + "…"
+         + SUGGEST + "Add it to time_dimensions, or choose one of: ….",
+         category="checker", family="local-partitioned", user=True, owner="checker"),
+    _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by column '…' is not a query dimension."
          + AT + "…"
          + SUGGEST + "Add it to dimensions/time_dimensions, or choose one of: ….",

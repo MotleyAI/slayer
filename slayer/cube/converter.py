@@ -19,7 +19,7 @@ from slayer.core.enums import (
     invert_cardinality,
 )
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.formula import ALL_TRANSFORMS, parse_formula
+from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import render_probe_text
 from slayer.core.refs import IDENTIFIER_RE, functional_agg_text
@@ -635,13 +635,6 @@ class CubeToSlayerConverter:
                 cube=cube.name, member=meas.name,
                 message="multi_stage/time_shift/grain/filter on measure deferred to Stage 2; "
                         "emitted as plain aggregation if possible."))
-
-        if meas.name in ALL_TRANSFORMS:
-            report.add(CubeConversionIssue(
-                category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
-                cube=cube.name, member=meas.name,
-                message=f"Measure name '{meas.name}' shadows a SLayer transform; skipped."))
-            return
 
         # Reserve the measure's name BEFORE creating its underlying column, so a
         # bare-identifier column yields (`rate` → `rate_col`) and the measure keeps

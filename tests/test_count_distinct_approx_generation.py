@@ -114,7 +114,7 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
     ``slayer/core/enums.py`` ``AGGREGATION_ALIASES``) heal to the canonical
     name and dispatch through the same built-in generator branch, so a native
     dialect emits its approximate-distinct function rather than raising
-    'Unknown aggregation' or 'has no formula'."""
+    'Unknown function' or 'has no formula'."""
     for alias in ("approx_count_distinct", "countdistinctapprox"):
         query = SlayerQuery(
             source_model="orders",

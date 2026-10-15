@@ -182,5 +182,5 @@ class TestUnknownOuterAggregationRejectedAtBinding:
         query = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(formula=f"magic_fn({INNER_CR})", name="x")])
-        with pytest.raises((SlayerError, ValueError), match="(?i)unknown aggregation"):
+        with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

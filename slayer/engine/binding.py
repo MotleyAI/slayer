@@ -27,17 +27,21 @@ from slayer.core.errors import (
     UnresolvedPlaceholderError,
 )
 from slayer.core.enums import (
+    AMBIGUOUS_WEEKDAY_NAMES,
     BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
+    DATE_PART_ALIASES,
     DEFAULT_AGGREGATIONS_BY_TYPE,
+    GRANULARITY_NAMES,
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
     DataType,
-    format_unknown_aggregation,
+    ambiguous_weekday_message,
     normalize_aggregation_name,
 )
 from slayer.core.direction import rank_direction, with_direction_kwarg
+from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
@@ -963,7 +967,8 @@ def _bind_partition_keys(
             pks.append(dim_alias_map[elem.name])
             continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
-        if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
+        # A time bucket must be a query time dimension; the checker judges that.
+        if not isinstance(bound, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             raise PartitionKeyError(
                 summary=f"partition_by takes column references; '{key_display(bound)}' is an expression.",
                 location=f"{label} partition_by",
@@ -1341,19 +1346,23 @@ def _fold_positional_agg_args(
     return (), tuple(folded)
 
 
-def _unknown_aggregation_message(name: str, known) -> str:
-    """The standard unknown-aggregation error, plus a scalar-allowlist hint
-    when the name is a near-miss for a scalar function (typo UX)."""
-    msg = format_unknown_aggregation(name, known)
-    scalar_match = difflib.get_close_matches(
-        word=name.lower(), possibilities=sorted(SCALAR_FUNCTIONS), n=1,
-    )
-    if scalar_match:
-        msg += (
-            f" Note: {scalar_match[0]!r} is a scalar function, not an "
-            f"aggregation (scalar allowlist: {sorted(SCALAR_FUNCTIONS)})."
+def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBundle) -> UnknownFunctionError:
+    """Unknown callable ``name``: the callable categories and a close match."""
+    granularities = sorted(GRANULARITY_NAMES | set(bundle.granularities))
+    callable_names = [*aggregations, *SCALAR_FUNCTIONS, *DATE_PART_ALIASES, *ALL_TRANSFORMS, *granularities]
+    match = difflib.get_close_matches(word=name, possibilities=sorted(set(callable_names)), n=1)
+    hint = f" Did you mean '{match[0]}'?" if match else ""
+    if name.lower() in AMBIGUOUS_WEEKDAY_NAMES:
+        suggestion = ambiguous_weekday_message(name)
+    else:
+        suggestion = (
+            f"Known: aggregations {sorted(aggregations)}, scalar functions "
+            f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
+            f"granularities {granularities}."
         )
-    return msg
+    return UnknownFunctionError(
+        name=name, location=None, summary=f"Unknown function '{name}'.{hint}", suggestion=suggestion,
+    )
 
 
 def _validate_agg_eligibility(
@@ -1378,12 +1387,12 @@ def _validate_agg_eligibility(
     """
     owner_model, leaf = _resolve_agg_owner(source, bundle)
     if owner_model is None:
-        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS)
+        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS, bundle=bundle)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
-    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names)
+    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names, bundle=bundle)
     col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
@@ -1395,9 +1404,9 @@ def _validate_agg_eligibility(
     return effective
 
 
-def _known_aggregation(name: str, known) -> str:
+def _known_aggregation(name: str, known, *, bundle: ResolvedSourceBundle) -> str:
     if name not in known:
-        raise ValueError(_unknown_aggregation_message(name, known))
+        raise _unknown_function_error(name, aggregations=known, bundle=bundle)
     return name
 
 

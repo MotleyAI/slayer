@@ -631,15 +631,16 @@ class UnknownFunctionError(SlayerError, ValueError):
     def __init__(
         self,
         name: str,
-        location: str,
+        location: str | None,
         suggestion: str | None = None,
+        summary: str | None = None,
     ) -> None:
         self.name = name
         self.location = location
         self.suggestion = suggestion or self._DEFAULT_SUGGESTION
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Function {name!r} is not allowed in Mode B.",
+            summary=summary or f"Function {name!r} is not allowed in Mode B.",
             location=location,
             suggestion=self.suggestion,
         ))
