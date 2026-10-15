@@ -72,7 +72,9 @@ class ResolvedSourceBundle(BaseModel):
         return None
 
     def factor_free(self, model: SlayerModel) -> SlayerModel:
-        """``model`` as stored: a spine population's P factor without its product hop."""
+        """``model`` as stored: a population without its product hops."""
+        if model.unrelated_datasets:
+            model = model.with_unrelated(frozenset())
         return model.as_population_factor(False) if model.population_spine else model
 
     def rerooted(self, new_source: SlayerModel) -> "ResolvedSourceBundle":

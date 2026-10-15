@@ -9,27 +9,27 @@
 ## 2. Product hop and resolution
 
 - [ ] 2.1 Add the typed product-hop discriminator (design D1), move the spine product and detached edges onto it, and make join rendering, rerooting, association building, row scopes and semi-join correlation fail closed on an unrelated product hop; verify the full existing suite stays green
-- [ ] 2.2 Add the pre-binding collection of unresolved first-hop dataset names into the binding bundle (design D4); verify the "references in every position" and "names that are not reachable datasets" scenarios
-- [ ] 2.3 Mint the unrelated product hop in strict first-hop resolution only (design D2); verify the resolution scenarios and that route-search / inference / routing suites are unchanged
+- [x] 2.2 Add the pre-binding collection of unresolved first-hop dataset names into the binding bundle (design D4); verify the "references in every position" and "names that are not reachable datasets" scenarios
+- [x] 2.3 Mint the unrelated product hop in strict first-hop resolution only (design D2); verify the resolution scenarios and that route-search / inference / routing suites are unchanged
 
 ## 3. Checker and emission
 
-- [ ] 3.1 Implement the central product rule on dependency closures and the new typed row-level error (design D3); verify the row-level and mixed-conjunct scenarios
-- [ ] 3.2 Compile aggregates across the hop as producers over the unrelated dataset at their attributable grain (empty or spine bucket), attached by `CROSS JOIN` / bucket join, with the dedicated associate disposition (design D5); verify the aggregation scenarios and the SQL-shape tests
+- [x] 3.1 Implement the central product rule on dependency closures and the new typed row-level error (design D3); verify the row-level and mixed-conjunct scenarios
+- [x] 3.2 Compile aggregates across the hop as producers over the unrelated dataset at their attributable grain (empty or spine bucket), attached by `CROSS JOIN` / bucket join, with the dedicated associate disposition (design D5); verify the aggregation scenarios and the SQL-shape tests
 - [ ] 3.3 Lower one-sided filters across the hop to producer predicates and uncorrelated `EXISTS` (design D5); verify the filter scenarios, including zero-match and empty dataset
-- [ ] 3.4 Add `UnrelatedDatasetWarningPayload` and emit it once per dataset per stage (design D6); verify the warning scenarios
-- [ ] 3.5 Change the empty-`join_pairs` validation message to name the aggregate remedy; verify the empty-join-pairs scenario
-- [ ] 3.6 Reject a `Column.sql` or model filter whose qualifier names a dataset no join path reaches, at save time and (stored unvalidated) at query time; verify the stored-definitions scenario
+- [x] 3.4 Add `UnrelatedDatasetWarningPayload` and emit it once per dataset per stage (design D6); verify the warning scenarios
+- [x] 3.5 Change the empty-`join_pairs` validation message to name the aggregate remedy; verify the empty-join-pairs scenario
+- [x] 3.6 Reject a `Column.sql` or model filter whose qualifier names a dataset no join path reaches, at save time and (stored unvalidated) at query time; verify the stored-definitions scenario
 
 ## 4. Root recommendation
 
-- [ ] 4.1 Add `ItemPath.unrelated` and the attachment rule of design D7 across the Python / REST / CLI / MCP surfaces; verify the recommendation tests
+- [x] 4.1 Add `ItemPath.unrelated` and the attachment rule of design D7 across the Python / REST / CLI / MCP surfaces; verify the recommendation tests
 
 ## 5. Docs, agent surface, architecture
 
-- [ ] 5.1 Add one sentence to `docs/concepts/queries.md` › Cross-model measures and one to › Choosing a root model (the `unrelated` flag); verify every touched page stays in the `zensical.toml` nav
-- [ ] 5.2 Add the unrelated-model clause to the MCP `measures` field description within the 2048-character budget; verify the tool-surface tests
-- [ ] 5.3 Land the approved Axiom 3.1 in `architecture/semantics.arc42.md` exactly as approved (below), with its `[enforced: test:tests/test_unrelated_datasets.py]` tag; verify `poetry run la-arch-check` is green
+- [x] 5.1 Add one sentence to `docs/concepts/queries.md` › Cross-model measures and one to › Choosing a root model (the `unrelated` flag); verify every touched page stays in the `zensical.toml` nav
+- [x] 5.2 Add the unrelated-model clause to the MCP `measures` field description within the 2048-character budget; verify the tool-surface tests
+- [x] 5.3 Land the approved Axiom 3.1 in `architecture/semantics.arc42.md` exactly as approved (below), with its `[enforced: test:tests/test_unrelated_datasets.py]` tag; verify `poetry run la-arch-check` is green
 
   Approved wording, inserted between the existing Axiom 3 text and its two `[enforced: …]` tags:
 

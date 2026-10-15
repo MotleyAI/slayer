@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -12,6 +13,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
+from slayer.engine.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -38,9 +40,14 @@ async def _referenced_models(
         source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
         failures=failures,
     )
+    known = {m.name for m in component}
     component.extend(await _query_written_targets(
-        queries=[*named_queries.values(), query], known={m.name for m in component},
+        queries=[*named_queries.values(), query], known=known,
         sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
+    ))
+    component.extend(await _named_components(
+        names=_definition_heads(component), known=known, storage=storage, data_source=data_source,
+        failures=failures,
     ))
     referenced, query_backed = await _split_query_backed(
         models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
@@ -182,10 +189,11 @@ async def _stage_source_models(
     return out
 
 
-def _written_join_targets(spec: SourceSpec | None) -> List[str]:
-    if spec is None or isinstance(spec, str):
-        return []
-    return [j.target_model for j in spec.joins or []]
+def _written_targets(query: SlayerQuery) -> List[str]:
+    """The models ``query`` names: its source's join targets, then its references' first hops."""
+    spec = query.source_model
+    joins = [] if spec is None or isinstance(spec, str) else [j.target_model for j in spec.joins or []]
+    return list(dict.fromkeys([*joins, *sorted(first_hop_names(query))]))
 
 
 async def _query_written_targets(
@@ -197,25 +205,50 @@ async def _query_written_targets(
     data_source: Optional[str],
     failures: DocumentLoadFailures,
 ) -> List[SlayerModel]:
-    """The components of models the queries name as join targets but the join-graph
-    walk did not reach (an extension over a sibling carries its own joins)."""
+    """The components of models the queries name — as join targets or first hops — but the
+    join-graph walk did not reach (an extension over a sibling carries its own joins)."""
+    names = [n for q in queries for n in _written_targets(q) if n not in sibling_names]
+    return await _named_components(
+        names=names, known=known, storage=storage, data_source=data_source, failures=failures,
+    )
+
+
+#: A dotted qualifier's head in a Mode-A fragment (a model a definition may name).
+_QUALIFIER_HEAD = re.compile(r"(?<![\w.\"])([A-Za-z_]\w*)\s*\.\s*[A-Za-z_\"]")
+
+
+def _definition_heads(models: List[SlayerModel]) -> List[str]:
+    """The qualifiers ``models``' Mode-A definitions spell, so an unreachable one is known to the door."""
+    fragments = [f for m in models for c in m.columns for f in (c.sql, c.filter) if f]
+    fragments += [f for m in models for f in m.filters or []]
+    return list(dict.fromkeys(h for f in fragments for h in _QUALIFIER_HEAD.findall(f)))
+
+
+async def _named_components(
+    *,
+    names: List[str],
+    known: "set[str]",
+    storage: "StorageBackend",
+    data_source: Optional[str],
+    failures: DocumentLoadFailures,
+) -> List[SlayerModel]:
+    """The components of the ``names`` models not yet ``known`` (absent names skipped)."""
     out: List[SlayerModel] = []
-    for q in queries:
-        for name in _written_join_targets(q.source_model):
-            if name in known or name in sibling_names:
-                continue
-            model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
-            if model is None:
-                continue
-            fresh = [
-                m for m in await _collect_referenced_models(
-                    source_model=model, named_queries={}, storage=storage, data_source=data_source,
-                    failures=failures,
-                )
-                if m.name not in known
-            ]
-            known.update(m.name for m in fresh)
-            out.extend(fresh)
+    for name in names:
+        if name in known:
+            continue
+        model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
+        if model is None:
+            continue
+        fresh = [
+            m for m in await _collect_referenced_models(
+                source_model=model, named_queries={}, storage=storage, data_source=data_source,
+                failures=failures,
+            )
+            if m.name not in known
+        ]
+        known.update(m.name for m in fresh)
+        out.extend(fresh)
     return out
 
 
@@ -290,6 +323,10 @@ async def _stage_base_components(
                 source_model=base, named_queries={}, storage=storage, data_source=data_source,
                 failures=failures,
             ))
+    out.extend(await _query_written_targets(
+        queries=list(model.source_queries or []), known={*known, *skip, *(m.name for m in out)},
+        sibling_names=set(private), storage=storage, data_source=data_source, failures=failures,
+    ))
     return out
 
 

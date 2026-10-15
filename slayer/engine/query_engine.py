@@ -64,8 +64,8 @@ from slayer.core.query import (
     refine_query,
     render_probe_text,
 )
-from slayer.core.join_search import blocking_pairs, shortest_routes
-from slayer.engine.column_dependency import check_definition_ambiguity
+from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
+from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach
 from slayer.engine.population import (
     ambiguity_resolved_path,
     determined_path,
@@ -87,7 +87,9 @@ from slayer.core.warnings import (
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
     SlayerNarrowedAccessWarning,
+    SlayerUnrelatedDatasetWarning,
     SlayerWholePeriodsWarning,
+    UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
 )
 from slayer.core.refs import functional_agg_text
@@ -417,6 +419,23 @@ def _collect_associated_warnings(
     ]
 
 
+def _collect_unrelated_warnings(*, planned_list, labels) -> List[UnrelatedDatasetWarningPayload]:
+    """One unrelated-dataset payload per ``(stage location, dataset)``; measures unioned."""
+    found: "dict[tuple[str, str], tuple[str, list[str]]]" = {}
+    for planned, location in zip(planned_list, labels):
+        for attach in planned.regroup_attach_plans:
+            if attach.unrelated_dataset is None:
+                continue
+            _population, measures = found.setdefault(
+                (location, attach.unrelated_dataset), (attach.unrelated_population or "", []),
+            )
+            measures.extend(m for m in attach.unrelated_measures if m not in measures)
+    return [
+        UnrelatedDatasetWarningPayload(dataset=dataset, population=population, measures=measures, location=location)
+        for (location, dataset), (population, measures) in found.items()
+    ]
+
+
 def _collect_degenerate_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[DegenerateReaggregationWarningPayload]:
@@ -537,6 +556,8 @@ def _emit_python_warnings(response) -> None:
             )
         elif isinstance(w, WholePeriodsNonNestingWarningPayload):
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
+        elif isinstance(w, UnrelatedDatasetWarningPayload):
+            _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -1184,6 +1205,7 @@ class SlayerQueryEngine:
             _raise_on_error_events(broadcasts=broadcast_warnings)
         warnings.extend(broadcast_warnings)
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
+        warnings.extend(_collect_unrelated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
         warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
@@ -2084,9 +2106,19 @@ class SlayerQueryEngine:
         # fan-out-free path of an item blocked only by ambiguity (used when nothing is viable, or by a hint).
         strict: dict[str, dict[str, tuple[str, ...]]] = {}
         lenient: dict[str, dict[str, tuple[str, ...]]] = {}
+        # With determination items, an attachment no join path reaches meets the root as a product.
+        unrelated: dict[str, set[str]] = {}
         for name in all_names:
             routed = shortest_routes(root=models_by_name[name], models_by_name=models_by_name)
             paths = {r.input_item: routed[r.model].tokens for r in attach if r.model in routed}
+            unrelated[name] = {
+                r.input_item for r in attach
+                if det and r.model not in routed and unreachable_target(
+                    root=models_by_name[name], token=r.model, models_by_name=models_by_name,
+                ) is not None
+            }
+            paths.update({item: (models_by_name[r.model].spelling,) for r in attach
+                          if (item := r.input_item) in unrelated[name]})
             fallback: dict[str, tuple[str, ...]] = {}
             for r in det:
                 item = f"{r.model}.{r.leaf}"
@@ -2142,6 +2174,7 @@ class SlayerQueryEngine:
                     input_item=r.input_item,
                     path=_emit_recommend_path(list(reach[root][r.input_item]), r),
                     attachment=r.attachment,
+                    unrelated=r.input_item in unrelated[root],
                 )
                 for r in resolved
             ]
@@ -2875,6 +2908,7 @@ class SlayerQueryEngine:
         datasource = await self.storage.get_datasource(model.data_source)
         dialect = self._dialect_for_type(datasource.type if datasource else None)
         models_by_name = {k: v for k, v in loaded.items() if v is not None}
+        check_definition_reach(model=model, reachable=models_by_name)
         check_definition_ambiguity(model=model, reachable=models_by_name)
 
         def _expand(sql: str) -> None:

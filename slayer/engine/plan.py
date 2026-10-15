@@ -27,6 +27,7 @@ from slayer.core.scope import (
 from slayer.engine.compile import compile_query
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.normalization import normalize_query
+from slayer.engine.unrelated import stamp_unrelated
 from slayer.engine.stage_ordering import (
     localize_stages,
     stage_sibling_reads,
@@ -89,6 +90,36 @@ def _stage_scope_and_bundle(
     stage_model: Optional[SlayerModel],
 ) -> "Tuple[ModelScope | StageSchema, ResolvedSourceBundle]":
     """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
+    scope, sb = _stage_scope_and_bundle_unframed(
+        query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
+        stage_model=stage_model,
+    )
+    framed_scope, framed = _framed(query=query, scope=scope, bundle=sb)
+    assert framed_scope is not None
+    return framed_scope, framed
+
+
+def _framed(
+    *, query: SlayerQuery, scope: "ModelScope | StageSchema | None", bundle: ResolvedSourceBundle,
+) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
+    """The frame's population stamped with the unrelated datasets ``query`` names; dots need a model scope."""
+    host = bundle.source_model
+    if host is None:
+        return scope, bundle
+    stamped = stamp_unrelated(query=query, bundle=bundle, host=host)
+    if stamped is host:
+        return scope, bundle
+    return ModelScope(source_model=stamped), bundle.model_copy(update={"source_model": stamped})
+
+
+def _stage_scope_and_bundle_unframed(
+    *,
+    query: SlayerQuery,
+    bundle: ResolvedSourceBundle,
+    stage_schemas: Dict[str, StageSchema],
+    data_source: str,
+    stage_model: Optional[SlayerModel],
+) -> "Tuple[ModelScope | StageSchema, ResolvedSourceBundle]":
     src = query.source_model
     sibling_names = set(stage_schemas)
     sib = source_name_if_sibling(spec=src, sibling_names=sibling_names)
@@ -264,7 +295,7 @@ class _StagePlanner:
     ) -> "Tuple[ModelScope | StageSchema | None, ResolvedSourceBundle]":
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         if single:
-            return None, base
+            return _framed(query=query, scope=None, bundle=base)
         return _stage_scope_and_bundle(
             query=query, bundle=base, stage_schemas=self.state.schemas,
             data_source=self.data_source,

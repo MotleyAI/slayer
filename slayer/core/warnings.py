@@ -92,6 +92,23 @@ class AssociatedWarningPayload(SlayerWarning):
         )
 
 
+class UnrelatedDatasetWarningPayload(SlayerWarning):
+    """Aggregates over ``dataset``, which no join path reaches from ``population``: each is computed over the dataset's own rows and repeated on every row."""
+
+    kind: Literal["unrelated_dataset"] = "unrelated_dataset"
+    dataset: str
+    population: str
+    measures: list[str]
+    location: str
+
+    def human_message(self) -> str:
+        return (
+            f"{', '.join(repr(m) for m in self.measures)} (at {self.location}) read {self.dataset!r}, which no "
+            f"join path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
+            f"repeated on every row"
+        )
+
+
 class DegenerateReaggregationWarningPayload(SlayerWarning):
     """A second-order aggregation whose operand grain equals the outer grain, so it is the identity; ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
 
@@ -224,6 +241,7 @@ AnySlayerWarning = Annotated[
         NormalizationWarning,
         BroadcastGrainWarningPayload,
         AssociatedWarningPayload,
+        UnrelatedDatasetWarningPayload,
         DegenerateReaggregationWarningPayload,
         SemiJoinPushedWarningPayload,
         ResponseTruncationWarning,
@@ -241,6 +259,17 @@ class SlayerNormalizationWarning(UserWarning):
 
     def __init__(self, payload: NormalizationWarning) -> None:
         super().__init__(payload)  # arg mirrors param; __str__ is the one wording (pytest-xdist degrades to str() for the unserializable payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerUnrelatedDatasetWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``UnrelatedDatasetWarningPayload`` — one wording on both channels."""
+
+    def __init__(self, payload: UnrelatedDatasetWarningPayload) -> None:
+        super().__init__(payload)
         self.payload = payload
 
     def __str__(self) -> str:

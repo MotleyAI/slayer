@@ -9,10 +9,12 @@ import json
 import sys
 import tempfile
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
+from mcp.types import TextContent
 
 from slayer.api.server import create_app
 from slayer.cli import _run_recommend_root_model, main
@@ -72,7 +74,7 @@ class TestMcpTool:
             name="recommend_root_model",
             arguments={"items": ["customers.name", "products.category"]},
         )
-        text = blocks[0].text
+        text = _text(blocks)
         assert "orders" in text
         assert "customers.name" in text
 
@@ -82,7 +84,7 @@ class TestMcpTool:
             name="recommend_root_model",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "json"},
         )
-        payload = json.loads(blocks[0].text)
+        payload = json.loads(_text(blocks))
         assert payload["root_model"] == "orders"
         assert payload["reachable"] is True
 
@@ -92,7 +94,7 @@ class TestMcpTool:
             name="recommend_root_model",
             arguments={"items": ["customers.name", "tickets.subject"], "format": "json"},
         )
-        payload = json.loads(blocks[0].text)
+        payload = json.loads(_text(blocks))
         assert payload["root_model"] is None
         assert payload["reachable"] is False
         assert payload["coverage"]
@@ -103,7 +105,7 @@ class TestMcpTool:
             name="recommend_root_model",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "xml"},
         )
-        assert "failed" in blocks[0].text.lower()
+        assert "failed" in _text(blocks).lower()
 
     async def test_ambiguous_model_returns_friendly_error(self) -> None:
         # 'orders' in two datasources → AmbiguousModelError (a SlayerError,
@@ -125,7 +127,7 @@ class TestMcpTool:
             )
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
-            text = blocks[0].text.lower()
+            text = _text(blocks).lower()
             assert "multiple datasources" in text
             assert "data_source" in text
 
@@ -238,6 +240,13 @@ def _flags(payload: dict) -> dict[str, bool]:
     return {ip["input_item"]: ip.get("unrelated") for ip in payload["item_paths"]}
 
 
+def _text(blocks: Any) -> str:
+    """The text of an MCP call's first content block."""
+    block = blocks[0]
+    assert isinstance(block, TextContent)
+    return block.text
+
+
 def _flagged_in_text(text: str) -> bool:
     """The text's line for the unrelated item says so, and the connected item's line does not."""
     def lines(item: str) -> list[str]:
@@ -255,14 +264,14 @@ class TestUnrelatedFlagSurfaces:
         blocks, _ = await mcp.call_tool(
             name="recommend_root_model", arguments={"items": UNRELATED_ITEMS, "format": "json"},
         )
-        payload = json.loads(blocks[0].text)
+        payload = json.loads(_text(blocks))
         assert payload["root_model"] == "customers"
         assert _flags(payload) == UNRELATED_FLAGS
 
     async def test_mcp_markdown(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(name="recommend_root_model", arguments={"items": UNRELATED_ITEMS})
-        assert _flagged_in_text(blocks[0].text)
+        assert _flagged_in_text(_text(blocks))
 
     def test_rest(self, storage) -> None:
         resp = TestClient(create_app(storage=storage)).post("/recommend-root-model", json={"items": UNRELATED_ITEMS})
@@ -315,7 +324,7 @@ class TestRootHintSurfaces:
             name="recommend_root_model",
             arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
         )
-        payload = json.loads(blocks[0].text)
+        payload = json.loads(_text(blocks))
         assert payload["root_model"] == "orders"
 
     async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
@@ -324,7 +333,7 @@ class TestRootHintSurfaces:
             name="recommend_root_model",
             arguments={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
         )
-        assert "failed" in blocks[0].text.lower()
+        assert "failed" in _text(blocks).lower()
 
     # -- REST -----------------------------------------------------------
     def test_rest_feasible_hint_honored(self, storage) -> None:

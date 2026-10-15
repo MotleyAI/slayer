@@ -41,7 +41,14 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
-from slayer.core.join_walker import aggregation_owner, follow, model_column_type, physical_join_pairs, resolved_terminal
+from slayer.core.join_walker import (
+    aggregation_owner,
+    follow,
+    is_unrelated_edge,
+    model_column_type,
+    physical_join_pairs,
+    resolved_terminal,
+)
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
@@ -4389,7 +4396,9 @@ class SQLGenerator:
     def _hop_join(
         self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
-        """``(join_expr, on_expr, join_type)`` for one oriented hop."""
+        """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
+        if is_unrelated_edge(edge):
+            raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
         join_on_parts = [
             # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
             exp.EQ(

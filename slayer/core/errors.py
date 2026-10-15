@@ -403,6 +403,37 @@ class TimeSpineError(QueryTypeError):
     outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
 
 
+class UnrelatedDatasetError(QueryTypeError):
+    """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
+
+
+class UnreachableDefinitionError(SlayerError, ValueError):
+    """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
+
+    def __init__(self, *, model: str, reference: str, dataset: str, definition: str | None = None) -> None:
+        self.model = model
+        self.reference = reference
+        self.dataset = dataset
+        self.definition = definition
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{definition or 'A definition'} on model {model!r} reads {reference!r}, but no join path "
+            f"reaches {dataset!r} from {model!r}.",
+            suggestion=f"Declare a join between them, or read {dataset!r} in a query through aggregates.",
+        ))
+
+    def labelled(self, definition: str) -> "UnreachableDefinitionError":
+        """This error naming ``definition``, unless it already names one."""
+        if self.definition is not None:
+            return self
+        return UnreachableDefinitionError(
+            model=self.model, reference=self.reference, dataset=self.dataset, definition=definition,
+        )
+
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
 class GranularityDefinitionError(SlayerError):
     """A datasource custom-granularity definition breaking a save-time rule."""
 

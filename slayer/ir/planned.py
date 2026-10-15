@@ -409,6 +409,11 @@ class RegroupAttachPlan(BaseModel):
     # are not additive across (empty for an explicit ``partition_by=`` grain).
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
+    # A producer over an unrelated dataset (its product-hop spelling), the population it
+    # meets, and the public measures reading it.
+    unrelated_dataset: Optional[str] = None
+    unrelated_population: Optional[str] = None
+    unrelated_measures: List[str] = Field(default_factory=list)
     # Reachable-but-unsafe conjuncts inlined on a home-rooted association
     # producer's joins: carried here since ``semi_join_filters`` is
     # empty for association producers, so the informational entry a semi-join

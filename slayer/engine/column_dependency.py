@@ -26,7 +26,9 @@ from slayer.core.errors import (
     DerivedColumnAmbiguousError,
     DerivedColumnCircularError,
     DerivedColumnFanningError,
+    UnreachableDefinitionError,
 )
+from slayer.core.join_search import unreachable_target
 from slayer.core.join_walker import provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.join_safety import provably_fans
@@ -347,6 +349,20 @@ def _definition_label(*, column: Column | None, fragment: str) -> str:
     return f"column {column.name!r}" if column is not None else f"model filter {fragment!r}"
 
 
+def check_definition_reach(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> None:
+    """Reject a Mode-A definition on ``model`` naming a model no join path reaches from it."""
+    models = {**reachable, model.name: model}
+    for column, fragment in _definitions(model):
+        for quals, leaf in _fragment_refs(fragment) or []:
+            path = _hop_path(quals=quals, host=model)
+            dataset = unreachable_target(root=model, token=path[0], models_by_name=models) if path else None
+            if dataset is not None:
+                raise UnreachableDefinitionError(
+                    model=model.name, reference=".".join((*quals, leaf)), dataset=dataset,
+                    definition=_definition_label(column=column, fragment=fragment),
+                )
+
+
 def check_definition_ambiguity(*, model: SlayerModel, reachable: dict[str, SlayerModel]) -> None:
     """Reject a Mode-A definition on ``model`` whose path crosses an ambiguous hop: a column's
     as :class:`DerivedColumnAmbiguousError`, a model filter's as the base error naming it. A
@@ -439,6 +455,7 @@ def validate_derived_columns(
     failed to load, whose reverse joins can't be proved absent. Best-effort; the
     compile-time / query-time guards remain authoritative."""
     reachable = {**peers, model.name: model}
+    check_definition_reach(model=model, reachable=reachable)
     check_definition_ambiguity(model=model, reachable=reachable)
     _check_reference_arity(model=model, reachable=reachable)
     # Iterate roots in a deterministic order so the reported cycle is

@@ -165,14 +165,16 @@ class TestExistingResolutionUnchanged:
 
 class TestNamesThatAreNotReachableDatasets:
     async def test_unknown_name(self, engine) -> None:
+        q = query(measures=[m("count(evnts.id)", "n")])
         with pytest.raises(UnresolvableDimensionJoinError) as exc:
-            await engine.execute(query(measures=[m("count(evnts.id)", "n")]))
+            await engine.execute(q)
         assert "evnts.id" in str(exc.value)
         assert "no route to target" in str(exc.value)
 
     async def test_time_spine_is_never_an_unrelated_dataset(self, engine) -> None:
+        q = query(measures=[m("count(time_spine.timestamp)", "n")])
         with pytest.raises(TimeSpineError) as exc:
-            await engine.execute(query(measures=[m("count(time_spine.timestamp)", "n")]))
+            await engine.execute(q)
         assert "no countable rows" in str(exc.value)
 
     async def test_model_of_another_datasource(self, engine) -> None:
@@ -181,8 +183,9 @@ class TestNamesThatAreNotReachableDatasets:
             name="widgets", sql_table="widgets", data_source="other",
             columns=[Column(name="id", type=DataType.INT, primary_key=True)],
         ))
+        q = query(measures=[m("count(widgets.id)", "n")])
         with pytest.raises(UnresolvableDimensionJoinError) as exc:
-            await engine.execute(query(measures=[m("count(widgets.id)", "n")]))
+            await engine.execute(q)
         assert "no route to target" in str(exc.value)
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -190,11 +193,13 @@ class TestNamesThatAreNotReachableDatasets:
         hidden = events_model().model_copy(update={"access_tags": ["secret"]})
         async with main_engine(backend, models=[customers_model(), hidden, users_model(), orgs_model()]) as eng:
             scoped = SlayerQueryEngine(storage=TagFilteredStorage(eng.storage, tags=set(), bypass=False))
+            hidden_q = query(measures=[m("count(events.id)", "n")])
+            unknown_q = query(measures=[m("count(evnts.id)", "n")])
             try:
                 with pytest.raises(UnresolvableDimensionJoinError) as hidden_exc:
-                    await scoped.execute(query(measures=[m("count(events.id)", "n")]))
+                    await scoped.execute(hidden_q)
                 with pytest.raises(UnresolvableDimensionJoinError) as unknown_exc:
-                    await scoped.execute(query(measures=[m("count(evnts.id)", "n")]))
+                    await scoped.execute(unknown_q)
             finally:
                 scoped.close()
         assert str(hidden_exc.value) == str(unknown_exc.value).replace("evnts", "events")
@@ -216,8 +221,9 @@ async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
 class TestStoredDefinitionsRefuse:
     async def test_saved_measure(self, engine) -> None:
         await engine.save_model(customers_model(measures=[ModelMeasure(name="ev", formula="count(events.id)")]))
+        q = query(measures=["ev"])
         with pytest.raises(UnresolvableDimensionJoinError) as exc:
-            await engine.execute(query(measures=["ev"]))
+            await engine.execute(q)
         assert "no route to target" in str(exc.value)
 
     @pytest.mark.parametrize("definition", ["column", "filter"])
@@ -258,8 +264,9 @@ class TestAggregates:
         assert warnings_of(resp, "broadcast") == []
 
     async def test_error_mode_refuses_a_population_dimension(self, engine) -> None:
+        q = grouped_query(to_many_handling="error")
         with pytest.raises(SlayerError) as exc:
-            await engine.execute(grouped_query(to_many_handling="error"))
+            await engine.execute(q)
         msg = str(exc.value)
         assert "would broadcast" in msg
         assert "n_events" in msg
@@ -277,10 +284,9 @@ class TestAggregates:
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_partition_by_a_population_dimension(self, engine, mode: str) -> None:
+        q = grouped_query(measures=[m("count(events.id, partition_by=[city])", "n")], to_many_handling=mode)
         with pytest.raises(PartitionKeyError):
-            await engine.execute(grouped_query(
-                measures=[m("count(events.id, partition_by=[city])", "n")], to_many_handling=mode,
-            ))
+            await engine.execute(q)
 
     async def test_partition_by_a_population_dimension_under_associate(self, engine) -> None:
         resp = await engine.execute(grouped_query(
@@ -325,13 +331,15 @@ class TestAggregates:
 
 class TestRowLevelRefusal:
     async def test_unrelated_dimension(self, engine) -> None:
+        q = grouped_query(dimensions=["city", "events.kind"])
         with pytest.raises(UnrelatedDatasetError) as exc:
-            await engine.execute(grouped_query(dimensions=["city", "events.kind"]))
+            await engine.execute(q)
         _assert_row_level_refusal(exc, reference="events.kind")
 
     async def test_unrelated_derived_dimension(self, engine) -> None:
+        q = grouped_query(dimensions=["city", "events.amount_x2"])
         with pytest.raises(UnrelatedDatasetError) as exc:
-            await engine.execute(grouped_query(dimensions=["city", "events.amount_x2"]))
+            await engine.execute(q)
         _assert_row_level_refusal(exc, reference="events.amount_x2")
 
     @pytest.mark.parametrize("fields, reference", [
@@ -341,21 +349,24 @@ class TestRowLevelRefusal:
         ({"dimensions": ["city", "events.kind"], "measures": [], "distinct_dimension_values": False}, "events.kind"),
     ], ids=["time_dimension", "computed_dimension", "order_key", "raw_rows"])
     async def test_other_row_level_positions(self, engine, fields: dict[str, Any], reference: str) -> None:
+        q = query(**{"measures": [m("count(*)", "n")], **fields})
         with pytest.raises(UnrelatedDatasetError) as exc:
-            await engine.execute(query(**{"measures": [m("count(*)", "n")], **fields}))
+            await engine.execute(q)
         _assert_row_level_refusal(exc, reference=reference)
 
     async def test_one_row_stage_field_names_the_max_remedy(self, engine) -> None:
+        q = stages(
+            {"name": "e", "source_model": "events", "measures": [m("count(*)", "ne")]},
+            {"source_model": "customers", "dimensions": ["city", "e.ne"], "measures": [m("count(*)", "n")]},
+        )
         with pytest.raises(UnrelatedDatasetError) as exc:
-            await engine.execute(stages(
-                {"name": "e", "source_model": "events", "measures": [m("count(*)", "ne")]},
-                {"source_model": "customers", "dimensions": ["city", "e.ne"], "measures": [m("count(*)", "n")]},
-            ))
+            await engine.execute(q)
         assert "max(e.ne)" in str(exc.value)
 
     async def test_mixed_operands_inside_one_aggregation(self, engine) -> None:
+        q = query(measures=[m("sum(events.amount * customers.id)", "x")])
         with pytest.raises(UnsafeJoinInputError):
-            await engine.execute(query(measures=[m("sum(events.amount * customers.id)", "x")]))
+            await engine.execute(q)
 
     def test_empty_join_pairs_name_the_aggregate_remedy(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc:
@@ -391,8 +402,9 @@ class TestFilters:
 
     @pytest.mark.parametrize("conjunct", ["events.amount > customers.id", "city = 'A' or events.amount > 100"])
     async def test_mixed_conjuncts_are_refused(self, engine, conjunct: str) -> None:
+        q = query(measures=[m("count(events.id)", "n")], filters=[conjunct])
         with pytest.raises(UnrelatedDatasetError) as exc:
-            await engine.execute(query(measures=[m("count(events.id)", "n")], filters=[conjunct]))
+            await engine.execute(q)
         msg = str(exc.value)
         assert "events.amount" in msg
         assert "split" in msg.lower()

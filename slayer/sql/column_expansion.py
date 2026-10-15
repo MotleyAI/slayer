@@ -29,8 +29,10 @@ from slayer.core.errors import (
     CircularJoinPathError,
     ColumnCycleError,
     LegacyDunderAliasError,
+    UnreachableDefinitionError,
     UnresolvableDimensionJoinError,
 )
+from slayer.core.join_search import unreachable_target
 from slayer.core.join_walker import (
     canonical_path,
     follow,
@@ -275,6 +277,14 @@ def _resolve_qualifiers(
     if not quals:
         return ()
     path = tuple(quals)
+    # A definition is judged from its model as stored: it never sees a query frame's product hops.
+    source_model = source_model.with_unrelated(frozenset()) if source_model.unrelated_datasets else source_model
+    dataset = unreachable_target(root=source_model, token=path[0], models_by_name=models_by_name)
+    if dataset is not None:
+        raise UnreachableDefinitionError(
+            model=source_model.name, reference=".".join((*qualifiers, leaf)), dataset=dataset,
+            definition=f"column {column!r}" if column else None,
+        )
     # A revisit surfaces either from the direct walk or from the legacy
     # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
     # reference and the column being expanded.

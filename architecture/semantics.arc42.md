@@ -102,6 +102,12 @@ is the coercion from coarser to finer.
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
    alone (bidirectional traversal).
+   - **3.1 Unrelated datasets.** A dataset no join path reaches from a query's
+     population meets it as the product `P × D`, every row with every row,
+     reached only by naming `D` as a query path's first hop, never by route
+     search. Only aggregates and filters (Axiom 14) read across `×`; any other
+     row-level read is a type error, so `×` never multiplies the population.
+     [enforced: test:tests/test_unrelated_datasets.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home

@@ -23,6 +23,8 @@ class ItemPath(BaseModel):
     # DEV-1866: True for a saved measure / aggregation-suffixed item — reachable
     # from the root but not a determination item that steers the recommendation.
     attachment: bool = False
+    # An attachment on a dataset no join path reaches: its path is the root's product hop.
+    unrelated: bool = False
 
 
 class CandidateCoverage(BaseModel):
@@ -64,7 +66,8 @@ def render_recommendation_markdown(rec: RootModelRecommendation) -> str:
         lines.append("| Input item | Path from root |")
         lines.append("|------------|----------------|")
         for ip in rec.item_paths:
-            lines.append(f"| `{ip.input_item}` | `{ip.path}` |")
+            note = " (unrelated: no join path, aggregated over its own rows)" if ip.unrelated else ""
+            lines.append(f"| `{ip.input_item}` | `{ip.path}`{note} |")
     else:
         lines.append("Recommended root model: _none_ — no single model "
                      "reaches every item.")

@@ -39,6 +39,7 @@ from slayer.core.errors import (
     TransformInputError,
     UnanalyzableDependencyError,
     UnknownGranularityError,
+    UnrelatedDatasetError,
     UnsafeJoinInputError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
@@ -859,6 +860,35 @@ _SPINE_REMEDY = (
     "(time_dimensions=[{dimension: time_spine.timestamp, granularity: month, date_range: [...]}]) "
     "or inside a date_range / bound filter; for other date logic use the fact's own time column."
 )
+
+
+def check_unrelated_row_read(
+    *, reference: Optional[ValueKey], dataset: str, population: str, location: str,
+) -> None:
+    """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
+    if reference is None:
+        return
+    ref = key_display(reference.column if isinstance(reference, TimeTruncKey) else reference)
+    raise UnrelatedDatasetError(
+        summary=f"{ref} reads {dataset}, which no join path reaches from the population "
+        f"{population}: it meets {population} as a product, so it is read only through aggregates.",
+        location=location,
+        suggestion=f"Aggregate it, e.g. max({ref}).",
+    )
+
+
+def check_unrelated_filter_sides(
+    *, conjunct: ValueKey, datasets: Optional[frozenset], population: str,
+) -> None:
+    """A filter condition reading an unrelated dataset together with anything else raises."""
+    if not datasets:
+        return
+    raise UnrelatedDatasetError(
+        summary=f"The filter condition {key_display(conjunct)} reads {', '.join(sorted(datasets))} "
+        f"together with another dataset, but no join path reaches {', '.join(sorted(datasets))} "
+        f"from the population {population}: each condition must read one side alone.",
+        suggestion="Split it into AND-ed conditions that each read one dataset.",
+    )
 
 
 def check_spine_clash(*, clash: bool) -> None:
