@@ -230,6 +230,79 @@ class TestSlayerClient:
         assert rec.root_model == "orders"  # to-one determiner of both
 
 
+UNRELATED_ITEMS = ["customers.name", "tickets.id:count"]
+UNRELATED_FLAGS = {"customers.name": False, "tickets.id:count": True}
+
+
+def _flags(payload: dict) -> dict[str, bool]:
+    return {ip["input_item"]: ip.get("unrelated") for ip in payload["item_paths"]}
+
+
+def _flagged_in_text(text: str) -> bool:
+    """The text's line for the unrelated item says so, and the connected item's line does not."""
+    def lines(item: str) -> list[str]:
+        return [ln.lower() for ln in text.splitlines() if item in ln]
+
+    return bool(lines("tickets.id:count")) and all("unrelated" in ln for ln in lines("tickets.id:count")) \
+        and not any("unrelated" in ln for ln in lines("customers.name"))
+
+
+class TestUnrelatedFlagSurfaces:
+    """``ItemPath.unrelated`` is serialised on every surface."""
+
+    async def test_mcp_json(self, storage) -> None:
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="recommend_root_model", arguments={"items": UNRELATED_ITEMS, "format": "json"},
+        )
+        payload = json.loads(blocks[0].text)
+        assert payload["root_model"] == "customers"
+        assert _flags(payload) == UNRELATED_FLAGS
+
+    async def test_mcp_markdown(self, storage) -> None:
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(name="recommend_root_model", arguments={"items": UNRELATED_ITEMS})
+        assert _flagged_in_text(blocks[0].text)
+
+    def test_rest(self, storage) -> None:
+        resp = TestClient(create_app(storage=storage)).post("/recommend-root-model", json={"items": UNRELATED_ITEMS})
+        assert resp.status_code == 200
+        assert _flags(resp.json()) == UNRELATED_FLAGS
+
+    @pytest.mark.parametrize("fmt", ["json", "text"])
+    def test_cli(self, storage, capsys, fmt: str) -> None:
+        args = argparse.Namespace(
+            storage=storage.base_dir, models_dir=None, items=UNRELATED_ITEMS, data_source=None, format=fmt,
+        )
+        _run_recommend_root_model(args)
+        out = capsys.readouterr().out
+        if fmt == "json":
+            assert _flags(json.loads(out)) == UNRELATED_FLAGS
+        else:
+            assert _flagged_in_text(out)
+
+    async def test_client_local(self, storage) -> None:
+        rec = await SlayerClient(storage=storage).recommend_root_model(UNRELATED_ITEMS)
+        assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
+
+    async def test_client_remote_parses_the_flag(self) -> None:
+        client = SlayerClient(url="https://testserver")
+
+        async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
+            return {
+                "data_source": "mydb", "root_model": "customers", "reachable": True,
+                "item_paths": [
+                    {"input_item": "customers.name", "path": "name", "unrelated": False},
+                    {"input_item": "tickets.id:count", "path": "count(tickets.id)", "unrelated": True},
+                ],
+                "coverage": [], "message": "", "warnings": [],
+            }
+
+        client._request = fake_request  # type: ignore[assignment]
+        rec = await client.recommend_root_model(UNRELATED_ITEMS)
+        assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
+
+
 class TestRootHintSurfaces:
     """``root_hint`` plumbed through every surface: a feasible bridge hint is
     honored; a bad hint surfaces per-surface (MCP failed-text / REST 400 /

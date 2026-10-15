@@ -8,7 +8,7 @@ Scenario seed data, unless a scenario says otherwise: `customers` (id 1–3, cit
 
 ### Requirement: An unrelated dataset is reached by naming it
 
-In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference path whose first hop resolves to no edge and no route from the population SHALL resolve through a product hop to the dataset its token names, when that token names a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every existing edge and route resolution SHALL take precedence, and no route search — short-form routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A path SHALL continue past the product hop over ordinary edges. A token naming no visible dataset of the population's datasource, the time spine, or the population itself SHALL keep its existing error. Stored definitions (`Column.sql`, model filters, saved measures, joins) SHALL keep their existing error for a reference with no join path.
+In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference path whose first hop resolves to no edge and no route from the population SHALL resolve through a product hop to the dataset its token names, when that token names a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every existing edge and route resolution SHALL take precedence, and no route search — short-form routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A path SHALL continue past the product hop over ordinary edges. A token naming no visible dataset of the population's datasource, the time spine, or the population itself SHALL keep its existing error. Stored definitions (`Column.sql`, model filters, saved measures, joins) SHALL refuse a reference with no join path: a saved measure fails when used with the existing no-route error, and a `Column.sql` or model filter is rejected at save time with a typed error naming the definition and the unreachable model, and fails closed with that error at query time when stored without validation.
 
 #### Scenario: A grand-total ratio across unrelated models
 
@@ -47,8 +47,8 @@ In a query frame — the main query and every stage of a query list, including t
 
 #### Scenario: Stored definitions keep refusing
 
-- **WHEN** a saved measure on `customers` reads `count(events.id)`, or a `customers` column's `sql` reads `events.amount`
-- **THEN** saving or using it fails with the existing no-join-path error
+- **WHEN** a saved measure on `customers` reads `count(events.id)`, a `customers` column's `sql` reads `events.amount`, or a `customers` model filter reads `events.amount > 1`
+- **THEN** using the saved measure fails with the existing no-route error; saving the column or the filter fails with the typed error, and using either one stored without validation fails with the same error
 
 ### Requirement: Aggregates across a product hop resolve like unattributable aggregates
 

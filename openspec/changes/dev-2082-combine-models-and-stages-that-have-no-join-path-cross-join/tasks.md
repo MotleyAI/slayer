@@ -1,10 +1,10 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Write `tests/test_unrelated_datasets.py` covering every scenario of `specs/queries/unrelated-datasets/spec.md` on in-process SQLite (unit tests, not `integration`), and verify each fails on the current code for the right reason
-- [ ] 1.2 Strengthen the no-explosion scenarios per design D1/D5: sentinel sums with non-trivial row counts, each value checked against the same measure queried alone, two aggregates from one dataset, several datasets in one expression, empty dataset, all three modes; SQL-shape assertions parse the emitted SQL with sqlglot and check each unrelated table occurs only in its own producers and uncorrelated `EXISTS`; verify they fail today
-- [ ] 1.3 Add the root-recommendation scenarios of `specs/queries/population/spec.md` (unrelated attachment, unrelated column, attachments alone) next to the existing recommendation tests, plus the `unrelated` field on the REST / CLI / MCP / client outputs; verify they fail today
-- [ ] 1.4 Add the MCP scenarios of `specs/mcp/tool-surface/spec.md`: the unrelated-model marker owned only by `measures` (drift-guard table), the unrelated-model ratio idiom, budgets intact; verify they fail today
-- [ ] 1.5 Add the RLS scenario (a tenant policy scopes the unrelated dataset's producer) and the access-context scenario (a hidden model is reported as unknown); verify they fail today
+- [x] 1.1 Write `tests/test_unrelated_datasets.py` covering every scenario of `specs/queries/unrelated-datasets/spec.md` on in-process SQLite (unit tests, not `integration`), and verify each fails on the current code for the right reason
+- [x] 1.2 Strengthen the no-explosion scenarios per design D1/D5: sentinel sums with non-trivial row counts, each value checked against the same measure queried alone, two aggregates from one dataset, several datasets in one expression, empty dataset, all three modes; SQL-shape assertions parse the emitted SQL with sqlglot and check each unrelated table occurs only in its own producers and uncorrelated `EXISTS`; verify they fail today
+- [x] 1.3 Add the root-recommendation scenarios of `specs/queries/population/spec.md` (unrelated attachment, unrelated column, attachments alone) next to the existing recommendation tests, plus the `unrelated` field on the REST / CLI / MCP / client outputs; verify they fail today
+- [x] 1.4 Add the MCP scenarios of `specs/mcp/tool-surface/spec.md`: the unrelated-model marker owned only by `measures` (drift-guard table), the unrelated-model ratio idiom, budgets intact; verify they fail today
+- [x] 1.5 Add the RLS scenario (a tenant policy scopes the unrelated dataset's producer) and the access-context scenario (a hidden model is reported as unknown); verify they fail today
 
 ## 2. Product hop and resolution
 
@@ -19,6 +19,7 @@
 - [ ] 3.3 Lower one-sided filters across the hop to producer predicates and uncorrelated `EXISTS` (design D5); verify the filter scenarios, including zero-match and empty dataset
 - [ ] 3.4 Add `UnrelatedDatasetWarningPayload` and emit it once per dataset per stage (design D6); verify the warning scenarios
 - [ ] 3.5 Change the empty-`join_pairs` validation message to name the aggregate remedy; verify the empty-join-pairs scenario
+- [ ] 3.6 Reject a `Column.sql` or model filter whose qualifier names a dataset no join path reaches, at save time and (stored unvalidated) at query time; verify the stored-definitions scenario
 
 ## 4. Root recommendation
 

@@ -239,6 +239,14 @@ async def test_cross_model_ratio(child_engine: SlayerQueryEngine) -> None:
     assert [fx.value(r, ".per_customer") for r in resp.data] == [pytest.approx(168 / 4)]
 
 
+async def test_unrelated_model_ratio(child_engine: SlayerQueryEngine) -> None:
+    resp = await _run(child_engine, {
+        "source_model": "customers", "measures": [{"formula": fx.UNRELATED_RATIO, "name": "per_customer"}],
+    })
+    assert [fx.value(r, ".per_customer") for r in resp.data] == [pytest.approx(6 / 4)]
+    assert "unrelated_dataset" in _kinds(resp)
+
+
 async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, [
         {

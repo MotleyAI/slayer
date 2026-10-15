@@ -21,7 +21,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.memories.help_seed import load_help_topics
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._mcp_idiom_fixtures import CROSS_MODEL_RATIO, EXAMPLE_OWNERS, SECOND_CHILD
+from tests._mcp_idiom_fixtures import CROSS_MODEL_RATIO, EXAMPLE_OWNERS, SECOND_CHILD, UNRELATED_MODEL
 
 DESCRIPTION_BUDGET = 2048
 # The query schema ships with every request; set from the size measured after the rewrite + ~10%.
@@ -45,6 +45,7 @@ MARKER_OWNERS: dict[str, tuple[str, str]] = {
     "an order with no customer": ("SlayerQuery", "measures"),
     "only the columns the question asks for": ("SlayerQuery", "order"),
     "where the facts are": ("SlayerQuery", "source_model"),
+    UNRELATED_MODEL: ("SlayerQuery", "measures"),
     **EXAMPLE_OWNERS,
 }
 
@@ -53,7 +54,7 @@ FAN_OUT_MARKER = "cannot fan out"
 #: Moved guidance: also absent from the instructions and every help topic.
 SOLE_OWNER_MARKERS = (
     "time_spine.timestamp", "an order with no customer", "only the columns the question asks for",
-    "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, FAN_OUT_MARKER,
+    "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, UNRELATED_MODEL, FAN_OUT_MARKER,
 )
 #: Help-topic copies the moved guidance replaced.
 RETIRED_HELP_PHRASES = ("Project exactly the columns", "Fill time gaps", "## Gaps")
