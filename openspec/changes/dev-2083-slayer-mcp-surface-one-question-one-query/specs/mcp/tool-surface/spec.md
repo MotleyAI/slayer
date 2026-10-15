@@ -67,7 +67,7 @@ Fields that reuse another field's syntax (a refinement's clauses, a measure's `f
 
 ### Requirement: Documented query idioms behave as documented
 Every query idiom given as an example in the tool or schema descriptions SHALL execute and return the documented result:
-- `change`, `change_pct` and `time_shift` with a `date_range` compare the first in-range bucket against the bucket before the range;
+- `change`, `change_pct` and `time_shift(…, -1)` with a `date_range` compare the first in-range bucket against the bucket before the range, and `time_shift(…, 1)` compares the last in-range bucket against the bucket after it;
 - an aggregation with `window=` includes rows before the range in the first in-range buckets;
 - `cumsum` with a `date_range` accumulates from the range start only;
 - a filter `<joined model>.<key> is null` keeps exactly the rows with no joined row;

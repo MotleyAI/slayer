@@ -67,6 +67,36 @@ async def test_change_change_pct_and_time_shift_look_back_before_date_range(engi
     assert fx.value(jan, ".prev") == 45
 
 
+async def test_forward_time_shift_reads_after_date_range(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "source_model": "orders",
+        "time_dimensions": [{"dimension": "order_date", "granularity": "month", "date_range": ["2025-02-01", "2025-03-31"]}],
+        "measures": [{"formula": "time_shift(sum(amount), 1)", "name": "next"}],
+    })
+    assert fx.value(fx.rows_by(resp, key="order_date")["2025-03"], ".next") == 60
+
+
+@pytest.mark.parametrize(("formula", "month", "paid", "unfiltered"), [
+    (fx.CHANGE, "2025-04", None, 30),
+    (fx.CHANGE_PCT, "2025-04", None, pytest.approx(1.0)),
+    (fx.TIME_SHIFT, "2025-04", None, 30),
+    ("time_shift(sum(amount), 1)", "2025-01", None, 70),
+])
+async def test_non_time_filter_restricts_calendar_look_backs(
+    engine: SlayerQueryEngine, formula: str, month: str, paid: Any, unfiltered: Any,
+) -> None:
+    async def value(filters: list[str]) -> Any:
+        resp = await _run(engine, {
+            "source_model": "orders",
+            "time_dimensions": [{"dimension": "order_date", "granularity": "month", "date_range": ["2025-01-01", "2025-04-30"]}],
+            "measures": [{"formula": formula, "name": "v"}], "filters": filters,
+        })
+        return fx.value(fx.rows_by(resp, key="order_date")[month], ".v")
+
+    assert await value(["status == 'paid'"]) == paid
+    assert await value([]) == unfiltered
+
+
 async def test_trailing_window_reads_rows_before_date_range(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "source_model": "orders", "time_dimensions": _YEAR_2025,
