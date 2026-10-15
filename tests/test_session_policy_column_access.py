@@ -39,11 +39,11 @@ def test_rule_needs_exactly_one_list():
     with pytest.raises(ValidationError):
         ColumnAccessRule(table="employees")
     with pytest.raises(ValidationError):
-        ColumnAccessRule(table="employees", deny=["salary"], allow=["id"])
+        ColumnAccessRule(table="employees", deny=("salary",), allow=("id",))
 
 
 def test_column_access_alone_is_a_policy():
-    policy = SessionPolicy(column_access=[ColumnAccessRule(table="employees", deny=["salary"])])
+    policy = SessionPolicy(column_access=(ColumnAccessRule(table="employees", deny=("salary",)),))
     assert policy.ruleset is None
 
 
@@ -55,30 +55,30 @@ def test_inline_sql_switch_alone_is_a_policy():
 
 
 def test_deny_projects_remaining_columns():
-    policy = SessionPolicy(column_access=[ColumnAccessRule(table="employees", deny=["salary"])])
+    policy = SessionPolicy(column_access=(ColumnAccessRule(table="employees", deny=("salary",)),))
     out = _rewrite("SELECT e.name FROM employees AS e", policy)
     assert out == "SELECT e.name FROM (SELECT id, org, name FROM employees) AS e"
 
 
 def test_allow_list_and_wildcard_table():
-    policy = SessionPolicy(column_access=[
-        ColumnAccessRule(table="*", deny=["org"]),
-        ColumnAccessRule(table="employees", allow=["id", "name", "org"]),
-    ])
+    policy = SessionPolicy(column_access=(
+        ColumnAccessRule(table="*", deny=("org",)),
+        ColumnAccessRule(table="employees", allow=("id", "name", "org")),
+    ))
     out = _rewrite("SELECT * FROM employees JOIN orgs ON employees.id = orgs.id", policy)
     assert "(SELECT id, name FROM employees) AS employees" in out
     assert "(SELECT id, title FROM orgs) AS orgs" in out
 
 
 def test_unrestricted_table_untouched():
-    policy = SessionPolicy(column_access=[ColumnAccessRule(table="employees", deny=["salary"])])
+    policy = SessionPolicy(column_access=(ColumnAccessRule(table="employees", deny=("salary",)),))
     assert _rewrite("SELECT title FROM orgs", policy) == "SELECT title FROM orgs"
 
 
 def test_row_filter_wraps_inside_column_projection():
     policy = SessionPolicy(
         ruleset=ColumnFilterRuleset(column="org", value="acme"),
-        column_access=[ColumnAccessRule(table="employees", deny=["salary"])],
+        column_access=(ColumnAccessRule(table="employees", deny=("salary",)),),
     )
     out = apply_session_policy(
         "SELECT name FROM employees", dialect="sqlite", policy=policy,
@@ -91,7 +91,7 @@ def test_row_filter_wraps_inside_column_projection():
 
 
 def test_unlistable_table_fails_closed():
-    policy = SessionPolicy(column_access=[ColumnAccessRule(table="employees", deny=["salary"])])
+    policy = SessionPolicy(column_access=(ColumnAccessRule(table="employees", deny=("salary",)),))
     with pytest.raises(ForcedFilterError, match="could not list"):
         apply_session_policy(
             "SELECT name FROM employees", dialect="sqlite", policy=policy,
@@ -100,7 +100,7 @@ def test_unlistable_table_fails_closed():
 
 
 def test_nothing_visible_fails_closed():
-    policy = SessionPolicy(column_access=[ColumnAccessRule(table="orgs", allow=["missing"])])
+    policy = SessionPolicy(column_access=(ColumnAccessRule(table="orgs", allow=("missing",)),))
     with pytest.raises(ForcedFilterError, match="no column"):
         _rewrite("SELECT title FROM orgs", policy)
 
@@ -139,14 +139,14 @@ async def test_engine_allowed_columns_still_work(storage):
     engine = _engine(
         storage,
         ruleset=ColumnFilterRuleset(column="org", value="acme"),
-        column_access=[ColumnAccessRule(table="employees", deny=["salary"])],
+        column_access=(ColumnAccessRule(table="employees", deny=("salary",)),),
     )
     resp = await engine.execute({"source_model": "employees", "measures": [{"formula": "count(*)", "name": "n"}]})
     assert resp.data == [{"employees.n": 2}]
 
 
 async def test_engine_denied_column_fails(storage):
-    engine = _engine(storage, column_access=[ColumnAccessRule(table="employees", deny=["salary"])])
+    engine = _engine(storage, column_access=(ColumnAccessRule(table="employees", deny=("salary",)),))
     with pytest.raises(Exception, match="salary"):
         await engine.execute({"source_model": "employees", "measures": [{"formula": "sum(salary)"}]})
 
@@ -182,8 +182,9 @@ def test_datasource_ruleset_replaces_default():
         datasource_rulesets={"isolated": None, "other": ColumnFilterRuleset(column="tenant", value="t1")},
     )
     assert policy.ruleset_for("isolated") is None
-    assert policy.ruleset_for("other").column == "tenant"
-    assert policy.ruleset_for("hr").column == "org"
+    other, default = policy.ruleset_for("other"), policy.ruleset_for("hr")
+    assert isinstance(other, ColumnFilterRuleset) and other.column == "tenant"
+    assert isinstance(default, ColumnFilterRuleset) and default.column == "org"
     out = apply_session_policy(
         "SELECT name FROM employees", dialect="sqlite", policy=policy,
         has_column=_no_has_column, datasource="isolated",
