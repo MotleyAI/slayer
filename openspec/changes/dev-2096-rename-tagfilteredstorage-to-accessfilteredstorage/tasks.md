@@ -15,5 +15,5 @@
 
 ## 4. Tracker (end of pr-review, before merge)
 
-- [ ] 4.1 Edit DEV-2014's body (design D5): all three `TagFilteredStorage` mentions → `AccessFilteredStorage`; the Dependencies line states the class ships in the release after motley-slayer 1.2.0, which the DEV-2034 pin must reach. Show the exact edit to the user first. Verify: the body no longer names `TagFilteredStorage`.
-- [ ] 4.2 Comment on DEV-2034: its SLayer pin moves to the release after 1.2.0, which carries `AccessFilteredStorage`. Show the text to the user first. Verify: comment posted.
+- [x] 4.1 Edit DEV-2014's body (design D5): all three `TagFilteredStorage` mentions → `AccessFilteredStorage`; the Dependencies line states the class ships in the release after motley-slayer 1.2.0, which the DEV-2034 pin must reach. Show the exact edit to the user first. Verify: the body no longer names `TagFilteredStorage`.
+- [x] 4.2 Comment on DEV-2034: its SLayer pin moves to the release after 1.2.0, which carries `AccessFilteredStorage`. Show the text to the user first. Verify: comment posted.
