@@ -16,10 +16,11 @@
 
 - [x] 3.1 Implement the central product rule on dependency closures and the new typed row-level error (design D3); verify the row-level and mixed-conjunct scenarios
 - [x] 3.2 Compile aggregates across the hop as producers over the unrelated dataset at their attributable grain (empty or spine bucket), attached by `CROSS JOIN` / bucket join, with the dedicated associate disposition (design D5); verify the aggregation scenarios and the SQL-shape tests
-- [ ] 3.3 Lower one-sided filters across the hop to producer predicates and uncorrelated `EXISTS` (design D5); verify the filter scenarios, including zero-match and empty dataset
+- [x] 3.3 Lower one-sided filters across the hop to producer predicates and uncorrelated `EXISTS` (design D5); verify the filter scenarios, including zero-match and empty dataset
 - [x] 3.4 Add `UnrelatedDatasetWarningPayload` and emit it once per dataset per stage (design D6); verify the warning scenarios
 - [x] 3.5 Change the empty-`join_pairs` validation message to name the aggregate remedy; verify the empty-join-pairs scenario
 - [x] 3.6 Reject a `Column.sql` or model filter whose qualifier names a dataset no join path reaches, at save time and (stored unvalidated) at query time; verify the stored-definitions scenario
+- [x] 3.7 Render every division as `x / NULLIF(y, 0)` in the one arithmetic composer (`slayer/sql/render/row_expr.py`) and regenerate the golden SQL; verify the division-by-zero scenario and the zero-match filter scenarios on DuckDB
 
 ## 4. Root recommendation
 
