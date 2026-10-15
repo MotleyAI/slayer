@@ -114,9 +114,9 @@ class TestResolution:
             dimensions=["city"], measures=[m("count(*)", "n"), m("count(events.id)", "ne")],
         )]))
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "per_city", "dimensions": ["city"], "measures": [m("max(ne)", "ne")],
+            "source_model": "per_city", "dimensions": ["city"], "measures": [m("max(ne)", "ne_max")],
         }))
-        assert rows(resp, "ne") == {"A": (5.0,), "B": (5.0,)}
+        assert rows(resp, "ne_max") == {"A": (5.0,), "B": (5.0,)}
 
     async def test_field_filter_is_the_only_reference(self, engine) -> None:
         kept = await engine.execute(grouped_query(measures=[m("count(*)", "n")], filters=["events.amount > 25"]))

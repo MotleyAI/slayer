@@ -45,5 +45,5 @@
 
 ## 6. Gates
 
-- [ ] 6.1 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green
+- [x] 6.1 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green
 - [x] 6.2 Run the integration suite with the CI invocation from `.github/workflows/ci.yml`; green
