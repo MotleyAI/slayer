@@ -260,11 +260,19 @@ candidate. Only when no candidate is viable and an item's probe failed solely be
 a hop or its short-form route is ambiguous — never fanning or unreachable — SHALL
 recommendation resolve that item along its tie-break-best fan-out-free route and emit
 that full canonical path, so the recommended root executes once named as
-`source_model`. A feasible `root_hint` (determines all determination items under
-either rule, reaches all attachments) SHALL override selection; an infeasible one falls back with a warning; a malformed one raises. The
-no-common-root coverage output SHALL be retained with the per-item criterion updated
-to match. A pair whose unaddressable edges keep an item from being reached SHALL be
-named in the response warnings with the remedy to name its edges.
+`source_model`. When the items include at least one determination item, an attachment
+on a dataset that no join path connects to a candidate SHALL NOT count against that
+candidate; once a root is chosen, each such attachment SHALL be reported with the
+path a query rooted there spells it by (its product hop, `queries/unrelated-datasets`)
+and flagged `unrelated`, and SHALL never steer the choice. Without determination items,
+attachments steer selection by join-path reachability alone. Every other item
+SHALL carry `unrelated` false. A feasible `root_hint` (determines all determination
+items under either rule, reaches all attachments, by a join path or as unrelated
+datasets when determination items exist) SHALL override selection; an infeasible one
+falls back with a warning; a malformed one raises. The no-common-root coverage output
+SHALL be retained with the per-item criterion updated to match. A pair whose
+unaddressable edges keep an item from being reached SHALL be named in the response
+warnings with the remedy to name its edges.
 
 #### Scenario: Saved measure does not steer the recommendation
 
@@ -301,6 +309,25 @@ named in the response warnings with the remedy to name its edges.
   `recommend_root_model` is given `orders.id` and `addresses.city`
 - **THEN** the response warnings name `orders`↔`addresses` and the remedy to name
   the edges
+
+#### Scenario: An unrelated attachment is reported through the product hop
+
+- **WHEN** `customers` and `events` share no join path and `recommend_root_model` is
+  given `customers.city` and `count(events.id)`
+- **THEN** the root is `customers`, `count(events.id)` is reported as an attachment
+  flagged `unrelated` with the path `count(events.id)`, `customers.city` is flagged
+  `unrelated` false, and querying that path rooted at `customers` succeeds
+
+#### Scenario: An unrelated column stays unreachable
+
+- **WHEN** `recommend_root_model` is given `customers.city` and `events.kind`
+- **THEN** no root is recommended, exactly as before this change
+
+#### Scenario: Attachments alone keep join-path selection
+
+- **WHEN** `recommend_root_model` is given only `count(customers.id)` and
+  `count(events.id)`
+- **THEN** no root is recommended, exactly as before this change
 
 ### Requirement: Population specs are typed at construction
 
