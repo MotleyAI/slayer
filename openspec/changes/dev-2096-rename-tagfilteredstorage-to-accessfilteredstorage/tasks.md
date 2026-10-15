@@ -1,6 +1,6 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Switch `tests/test_model_access.py`, `tests/test_model_access_caches.py`, `tests/test_model_access_memories.py`, `tests/test_model_access_surfaces.py`, `tests/test_model_access_writes.py` to `from slayer.storage.access_filtered import AccessFilteredStorage` (imports, annotations, docstrings; logic untouched, design D6). Verify: each file fails at collection with `ModuleNotFoundError: slayer.storage.access_filtered`.
+- [x] 1.1 Switch `tests/test_model_access.py`, `tests/test_model_access_caches.py`, `tests/test_model_access_memories.py`, `tests/test_model_access_surfaces.py`, `tests/test_model_access_writes.py` to `from slayer.storage.access_filtered import AccessFilteredStorage` (imports, annotations, docstrings; logic untouched, design D6). Verify: each file fails at collection with `ModuleNotFoundError: slayer.storage.access_filtered`.
 
 ## 2. Rename (pr-implement)
 
