@@ -1,4 +1,4 @@
-"""DEV-1911 — a path-less derived partition key fanning from its host fails closed
+"""A path-less derived partition key fanning from its host fails closed
 in every mode.
 
 A ``partition_by=`` naming a host-local derived column whose definition crosses the
@@ -7,7 +7,7 @@ is not single-valued at the host grain, so no ``to_many_handling`` mode can coun
 inline — it is a mode-invariant input-safety error, distinct from a dimension merely
 unattributable from a further (cross-model) root, which still resolves by mode. The
 guard runs at bind (mode-unaware, one chokepoint), so it fires uniformly across every
-position the key can appear in. On the DEV-1900 fixture graph, dual-engine.
+position the key can appear in. On the shared fixture graph, dual-engine.
 
 Covers ``queries/attribution-modes``.
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import JoinCardinality
-from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.errors import AmbiguousJoinPathError, UnrelatedDatasetError
 from slayer.core.models import (
     Column,
     DataType,
@@ -277,16 +277,16 @@ class TestDiagnosticNamesHop:
 
 
 class TestUnreachableAndAmbiguousFailClosed:
-    """An unreachable or ambiguous partition_by path is caught upstream at dimension
-    resolution — never reaching the fanning guard — so it fails closed
-    deterministically without falsely naming the fanning hop."""
+    """An unreachable partition_by path is a row-level read of an unrelated dataset and an
+    ambiguous one fails at dimension resolution — neither reaches the fanning guard, so
+    each fails closed deterministically without falsely naming the fanning hop."""
 
     async def test_unreachable_path_fails_closed_no_false_hop(self, island_engine):
         query = _regions_q(
             dimensions=["name"],
             measures=[ModelMeasure(
                 formula="pop:sum(partition_by=island.value)", name="w")])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnrelatedDatasetError) as ei:
             await island_engine.execute(query)
         assert HOP not in str(ei.value), str(ei.value)
 

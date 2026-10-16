@@ -26,6 +26,7 @@ from slayer.core.enums import (
     ObjectKind,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
+    RESERVED_DATE_SYNTAX_NAMES,
     _coerce_legacy_datatype,
     builtin_empty_value,
 )
@@ -356,7 +357,9 @@ class ModelMeasure(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # ``type`` declares the formula's result type.
+        # ``type`` declares the formula's result type; an explicit null stays set.
+        if isinstance(data, dict) and "type" in data and data["type"] is None:
+            return data
         return _coerce_legacy_type_field(data)
 
     @field_validator("name")
@@ -369,19 +372,6 @@ class ModelMeasure(BaseModel):
             )
         if v is not None:
             _reject_reserved_prefix(v, "ModelMeasure name")
-        return v
-
-    @field_validator("name")
-    @classmethod
-    def _reject_transform_shadowing(cls, v: str | None) -> str | None:
-        """Reject names that would shadow a built-in transform (``cumsum`` etc.)."""
-        if v is None:
-            return v
-        if v in ALL_TRANSFORMS:
-            raise ValueError(
-                f"ModelMeasure name '{v}' is a reserved transform name. "
-                f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
-            )
         return v
 
     @field_validator("formula")
@@ -483,6 +473,11 @@ class Aggregation(BaseModel):
                 f"function. Scalar-allowlist names are reserved: "
                 f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
             )
+        if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
+            raise ValueError(
+                f"Aggregation name '{self.name}' is a reserved date function or "
+                f"date-part alias: {', '.join(sorted(RESERVED_DATE_SYNTAX_NAMES))}"
+            )
         # A granularity-named aggregation would shadow the functional ``gran(col)``
         # time-bucket form in a query dimension.
         if self.name.lower() in GRANULARITY_NAMES:
@@ -575,7 +570,10 @@ class ModelJoin(BaseModel):
     @classmethod
     def _validate_join_pairs(cls, v: list[list[str]]) -> list[list[str]]:
         if not v:
-            raise ValueError("join_pairs must be non-empty")
+            raise ValueError(
+                "join_pairs must be non-empty; to combine a model no join path reaches, drop the join and "
+                "aggregate its columns in the query (e.g. count(events.id) / count(*))"
+            )
         for i, pair in enumerate(v):
             if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
                 raise ValueError(
@@ -668,7 +666,6 @@ class SlayerModel(BaseModel):
         list | None, BeforeValidator(_coerce_source_queries)
     ] = None  # List of SlayerQuery — query-backed source mode
     query_variables: dict[str, Any] = Field(default_factory=dict)
-    backing_query_sql: str | None = None
     data_source: str = ""
     columns: list[Column] = Field(default_factory=list)
     measures: list[ModelMeasure] = Field(default_factory=list)
@@ -720,6 +717,8 @@ class SlayerModel(BaseModel):
     default_time_dimension: str | None = None
     description: str | None = None
     hidden: bool = False
+    # Callers sharing a tag may read the model; empty = public.
+    access_tags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
     source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
@@ -727,6 +726,8 @@ class SlayerModel(BaseModel):
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this model is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)
+    # Runtime-only: datasets no join path reaches that this query frame's population names.
+    _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
 
     @field_validator("filters")
     @classmethod
@@ -883,6 +884,16 @@ class SlayerModel(BaseModel):
     def as_population_factor(self, factor: bool = True) -> "SlayerModel":
         out = self.model_copy()
         out._population_spine = factor
+        return out
+
+    @property
+    def unrelated_datasets(self) -> frozenset[str]:
+        """Names of the datasets this query frame's population meets only as a product."""
+        return self._unrelated
+
+    def with_unrelated(self, names: frozenset[str]) -> "SlayerModel":
+        out = self.model_copy()
+        out._unrelated = names
         return out
 
     @property
@@ -1086,6 +1097,7 @@ class DatasourceConfig(BaseModel):
 def _reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
     out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))
     out.update(dict.fromkeys(GRANULARITY_NAMES, "granularity"))

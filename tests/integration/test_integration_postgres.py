@@ -1585,10 +1585,12 @@ class TestPostgresReservedWordModel:
             source_model="grant", dimensions=["namespace"],
             measures=[{"formula": "merchant.id:count_distinct", "name": "order"}],
         )
-        model = await pg_reserved.create_model_from_query(
+        await pg_reserved.create_model_from_query(
             query=query, name="grants_vm", save=True,
         )
-        assert '"order"' in model.backing_query_sql, model.backing_query_sql
+        over_model = {"source_model": "grants_vm", "dimensions": ["namespace", "order"]}
+        sql = (await pg_reserved.execute(query=over_model, dry_run=True)).sql or ""
+        assert '"order"' in sql, sql
         # Executing the stored backing query (which contains ``AS "order"``)
         # must not raise a Postgres syntax error — that is the regression.
         result = await pg_reserved.execute(query="grants_vm")

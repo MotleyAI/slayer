@@ -1,4 +1,4 @@
-"""DEV-1746 §5.12 — the empty-base grain becomes a typed planner node.
+"""The empty-base grain is a typed planner node.
 
 When a query asks only for isolated aggregates — no host row slots and no
 host-local aggregates — the host base has nothing to project, so the generator
@@ -175,7 +175,7 @@ class TestEmptyBaseGrainPlanNode:
         for factory in (_unfiltered_query, _filtered_query):
             planned = plan_query(query=factory(), bundle=_bundle())
             assert planned.empty_base_plan is not None
-            # DEV-1836: a cross-model aggregate is now an isolated regroup-attach
+            # A cross-model aggregate is an isolated regroup-attach
             # placeholder (its producer is a target-rooted _cm_ CTE), so its host
             # projection slot carries the substitution placeholder key.
             attach_placeholders = {
@@ -284,7 +284,7 @@ class TestEmptyBaseExecution:
     async def test_host_filter_gates_the_whole_result(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A host-local filter that MATCHES gates the spine AND (DEV-1840)
+        """A host-local filter that MATCHES gates the spine AND
         restricts the isolated CTE by semi-join: only customer 100 has a paid
         order, so the scalar is 1000, not the unfiltered 1325."""
         query = SlayerQuery(
@@ -310,3 +310,15 @@ class TestEmptyBaseExecution:
         assert resp.data == [], (
             f"a non-matching host filter still returned rows:\n{resp.data}"
         )
+
+    async def test_expression_over_isolated_aggregates_alone(
+        self, exec_engine: SlayerQueryEngine,
+    ) -> None:
+        """An expression of cross-model aggregates alone also leaves ``_base`` a placeholder spine."""
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.spend:sum * 2", name="twice")],
+        )
+        resp = await exec_engine.execute(query)
+        assert len(resp.data) == 1, resp.data
+        assert resp.data[0]["orders.twice"] == pytest.approx(2650.0), resp.data

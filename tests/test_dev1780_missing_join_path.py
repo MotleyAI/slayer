@@ -1,5 +1,5 @@
-"""DEV-1780/1856 — a non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
-DEV-1856 turned short-form auto-routing on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
+"""A non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
+Short-form auto-routing is on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
 
 from __future__ import annotations
 
@@ -8,15 +8,16 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     UnknownReferenceError,
+    UnrelatedDatasetError,
     UnresolvableDimensionJoinError,
 )
+from slayer.core.join_search import count_routes
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.join_graph import JoinGraph
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._edge_graph_fixtures import edge_graph
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +190,10 @@ class TestShortFormRoutingAndBrokenChains:
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
         engine = await _engine(tmp_path, drop_customer_consumer=True)
         q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnrelatedDatasetError) as ei:
             await _dry_sql(engine, q)
-        assert ei.value.suggested_path is None
+        assert "Consumer.name" in str(ei.value)
+        assert "Invoice" in str(ei.value)
 
     async def test_broken_time_dimension_chain_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
@@ -208,10 +210,9 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
+        query = SlayerQuery.model_validate(_amount_query(dimensions=["Customer.Consumer.does_not_exist"]))
         with pytest.raises(UnknownReferenceError):
-            await _dry_sql(engine, SlayerQuery(**_amount_query(
-                dimensions=["Customer.Consumer.does_not_exist"],
-            )))
+            await _dry_sql(engine, query)
 
 
 # ===========================================================================
@@ -227,7 +228,7 @@ class TestDiagnosticsPreserved:
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
         )
         # A <-> B cycle over two DISTINCT edges; named so each hop resolves
-        # unambiguously (DEV-1853: two edges on one pair fail closed on a bare
+        # unambiguously (two edges on one pair fail closed on a bare
         # model-name token) and the revisit check still fires.
         await storage.save_model(SlayerModel(
             name="B", sql_table="B", data_source="test",
@@ -242,12 +243,13 @@ class TestDiagnosticsPreserved:
                              name="to_b")],
         ))
         engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery.model_validate({
+            "source_model": "A",
+            "measures": [{"formula": "amount:sum", "name": "amt"}],
+            "dimensions": ["to_b.to_a.amount"],
+        })
         with pytest.raises(ValueError) as ei:
-            await _dry_sql(engine, SlayerQuery(
-                source_model="A",
-                measures=[{"formula": "amount:sum", "name": "amt"}],
-                dimensions=["to_b.to_a.amount"],
-            ))
+            await _dry_sql(engine, query)
         assert "ircular" in str(ei.value)
 
 
@@ -275,8 +277,8 @@ class TestInternalEnrichmentsUnaffected:
 
 class TestDownstreamStageScope:
     async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
-        """A named-query stage sees a FLAT schema, so an outer-stage dotted ref is
-        ``IllegalScopeReferenceError``; the inner stage's full-path dim resolves."""
+        """An outer-stage dotted ref names a model no join path reaches from the flat
+        stage: ``UnrelatedDatasetError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
         inner = SlayerQuery(
             name="s1", source_model="Invoice",
@@ -288,63 +290,63 @@ class TestDownstreamStageScope:
             dimensions=["Subscription.Customer.Consumer.email"],
             measures=[{"formula": "*:count"}],
         )
-        with pytest.raises(IllegalScopeReferenceError):
+        with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
 
 
 # ===========================================================================
-# JoinGraph.count_simple_paths unit (route-enumeration primitive; retained)
+# count_routes unit (route-enumeration primitive; retained)
 # ===========================================================================
 
+def _count(nodes: set[str], edges: list[tuple[str, str, str | None]], root: str, target: str,
+           *, cap: int = 2) -> int:
+    models = edge_graph(nodes=nodes, edges=edges)
+    return count_routes(root=models[root], target=target, models_by_name=models, cap=cap)
+
+
 class TestCountSimplePaths:
-    # DEV-1853: JoinGraph is an undirected multigraph — one entry per declared
-    # edge; route counts below are re-derived on the bidirectional semantics.
+    # The join graph is an undirected multigraph — one entry per declared
+    # edge; route counts below are derived on the bidirectional semantics.
     def test_unique(self) -> None:
-        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None), ("B", "C", None)])
-        assert g.count_simple_paths("A", "C") == 1
+        assert _count({"A", "B", "C"}, [("A", "B", None), ("B", "C", None)], "A", "C") == 1
 
     def test_diamond_is_ambiguous(self) -> None:
-        g = JoinGraph(
-            nodes={"A", "B", "C", "D"},
-            edges=[("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "D", None)],
-        )
-        assert g.count_simple_paths("A", "D") == 2
+        assert _count(
+            {"A", "B", "C", "D"},
+            [("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "D", None)],
+            "A", "D",
+        ) == 2
 
     def test_two_hop_plus_three_hop_is_ambiguous(self) -> None:
         # A-B-D and A-C-B-D both reach D.
-        g = JoinGraph(
-            nodes={"A", "B", "C", "D"},
-            edges=[("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "B", None)],
-        )
-        assert g.count_simple_paths("A", "D") == 2
+        assert _count(
+            {"A", "B", "C", "D"},
+            [("A", "B", None), ("A", "C", None), ("B", "D", None), ("C", "B", None)],
+            "A", "D",
+        ) == 2
 
     def test_unreachable(self) -> None:
         # A disconnected node stays unreachable under bidirectional traversal.
-        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None)])
-        assert g.count_simple_paths("A", "C") == 0
+        assert _count({"A", "B", "C"}, [("A", "B", None)], "A", "C") == 0
 
     def test_root_equals_target(self) -> None:
-        g = JoinGraph(nodes={"A", "B"}, edges=[("A", "B", None)])
         # A path from A to itself is the single trivial empty route.
-        assert g.count_simple_paths("A", "A") == 1
+        assert _count({"A", "B"}, [("A", "B", None)], "A", "A") == 1
 
     def test_cycle_is_finite_and_counts_one_route(self) -> None:
         # Chain A-B-C (each edge declared once, both directions traversable):
         # exactly one simple route A->C, and the visited guard stays finite.
-        g = JoinGraph(nodes={"A", "B", "C"}, edges=[("A", "B", None), ("B", "C", None)])
-        assert g.count_simple_paths("A", "C") == 1
+        assert _count({"A", "B", "C"}, [("A", "B", None), ("B", "C", None)], "A", "C") == 1
 
     def test_parallel_edges_are_distinct_routes(self) -> None:
-        # DEV-1853 divergences.md class (d): two unnamed edges on one pair
-        # count as two routes.
-        g = JoinGraph(nodes={"A", "B"}, edges=[("A", "B", None), ("A", "B", None)])
-        assert g.count_simple_paths("A", "B") == 2
+        # Two unnamed edges on one pair count as two routes.
+        assert _count({"A", "B"}, [("A", "B", None), ("A", "B", None)], "A", "B") == 2
 
     def test_cap_limits_work(self) -> None:
         # Many parallel routes A->{B1,B2,B3}->D: capped at 2.
-        g = JoinGraph(
-            nodes={"A", "B1", "B2", "B3", "D"},
-            edges=[("A", "B1", None), ("A", "B2", None), ("A", "B3", None),
-                   ("B1", "D", None), ("B2", "D", None), ("B3", "D", None)],
-        )
-        assert g.count_simple_paths("A", "D", cap=2) == 2
+        assert _count(
+            {"A", "B1", "B2", "B3", "D"},
+            [("A", "B1", None), ("A", "B2", None), ("A", "B3", None),
+             ("B1", "D", None), ("B2", "D", None), ("B3", "D", None)],
+            "A", "D", cap=2,
+        ) == 2

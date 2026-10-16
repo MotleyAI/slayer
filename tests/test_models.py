@@ -377,13 +377,9 @@ class TestSlayerModel:
         assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
-    def test_model_measure_name_cannot_shadow_transform(self) -> None:
-        """A ``ModelMeasure`` named after a built-in transform (``cumsum`` etc.)
-        would shadow the transform in formulas like ``cumsum(...)``. Reject at
-        model-validation time.
-        """
-        with pytest.raises(ValueError, match="reserved"):
-            ModelMeasure(name="cumsum", formula="revenue:sum")
+    def test_model_measure_may_be_named_after_transform(self) -> None:
+        """A transform name acts as a transform only in call position."""
+        assert ModelMeasure(name="cumsum", formula="revenue:sum").name == "cumsum"
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
         """DEV-1336: a ``ModelMeasure`` formula containing raw `OVER (...)` SQL
@@ -843,7 +839,7 @@ class TestSourceQueryStages:
 
 
 class TestQueryVariablesAndCacheFields:
-    """``query_variables`` and ``backing_query_sql`` defaults and shape."""
+    """``query_variables`` defaults and shape."""
 
     def test_query_variables_default_is_empty_dict(self) -> None:
         m = SlayerModel(name="orders", sql_table="t", data_source="ds")
@@ -857,10 +853,6 @@ class TestQueryVariablesAndCacheFields:
             query_variables={"threshold": 1500, "region": "US"},
         )
         assert m.query_variables == {"threshold": 1500, "region": "US"}
-
-    def test_backing_query_sql_default_is_none(self) -> None:
-        m = SlayerModel(name="orders", sql_table="t", data_source="ds")
-        assert m.backing_query_sql is None
 
 
 class TestAllowedAggregationsBuildTimeValidation:

@@ -797,11 +797,10 @@ class TimeDimension(BaseModel):
         description=(
             'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
             "with either bound null (one-sided). change, change_pct, time_shift and window= "
-            "aggregates read rows before the range by themselves, so each month of 2025 with its "
+            "aggregates read rows before the range (a forward time_shift, after it) by themselves, "
+            "so each month of 2025 with its "
             'change vs the previous month is just "2025": never widen the range and drop rows '
-            "afterwards. cumsum starts at the range start; for a running total since the first "
-            "row, accumulate in an inner stage without date_range and filter the time in an "
-            "outer stage."
+            "afterwards. cumsum starts at the range start."
         ),
     )
     label: str | None = None
@@ -834,11 +833,29 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
             option["items"] = {"anyOf": [option["items"], {"type": "string"}]}
 
 
+def _advertise_order_item(schema: dict[str, Any]) -> None:
+    """Publish ``column``'s string form; hide the internal ``raw_formula``."""
+    props = schema.get("properties", {})
+    props.pop("raw_formula", None)
+    if "column" in props:
+        props["column"] = {"anyOf": [{"type": "string"}, props["column"]]}
+
+
+def _order_column_text(col: Any) -> str | None:
+    """The string form of an order ``column``: the string itself, or the expression a ``{"name": …}``-only object carries."""
+    if isinstance(col, str):
+        return col
+    if isinstance(col, dict) and set(col) == {"name"} and isinstance(name := col["name"], str):
+        if not _is_valid_column_ref_name(name) and _order_formula_candidate(name) is not None:
+            return name
+    return None
+
+
 class OrderItem(BaseModel):
     """A sort key."""
     # extra="forbid": reject stray keys so a mixed canonical+shorthand item
     # raises instead of silently dropping the extra key.
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_advertise_order_item)
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
@@ -852,11 +869,11 @@ class OrderItem(BaseModel):
     def _capture_raw_formula(cls, data: Any) -> Any:
         """Capture the raw column formula before coercion normalizes it."""
         if isinstance(data, dict):
-            col = data.get("column")
-            if isinstance(col, str):
+            col = _order_column_text(data.get("column"))
+            if col is not None:
                 candidate = _order_formula_candidate(col)
                 if candidate is not None:
-                    data = {**data, "raw_formula": candidate}
+                    data = {**data, "column": col, "raw_formula": candidate}
         return data
 
     @field_validator("direction")
@@ -1076,10 +1093,22 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "Stage name. In a list of query objects every entry but the last carries a name, and "
-            "later stages use it as their source_model. Use stages to re-query a whole result: "
-            "filter after a window or rank, or aggregate another query's rows. An outer stage sees "
-            "the inner result's columns with dotted paths flattened to __: an inner dimension "
-            "customers.region_id is customers__region_id outside; a measure keeps its name. More: "
+            "later stages use it as their source_model. A STAGE IS NOT NEEDED for top N per group "
+            "(filter on `rank(...)` in the same stage), for averaging or bucketing per-entity "
+            "totals (a nested aggregate, or a computed dimension with `partition_by`), or for "
+            "shares and totals (`partition_by`). A filter on a transform's value "
+            "(`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over "
+            "every row the other filters keep. Stages ARE "
+            "needed only to drop rows by a dimension or time condition that a cross-row value "
+            "must still see, or to join or reuse a whole result: a row filter or date_range "
+            "applies before a running total, lag / lead, rank, ntile, consecutive_periods or "
+            "`partition_by` total (change, change_pct, time_shift and window= still read past "
+            "date_range or a filter on their own time dimension, but not past other filters). "
+            "Compute the value "
+            "in an inner stage and filter in the outer one. An outer stage sees the inner "
+            "result's columns with dotted paths flattened to __: an inner dimension "
+            "customers.regions.name is customers__regions__name outside; a measure keeps its "
+            "name. More: "
             'inspect(reference=["memory:help.queries"], entity_type="memory").'
         ),
     )
@@ -1092,9 +1121,9 @@ class SlayerQuery(BaseModel):
             "{\"formula\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
             '"name": "orders_2025"} list every region, including those without orders (a count '
             "over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. "
-            "Otherwise root where the facts are, or omit to infer the smallest model determining "
-            "every dimension and row-level condition column (reported in the response); rows "
-            'without facts then drop out. A saved model or stage name, an inline extension '
+            "Otherwise root where the facts are (rows without facts then drop out), or omit to "
+            "infer the smallest model determining every dimension and row-level condition column "
+            '(reported in the response). A saved model or stage name, an inline extension '
             '{"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query '
             "columns, or a full inline model."
         ),
@@ -1111,14 +1140,14 @@ class SlayerQuery(BaseModel):
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
             "spell its keys exactly like the query's dimensions (a joined column by its dotted "
             "path; its bare name fails). Share of group: "
-            "sum(amount) / sum(amount, partition_by=customers.region_id); share of the grand "
+            "sum(amount) / sum(amount, partition_by=customers.regions.name); share of the grand "
             "total: sum(amount) / sum(amount, partition_by=[]).\n"
             "- window= turns any aggregation into a trailing time window ending at each time "
             "bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): "
             "count_distinct(customer_id, window='90d').\n"
             "- Nesting aggregates per-group values: "
-            "avg(sum(amount, partition_by=[customers.region_id, customers.name]), "
-            "partition_by=[customers.region_id]) averages the per-customer totals in each region.\n"
+            "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+            "partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n"
             "- Transforms wrap an aggregate; all but the rank family need a time dimension: "
             "cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) "
             "period-over-period delta / ratio; time_shift(sum(amount), -1) the previous "
@@ -1135,7 +1164,10 @@ class SlayerQuery(BaseModel):
             "own rows: several child models never fan out or double count. A child row without a "
             "parent (an order with no customer) has NULL parent columns: it counts in the NULL "
             "row of a parent dimension when that row exists, and in an ungrouped total; never add "
-            "it again.\n"
+            "it again. An aggregate over a model no join path reaches from the root is computed "
+            "over that model's own rows and repeated on every row (per bucket of a time_spine "
+            "time dimension), with an unrelated_dataset warning: rooted at customers, "
+            "count(events.id) / count(*).\n"
             "More (every aggregation, empty-input values, nesting and transform rules): "
             'inspect(reference=["memory:help.aggregations", "memory:help.transforms"], '
             'entity_type="memory").'
@@ -1190,8 +1222,10 @@ class SlayerQuery(BaseModel):
             "month(created_at); granularities are second, minute, hour, day, week, week_sunday, "
             "month, quarter, year, or the datasource's custom ones. An aggregate inside a "
             "computed dimension needs partition_by= to fix its grain: "
-            "{\"expression\": \"iif(sum(amount, partition_by=customers.name) > 150, 'high', "
-            "'low')\", \"name\": \"spend_band\"}."
+            "{\"expression\": \"iif(sum(amount, partition_by=customers.id) > 150, 'high', "
+            "'low')\", \"name\": \"spend_band\"}. Group by naturally readable labels: a name "
+            "(customers.regions.name), never by an id alone unless ids are asked for; when a name "
+            "may repeat (people, products), by the id and the name."
         ),
     )
     time_dimensions: list[TimeDimension] | None = Field(
@@ -1224,7 +1258,7 @@ class SlayerQuery(BaseModel):
             "sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
             "sum(amount) > 100; top N per group: "
-            "rank(sum(amount), partition_by=customers.region_id, direction='desc') <= 1.\n"
+            "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
@@ -1500,6 +1534,29 @@ def _union(
     return merged
 
 
+_RESTATABLE_FIELDS = ("label", "type", "description", "meta")
+
+
+def _drop_restatements(
+    saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None,
+) -> list[ModelMeasure] | None:
+    """``refined`` without the entries restating a saved entry by its bare name; a differing set field conflicts."""
+    by_name = {m.name: m for m in saved or [] if m.name}
+    kept: list[ModelMeasure] = []
+    for entry in refined or []:
+        prior = by_name.get(entry.formula.strip())
+        if prior is None or entry.name not in (None, prior.name):
+            kept.append(entry)
+            continue
+        for field in _RESTATABLE_FIELDS:
+            if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
+                raise RefinementConflictError(
+                    field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
+                    suggestion=_ENTRY_CONFLICT_SUGGESTION,
+                )
+    return kept if refined else refined
+
+
 def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> Any:
     if refined is None or refined == saved:
         return saved
@@ -1559,7 +1616,8 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
             identity=dimension_identity,
         ),
         "measures": _union(
-            saved.measures, refinement.measures, field="measures", canon=lambda m: m,
+            saved.measures, _drop_restatements(saved.measures, refinement.measures), field="measures",
+            canon=lambda m: m,
             identity=lambda m: ("name", m.name) if m.name else ("formula", m.formula),
         ),
         "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, model_name),

@@ -3,8 +3,8 @@
 A derived ``Column.sql`` / ``Column.filter`` reference that provably crosses a
 fanning hop from its declaring model is rejected at save time
 (``DerivedColumnFanningError``); an unproven hop warns and defers to the
-DEV-1832 query-time backstop; a provably to-one hop is silent; an unloaded /
-ambiguous target is skipped (best-effort).
+DEV-1832 query-time backstop; a provably to-one hop is silent; an unloaded
+target is skipped (best-effort); an ambiguous one is rejected.
 
 The query-time backstop for an aggregated unproven-hop column is pinned by
 ``tests/integration/test_integration_duckdb.py::TestDev1709SiblingProtection``
@@ -15,7 +15,7 @@ import warnings
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.errors import DerivedColumnFanningError, SlayerError
+from slayer.core.errors import DerivedColumnAmbiguousError, DerivedColumnFanningError, SlayerError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine import join_safety
 from slayer.engine.column_dependency import validate_derived_columns
@@ -479,9 +479,9 @@ async def test_unresolvable_reference_skipped(tmp_path) -> None:
     assert await storage.get_model("orders", data_source=DS) is not None
 
 
-async def test_ambiguous_parallel_edge_skipped(tmp_path) -> None:
+async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
     """A bare model-name token spanning two parallel named edges is ambiguous
-    → skipped, even when one edge is fanning-declared."""
+    → rejected as ambiguous, never as fanning, even when one edge is fanning-declared."""
     storage = _storage(tmp_path)
     widgets = SlayerModel(
         name="widgets", data_source=DS, sql_table="widgets",
@@ -509,8 +509,12 @@ async def test_ambiguous_parallel_edge_skipped(tmp_path) -> None:
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        await storage.save_model(orders)  # ambiguous hop → skipped, no raise
+        with pytest.raises(DerivedColumnAmbiguousError) as ei:
+            await storage.save_model(orders)
+    assert not isinstance(ei.value, DerivedColumnFanningError)
+    assert ei.value.column == "wsum"
     assert _fanning_warnings(rec, column="wsum") == []
+    assert await storage.get_model("orders", data_source=DS) is None
 
 
 async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:

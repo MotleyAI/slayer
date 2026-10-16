@@ -21,7 +21,16 @@ from slayer.mcp.server import create_mcp_server
 from slayer.memories.help_seed import load_help_topics
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._mcp_idiom_fixtures import CROSS_MODEL_RATIO, EXAMPLE_OWNERS, SECOND_CHILD
+from tests._mcp_idiom_fixtures import (
+    CROSS_MODEL_RATIO,
+    EXAMPLE_OWNERS,
+    FAN_OUT,
+    ONE_QUERY,
+    SECOND_CHILD,
+    STAGE_NEEDED,
+    STAGE_NOT_NEEDED,
+    UNRELATED_MODEL,
+)
 
 DESCRIPTION_BUDGET = 2048
 # The query schema ships with every request; set from the size measured after the rewrite + ~10%.
@@ -45,18 +54,41 @@ MARKER_OWNERS: dict[str, tuple[str, str]] = {
     "an order with no customer": ("SlayerQuery", "measures"),
     "only the columns the question asks for": ("SlayerQuery", "order"),
     "where the facts are": ("SlayerQuery", "source_model"),
+    UNRELATED_MODEL: ("SlayerQuery", "measures"),
     **EXAMPLE_OWNERS,
 }
 
 _INSTRUCTIONS = ("<instructions>",)
-FAN_OUT_MARKER = "cannot fan out"
-#: Moved guidance: also absent from the instructions and every help topic.
-SOLE_OWNER_MARKERS = (
-    "time_spine.timestamp", "an order with no customer", "only the columns the question asks for",
-    "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, FAN_OUT_MARKER,
-)
+_TOOL_DESCRIPTION = ("<tool description>",)
+
+
+def _field_path(model: str, field: str) -> tuple[str, ...]:
+    return ("$defs", model, "properties", field)
+
+
+#: Moved guidance → its only owners among the query texts, the instructions and every help topic.
+SOLE_OWNER_MARKERS: dict[str, frozenset[tuple[str, ...]]] = {
+    **{
+        marker: frozenset({_field_path(*MARKER_OWNERS[marker])})
+        for marker in (
+            "time_spine.timestamp", "an order with no customer", "only the columns the question asks for",
+            "where the facts are", SECOND_CHILD, CROSS_MODEL_RATIO, STAGE_NOT_NEEDED, STAGE_NEEDED,
+            UNRELATED_MODEL,
+        )
+    },
+    ONE_QUERY: frozenset({_INSTRUCTIONS, _TOOL_DESCRIPTION}),
+    FAN_OUT: frozenset({_INSTRUCTIONS}),
+}
 #: Help-topic copies the moved guidance replaced.
 RETIRED_HELP_PHRASES = ("Project exactly the columns", "Fill time gaps", "## Gaps")
+#: Retired stage and one-query wording, absent from every surface text.
+RETIRED_PHRASES = (
+    "filter after a window or rank", "filter after a rank or window", "re-query a whole result",
+    "accumulate in an inner stage", "Answer with one query whenever", "## One query first", "Typical uses",
+    "filter the time in an outer stage", "A row-level condition applies before transforms",
+)
+#: A dotted or ``__``-flattened path, or a ``partition_by=`` key, ending in ``_id``.
+_ID_GROUPING = re.compile(r"\b[A-Za-z]\w*?(?:\.|__)\w*_id\b|partition_by=\[?(?:[\w.]+,\s*)*[\w.]*_id\b")
 
 
 _STORE = tempfile.TemporaryDirectory()
@@ -90,14 +122,10 @@ def _descriptions(node: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str
     return out
 
 
-def _field_path(model: str, field: str) -> tuple[str, ...]:
-    return ("$defs", model, "properties", field)
-
-
 def _query_texts() -> dict[tuple[str, ...], str]:
     query = _tools()["query"]
     texts = dict(_descriptions(query.inputSchema))
-    texts[("<tool description>",)] = query.description or ""
+    texts[_TOOL_DESCRIPTION] = query.description or ""
     return texts
 
 
@@ -192,10 +220,15 @@ def test_instructions_come_from_the_module_constant() -> None:
 
 
 def test_instructions_give_the_fan_out_reason() -> None:
-    assert (
-        "Aggregates over several joined models in one query are each computed over their own rows, "
-        "so one query cannot fan out or double count; split only when a stage must re-query a whole result."
-    ) in server_mod.SERVER_INSTRUCTIONS
+    assert server_mod.SERVER_INSTRUCTIONS.splitlines()[1] == (
+        "ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Do NOT split it into "
+        "several queries, do NOT combine or recompute query results yourself (by hand or in Python), and do "
+        "NOT add stages for what one stage can do. One SLayer query computes all of these together: totals at "
+        "any coarser grain and shares of them, ranks and top N per group, period-over-period changes, running "
+        "totals, trailing windows, aggregates of aggregates, and aggregates over several joined models. Each "
+        "aggregate runs over its own model's rows, so one query NEVER fans out or double counts. Explore the "
+        "data first if you need to; then write the one query."
+    )
 
 
 def test_over_budget_instructions_fail_the_build(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -246,9 +279,51 @@ def test_query_description_points_to_fields_help_refine_and_cap() -> None:
     lowered = description.lower()
     for stem in (
         "join", "share", "grand total", "rank", "top", "display", "period-over-period",
-        "running total", "trailing window", "double counting", "nest", "stage", "prefer", "list",
+        "running total", "trailing window", "double counting", "nest", "stage", "list",
     ):
         assert stem in lowered, stem
+
+
+def test_query_description_opens_with_the_one_query_rule() -> None:
+    assert (_tools()["query"].description or "").startswith(
+        "ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you "
+        "want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins. "
+        "A single query can:\n- "
+    )
+
+
+def test_query_description_credits_look_back_to_changes_and_windows_only() -> None:
+    lines = (_tools()["query"].description or "").splitlines()
+    assert [line for line in lines if "look back" in line] == [
+        "- compute period-over-period changes and trailing windows (90 days, 3 months), which look back "
+        "before date_range by themselves, and running totals;"
+    ]
+
+
+def test_name_describes_when_a_stage_is_needed() -> None:
+    assert _query_texts()[_field_path("SlayerQuery", "name")] == (
+        "Stage name. In a list of query objects every entry but the last carries a name, and later stages "
+        "use it as their source_model. A STAGE IS NOT NEEDED for top N per group (filter on `rank(...)` in "
+        "the same stage), for averaging or bucketing per-entity totals (a nested aggregate, or a computed "
+        "dimension with `partition_by`), or for shares and totals (`partition_by`). A filter on a "
+        "transform's value (`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over "
+        "every row the other filters keep. Stages ARE needed only to drop rows by a dimension or time "
+        "condition that a cross-row value must still see, or to join or reuse a whole result: a row filter "
+        "or date_range applies before a running total, lag / lead, rank, ntile, consecutive_periods or "
+        "`partition_by` total (change, change_pct, time_shift and "
+        "window= still read past date_range or a filter on their own time dimension, but not past other "
+        "filters). Compute the value in an inner stage and filter in the outer one. An outer stage sees the "
+        "inner result's columns with dotted paths flattened to __: an inner dimension customers.regions.name "
+        "is customers__regions__name outside; a measure keeps its name. More: "
+        'inspect(reference=["memory:help.queries"], entity_type="memory").'
+    )
+
+
+def test_dimensions_require_a_readable_label() -> None:
+    assert _query_texts()[_field_path("SlayerQuery", "dimensions")].endswith(
+        "Group by naturally readable labels: a name (customers.regions.name), never by an id alone unless "
+        "ids are asked for; when a name may repeat (people, products), by the id and the name."
+    )
 
 
 def test_query_schema_within_size_budget() -> None:
@@ -276,18 +351,44 @@ def _surface_texts() -> dict[tuple[str, ...], str]:
     return texts
 
 
-@pytest.mark.parametrize("marker", SOLE_OWNER_MARKERS)
+@pytest.mark.parametrize("marker", sorted(SOLE_OWNER_MARKERS))
 def test_moved_guidance_has_no_second_copy(marker: str) -> None:
-    owner = _INSTRUCTIONS if marker == FAN_OUT_MARKER else _field_path(*MARKER_OWNERS[marker])
+    owners = SOLE_OWNER_MARKERS[marker]
     texts = _surface_texts()
-    assert marker in texts.get(owner, ""), f"{marker!r} missing from {owner}"
-    elsewhere = [path for path, text in texts.items() if path != owner and marker in text]
+    for owner in owners:
+        assert marker in texts.get(owner, ""), f"{marker!r} missing from {owner}"
+    elsewhere = [path for path, text in texts.items() if path not in owners and marker in text]
     assert elsewhere == []
 
 
 @pytest.mark.parametrize("phrase", RETIRED_HELP_PHRASES)
 def test_retired_help_copies_are_gone(phrase: str) -> None:
     assert [t.id for t in load_help_topics() if phrase in t.learning] == []
+
+
+@pytest.mark.parametrize("phrase", RETIRED_PHRASES)
+def test_retired_stage_and_one_query_wording_is_gone(phrase: str) -> None:
+    assert [path for path, text in _surface_texts().items() if phrase in text] == []
+
+
+@pytest.mark.parametrize(("topic", "sentence"), [
+    ("help.queries", "(`customers.regions.name` becomes `customers__regions__name`)"),
+    ("help.transforms", "Whether a filter needs a stage around a transform: the query object's `name` field."),
+    ("help.time", "A running total since the first row, in two stages:"),
+])
+def test_help_topics_point_to_the_stage_rule(topic: str, sentence: str) -> None:
+    body = next(t.learning for t in load_help_topics() if t.id == topic)
+    assert sentence in " ".join(body.split())
+
+
+def test_date_range_drops_the_stage_recipe() -> None:
+    text = _query_texts()[_field_path("TimeDimension", "date_range")]
+    assert text.endswith("cumsum starts at the range start.")
+
+
+def test_no_example_groups_by_an_id() -> None:
+    hits = {path: _ID_GROUPING.findall(text) for path, text in _surface_texts().items()}
+    assert {path: found for path, found in hits.items() if found} == {}
 
 
 def test_intro_time_deep_dive_line_drops_gaps() -> None:
@@ -317,7 +418,12 @@ def test_measure_formula_points_to_the_measures_field() -> None:
     assert len(text) <= 200, text
 
 
+def test_unrelated_aggregate_varies_per_spine_bucket() -> None:
+    text = _tools()["query"].inputSchema["$defs"]["SlayerQuery"]["properties"]["measures"].get("description") or ""
+    assert "repeated on every row (per bucket of a time_spine time dimension)" in text
+
+
 def test_date_range_is_described() -> None:
     text = _tools()["query"].inputSchema["$defs"]["TimeDimension"]["properties"]["date_range"].get("description") or ""
-    for needle in ("change", "time_shift", "window=", "cumsum"):
+    for needle in ("change,", "change_pct", "time_shift", "window=", "cumsum"):
         assert needle in text, needle

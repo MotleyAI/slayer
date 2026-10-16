@@ -9,16 +9,16 @@ core backs ``recommend_root_model``.
 
 from __future__ import annotations
 
-from collections import deque
-
 from pydantic import BaseModel
 
 from slayer.core.errors import (
     AmbiguousJoinPathError,
+    CircularJoinPathError,
     PopulationErrorReason,
     PopulationInferenceError,
 )
-from slayer.core.join_walker import neighbors, provably_to_one, resolve_hop
+from slayer.core.join_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
+from slayer.core.join_walker import canonical_path, provably_to_one, terminal_model, walk
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
@@ -87,24 +87,11 @@ def _computed_dimension_refs(expression: str) -> list[str]:
 def _walk_terminal_model(
     path: list[str], *, models_by_name: dict[str, SlayerModel]
 ) -> SlayerModel | None:
-    """Model at the end of a dotted ``path`` (a model name then join tokens), or None.
-
-    Cardinality-blind (a saved measure is dropped regardless of the path's arity)
-    and routes edge-name tokens via ``resolve_hop``, so a named join resolves the
-    same way execution binds it; an ambiguous or dead hop yields None.
-    """
-    if not path:
+    """Model at the end of a dotted ``path`` (a model name then join tokens), or None."""
+    root = models_by_name.get(path[0]) if path else None
+    if root is None:
         return None
-    current = models_by_name.get(path[0])
-    for token in path[1:]:
-        if current is None:
-            return None
-        try:
-            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
-        except AmbiguousJoinPathError:
-            return None
-        current = models_by_name.get(edge.target_model) if edge is not None else None
-    return current
+    return terminal_model(root=root, path=path[1:], models_by_name=models_by_name)
 
 
 def _is_saved_measure_ref(ref: str, *, models_by_name: dict[str, SlayerModel]) -> bool:
@@ -219,36 +206,28 @@ def determination_items(
 # --------------------------------------------------------------------------- #
 def _walk_to_one(
     *, start: SlayerModel, tokens: list[str], models_by_name: dict[str, SlayerModel]
-) -> tuple[SlayerModel | None, str, int]:
-    """Walk ``tokens`` from ``start``; ``(terminal model, verdict, hops)``.
+) -> tuple[SlayerModel | None, str, tuple[str, ...]]:
+    """Walk ``tokens`` from ``start``; ``(terminal model, verdict, canonical path)``.
 
-    Every oriented hop must be provably to-one; ``_NO_EDGE`` distinguishes a token
-    with no literal edge from a resolved-but-unsafe (``_UNREACHABLE``) hop.
+    Every oriented hop must be provably to-one; ``_NO_EDGE`` distinguishes a path
+    that does not resolve from a resolved-but-unsafe (``_UNREACHABLE``) one.
     """
-    current = start
-    visited = {start.name}
-    hops = 0
-    for token in tokens:
-        try:
-            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
-        except AmbiguousJoinPathError:
-            return (None, _AMBIGUOUS, 0)
-        if edge is None:
-            return (None, _NO_EDGE, 0)
-        if edge.target_model in visited:
-            return (None, _UNREACHABLE, 0)
-        target = models_by_name.get(edge.target_model)
-        if target is None or not provably_to_one(edge=edge, target_model=target):
-            return (None, _UNREACHABLE, 0)
-        visited.add(edge.target_model)
-        current = target
-        hops += 1
-    return (current, _OK, hops)
+    try:
+        chain = walk(root=start, path=tokens, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return (None, _AMBIGUOUS, ())
+    except CircularJoinPathError:
+        return (None, _UNREACHABLE, ())
+    if chain is None:
+        return (None, _NO_EDGE, ())
+    if not all(provably_to_one(edge=e, target_model=models_by_name[e.target_model]) for e in chain):
+        return (None, _UNREACHABLE, ())
+    return (models_by_name[chain[-1].target_model] if chain else start, _OK, canonical_path(chain))
 
 
 def _short_form_probe(
     *, start: SlayerModel, target: str, models_by_name: dict[str, SlayerModel]
-) -> tuple[SlayerModel | None, str, int]:
+) -> tuple[SlayerModel | None, str, tuple[str, ...]]:
     """Routed fallback for a single-token anchor with no literal edge."""
     route, status = resolve_route(
         root=start, target_model=target, models_by_name=models_by_name
@@ -259,14 +238,14 @@ def _short_form_probe(
         reachable = safe_route_reachable(
             root=start, target_model=target, models_by_name=models_by_name
         )
-        return (None, _AMBIGUOUS if reachable else _UNREACHABLE, 0)
+        return (None, _AMBIGUOUS if reachable else _UNREACHABLE, ())
     if route is None:
-        return (None, _UNREACHABLE, 0)
+        return (None, _UNREACHABLE, ())
     return _walk_to_one(start=start, tokens=route, models_by_name=models_by_name)
 
 
-def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, int]:
-    """Route ``item``'s dotted path from ``root``; ``(verdict, hops)``.
+def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, tuple[str, ...]]:
+    """Route ``item``'s dotted path from ``root``; ``(verdict, canonical path)`` — hops are its length.
 
     Literal resolution first: the spelled path is walked hop by hop, and a path
     that resolves literally is never reinterpreted through routing. A single-token
@@ -284,88 +263,55 @@ def probe_item(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) 
         path = path[1:]
     start = models_by_name.get(root)
     if start is None:
-        return (_UNREACHABLE, 0)
+        return (_UNREACHABLE, ())
     terminal, verdict, hops = _walk_to_one(start=start, tokens=path, models_by_name=models_by_name)
     if verdict == _NO_EDGE and len(path) == 1:
         terminal, verdict, hops = _short_form_probe(
             start=start, target=path[0], models_by_name=models_by_name
         )
     if terminal is None:
-        return (_UNREACHABLE if verdict == _NO_EDGE else verdict, 0)
+        return (_UNREACHABLE if verdict == _NO_EDGE else verdict, ())
     if terminal.get_column(leaf) is None:
-        return (_UNREACHABLE, 0)
+        return (_UNREACHABLE, ())
     return (_OK, hops)
 
 
-def _to_one_hops(
-    current: SlayerModel, models_by_name: dict[str, SlayerModel]
-) -> list[tuple[str, str]]:
-    """``(target, token)`` for each *unambiguous* provably to-one executable hop from ``current``.
-
-    A hop counts only when a single executable token resolves it (via ``resolve_hop``)
-    and its oriented edge is provably to-one — so an unnamed parallel pair (ambiguous,
-    hence unroutable) is not a determination hop, and a named parallel pair contributes
-    only the token whose edge is to-one, matching query-time routing.
-    """
-    incident = neighbors(model=current, models_by_name=models_by_name)
-    tokens: set[str] = set()
-    for edge in incident:
-        if edge.name:
-            tokens.add(edge.name)
-        tokens.add(edge.target_spelling or edge.target_model)
-    out: list[tuple[str, str]] = []
-    for token in tokens:
-        try:
-            edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
-        except AmbiguousJoinPathError:
-            continue
-        if edge is None:
-            continue
-        target = models_by_name.get(edge.target_model)
-        if target is not None and provably_to_one(edge=edge, target_model=target):
-            out.append((edge.target_model, token))
-    return out
+def determined_path(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, ...] | None:
+    """``item``'s canonical path from ``root`` when ``root`` determines it, else ``None``."""
+    verdict, path = probe_item(root=root, item=item, models_by_name=models_by_name)
+    return path if verdict == _OK else None
 
 
-def to_one_reachable(
-    root: str, models_by_name: dict[str, SlayerModel]
-) -> dict[str, list[str]]:
-    """Every model reachable from ``root`` over unambiguous provably to-one hops → its
-    lexicographically-smallest minimal to-one token path (``root`` maps to ``[]``).
+def ambiguity_resolved_path(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> tuple[str, ...] | None:
+    """For a ``model.leaf`` item whose probe fails only on ambiguity, its tie-break-best fan-out-free canonical path."""
+    if probe_item(root=root, item=item, models_by_name=models_by_name)[0] != _AMBIGUOUS:
+        return None
+    *path, leaf = item.split(".")
+    target = models_by_name.get(path[0]) if len(path) == 1 else None
+    if target is None or target.get_column(leaf) is None:
+        return None
+    route = shortest_route(root=models_by_name[root], target=target.name, models_by_name=models_by_name,
+                           hop_filter=HopFilter.TO_ONE)
+    return route.tokens if route is not None else None
 
-    Auto-routing (a BFS), unlike :func:`probe_item`'s spelled-path walk — the shared
-    to-one determination primitive that backs ``recommend_root_model`` (which routes
-    model→model). Emitting the recorded to-one path keeps recommendation paths safe
-    even when a cardinality-blind route of equal length would cross a to-many edge.
-    """
-    dist = {root: 0}
-    queue: deque[str] = deque([root])
-    while queue:
-        node = queue.popleft()
-        model = models_by_name.get(node)
-        if model is None:
-            continue
-        for target, _ in _to_one_hops(model, models_by_name):
-            if target not in dist:
-                dist[target] = dist[node] + 1
-                queue.append(target)
 
-    # Lex-min token-path reconstruction over the to-one frontier (matches
-    # JoinGraph.shortest_path's determinism, constrained to to-one hops).
-    nodes_by_dist: dict[int, list[str]] = {}
-    for name, d in dist.items():
-        nodes_by_dist.setdefault(d, []).append(name)
-    best: dict[str, list[str]] = {root: []}
-    for d in range(1, max(dist.values(), default=0) + 1):
-        for target in nodes_by_dist.get(d, []):
-            candidates = [
-                best[u] + [token]
-                for u in nodes_by_dist.get(d - 1, [])
-                for tgt, token in _to_one_hops(models_by_name[u], models_by_name)
-                if tgt == target and u in models_by_name
-            ]
-            best[target] = min(candidates)
-    return best
+def item_blockers(*, root: str, item: str, models_by_name: dict[str, SlayerModel]) -> list[UnaddressablePair]:
+    """The unaddressable pairs that keep ``item``'s path from resolving from ``root``."""
+    path = item.split(".")[:-1]
+    if path and path[0] == root:
+        path = path[1:]
+    start = models_by_name.get(root)
+    if start is None or not path:
+        return []
+    try:
+        if walk(root=start, path=path, models_by_name=models_by_name) is not None or len(path) > 1:
+            return []
+    except AmbiguousJoinPathError as e:
+        return [p for p in unaddressable_pairs(models_by_name=models_by_name)
+                if {p.source_model, p.target_model} == {e.source_model, e.target_model}]
+    except CircularJoinPathError:
+        return []
+    return blocking_pairs(root=start, target=path[0], models_by_name=models_by_name)
 
 
 class CandidateVerdict(BaseModel):
@@ -398,7 +344,7 @@ def evaluate_candidates(
         verdicts.append(CandidateVerdict(
             model_name=name,
             viable=viable,
-            total_hops=sum(h for _, h in probes.values()),
+            total_hops=sum(len(h) for _, h in probes.values()),
             ambiguous_blocked=ambiguous_blocked,
             ambiguous_item=ambiguous_item,
             reachable_items=reachable,
@@ -663,17 +609,23 @@ async def infer_population(
     if tied:
         raise PopulationInferenceError(PopulationErrorReason.TIE, candidates=tied)
 
+    pairs = {
+        p.describe(): None
+        for v in verdicts for it in v.unreachable_items
+        for p in item_blockers(root=v.model_name, item=it, models_by_name=models_by_name)
+    }
     blocked = [v for v in verdicts if v.ambiguous_blocked]
     if blocked:
         first = blocked[0]
         raise PopulationInferenceError(
             PopulationErrorReason.AMBIGUOUS_PATH,
             candidates=[v.model_name for v in blocked],
-            detail=(
+            detail="; ".join([
                 f"from candidate {first.model_name!r}, the join path to "
-                f"{first.ambiguous_item!r} is ambiguous"
-            ),
+                f"{first.ambiguous_item!r} is ambiguous", *pairs,
+            ]),
         )
     raise PopulationInferenceError(
-        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(models_by_name)
+        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(models_by_name),
+        detail="; ".join(pairs) or None,
     )

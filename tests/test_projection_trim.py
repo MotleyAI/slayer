@@ -794,14 +794,14 @@ class TestStagedProjectionTrim:
         )
         model = await engine.create_model_from_query(query=query, name="ranked_funds", save=True)
         # The model's `columns` (derived from the wrapped query's projection)
-        # must include the hoisted ``expensenet_sum`` intermediate. The
-        # backing_query_sql (the wrapper that downstream FROMs reference)
-        # must also project that alias.
+        # must include the hoisted ``expensenet_sum`` intermediate, or its
+        # rendered SQL must project that alias.
         col_names = {c.name for c in (model.columns or [])}
-        assert "funds.expensenet_sum" in col_names or "expensenet_sum" in col_names or "expensenet_sum" in (model.backing_query_sql or ""), (
+        sql = (await engine.execute("ranked_funds", dry_run=True)).sql or ""
+        assert "funds.expensenet_sum" in col_names or "expensenet_sum" in col_names or "expensenet_sum" in sql, (
             f"query-backed wrap must keep the hoisted ``expensenet_sum`` "
             f"alias accessible to downstream stages.\n"
-            f"columns: {col_names}\nbacking_query_sql:\n{model.backing_query_sql}"
+            f"columns: {col_names}\nSQL:\n{sql}"
         )
         # And the wrapper's column for ``expense_rank`` must of course be
         # present too.

@@ -51,6 +51,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_drift import NarrowedAccessFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
@@ -1680,6 +1681,12 @@ def _format_validate_models_output(entries) -> str:
         return "No drift detected."
     lines: list[str] = []
     for entry in entries:
+        if isinstance(entry, NarrowedAccessFinding):
+            lines.append(
+                f"NARROWED ACCESS: {entry.model_name} (datasource: {entry.data_source}) "
+                f"reads {', '.join(entry.narrowed_by)}"
+            )
+            continue
         if entry.tool == "delete_model":
             lines.append(
                 f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
@@ -1922,8 +1929,9 @@ def _run_validate_models(args):
     _print_drift_section(entries, headed=wants_cardinality)
     _print_join_safety_section(join_safety)
     # Clean first: profiling a model we are about to repair is wasted work.
-    if bool(getattr(args, "force_clean", False)) and entries:
-        _apply_force_clean(args, engine, entries)
+    deletes = [e for e in entries if not isinstance(e, NarrowedAccessFinding)]
+    if bool(getattr(args, "force_clean", False)) and deletes:
+        _apply_force_clean(args, engine, deletes)
     report = _collect_cardinality_report(args, engine)
     if report is not None:
         _print_cardinality_section(report)

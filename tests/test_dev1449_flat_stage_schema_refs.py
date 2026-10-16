@@ -1,10 +1,10 @@
-"""DEV-1450 stage 7b.15e — DEV-1449 acceptance via ``engine.execute``.
+"""Flat stage-schema references, end to end via ``engine.execute``.
 
-DEV-1449: a downstream stage sees its upstream as a FLAT ``StageSchema``, not
+A downstream stage sees its upstream as a FLAT ``StageSchema``, not
 as a model with joins (P5/P6). A multi-hop upstream dimension
 (``customers.region``) surfaces downstream under its flat name
-(``customers__region``); the dotted join form is illegal in stage scope and
-raises ``IllegalScopeReferenceError``.
+(``customers__region``); the dotted form names ``customers``, which no join path
+reaches from the stage, so a row-level read of it raises ``UnrelatedDatasetError``.
 
 End-to-end through ``engine.execute([stage1, root])``. The planner-level
 behavior is pinned in ``tests/test_generator2_multistage.py``; this asserts
@@ -20,7 +20,7 @@ from typing import AsyncIterator, Tuple
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalScopeReferenceError
+from slayer.core.errors import UnrelatedDatasetError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -129,7 +129,7 @@ async def test_dev1449_flat_name_resolves(engine):
 
 
 async def test_dev1449_dotted_form_raises(engine):
-    """The dotted join form is illegal against a flat upstream stage schema."""
+    """The dotted form reads a model no join path reaches from the flat upstream stage."""
     eng, _ = engine
     root = SlayerQuery(
         source_model="stage1",
@@ -137,5 +137,5 @@ async def test_dev1449_dotted_form_raises(engine):
         measures=[{"formula": "amount_sum:sum"}],
     )
     stage1 = _stage1()
-    with pytest.raises(IllegalScopeReferenceError):
+    with pytest.raises(UnrelatedDatasetError):
         await eng.execute([stage1, root])

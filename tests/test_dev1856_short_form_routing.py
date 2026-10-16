@@ -1,4 +1,4 @@
-"""DEV-1856 — short-form dotted-dimension auto-routing, end to end; covers every spec scenario."""
+"""Short-form dotted-dimension auto-routing, end to end; covers every spec scenario."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import sqlglot
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import (
     AmbiguousJoinPathError,
-    IllegalScopeReferenceError,
     UnknownReferenceError,
+    UnrelatedDatasetError,
     UnresolvableDimensionJoinError,
 )
 from slayer.core.models import (
@@ -309,7 +309,7 @@ class TestFanoutTieBreak:
         )
 
 
-# Requirement: Routed paths are executable (DEV-1853 bidirectional/parallel interplay)
+# Requirement: Routed paths are executable (bidirectional/parallel interplay)
 
 class TestBidirectionalAndParallelEdges:
     async def test_unique_route_through_reverse_hop_resolves(self, tmp_path) -> None:
@@ -391,7 +391,7 @@ class TestBidirectionalAndParallelEdges:
 
     async def test_adjacent_parallel_edges_stay_ambiguous_hop(self, tmp_path) -> None:
         """Root itself has two named edges to Leaf: the bare ``Leaf.x`` hop fails
-        closed as DEV-1853's ambiguous join hop — routing never applies. Boundary
+        closed as the ambiguous join hop — routing never applies. Boundary
         guard; passes pre-implementation."""
         leaf = SlayerModel(
             name="Leaf", sql_table="Leaf", data_source="test",
@@ -417,7 +417,7 @@ class TestBidirectionalAndParallelEdges:
 # Requirement: an adjacent (direct) parallel pair is a fail-closed hop, never routed
 
 class TestAdjacentParallelParity:
-    """A parallel pair DIRECTLY off the root is DEV-1853's fail-closed ambiguous hop, not a
+    """A parallel pair DIRECTLY off the root is the fail-closed ambiguous hop, not a
     short-form route — identically across dimensions, saved measures, and schema-drift."""
 
     def _models(self) -> list[SlayerModel]:
@@ -493,11 +493,10 @@ class TestRejectionTaxonomy:
     async def test_unreachable_target_has_no_suggestion(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path, drop_customer_consumer=True)
         q = _q(dimensions=["Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnrelatedDatasetError) as ei:
             await _cols_sql(engine, q)
-        assert ei.value.suggested_path is None
-        assert ei.value.reference == "Consumer.name"
-        assert ei.value.root_model == "Invoice"
+        assert "Consumer.name" in str(ei.value)
+        assert "Invoice" in str(ei.value)
 
 
 # Requirement: Broken explicit chains are never auto-fixed
@@ -702,7 +701,7 @@ class TestSavedMeasureRouting:
 class TestScoping:
     async def test_cross_datasource_target_is_not_a_candidate(self, tmp_path) -> None:
         """A same-named ``Consumer`` in another datasource is never a route candidate;
-        with the in-datasource Consumer unreachable, the short form is rejected."""
+        the in-datasource Consumer, unreachable, is read only through aggregates."""
         storage = resolve_storage(str(tmp_path))
         await _save(storage, _chain_models(drop_customer_consumer=True))
         await storage.save_datasource(
@@ -714,12 +713,14 @@ class TestScoping:
         ))
         engine = SlayerQueryEngine(storage=storage)
         q = _q(dimensions=["Consumer.name"])
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnrelatedDatasetError) as ei:
             await _cols_sql(engine, q)
+        assert "Consumer.name" in str(ei.value)
+        assert "Invoice" in str(ei.value)
 
     async def test_downstream_stage_dotted_ref_stays_illegal(self, tmp_path) -> None:
-        """A short form in a downstream stage (flat schema) stays an illegal-scope
-        reference — routing is a base-scope rule, never applied past a stage boundary."""
+        """A short form in a downstream stage (flat schema) is never routed past the stage
+        boundary: it names a model no join path reaches from the stage, read only through aggregates."""
         engine = await _chain_engine(tmp_path)
         inner = SlayerQuery(
             name="s1", source_model="Invoice",
@@ -730,7 +731,7 @@ class TestScoping:
             source_model="s1", dimensions=["Consumer.email"],
             measures=[{"formula": "*:count"}],
         )
-        with pytest.raises(IllegalScopeReferenceError):
+        with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_declared_join_absent_target_stays_unknown_ref(self, tmp_path) -> None:

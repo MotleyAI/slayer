@@ -118,7 +118,7 @@ curl -X POST http://localhost:5143/models \
   }'
 ```
 
-For query-backed models, do **not** supply `columns` or `backing_query_sql` — they're auto-generated and rejected at save with a 400 error. `GET /models/{name}` returns the saved `source_queries`, `query_variables`, and the cached `columns` / `backing_query_sql`.
+For query-backed models, do **not** supply `columns` — they're auto-generated and rejected at save with a 400 error. `GET /models/{name}` returns the saved `source_queries`, `query_variables`, and the cached `columns`; a `dry_run` query on the model returns its SQL.
 
 ### Datasources
 

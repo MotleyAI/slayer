@@ -160,6 +160,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Partition by a single query dimension instead.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
+         message="The partition_by bucket '…' is not one of the query's time dimensions."
+         + AT + "…"
+         + SUGGEST + "Add it to time_dimensions, or choose one of: ….",
+         category="checker", family="local-partitioned", user=True, owner="checker"),
+    _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by column '…' is not a query dimension."
          + AT + "…"
          + SUGGEST + "Add it to dimensions/time_dimensions, or choose one of: ….",
@@ -414,6 +419,12 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function='check_spine_raw_rows', exc='TimeSpineError',
          message='A time_spine query cannot set distinct_dimension_values=false: the spine has no rows.\n  suggestion: …',
          category="checker", family='time-spine', user=True, owner="checker"),
+    _row(module=_EE, function='check_unrelated_filter_sides', exc='UnrelatedDatasetError',
+         message='The filter condition … reads … together with another dataset, but no join path reaches … from the population …: each condition must read one side alone.\n  suggestion: Split it into AND-ed conditions that each read one dataset.',
+         category="checker", family='unrelated-datasets', user=True, owner="checker"),
+    _row(module=_EE, function='check_unrelated_row_read', exc='UnrelatedDatasetError',
+         message='… reads …, which no join path reaches from the population …: it meets … as a product, so it is read only through aggregates.\n  at …\n  suggestion: Aggregate it, e.g. max(…).',
+         category="checker", family='unrelated-datasets', user=True, owner="checker"),
     _row(module=_PL, function="_iter_slot_deps", exc="TypeError",
          message="_iter_slot_deps has no case for …: classify the kind explicitly (slot-worthy, inlined composite, or never slottable).",
          category="internal", family="internal", user=False, owner="compiler"),

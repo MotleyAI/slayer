@@ -23,7 +23,7 @@ covar_pop(price, other=quantity)   — population covariance
 avg(customers.score)  — cross-model: AVG of "score" from the joined "customers" model
 ```
 
-Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax).
+Aggregations are used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`.
 
 A measure may combine query-dimension values with aggregates (`quantity * count(*)` by `quantity`, `iif(region == 'North', sum(amount), 0)` by `region`), reading each dimension's value per result row; a row-level column that is not a query dimension (`amount + sum(amount)` by `region`) is a typing error.
 
@@ -264,10 +264,10 @@ When a measure is renamed via `name`, query filters and ORDER BY entries in the 
 | `+` | `"sum(revenue) + sum(bonus)"` | `SUM(revenue) + SUM(bonus)` |
 | `-` | `"sum(revenue) - sum(cost)"` | `SUM(revenue) - SUM(cost)` |
 | `*` | `"avg(price) * sum(quantity)"` | `AVG(price) * SUM(quantity)` |
-| `/` | `"sum(revenue) / count(*)"` | `SUM(revenue) / COUNT(*)` |
+| `/` | `"sum(revenue) / count(*)"` | `SUM(revenue) / NULLIF(COUNT(*), 0)` |
 | `**` | `"sum(value) ** 2"` | `SUM(value) ** 2` |
 
-Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`.
+Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`. Division by zero is NULL on every backend.
 
 All measure names referenced in the formula must exist in the model (except `*` which is always available). For measures from joined models, use a dotted path inside the aggregation: `"avg(customers.score)"` or multi-hop: `"sum(customers.regions.population)"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
 

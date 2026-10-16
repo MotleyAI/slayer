@@ -1485,11 +1485,11 @@ class TestDbtConversionErrorOnDimMeasureCollision:
         assert "amount" in msg
 
 
-class TestUnconvertedTransformShadowing:
-    """Q-F: a dbt measure or metric named after a SLayer transform is routed
-    to ``unconverted_metrics`` rather than crashing."""
+class TestTransformNamedMeasures:
+    """A dbt measure named after a SLayer transform imports like any other."""
 
-    def test_unconverted_metrics_for_transform_shadowing_name(self) -> None:
+    @pytest.mark.parametrize("name", ["cumsum", "rank"])
+    def test_transform_named_measure_is_imported(self, name: str) -> None:
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -1497,26 +1497,17 @@ class TestUnconvertedTransformShadowing:
                     model="orders",
                     entities=[DbtEntity(name="order_id", type="primary", expr="id")],
                     measures=[
-                        # Valid measure to anchor the model (so we can test
-                        # the metric-side transform shadowing path).
                         DbtMeasure(name="total", agg="sum", expr="amount"),
-                        # ``cumsum`` is a SLayer transform — ModelMeasure
-                        # construction must reject it and route to unconverted.
-                        DbtMeasure(name="cumsum", agg="sum", expr="amount"),
+                        DbtMeasure(name=name, agg="sum", expr="amount"),
                     ],
                 ),
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
 
-        # The good measure converted normally.
         orders = next(m for m in result.models if m.name == "orders")
-        assert any(m.name == "total" for m in orders.measures)
-        # The shadowing measure was routed to unconverted_metrics.
-        assert any(
-            u.metric_name == "cumsum"
-            for u in result.unconverted_metrics
-        )
+        assert {"total", name} <= {m.name for m in orders.measures}
+        assert not any(u.metric_name == name for u in result.unconverted_metrics)
 
 
 # ---------------------------------------------------------------------------

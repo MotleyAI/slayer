@@ -39,6 +39,7 @@ from slayer.core.errors import (
     TransformInputError,
     UnanalyzableDependencyError,
     UnknownGranularityError,
+    UnrelatedDatasetError,
     UnsafeJoinInputError,
 )
 from slayer.core.formula import TIME_TRANSFORMS
@@ -78,7 +79,7 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import dotted_key_display
+from slayer.core.refs import dotted_key_display, key_display
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
@@ -861,6 +862,35 @@ _SPINE_REMEDY = (
 )
 
 
+def check_unrelated_row_read(
+    *, reference: Optional[ValueKey], dataset: str, population: str, location: str,
+) -> None:
+    """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
+    if reference is None:
+        return
+    ref = key_display(reference.column if isinstance(reference, TimeTruncKey) else reference)
+    raise UnrelatedDatasetError(
+        summary=f"{ref} reads {dataset}, which no join path reaches from the population "
+        f"{population}: it meets {population} as a product, so it is read only through aggregates.",
+        location=location,
+        suggestion=f"Aggregate it, e.g. max({ref}).",
+    )
+
+
+def check_unrelated_filter_sides(
+    *, conjunct: ValueKey, datasets: Optional[frozenset], population: str,
+) -> None:
+    """A filter condition reading an unrelated dataset together with anything else raises."""
+    if not datasets:
+        return
+    raise UnrelatedDatasetError(
+        summary=f"The filter condition {key_display(conjunct)} reads {', '.join(sorted(datasets))} "
+        f"together with another dataset, but no join path reaches {', '.join(sorted(datasets))} "
+        f"from the population {population}: each condition must read one side alone.",
+        suggestion="Split it into AND-ed conditions that each read one dataset.",
+    )
+
+
 def check_spine_clash(*, clash: bool) -> None:
     """A stored model named ``time_spine`` shadows the built-in spine."""
     if clash:
@@ -1343,6 +1373,12 @@ def check_partition_key_resolves(
             f"ambiguous — it is a time dimension at multiple granularities.",
             location=label,
             suggestion="Partition by a single query dimension instead.",
+        )
+    if isinstance(pk, TimeTruncKey):
+        raise PartitionKeyError(
+            summary=f"The partition_by bucket '{key_display(pk)}' is not one of the query's time dimensions.",
+            location=label,
+            suggestion=f"Add it to time_dimensions, or choose one of: {', '.join(available_dims) or '(none)'}.",
         )
     if maps_to_bucket or lenient:
         return

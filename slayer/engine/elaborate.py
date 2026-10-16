@@ -8,21 +8,26 @@ builder and THE checker live in ``elaborate_env``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from slayer.core.keys import ValueKey, split_top_level_and
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import (
     build_environment,
     check_combined_partition_keys,
+    check_unrelated_filter_sides,
+    check_unrelated_row_read,
     home_dataset,
     position_typing_context,
     type_and_split_filters,
 )
 from slayer.engine.home import resolve_aggregate_homes
 from slayer.engine.join_safety import crossing_local_root_predicate
-from slayer.ir.elaborated import ElaboratedProducer, ElaboratedQuery, ElaboratedStage
+from slayer.engine.unrelated import ProductSides
+from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
+from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import (
     PreboundQuery,
     StrictQueryCarrier,
@@ -51,9 +56,17 @@ def elaborate_query(
             query=query, bundle=bundle, scope=scope,
             stage_schemas=stage_schemas,
         )
+    sides = ProductSides(host=scope.source_model, bundle=bundle) if isinstance(scope, ModelScope) and (
+        scope.source_model is not None) else None
+    crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
     prebound, filter_typings = type_and_split_filters(
-        prebound, crossing_root=crossing_local_root_predicate(scope=scope, bundle=bundle),
+        prebound,
+        crossing_root=crossing if sides is None or not sides.tokens else (
+            lambda k: crossing(k) or bool(sides.crossed(k))
+        ),
     )
+    if sides is not None:
+        _check_product_hops(prebound, filter_typings=filter_typings, sides=sides)
     check_combined_partition_keys(
         prebound, filter_typings=filter_typings,
         order_texts=[o.raw_formula or o.column.full_name for o in query.order or []],
@@ -62,6 +75,29 @@ def elaborate_query(
         prebound, filter_typings=filter_typings, bundle=bundle, scope=scope,
         stage_schemas=stage_schemas,
     ))
+
+
+def _check_product_hops(
+    prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping], sides: ProductSides,
+) -> None:
+    """Only aggregates and one-sided field filters read across a product hop (semantics Axiom 3.1)."""
+    if not sides.tokens:
+        return
+    population = sides.host.spelling
+    roots: List[Tuple[ValueKey, str]] = [
+        (dm.bound.value_key, f"{'dimension' if dm.is_dimension else 'measure'} {dm.public_name!r}")
+        for dm in prebound.declared_measures
+    ]
+    roots += [(sp.bound.value_key, "order") for sp in prebound.order_specs]
+    for bf, typing in zip(prebound.bound_filters, filter_typings, strict=True):
+        if typing.typing == MaskTyping.FIELD:
+            for cj in split_top_level_and(bf.value_key):
+                check_unrelated_filter_sides(conjunct=cj, datasets=sides.mixed_sides(cj), population=population)
+        else:
+            roots.append((bf.value_key, "filter"))
+    for root, location in roots:
+        reference, dataset = next(sides.row_level_reads(root), (None, ""))
+        check_unrelated_row_read(reference=reference, dataset=dataset, population=population, location=location)
 
 
 def elaborate_synthesized(

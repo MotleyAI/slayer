@@ -1,32 +1,10 @@
-"""DEV-1745 (W4 / mechanism contract 5.3) — per-filter structural reachability.
+"""Per-filter structural summary: whether a host filter depends on anything anchored at the host root.
 
-Cross-model routing asks one question of every host filter: can this predicate
-be evaluated inside a CTE rooted at ``target_path``? The answer is structural —
-it depends on which join paths the filter's dependencies are anchored at — so
-it is computed HERE, at plan time, and ``classify_host_filter`` reads it.
-
-What this replaces: a flat model-NAME membership test (``cm in target_path``)
-used for derived columns. It got two shapes wrong. A model reachable on a
-SIBLING branch counted as reachable, because its name appeared in the target
-path even though no prefix of the path led to it. And a host-model derived
-column whose ``Column.sql`` crossed INTO the target counted as host-local,
-because only the declaring model's name was consulted, never the SQL.
-
-One rule for every key kind: a dependency is reachable iff its anchored join
-path is a PREFIX of ``target_path`` (``path == target_path[:len(path)]``).
-Reachability is an ALL-DEPENDENCIES predicate — any unreachable dependency
-drops the filter.
-
-Storage (D9). The summary lives per-filter on ``PlannedQuery``. NOT on
-``ColumnSqlKey``: that key is interned and ``_reroot_path_ref`` re-anchors it
-with ``model_copy(update={"path": ...})``, which carries any extra field
-through rerooting stale. NOT on ``ValueSlot``: ``filter_referenced_slot_ids``
-silently skips keys with no interned slot, and a derived column referenced only
-inside a filter is exactly such a key — plus slots are copied wholesale into
-nested plans, which would import the PARENT's coordinate system.
-
-Invariant: every summary is expressed in the coordinate system of the
-``PlannedQuery`` that owns it, and is recomputed per plan, never copied.
+The summary lives per-filter on ``PlannedQuery`` — not on ``ColumnSqlKey`` (interned and
+re-anchored by ``model_copy``, which would carry the field through rerooting stale) and not
+on ``ValueSlot`` (a filter-only derived key has no interned slot, and slots are copied into
+nested plans). Every summary is expressed in the coordinate system of the ``PlannedQuery``
+that owns it, and is recomputed per plan, never copied.
 """
 
 from __future__ import annotations
@@ -40,17 +18,14 @@ from slayer.engine.reference_closure import (
     UnhandledValueKindError,  # re-exported
     _child_keys,
     _expand_derived_refs_any_dialect,
-    _parse_filter_sql_any_dialect,
-    key_closure,
+    parse_fragment_any_dialect,
 )
 from slayer.ir.planned import FilterReachability
 
 __all__ = [
     "UnhandledValueKindError",
-    "compute_key_join_paths",
     "filter_reachability_for",
     "key_has_host_local_ref",
-    "path_is_reachable",
     "recompute_filter_reachability",
 ]
 
@@ -77,7 +52,7 @@ def _expanded_fragment_ast_uncached(
     expanded = _expand_derived_refs_any_dialect(
         sql=fragment, model=model, alias_path=alias_path, bundle=bundle,
     )
-    return _parse_filter_sql_any_dialect(expanded or fragment)
+    return parse_fragment_any_dialect(expanded or fragment)
 
 
 def _expanded_fragment_ast(
@@ -157,23 +132,6 @@ def _derived_def_touches_anchor(
     )
 
 
-def compute_key_join_paths(
-    *, key, anchor_model, anchor_relation: str, bundle,
-    cache: "Optional[dict]" = None,
-) -> Tuple[Path, ...]:
-    """Every join path ``key``'s dependency tree crosses, anchored at
-    ``anchor_relation`` — delegates to the one dependency closure (DEV-1900).
-
-    Best-effort for filter routing: an unanalysable derived dependency (closure
-    ``None``) coerces to ``()`` here; the population guard and input safety take
-    the tri-state closure directly and fail closed on ``None``.
-    """
-    return key_closure(
-        key=key, anchor_model=anchor_model, anchor_relation=anchor_relation,
-        bundle=bundle, cache=cache,
-    ) or ()
-
-
 def key_has_host_local_ref(
     *, key, anchor_model, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
@@ -211,34 +169,6 @@ def key_has_host_local_ref(
     return _walk(key)
 
 
-def path_is_reachable(
-    *,
-    path: Path,
-    target_path: Path,
-    reachable_paths: "Optional[frozenset]" = None,
-) -> bool:
-    """The ONE reachability rule, for every key kind.
-
-    A FORWARD-path CTE selects from the bare target and carries only the
-    host→target hops, so ``path`` is reachable iff it is a PREFIX of
-    ``target_path``. A path deeper than the target is not available (the
-    target's scope stops there); a sibling branch that happens to share a model
-    name is not available either, which is precisely what the old flat
-    membership test got wrong.
-
-    A RE-ROOTED CTE (DEV-1747 D6) is planned against the TARGET as its own
-    root, so the target's WHOLE join graph is in scope and the prefix test no
-    longer describes it: a host-side sibling branch can be reachable from the
-    target by a different route entirely. That question is about the model
-    graph, not about string prefixes, so the caller — which holds the bundle —
-    walks it and passes the answer in as ``reachable_paths``. Membership then
-    replaces the prefix test outright.
-    """
-    if reachable_paths is not None:
-        return tuple(path) in reachable_paths
-    return tuple(path) == tuple(target_path[: len(path)])
-
-
 def recompute_filter_reachability(planned_query, *, bundle) -> List:
     """Recompute every mask's summary from scratch, anchored at
     ``planned_query``'s OWN root.
@@ -264,13 +194,6 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
         key = slots_by_id[mask.slot_id].key
         out.append(FilterReachability(
             filter_id=mask.slot_id,
-            crossed_join_paths=compute_key_join_paths(
-                key=key,
-                anchor_model=anchor_model,
-                anchor_relation=anchor_relation,
-                bundle=bundle,
-                cache=cache,
-            ),
             has_host_local_ref=key_has_host_local_ref(
                 key=key,
                 anchor_model=anchor_model,

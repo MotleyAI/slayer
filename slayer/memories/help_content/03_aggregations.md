@@ -6,7 +6,7 @@ filters, order, and computed dimensions.
 
 ## Catalogue
 
-`count(*)`, `count(x)`, `count_distinct(x)` (never `count(distinct x)`),
+`count(*)`, `count(x)`, `count_distinct(x)` (or `count(distinct x)`),
 `count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `median(x)`,
 `percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,

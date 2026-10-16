@@ -152,6 +152,13 @@ def _render_unary(*, op: str, operand: Expression) -> Expression:
     raise NotImplementedError(f"Unsupported unary operator {op!r}.")
 
 
+def _nonzero_number(node: Expression) -> bool:
+    try:
+        return isinstance(node, exp.Literal) and node.is_number and float(node.this) != 0
+    except ValueError:
+        return False
+
+
 def _fold_binary(
     *, node_cls: Any, operands: List[Expression],
 ) -> Expression:
@@ -167,6 +174,8 @@ def _fold_binary(
             rhs = _paren_if_lower_prec(
                 rhs, parent_prec=parent_prec, is_right=True,
             )
+        if node_cls is exp.Div and not _nonzero_number(rhs):
+            rhs = exp.Nullif(this=rhs, expression=exp.Literal.number(0))  # division by zero is NULL
         result = node_cls(this=lhs, expression=rhs)
     return result
 

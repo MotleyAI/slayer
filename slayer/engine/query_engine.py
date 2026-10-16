@@ -35,6 +35,7 @@ from slayer.core.errors import (
     QueryBackedCycleError,
     SchemaDriftError,
     SlayerError,
+    StoredDocumentLoadError,
 )
 from slayer.engine.cardinality import (
     CardinalityVerdict,
@@ -63,11 +64,15 @@ from slayer.core.query import (
     refine_query,
     render_probe_text,
 )
+from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
+from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach
 from slayer.engine.population import (
+    ambiguity_resolved_path,
+    determined_path,
     infer_population,
     infer_spine_population,
+    item_blockers,
     spine_datasource,
-    to_one_reachable,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
@@ -78,9 +83,13 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerNarrowedAccessWarning,
+    SlayerUnrelatedDatasetWarning,
     SlayerWholePeriodsWarning,
+    UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
 )
 from slayer.core.refs import functional_agg_text
@@ -113,10 +122,12 @@ from slayer.engine.schema_drift import (
     ApplyDriftResult,
     ApplyError,
     LiveSnapshotCache,
+    NarrowedAccessFinding,
     ToDeleteEntry,
     unloadable_model_delete,
     validate_datasource,
 )
+from slayer.engine.model_reads import narrowing_models
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -134,7 +145,6 @@ from slayer.ir.variables import (
 )
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.schema_scope import SchemaRef
-from slayer.engine.join_graph import JoinGraph
 from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
@@ -239,29 +249,26 @@ def _resolve_root_hint(
 
 def _build_recommend_coverage(
     all_names: list[str],
-    det_items: list["_ResolvedItem"],
-    reach_by_candidate: dict[str, dict[str, list[str]]],
+    items: list["_ResolvedItem"],
+    reach_by_candidate: dict[str, dict[str, tuple[str, ...]]],
     *,
     force_include: set[str] | None = None,
 ) -> list[CandidateCoverage]:
-    """Pareto frontier of partial-root candidates over the determination items.
+    """Pareto frontier of partial-root candidates over ``items``.
 
-    Reach is provably-to-one determination (``reach_by_candidate`` = target →
-    to-one token path); ``force_include`` rows appear even if dominated.
+    ``reach_by_candidate`` maps each candidate to input item → its path;
+    ``force_include`` rows appear even if dominated.
     """
     forced = force_include or set()
-    items_in_order = [r.input_item for r in det_items]
-    model_of_item = {r.input_item: r.model for r in det_items}
-    det_models = {r.model for r in det_items}
+    items_in_order = [r.input_item for r in items]
 
     candidates: list[tuple[str, set[str], dict[str, int]]] = []
     for name in all_names:
-        to_one = reach_by_candidate[name]
-        reach = {m for m in det_models if m in to_one}
+        paths = reach_by_candidate[name]
+        reach = {it for it in items_in_order if it in paths}
         if not reach and name not in forced:
             continue
-        hops = {m: len(to_one[m]) for m in reach}
-        candidates.append((name, reach, hops))
+        candidates.append((name, reach, {it: len(paths[it]) for it in reach}))
 
     def dominates(a: tuple, b: tuple) -> bool:
         _an, ar, ah = a
@@ -280,18 +287,17 @@ def _build_recommend_coverage(
 
     entries: list[tuple[CandidateCoverage, int]] = []
     for name, reach, hops in frontier:
-        reachable_items = [it for it in items_in_order if model_of_item[it] in reach]
-        unreachable_items = [it for it in items_in_order if model_of_item[it] not in reach]
         entries.append((
             CandidateCoverage(
                 model_name=name,
-                reachable_items=reachable_items,
-                unreachable_items=unreachable_items,
+                reachable_items=[it for it in items_in_order if it in reach],
+                unreachable_items=[it for it in items_in_order if it not in reach],
             ),
             sum(hops.values()),
         ))
     entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
     return [e[0] for e in entries]
+
 
 def _merge_query_variables(
     *,
@@ -410,6 +416,23 @@ def _collect_associated_warnings(
     return [
         AssociatedWarningPayload(measure=measure, location=location, dimensions=dims)
         for (location, measure), dims in dims_by_key.items()
+    ]
+
+
+def _collect_unrelated_warnings(*, planned_list, labels) -> List[UnrelatedDatasetWarningPayload]:
+    """One unrelated-dataset payload per ``(stage location, dataset)``; measures unioned."""
+    found: "dict[tuple[str, str], tuple[str, list[str]]]" = {}
+    for planned, location in zip(planned_list, labels):
+        for attach in _walk_regroup_attaches(planned):
+            if attach.unrelated_dataset is None:
+                continue
+            _population, measures = found.setdefault(
+                (location, attach.unrelated_dataset), (attach.unrelated_population or "", []),
+            )
+            measures.extend(m for m in attach.unrelated_measures if m not in measures)
+    return [
+        UnrelatedDatasetWarningPayload(dataset=dataset, population=population, measures=measures, location=location)
+        for (location, dataset), (population, measures) in found.items()
     ]
 
 
@@ -533,6 +556,8 @@ def _emit_python_warnings(response) -> None:
             )
         elif isinstance(w, WholePeriodsNonNestingWarningPayload):
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
+        elif isinstance(w, UnrelatedDatasetWarningPayload):
+            _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -1182,6 +1207,7 @@ class SlayerQueryEngine:
             _raise_on_error_events(broadcasts=broadcast_warnings)
         warnings.extend(broadcast_warnings)
         warnings.extend(_collect_associated_warnings(planned_list=plans, labels=labels))
+        warnings.extend(_collect_unrelated_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
         warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
@@ -2075,35 +2101,53 @@ class SlayerQueryEngine:
         ds = resolved[0].data_source
         models = await _all_models_in_datasource(self.storage, ds)
         models_by_name = {m.name: m for m in models}
-        graph = JoinGraph.build_from_models(models)
         all_names = sorted(models_by_name)
         warnings = list(base_warnings)
 
         det = [r for r in resolved if not r.attachment]
         attach = [r for r in resolved if r.attachment]
         mentioned = {r.model for r in resolved}
-        reach = {name: to_one_reachable(name, models_by_name) for name in all_names}
+        # Columns: the population probe; attachments: the shortest route. ``lenient`` adds the
+        # fan-out-free path of an item blocked only by ambiguity (used when nothing is viable, or by a hint).
+        strict: dict[str, dict[str, tuple[str, ...]]] = {}
+        lenient: dict[str, dict[str, tuple[str, ...]]] = {}
+        # With determination items, an attachment no join path reaches meets the root as a product.
+        unrelated: dict[str, set[str]] = {}
+        for name in all_names:
+            routed = shortest_routes(root=models_by_name[name], models_by_name=models_by_name)
+            paths = {r.input_item: routed[r.model].tokens for r in attach if r.model in routed}
+            unrelated[name] = {
+                r.input_item for r in attach
+                if det and r.model not in routed and unreachable_target(
+                    root=models_by_name[name], token=r.model, models_by_name=models_by_name,
+                ) is not None
+            }
+            paths.update({item: (models_by_name[r.model].spelling,) for r in attach
+                          if (item := r.input_item) in unrelated[name]})
+            fallback: dict[str, tuple[str, ...]] = {}
+            for r in det:
+                item = f"{r.model}.{r.leaf}"
+                path = determined_path(root=name, item=item, models_by_name=models_by_name)
+                if path is not None:
+                    paths[r.input_item] = path
+                elif (alt := ambiguity_resolved_path(root=name, item=item, models_by_name=models_by_name)) is not None:
+                    fallback[r.input_item] = alt
+            strict[name] = paths
+            lenient[name] = {**paths, **fallback}
+
+        def valid_under(reach: dict[str, dict[str, tuple[str, ...]]], root: str) -> bool:
+            return all(r.input_item in reach[root] for r in resolved)
+
+        reach = strict if any(valid_under(strict, n) for n in all_names) else lenient
 
         def det_hops(root: str) -> int:
-            return sum(len(reach[root].get(r.model, ())) for r in det)
-
-        def item_hops(root: str, item: "_ResolvedItem") -> list[str]:
-            # Determination items ride the recorded to-one path; attachments only
-            # need reachability, so they take the cardinality-blind shortest route.
-            if item.attachment:
-                return graph.shortest_path(root, item.model) or []
-            return reach[root].get(item.model, [])
-
-        def reaches_attachments(root: str) -> bool:
-            return all(graph.shortest_path(root, r.model) is not None for r in attach)
+            return sum(len(reach[root][r.input_item]) for r in det)
 
         def is_valid(root: str) -> bool:
-            return all(r.model in reach[root] for r in det) and reaches_attachments(root)
+            return valid_under(reach, root)
 
         def unmet(root: str) -> list[str]:
-            missing = [r.model for r in det if r.model not in reach[root]]
-            missing += [r.model for r in attach if graph.shortest_path(root, r.model) is None]
-            return sorted(set(missing))
+            return sorted({r.model for r in resolved if r.input_item not in lenient[root]})
 
         hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
         hint_model = hint[0] if hint is not None else None
@@ -2118,8 +2162,8 @@ class SlayerQueryEngine:
                 valid,
                 key=lambda n: (det_hops(n), 0 if n in mentioned else 1, n),
             )
-            if hint_model is not None and is_valid(hint_model):
-                root = hint_model
+            if hint_model is not None and valid_under(lenient, hint_model):
+                root, reach = hint_model, lenient
                 message = f"All items are reachable from '{root}' (requested via root_hint)."
             else:
                 root = auto
@@ -2133,8 +2177,9 @@ class SlayerQueryEngine:
             item_paths = [
                 ItemPath(
                     input_item=r.input_item,
-                    path=_emit_recommend_path(item_hops(root, r), r),
+                    path=_emit_recommend_path(list(reach[root][r.input_item]), r),
                     attachment=r.attachment,
+                    unrelated=r.input_item in unrelated[root],
                 )
                 for r in resolved
             ]
@@ -2144,21 +2189,17 @@ class SlayerQueryEngine:
             )
 
         force_include = {hint_model} if hint_model is not None else None
-        if det:
-            coverage = _build_recommend_coverage(all_names, det, reach, force_include=force_include)
-        else:
-            # Attachment-only request with no common reacher: rank partial roots by
-            # attachment reachability (cardinality-blind) so `coverage` isn't empty
-            # when the message directs callers to it.
-            attach_reach = {
-                name: {
-                    r.model: p
-                    for r in attach
-                    if (p := graph.shortest_path(name, r.model)) is not None
-                }
-                for name in all_names
-            }
-            coverage = _build_recommend_coverage(all_names, attach, attach_reach, force_include=force_include)
+        # An attachment-only request ranks partial roots by attachment reachability.
+        coverage = _build_recommend_coverage(all_names, det or attach, reach, force_include=force_include)
+        for entry in coverage:
+            root_model = models_by_name[entry.model_name]
+            for r in resolved:
+                if r.input_item in entry.unreachable_items or r.attachment and r.input_item not in reach[root_model.name]:
+                    pairs = (blocking_pairs(root=root_model, target=r.model, models_by_name=models_by_name)
+                             if r.attachment else
+                             item_blockers(root=root_model.name, item=f"{r.model}.{r.leaf}",
+                                           models_by_name=models_by_name))
+                    warnings.extend(p.describe() for p in pairs if p.describe() not in warnings)
         if hint_model is not None:
             missing = ", ".join(unmet(hint_model))
             warnings.append(
@@ -2214,8 +2255,8 @@ class SlayerQueryEngine:
                 f"Model {model_name!r} not found in datasource {data_source!r}."
             )
         if existing.source_queries:
-            # Query-backed models manage columns / backing_query_sql as cache;
-            # bypassing save_model would persist stale, mismatched cache.
+            # Query-backed models manage columns as cache; bypassing save_model
+            # would persist a stale, mismatched cache.
             raise ValueError(
                 f"edit_model_remove() does not support query-backed models "
                 f"({model_name!r}); edit source_queries via engine.save_model() "
@@ -2276,6 +2317,8 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
+            if isinstance(entry, NarrowedAccessFinding):
+                continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
             touched_ds.add(entry.data_source)
@@ -2319,7 +2362,10 @@ class SlayerQueryEngine:
         residual: List[Any] = []
         for ds_name in touched_ds:
             try:
-                residual.extend(await self.validate_models(data_source=ds_name))
+                residual.extend(
+                    e for e in await self.validate_models(data_source=ds_name)
+                    if not isinstance(e, NarrowedAccessFinding)
+                )
             except Exception as inner:
                 logger.debug(
                     "post-apply validate_models failed for ds=%r: %s",
@@ -2566,28 +2612,16 @@ class SlayerQueryEngine:
         self, data_source: Optional[str] = None
     ) -> "List[Any]":
         """Diff persisted models against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
-
-        if data_source is not None:
-            ds = await self.storage.get_datasource(data_source)
-            if ds is None:
-                return []
-            models, unloadable = await self.storage.load_models(data_source=data_source)
-            entries = await validate_datasource(
-                datasource=ds,
-                models=models,
-                sql_clients=self._sql_clients,
-            )
-            return [*entries, *(unloadable_model_delete(error=e) for e in unloadable)]
-
-        ds_names = await self.storage.list_datasources()
+        ds_names = [data_source] if data_source is not None else await self.storage.list_datasources()
         if not ds_names:
             return []
-
-        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
-            return await self.validate_models(data_source=name)
+        everything, _ = await self.storage.load_models()  # a reader's narrowing models may live elsewhere
+        narrowed = narrowing_models(everything)
+        if data_source is not None:
+            return await self._validate_datasource(data_source, narrowed=narrowed)
 
         results = await asyncio.gather(
-            *(_validate_one(n) for n in ds_names), return_exceptions=True
+            *(self._validate_datasource(n, narrowed=narrowed) for n in ds_names), return_exceptions=True
         )
         out: List = []
         for r in results:
@@ -2597,6 +2631,22 @@ class SlayerQueryEngine:
             out.extend(r)
         return out
 
+    async def _validate_datasource(
+        self, data_source: str, *, narrowed: Dict[Tuple[str, str], List[Tuple[str, str]]],
+    ) -> "List[Any]":
+        """One datasource's drift deletes, unloadable models and narrowed-access findings."""
+        ds = await self.storage.get_datasource(data_source)
+        if ds is None:
+            return []
+        models, unloadable = await self.storage.load_models(data_source=data_source)
+        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        findings = [
+            NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
+            for (ds_name, name), by in sorted(narrowed.items())
+            if ds_name == data_source
+        ]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+
     def create_model_from_query_sync(
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
@@ -2604,6 +2654,8 @@ class SlayerQueryEngine:
         description: Optional[str] = None,
         variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
+        access_tags: Optional[List[str]] = None,
+        warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
 
@@ -2614,6 +2666,8 @@ class SlayerQueryEngine:
                 description=description,
                 variables=variables,
                 save=save,
+                access_tags=access_tags,
+                warnings_out=warnings_out,
             )
         )
 
@@ -2656,7 +2710,7 @@ class SlayerQueryEngine:
             fitted = fit_map.get(alias.alias)
             if fitted is not None:
                 alias.set("alias", exp.to_identifier(fitted, quoted=True))
-        # Backing SQL is persisted on the virtual model, so length-fit here too.
+        # The virtual model's SQL is rendered verbatim, so length-fit here too.
         wrapped_sql = _finish_statement(
             wrapped_ast,
             dialect=dialect,
@@ -2681,6 +2735,8 @@ class SlayerQueryEngine:
         description: Optional[str] = None,
         variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
+        access_tags: Optional[List[str]] = None,
+        warnings_out: Optional[List[NarrowedAccessWarning]] = None,
     ) -> SlayerModel:
         """Create a query-backed model; cache fields come from a save-time dry-run, ``save=False`` skips persisting."""
         raw = query if isinstance(query, list) else [query]
@@ -2692,13 +2748,17 @@ class SlayerQueryEngine:
             description=description,
             source_queries=stages,
             query_variables=variables or {},
+            access_tags=access_tags or [],
         )
         if save:
-            return await self.save_model(model)
+            return await self.save_model(model, warnings_out=warnings_out)
         return await self._validate_and_populate_cache(model)
 
-    async def save_model(self, model: SlayerModel) -> SlayerModel:
-        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run."""
+    async def save_model(
+        self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]] = None,
+    ) -> SlayerModel:
+        """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
+        Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale
@@ -2721,17 +2781,16 @@ class SlayerQueryEngine:
                     f"auto-generated and must not be supplied "
                     f"(got {len(model.columns)} columns)."
                 )
-            if model.backing_query_sql is not None:
-                raise ValueError(
-                    f"Model '{model.name}' is query-backed; backing_query_sql "
-                    f"is auto-managed and must not be supplied."
-                )
             model = await self._validate_and_populate_cache(model)
         failures = DocumentLoadFailures()
         loaded = await self._preload_join_targets(model, failures=failures)
         _validate_join_keys(model=model, loaded=loaded)
         await self._validate_mode_a_join_paths(model, loaded=loaded)
         await self.validate_sql_model_source(model)
+        try:
+            prior = await self.storage.get_model(model.name, data_source=prior_data_source or model.data_source)
+        except StoredDocumentLoadError:
+            prior = None
         await self.storage.save_model(model, failures=failures)
         # Clean up the stale entry if the model moved datasource.
         if (
@@ -2741,7 +2800,34 @@ class SlayerQueryEngine:
             await self.storage.delete_model(
                 model.name, data_source=prior_data_source
             )
+        payloads = await self._narrowed_access(model=model, prior=prior)
+        if warnings_out is not None:
+            warnings_out.extend(payloads)
+            return model
+        # Last, as in query(): under ``-W error`` this raises after the save.
+        for payload in payloads:
+            _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
         return model
+
+    async def _narrowed_access(
+        self, *, model: SlayerModel, prior: Optional[SlayerModel],
+    ) -> List[NarrowedAccessWarning]:
+        """The saved model, if narrowed, and — when its tags changed — each reader it newly narrows, in any datasource."""
+        loaded, _ = await self.storage.load_models()
+        retagged = prior if prior is not None and prior.access_tags != model.access_tags else None
+        if retagged is None and not any(m.access_tags for m in loaded):
+            return []
+        key = (model.data_source, model.name)
+        after = narrowing_models(loaded)
+        flagged = {key} & set(after)
+        if retagged is not None:
+            replaced = {key, (retagged.data_source, retagged.name)}
+            before = narrowing_models([*(m for m in loaded if (m.data_source, m.name) not in replaced), retagged])
+            flagged |= set(after) - set(before)
+        return [
+            NarrowedAccessWarning(data_source=ds, model=name, narrowed_by=[f"{d}.{n}" for d, n in after[(ds, name)]])
+            for ds, name in sorted(flagged)
+        ]
 
     async def validate_sql_model_source(self, model: SlayerModel) -> None:
         """Statically classify a raw-``sql`` source, then trial-execute it: a
@@ -2827,6 +2913,8 @@ class SlayerQueryEngine:
         datasource = await self.storage.get_datasource(model.data_source)
         dialect = self._dialect_for_type(datasource.type if datasource else None)
         models_by_name = {k: v for k, v in loaded.items() if v is not None}
+        check_definition_reach(model=model, reachable=models_by_name)
+        check_definition_ambiguity(model=model, reachable=models_by_name)
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(
@@ -2867,7 +2955,6 @@ class SlayerQueryEngine:
         virtual = await self._expand_query_backed_model(model=model)
         return model.model_copy(update={
             "columns": list(virtual.columns),
-            "backing_query_sql": virtual.sql,
             # Refreshed from the resolved virtual model: the backing query may now
             # resolve through a different datasource, which downstream callers read
             # before expanding the model.

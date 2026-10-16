@@ -1,6 +1,6 @@
 """Recursive expansion of derived ``Column.sql`` references.
 
-Closes DEV-1333. A ``Column.sql`` may reference any other column on the same
+A ``Column.sql`` may reference any other column on the same
 model or on a joined model — including columns that are themselves derived
 (have their own ``sql`` expression rather than being a bare base-table
 column). The query planner had been emitting such references verbatim, which
@@ -29,12 +29,16 @@ from slayer.core.errors import (
     CircularJoinPathError,
     ColumnCycleError,
     LegacyDunderAliasError,
+    UnreachableDefinitionError,
     UnresolvableDimensionJoinError,
 )
+from slayer.core.join_search import unreachable_target
 from slayer.core.join_walker import (
     canonical_path,
+    follow,
     resolve_hop,
-    walk,
+    walk_miss,
+    walk_terminal,
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.scope import resolve_generated_column
@@ -77,7 +81,7 @@ def is_trivial_base(*, column: Column) -> bool:
 
 def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
-    to the root scope of ``parsed`` (DEV-1410).
+    to the root scope of ``parsed``.
 
     Column.sql is contractually a scalar expression, not a SELECT. To re-use
     sqlglot's scope analysis we wrap ``parsed`` in a synthetic
@@ -140,7 +144,7 @@ class _PathSink(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1743 — the shared Mode-A qualifier resolver.
+# The shared Mode-A qualifier resolver.
 #
 # The dotted-canonical flip makes ``.`` the ONLY chain separator in Mode-A free
 # SQL. A qualifier is EITHER an exact name (the host, or a directly-joined model
@@ -215,28 +219,6 @@ def reference_sites(
     return sites
 
 
-def _walk_exact(
-    *,
-    hops: Tuple[str, ...],
-    source_model: SlayerModel,
-    models_by_name: ModelsByName,
-) -> Optional[Tuple[SlayerModel, Tuple[str, ...]]]:
-    """``(terminal model, canonical path)`` of ``hops`` walked as a chain of EXACT
-    join hops from ``source_model`` via the shared walker — each token matches an incident edge's ``name`` or the
-    opposite-endpoint model name (which MAY contain ``__``), in either
-    direction (DEV-1853). ``None`` when a hop is not a join / not resolvable;
-    propagates :class:`AmbiguousJoinPathError` and :class:`CircularJoinPathError`
-    (a revisiting hop) — the strict door fails closed on both.
-    """
-    models = dict(models_by_name)
-    models.setdefault(source_model.name, source_model)
-    chain = walk(root=source_model, path=hops, models_by_name=models)
-    if chain is None:
-        return None
-    terminal = models.get(chain[-1].target_model) if chain else source_model
-    return (terminal, canonical_path(chain)) if terminal is not None else None
-
-
 def resolve_ref_target(
     *,
     qualifiers: Tuple[str, ...],
@@ -259,7 +241,7 @@ def resolve_ref_target(
     if not quals:
         return source_model
     try:
-        walked = _walk_exact(hops=tuple(quals), source_model=source_model, models_by_name=models_by_name)
+        walked = walk_terminal(root=source_model, path=quals, models_by_name=models_by_name)
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     return walked[0] if walked is not None else None
@@ -274,7 +256,7 @@ def _resolve_qualifiers(
     models_by_name: ModelsByName,
     column: Optional[str] = None,
 ) -> Optional[Tuple[str, ...]]:
-    """Classify a Mode-A qualifier chain (DEV-1743).
+    """Classify a Mode-A qualifier chain.
 
     Returns:
       * ``()`` — the reference is anchored on the host / owner model;
@@ -295,11 +277,19 @@ def _resolve_qualifiers(
     if not quals:
         return ()
     path = tuple(quals)
+    # A definition is judged from its model as stored: it never sees a query frame's product hops.
+    source_model = source_model.with_unrelated(frozenset()) if source_model.unrelated_datasets else source_model
+    dataset = unreachable_target(root=source_model, token=path[0], models_by_name=models_by_name)
+    if dataset is not None:
+        raise UnreachableDefinitionError(
+            model=source_model.name, reference=".".join((*qualifiers, leaf)), dataset=dataset,
+            definition=f"column {column!r}" if column else None,
+        )
     # A revisit surfaces either from the direct walk or from the legacy
     # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
     # reference and the column being expanded.
     try:
-        walked = _walk_exact(hops=path, source_model=source_model, models_by_name=models_by_name)
+        walked = walk_terminal(root=source_model, path=path, models_by_name=models_by_name)
         if walked is not None:
             return walked[1]
         if len(path) == 1:
@@ -337,7 +327,7 @@ def raise_if_legacy_split_alias(
         return
     naive = tuple(qualifier.split("__"))
     try:
-        walkable = _walk_exact(hops=naive, source_model=source_model, models_by_name=models_by_name) is not None
+        walkable = walk_terminal(root=source_model, path=naive, models_by_name=models_by_name) is not None
     except AmbiguousJoinPathError:
         walkable = True  # ambiguously walkable is still the legacy spelling
     if walkable:
@@ -359,29 +349,21 @@ def _raise_if_broken_join_walk(
     whose first hop is NOT a join hop is opaque (physical
     ``schema.table.column`` — join-target-beats-schema precedence) and returns
     without raising."""
-    models = dict(models_by_name)
-    models.setdefault(source_model.name, source_model)
-    if resolve_hop(
-        current=source_model, token=path[0], models_by_name=models,
-    ) is None:
+    models = {**models_by_name, source_model.name: models_by_name.get(source_model.name, source_model)}
+    if resolve_hop(current=source_model, token=path[0], models_by_name=models) is None:
         return
-    current = source_model
-    for hop in path:
-        edge = resolve_hop(current=current, token=hop, models_by_name=models)
-        if edge is None:
-            raise UnresolvableDimensionJoinError(
-                reference=".".join((*path, leaf)),
-                root_model=source_model.name,
-                reason=f"'{hop}' is not a joined model on the preceding hop.",
-            )
-        nxt = models.get(edge.target_model)
-        if nxt is None:
-            raise UnresolvableDimensionJoinError(
-                reference=".".join((*path, leaf)),
-                root_model=source_model.name,
-                reason=f"joined model '{hop}' is not in the resolved bundle.",
-            )
-        current = nxt
+    miss = walk_miss(root=source_model, path=path, models_by_name=models)
+    if miss is None:
+        return
+    raise UnresolvableDimensionJoinError(
+        reference=".".join((*path, leaf)),
+        root_model=source_model.name,
+        reason={
+            "no_edge": f"'{miss.token}' is not a joined model on the preceding hop.",
+            "unloaded": f"joined model '{miss.token}' is not in the resolved bundle.",
+            "spine": f"'{miss.token}' would cross the time spine, which a path may end at but never pass through.",
+        }[miss.kind],
+    )
 
 
 def _lenient_path(
@@ -407,11 +389,14 @@ def _lenient_path(
     if not quals:
         return ()
     try:
-        walked = _walk_exact(hops=tuple(quals), source_model=source_model, models_by_name=models_by_name)
-        if walked is None and len(quals) == 1 and "__" in quals[0]:
-            walked = _walk_exact(hops=tuple(quals[0].split("__")), source_model=source_model, models_by_name=models_by_name)
+        walked = walk_terminal(root=source_model, path=quals, models_by_name=models_by_name)
         if walked is not None:
             return walked[1]
+        if len(quals) == 1 and "__" in quals[0]:
+            # An internal join alias spells a bound, possibly composed, path.
+            chain = follow(root=source_model, path=quals[0].split("__"),
+                           models_by_name={**models_by_name, source_model.name: source_model})
+            return canonical_path(chain) if chain is not None else None
     except (AmbiguousJoinPathError, CircularJoinPathError):
         return None
     return None
@@ -527,7 +512,7 @@ def _locate_site_target(
     """``(target_model, canonical_alias)`` of a resolved site path, recording crossed joins."""
     if not path:
         return model, alias_path
-    walked = _walk_exact(hops=path, source_model=model, models_by_name=models_by_name)
+    walked = walk_terminal(root=model, path=path, models_by_name=models_by_name)
     if walked is None:
         return None
     if crossed_paths is not None:
@@ -685,7 +670,7 @@ def expand_derived_refs_sync(
     ``bundle.referenced_models``) — hops resolve through the shared
     bidirectional walker. ``owner_path`` is the
     ROOT-relative path of ``model`` (empty at the scope root). ``alias_resolver``
-    (DEV-1743) threads the WP3 join-alias registry so qualifier strings match
+    threads the WP3 join-alias registry so qualifier strings match
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
     spelling. When ``crossed_paths`` is supplied, every join-path prefix the
     fragment (recursively) crosses is added to it — the structural alternative
@@ -698,7 +683,7 @@ def expand_derived_refs_sync(
     # Reserved-word qualifiers (``grant.amount``) parse as an unsupported
     # ``Command`` unless quoted, so the reference would be invisible to the
     # resolver (no join registered). Prequote first — idempotent, so callers
-    # that already prequoted (the Mode-A door) are unaffected (DEV-1686).
+    # that already prequoted (the Mode-A door) are unaffected.
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     root_scope_ids = root_scope_column_ids(parsed=parsed)

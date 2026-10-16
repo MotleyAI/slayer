@@ -40,6 +40,18 @@ from slayer.engine.syntax import (
 )
 
 
+def _ext_models() -> dict[str, SlayerModel]:
+    """The stage source and the extension joins' target, as the runtime loads them."""
+    orders = SlayerModel(name="orders", data_source="ds", sql_table="orders", columns=[
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="customer_id", type=DataType.INT),
+        Column(name="b_id", type=DataType.INT), Column(name="s_id", type=DataType.INT)])
+    customers = SlayerModel(name="customers", data_source="ds", sql_table="customers", columns=[
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="name", type=DataType.TEXT)])
+    return {"orders": orders, "customers": customers}
+
+
 class TestStageGraphBidirectional:
     """DEV-1853: the cascade graph and attribution traverse either direction."""
 
@@ -74,7 +86,7 @@ class TestStageGraphBidirectional:
                       join_pairs=[["customer_id", "id"]], name="buyer"),
         ]))
         graph = _build_stage_graph(
-            stage=stage, stage_source_name="orders", models_by_name={},
+            stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
         )
         assert _attribute_ref_to_base(
             ref="buyer.name", base_name="customers", graph=graph,
@@ -88,7 +100,7 @@ class TestStageGraphBidirectional:
                       join_pairs=[["s_id", "id"]], name="seller"),
         ]))
         graph = _build_stage_graph(
-            stage=stage, stage_source_name="orders", models_by_name={},
+            stage=stage, stage_source_name="orders", models_by_name=_ext_models(),
         )
         assert _attribute_ref_to_base(
             ref="seller.name", base_name="customers", graph=graph,

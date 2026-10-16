@@ -14,14 +14,16 @@ Two faces:
   an incident edge's name, else the opposite-endpoint model name; ``None`` only on
   an unknown/unloaded hop so callers keep their own errors, raises
   :class:`AmbiguousJoinPathError` when two or more edges span the hop, and
-  :class:`CircularJoinPathError` when a hop revisits a model already on the path.
+  :class:`CircularJoinPathError` when a hop revisits a model already on the path;
+  :func:`follow` walks an already-resolved composed key path, where a revisit is
+  a separate occurrence (revisits are frame-local).
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Dict, Iterable, Iterator, Optional, Sequence
+from typing import Dict, Iterable, Iterator, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -35,23 +37,37 @@ __all__ = [
     "OrientedJoin",
     "OrientedLike",
     "addressable_token",
+    "addresses_alone",
     "aggregation_owner",
     "canonical_path",
     "canonical_token",
     "edges_between",
+    "follow",
+    "incident_model_names",
     "is_product_edge",
+    "is_unrelated_edge",
+    "matching_edges",
     "neighbors",
     "observe_traversals",
     "physical_join_pairs",
     "provably_to_one",
     "resolve_hop",
+    "resolved_terminal",
     "reverse_token",
     "terminal_model",
     "cancelling_revisit",
     "unique_key_sets",
+    "WalkMiss",
     "walk",
     "walk_cancelling",
+    "walk_miss",
+    "walk_terminal",
 ]
+
+
+#: A product hop's kind: the population to its spine, the spine to a dataset with no axis route,
+#: or the population to a dataset no join path reaches (minted only by strict resolution).
+ProductKind = Literal["spine", "detached", "unrelated"]
 
 
 class OrientedJoin(BaseModel):
@@ -75,6 +91,8 @@ class OrientedJoin(BaseModel):
     # A query stage's user spelling of an endpoint (``None`` for an ordinary model).
     source_spelling: str | None = None
     target_spelling: str | None = None
+    # A keyless hop pairing every source row with every target row; ``None`` for a declared join.
+    product: ProductKind | None = None
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -112,7 +130,7 @@ def reverse_token(edge: OrientedJoin) -> str:
     return edge.name or edge.source_spelling or edge.source_model
 
 
-def _matching(edges: list[OrientedJoin], token: str) -> list[OrientedJoin]:
+def matching_edges(edges: list[OrientedJoin], token: str) -> list[OrientedJoin]:
     """The edges ``token`` names, by precedence: edge name, then a query stage's
     spelling (it shadows a same-named model), then a model name — never a
     stage's minted identity."""
@@ -164,7 +182,7 @@ def _product_edge(model: SlayerModel) -> OrientedJoin:
         source_model=model.name, target_model=TIME_SPINE_MODEL, join_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.ONE_TO_MANY,
         name=TIME_SPINE_MODEL, declaring_model=model.name,
-        source_spelling=model.explicit_spelling,
+        source_spelling=model.explicit_spelling, product="spine",
     )
 
 
@@ -222,12 +240,28 @@ def _detached_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
         join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
         name=None, declaring_model=TIME_SPINE_MODEL,
         source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+        product="detached",
+    )
+
+
+def _unrelated_edge(*, source: SlayerModel, target: SlayerModel) -> OrientedJoin:
+    """The population and a dataset no join path reaches, meeting only as a product."""
+    return OrientedJoin(
+        source_model=source.name, target_model=target.name, join_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=JoinCardinality.MANY_TO_MANY,
+        name=None, declaring_model=source.name,
+        source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+        product="unrelated",
     )
 
 
 def is_product_edge(edge: OrientedJoin) -> bool:
-    """The population's hop to the spine (never an axis edge)."""
-    return edge.target_model == TIME_SPINE_MODEL and not edge.join_pairs
+    """A keyless product hop (never a declared or axis edge)."""
+    return edge.product is not None
+
+
+def is_unrelated_edge(edge: OrientedJoin) -> bool:
+    return edge.product == "unrelated"
 
 
 def _declared_toward(model: SlayerModel, target: str, *, spine: bool) -> list[ModelJoin]:
@@ -315,6 +349,11 @@ def neighbors(
     return out
 
 
+def incident_model_names(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[str]:
+    """Names of every model sharing an edge with ``model``, loaded or not."""
+    return sorted({e.target_model for e in neighbors(model=model, models_by_name=models_by_name)})
+
+
 def resolve_hop(
     *,
     current: SlayerModel,
@@ -328,7 +367,9 @@ def resolve_hop(
     reference error) and raises :class:`AmbiguousJoinPathError` when two or more
     edges qualify.
     """
-    candidates = _matching(neighbors(model=current, models_by_name=models_by_name), token)
+    candidates = matching_edges(neighbors(model=current, models_by_name=models_by_name), token)
+    if not candidates:
+        candidates = _unrelated_hops(current=current, token=token, models_by_name=models_by_name)
     if not candidates:
         return None
     if len(candidates) > 1:
@@ -342,42 +383,55 @@ def resolve_hop(
     return candidates[0]
 
 
+def _unrelated_hops(
+    *, current: SlayerModel, token: str, models_by_name: dict[str, SlayerModel],
+) -> list[OrientedJoin]:
+    """The product hop from a query frame's population to the unrelated dataset ``token`` names."""
+    targets = [models_by_name[n] for n in sorted(current.unrelated_datasets) if n in models_by_name]
+    return matching_edges([_unrelated_edge(source=current, target=t) for t in targets], token)
+
+
+def addresses_alone(*, edge: OrientedJoin, incident: list[OrientedJoin]) -> bool:
+    """Whether ``edge``'s canonical token names it alone among ``incident`` (its source's edges)."""
+    return matching_edges(incident, canonical_token(edge)) == [edge]
+
+
 def addressable_token(
     *, current: SlayerModel, edge: OrientedJoin, models_by_name: dict[str, SlayerModel],
 ) -> str | None:
     """``edge``'s hop token from ``current`` (name first), or ``None`` when the hop is unaddressable."""
-    token = canonical_token(edge)
-    try:
-        if resolve_hop(current=current, token=token, models_by_name=models_by_name) is None:
-            return None
-    except AmbiguousJoinPathError:
-        return None
-    return token
+    incident = neighbors(model=current, models_by_name=models_by_name)
+    return canonical_token(edge) if addresses_alone(edge=edge, incident=incident) else None
 
 
-def walk(
+class WalkMiss(BaseModel):
+    """Why a walk returned ``None``: the failing hop and whether it has no edge, an unloaded target, or crosses the spine."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int
+    token: str
+    kind: Literal["no_edge", "unloaded", "spine"]
+    target: str | None = None
+
+
+def _walk(
     *,
     root: SlayerModel,
     path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
-) -> list[OrientedJoin] | None:
-    """Resolve a full ``path`` of tokens from ``root`` into an oriented chain.
-
-    Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
-    :class:`AmbiguousJoinPathError` from any ambiguous hop, and raises
-    :class:`CircularJoinPathError` when a hop revisits a model already on the path
-    (a definite malformation, not a miss).
-    """
+    revisits: bool,
+) -> tuple[list[OrientedJoin] | None, WalkMiss | None]:
     current = root
     visited = {root.name}
     chain: list[OrientedJoin] = []
-    for token in path:
+    for i, token in enumerate(path):
         if chain and is_spine(current):
-            return None  # a path may end at the spine, never cross it
+            return None, WalkMiss(index=i, token=token, kind="spine")  # a path may end at the spine, never cross it
         edge = resolve_hop(current=current, token=token, models_by_name=models_by_name)
         if edge is None:
-            return None
-        if edge.target_model in visited:
+            return None, WalkMiss(index=i, token=token, kind="no_edge")
+        if not revisits and edge.target_model in visited:
             raise CircularJoinPathError(
                 reference=".".join(path),
                 root_model=root.name,
@@ -387,33 +441,76 @@ def walk(
             )
         nxt = models_by_name.get(edge.target_model)
         if nxt is None:
-            return None
+            return None, WalkMiss(index=i, token=token, kind="unloaded", target=edge.target_model)
         visited.add(edge.target_model)
         chain.append(edge)
         current = nxt
-    return chain
+    return chain, None
+
+
+def walk(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> list[OrientedJoin] | None:
+    """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain.
+
+    Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
+    :class:`AmbiguousJoinPathError` from any ambiguous hop, and raises
+    :class:`CircularJoinPathError` when a hop revisits a model already on the path
+    (a definite malformation, not a miss).
+    """
+    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False)[0]
+
+
+def walk_miss(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> WalkMiss | None:
+    """Why :func:`walk` returns ``None`` for ``path`` (``None`` when it does not); raises as :func:`walk` does."""
+    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=False)[1]
+
+
+def walk_terminal(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> tuple[SlayerModel, tuple[str, ...]] | None:
+    """``(terminal model, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
+    models = {**models_by_name, root.name: models_by_name.get(root.name, root)}
+    chain = walk(root=root, path=path, models_by_name=models)
+    if chain is None:
+        return None
+    return (models[chain[-1].target_model] if chain else root), canonical_path(chain)
+
+
+def follow(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> list[OrientedJoin] | None:
+    """:func:`walk` for an already-resolved, possibly composed key path: revisits are separate occurrences."""
+    return _walk(root=root, path=path, models_by_name=models_by_name, revisits=True)[0]
 
 
 def _owner_stack(
     *, root: SlayerModel, owner_path: Sequence[str],
     models_by_name: dict[str, SlayerModel],
 ) -> list[SlayerModel] | None:
-    """The model sequence of the (trusted, already-resolved) ``owner_path`` from
-    ``root``. Only the target model of each token is needed, so parallel edges
-    that agree on it never raise here (the default's own tokens resolve strictly);
-    ``None`` on an unresolvable or revisiting owner hop."""
-    stack: list[SlayerModel] = [root]
-    for token in owner_path:
-        cands = _matching(neighbors(model=stack[-1], models_by_name=models_by_name), token)
-        target = {e.target_model for e in cands}
-        if len(target) != 1:
-            return None
-        _observe(target, strict=True)
-        nxt = models_by_name.get(next(iter(target)))
-        if nxt is None or any(m.name == nxt.name for m in stack):
-            return None
-        stack.append(nxt)
-    return stack
+    """The occurrence sequence of the (trusted, already-resolved) ``owner_path`` from ``root``;
+    ``None`` when it does not resolve."""
+    try:
+        chain = follow(root=root, path=owner_path, models_by_name=models_by_name)
+    except AmbiguousJoinPathError:
+        return None
+    if chain is None:
+        return None
+    return [root, *(models_by_name[e.target_model] for e in chain)]
 
 
 def _incident_named(
@@ -442,13 +539,13 @@ def walk_cancelling(
     models_by_name: dict[str, SlayerModel],
 ) -> tuple[str, ...] | None:
     """Resolve a definition default's qualifier ``tokens`` in the owner's frame
-    (the owner is ``root`` walked along ``owner_path``), with reverse-hop
+    (the owner is ``root`` followed along ``owner_path``), with reverse-hop
     cancellation.
 
     Per token, precedence is incident edge name → a model name on the path
     (cancel) → a model-name hop: an incident edge-name token always hops and
     never cancels; a token equal to a dataset already on ``root + owner_path``
-    truncates the absolute path back to it — keeping ``owner_path``'s spelling —
+    truncates the absolute path back to its innermost occurrence — keeping ``owner_path``'s spelling —
     then resolution continues forward from there. Returns the absolute canonical
     path from ``root`` (``()`` = the root itself), ``None`` on a miss or a hop
     onto an already-visited model (see :func:`cancelling_revisit`); ambiguity raises."""
@@ -489,7 +586,7 @@ def _cancelling_walk(
     for token in tokens:
         edge = _incident_named(current=stack[-1], token=token, models_by_name=models)
         if edge is None:
-            cancel_at = next((i for i, m in enumerate(stack) if m.spelling == token), None)
+            cancel_at = next((i for i in reversed(range(len(stack))) if stack[i].spelling == token), None)
             if cancel_at is not None:
                 del stack[cancel_at + 1:]
                 del path_tokens[cancel_at:]
@@ -507,6 +604,20 @@ def _cancelling_walk(
     return tuple(path_tokens), None
 
 
+def _terminal(
+    *, root: SlayerModel, path: Sequence[str], models_by_name: dict[str, SlayerModel], revisits: bool,
+) -> SlayerModel | None:
+    models = dict(models_by_name)
+    models.setdefault(root.name, root)
+    try:
+        chain, _miss = _walk(root=root, path=path, models_by_name=models, revisits=revisits)
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    return models.get(chain[-1].target_model) if chain else root
+
+
 def terminal_model(
     *,
     root: SlayerModel,
@@ -516,15 +627,17 @@ def terminal_model(
     """Best-effort terminal model of ``path`` from ``root``: ``None`` on an
     unresolvable, revisiting, or ambiguous hop — for callers whose contract is
     to skip rather than raise (the strict doors fail closed on their own)."""
-    models = dict(models_by_name)
-    models.setdefault(root.name, root)
-    try:
-        chain = walk(root=root, path=path, models_by_name=models)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
-        return None
-    if chain is None:
-        return None
-    return models.get(chain[-1].target_model) if chain else root
+    return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=False)
+
+
+def resolved_terminal(
+    *,
+    root: SlayerModel,
+    path: Sequence[str],
+    models_by_name: dict[str, SlayerModel],
+) -> SlayerModel | None:
+    """:func:`terminal_model` of an already-resolved, possibly composed key path (revisits allowed)."""
+    return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=True)
 
 
 def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
@@ -534,7 +647,7 @@ def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerMod
             owner = model if key.model == model.name else models_by_name.get(key.model)
             leaf = key.column_name
         elif isinstance(key, ColumnKey):
-            owner = terminal_model(root=model, path=key.path, models_by_name=models_by_name)
+            owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
             leaf = key.leaf
         else:
             return None
@@ -550,6 +663,6 @@ def aggregation_owner(
     anchor; ``None`` with no root or an unresolvable hop."""
     if root is None:
         return None
-    return terminal_model(
+    return resolved_terminal(
         root=root, path=source_anchor_path(source), models_by_name=models_by_name,
     )

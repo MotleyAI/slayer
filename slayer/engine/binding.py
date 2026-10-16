@@ -27,27 +27,32 @@ from slayer.core.errors import (
     UnresolvedPlaceholderError,
 )
 from slayer.core.enums import (
+    AMBIGUOUS_WEEKDAY_NAMES,
     BUILTIN_AGGREGATION_PARAM_ORDER,
     BUILTIN_AGGREGATIONS,
+    DATE_PART_ALIASES,
     DEFAULT_AGGREGATIONS_BY_TYPE,
+    GRANULARITY_NAMES,
     NUMERIC_ONLY_AGGREGATIONS,
     PRIMARY_KEY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
     DataType,
-    format_unknown_aggregation,
+    ambiguous_weekday_message,
     normalize_aggregation_name,
 )
 from slayer.core.direction import rank_direction, with_direction_kwarg
+from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
-    OrientedJoin,
     aggregation_owner,
     canonical_path,
-    resolve_hop,
+    terminal_model,
     walk,
+    walk_miss,
+    walk_terminal,
 )
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
@@ -293,23 +298,10 @@ def _terminal_model_for_path(
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerModel]:
-    """Walk ``path`` from ``scope.source_model`` to the terminal model (host if
-    empty) through the shared bidirectional walker — reverse hops and edge-name
-    tokens resolve, so the terminal model comes from the resolved edge, never
-    from reading the token as a model name."""
-    current = scope.source_model
-    if current is None:
+    """The terminal model of ``path`` from ``scope.source_model`` (host if empty)."""
+    if scope.source_model is None:
         return None
-    models_by_name = bundle.models_by_name
-    models_by_name.setdefault(current.name, current)
-    for hop in path:
-        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
-        if edge is None:
-            return None
-        current = models_by_name.get(edge.target_model)
-        if current is None:
-            return None
-    return current
+    return terminal_model(root=scope.source_model, path=path, models_by_name=bundle.models_by_name)
 
 
 def bind_filter(
@@ -631,31 +623,24 @@ def _walk_join_chain(
     models_by_name = bundle.models_by_name
     models_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
-    current = host
-    visited_models = {host.name}
-    chain: List[OrientedJoin] = []
-    for hop in hop_path:
-        edge = resolve_hop(current=current, token=hop, models_by_name=models_by_name)
-        if edge is None:
-            return _route_edgeless_hop(
-                host=host, hop=hop, hop_path=hop_path, leaf=leaf, parts=parts,
-                models_by_name=models_by_name,
-            )
-        nxt = models_by_name.get(edge.target_model)
-        if nxt is None:
-            raise _target_not_in_bundle(parts=parts, target=edge.target_model)
-        # Revisiting a model is a circular join (``a -> b -> a``): reject here
-        # rather than fail confusingly on the leaf. Same class as the derived
-        # save-time refusal; still a ValueError, wording preserved.
-        if nxt.name in visited_models:
-            raise CircularJoinPathError(
-                reference=".".join(spelled), root_model=host.name,
-                revisited=nxt.name, hop=hop, via=current.name,
-            )
-        visited_models.add(nxt.name)
-        chain.append(edge)
-        current = nxt
-    return current, canonical_path(chain)
+    try:
+        walked = walk_terminal(root=host, path=hop_path, models_by_name=models_by_name)
+    except CircularJoinPathError as e:
+        raise CircularJoinPathError(
+            reference=".".join(spelled), root_model=host.name,
+            revisited=e.revisited, hop=e.hop, via=e.via,
+        ) from None
+    if walked is not None:
+        return walked
+    miss = walk_miss(root=host, path=hop_path, models_by_name=models_by_name)
+    assert miss is not None
+    if miss.kind == "unloaded":
+        assert miss.target is not None
+        raise _target_not_in_bundle(parts=parts, target=miss.target)
+    return _route_edgeless_hop(
+        host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
+        models_by_name=models_by_name,
+    )
 
 
 def _route_edgeless_hop(
@@ -881,42 +866,6 @@ def _rerooted_bundle(
     })
 
 
-def _reject_round_trip(
-    host_key: ValueKey,
-    *,
-    host: SlayerModel,
-    bundle: ResolvedSourceBundle,
-    ref_text: str,
-    terminal_name: str,
-) -> None:
-    """Reject a re-anchored measure whose join path revisits a model on the
-    host→target chain (round trip) — parity with the circular-join rejection."""
-    models_by_name = bundle.models_by_name
-    models_by_name.setdefault(host.name, host)
-    for sub in walk_value_keys(host_key):
-        path = getattr(sub, "path", None)
-        if not path:
-            continue
-        visited = {host.name}
-        current = host
-        for hop in path:
-            # Tokens may be edge names — resolve via the shared walker.
-            edge = resolve_hop(
-                current=current, token=hop, models_by_name=models_by_name)
-            nxt = models_by_name.get(edge.target_model) if edge else None
-            if nxt is None:
-                break
-            if nxt.name in visited:
-                raise ValueError(
-                    f"Round-trip reference: saved measure {ref_text!r} expands "
-                    f"across a join back to {nxt.name!r}, a model already on the "
-                    f"host->{terminal_name} chain, so it cannot be re-anchored "
-                    f"(the identical hand-written path is rejected as circular)."
-                )
-            visited.add(nxt.name)
-            current = nxt
-
-
 def _resolve_saved_measure(
     *,
     measure,
@@ -961,12 +910,7 @@ def _resolve_saved_measure(
         parsed, scope=target_scope, bundle=target_bundle, in_filter=False,
         measure_ctx=child,
     )
-    host_key = prepend_value_key(bound, host_path=host_path)
-    _reject_round_trip(
-        host_key, host=host_model, bundle=bundle,
-        ref_text=ref_text, terminal_name=terminal_model.name,
-    )
-    return host_key
+    return prepend_value_key(bound, host_path=host_path)
 
 
 def _resolve_dotted_star(
@@ -1023,7 +967,8 @@ def _bind_partition_keys(
             pks.append(dim_alias_map[elem.name])
             continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
-        if not isinstance(bound, (ColumnKey, ColumnSqlKey)):
+        # A time bucket must be a query time dimension; the checker judges that.
+        if not isinstance(bound, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
             raise PartitionKeyError(
                 summary=f"partition_by takes column references; '{key_display(bound)}' is an expression.",
                 location=f"{label} partition_by",
@@ -1401,19 +1346,23 @@ def _fold_positional_agg_args(
     return (), tuple(folded)
 
 
-def _unknown_aggregation_message(name: str, known) -> str:
-    """The standard unknown-aggregation error, plus a scalar-allowlist hint
-    when the name is a near-miss for a scalar function (typo UX)."""
-    msg = format_unknown_aggregation(name, known)
-    scalar_match = difflib.get_close_matches(
-        word=name.lower(), possibilities=sorted(SCALAR_FUNCTIONS), n=1,
-    )
-    if scalar_match:
-        msg += (
-            f" Note: {scalar_match[0]!r} is a scalar function, not an "
-            f"aggregation (scalar allowlist: {sorted(SCALAR_FUNCTIONS)})."
+def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBundle) -> UnknownFunctionError:
+    """Unknown callable ``name``: the callable categories and a close match."""
+    granularities = sorted(GRANULARITY_NAMES | set(bundle.granularities))
+    callable_names = [*aggregations, *SCALAR_FUNCTIONS, *DATE_PART_ALIASES, *ALL_TRANSFORMS, *granularities]
+    match = difflib.get_close_matches(word=name, possibilities=sorted(set(callable_names)), n=1)
+    hint = f" Did you mean '{match[0]}'?" if match else ""
+    if name.lower() in AMBIGUOUS_WEEKDAY_NAMES:
+        suggestion = ambiguous_weekday_message(name)
+    else:
+        suggestion = (
+            f"Known: aggregations {sorted(aggregations)}, scalar functions "
+            f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
+            f"granularities {granularities}."
         )
-    return msg
+    return UnknownFunctionError(
+        name=name, location=None, summary=f"Unknown function '{name}'.{hint}", suggestion=suggestion,
+    )
 
 
 def _validate_agg_eligibility(
@@ -1438,12 +1387,12 @@ def _validate_agg_eligibility(
     """
     owner_model, leaf = _resolve_agg_owner(source, bundle)
     if owner_model is None:
-        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS)
+        return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS, bundle=bundle)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
-    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names)
+    _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names, bundle=bundle)
     col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
     if col is None:
         return effective
@@ -1455,9 +1404,9 @@ def _validate_agg_eligibility(
     return effective
 
 
-def _known_aggregation(name: str, known) -> str:
+def _known_aggregation(name: str, known, *, bundle: ResolvedSourceBundle) -> str:
     if name not in known:
-        raise ValueError(_unknown_aggregation_message(name, known))
+        raise _unknown_function_error(name, aggregations=known, bundle=bundle)
     return name
 
 

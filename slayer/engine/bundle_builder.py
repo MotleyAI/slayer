@@ -7,10 +7,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import QueryBackedCycleError
+from slayer.core.join_walker import incident_model_names
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import StageDisplay
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_joins, spine_model
+from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, query_host, spine_model
+from slayer.engine.column_dependency import definition_heads
+from slayer.engine.unrelated import first_hop_names
 from slayer.ir.source_bundle import (
     ResolvedSourceBundle,
     apply_extension_overlay,
@@ -37,8 +40,9 @@ async def _referenced_models(
         source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
         failures=failures,
     )
+    known = {m.name for m in component}
     component.extend(await _query_written_targets(
-        queries=[*named_queries.values(), query], known={m.name for m in component},
+        queries=[*named_queries.values(), query], known=known,
         sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
     ))
     referenced, query_backed = await _split_query_backed(
@@ -181,10 +185,11 @@ async def _stage_source_models(
     return out
 
 
-def _written_join_targets(spec: SourceSpec | None) -> List[str]:
-    if spec is None or isinstance(spec, str):
-        return []
-    return [j.target_model for j in spec.joins or []]
+def _written_targets(query: SlayerQuery) -> List[str]:
+    """The models ``query`` names: its source's join targets, then its references' first hops."""
+    spec = query.source_model
+    joins = [] if spec is None or isinstance(spec, str) else [j.target_model for j in spec.joins or []]
+    return list(dict.fromkeys([*joins, *sorted(first_hop_names(query))]))
 
 
 async def _query_written_targets(
@@ -196,25 +201,39 @@ async def _query_written_targets(
     data_source: Optional[str],
     failures: DocumentLoadFailures,
 ) -> List[SlayerModel]:
-    """The components of models the queries name as join targets but the join-graph
-    walk did not reach (an extension over a sibling carries its own joins)."""
+    """The components of models the queries name — as join targets or first hops — but the
+    join-graph walk did not reach (an extension over a sibling carries its own joins)."""
+    names = [n for q in queries for n in _written_targets(q) if n not in sibling_names]
+    return await _named_components(
+        names=names, known=known, storage=storage, data_source=data_source, failures=failures,
+    )
+
+
+async def _named_components(
+    *,
+    names: List[str],
+    known: "set[str]",
+    storage: "StorageBackend",
+    data_source: Optional[str],
+    failures: DocumentLoadFailures,
+) -> List[SlayerModel]:
+    """The components of the ``names`` models not yet ``known`` (absent names skipped)."""
     out: List[SlayerModel] = []
-    for q in queries:
-        for name in _written_join_targets(q.source_model):
-            if name in known or name in sibling_names:
-                continue
-            model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
-            if model is None:
-                continue
-            fresh = [
-                m for m in await _collect_referenced_models(
-                    source_model=model, named_queries={}, storage=storage, data_source=data_source,
-                    failures=failures,
-                )
-                if m.name not in known
-            ]
-            known.update(m.name for m in fresh)
-            out.extend(fresh)
+    for name in names:
+        if name in known:
+            continue
+        model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
+        if model is None:
+            continue
+        fresh = [
+            m for m in await _collect_referenced_models(
+                source_model=model, named_queries={}, storage=storage, data_source=data_source,
+                failures=failures,
+            )
+            if m.name not in known
+        ]
+        known.update(m.name for m in fresh)
+        out.extend(fresh)
     return out
 
 
@@ -242,8 +261,9 @@ async def _split_query_backed(
     failures: DocumentLoadFailures,
 ) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
     """Split ``models`` into referenced models and query-backed placeholders, closing
-    over each placeholder's stage bases (and their components). Placeholders keep
-    their stored form with joins dropped; on-chain names are never loaded."""
+    over each placeholder's stage bases and each model's definition-named models (and
+    their components). Placeholders keep their stored form with joins dropped; on-chain
+    names are never loaded."""
     referenced: Dict[str, SlayerModel] = {}
     query_backed: Dict[str, SlayerModel] = {}
     pending = list(models)
@@ -253,6 +273,11 @@ async def _split_query_backed(
             continue
         if not model.source_queries:
             referenced[model.name] = model
+            pending.extend(m for m in await _named_components(
+                names=definition_heads([model]),
+                known={*chain, *referenced, *query_backed, *(p.name for p in pending)},
+                storage=storage, data_source=data_source, failures=failures,
+            ) if not is_spine(m))
             continue
         query_backed[model.name] = model.model_copy(update={"joins": []})
         pending.extend(await _stage_base_components(
@@ -289,6 +314,10 @@ async def _stage_base_components(
                 source_model=base, named_queries={}, storage=storage, data_source=data_source,
                 failures=failures,
             ))
+    out.extend(await _query_written_targets(
+        queries=list(model.source_queries or []), known={*known, *skip, *(m.name for m in out)},
+        sibling_names=set(private), storage=storage, data_source=data_source, failures=failures,
+    ))
     return out
 
 
@@ -350,7 +379,7 @@ async def _bfs_connected_component(
     *,
     seeds: List[str],
     all_models: Dict[str, SlayerModel],
-    incoming: Dict[str, List[str]],
+    universe: Dict[str, SlayerModel],
     storage: "StorageBackend",
     ds: Optional[str],
 ) -> Dict[str, SlayerModel]:
@@ -369,9 +398,10 @@ async def _bfs_connected_component(
         if model is None:
             continue
         collected.setdefault(name, model)
-        neighbors = [j.target_model for j in model.joins]
-        neighbors.extend(incoming.get(name, ()))
-        frontier.extend(n for n in neighbors if n not in visited)
+        frontier.extend(
+            n for n in incident_model_names(model=model, models_by_name={**universe, name: model})
+            if n not in visited
+        )
     return collected
 
 
@@ -400,15 +430,11 @@ async def _collect_referenced_models(
     all_models = await _load_datasource_peers(
         preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
-    incoming: Dict[str, List[str]] = {}
     universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
-    for m in all_models.values():
-        for join in spine_joins(m, models_by_name=universe):
-            incoming.setdefault(join.target_model, []).append(m.name)
     collected = await _bfs_connected_component(
         # The spine reaches every dataset (a query-backed one's axis is known only once spliced).
         seeds=list(all_models if is_spine(source_model) else preseeded),
-        all_models=all_models, incoming=incoming, storage=storage, ds=ds,
+        all_models=all_models, universe=universe, storage=storage, ds=ds,
     )
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)

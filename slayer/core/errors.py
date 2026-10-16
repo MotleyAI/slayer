@@ -48,13 +48,15 @@ class AmbiguousJoinPathError(SlayerError):
         target_model: str,
         candidates: "Sequence[OrientedJoin]",
         token: str | None = None,
+        context: str | None = None,
     ) -> None:
         self.source_model = source_model
         self.target_model = target_model
         self.candidates = list(candidates)
         self.token = token
         lines = [
-            f"Ambiguous join hop {source_model!r} → {target_model!r}: "
+            (f"{context}: " if context else "")
+            + f"Ambiguous join hop {source_model!r} → {target_model!r}: "
             f"{len(self.candidates)} edges connect these models and no edge "
             f"name resolves it."
         ]
@@ -185,6 +187,22 @@ class DerivedColumnCircularError(CircularJoinPathError):
             f"it, so this is not a column of {self.model!r}. Reference the column on "
             f"{self.revisited!r} directly if you mean this row's value, or declare the "
             f"aggregate on {self.via!r}, which reaches {self.revisited!r} forward."
+        )
+
+
+class DerivedColumnAmbiguousError(AmbiguousJoinPathError):
+    """A derived ``Column.sql``/``Column.filter`` reference crossing a hop that two or more edges span."""
+
+    def __init__(
+        self, *, column: str, model: str, reference: str, error: AmbiguousJoinPathError,
+    ) -> None:
+        self.column = column
+        self.model = model
+        self.reference = reference
+        super().__init__(
+            source_model=error.source_model, target_model=error.target_model,
+            candidates=error.candidates, token=error.token,
+            context=f"Derived column {column!r} on model {model!r} references {reference!r}",
         )
 
 
@@ -383,6 +401,37 @@ class GranularityShapeError(QueryTypeError):
 class TimeSpineError(QueryTypeError):
     """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
     outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
+
+
+class UnrelatedDatasetError(QueryTypeError):
+    """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
+
+
+class UnreachableDefinitionError(SlayerError, ValueError):
+    """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
+
+    def __init__(self, *, model: str, reference: str, dataset: str, definition: str | None = None) -> None:
+        self.model = model
+        self.reference = reference
+        self.dataset = dataset
+        self.definition = definition
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{definition or 'A definition'} on model {model!r} reads {reference!r}, but no join path "
+            f"reaches {dataset!r} from {model!r}.",
+            suggestion=f"Declare a join between them, or read {dataset!r} in a query through aggregates.",
+        ))
+
+    def labelled(self, definition: str) -> "UnreachableDefinitionError":
+        """This error naming ``definition``, unless it already names one."""
+        if self.definition is not None:
+            return self
+        return UnreachableDefinitionError(
+            model=self.model, reference=self.reference, dataset=self.dataset, definition=definition,
+        )
+
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
 class GranularityDefinitionError(SlayerError):
@@ -613,15 +662,16 @@ class UnknownFunctionError(SlayerError, ValueError):
     def __init__(
         self,
         name: str,
-        location: str,
+        location: str | None,
         suggestion: str | None = None,
+        summary: str | None = None,
     ) -> None:
         self.name = name
         self.location = location
         self.suggestion = suggestion or self._DEFAULT_SUGGESTION
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Function {name!r} is not allowed in Mode B.",
+            summary=summary or f"Function {name!r} is not allowed in Mode B.",
             location=location,
             suggestion=self.suggestion,
         ))
@@ -1006,6 +1056,42 @@ class StoredDocumentLoadError(SlayerError, ValueError):
 
     def __reduce__(self):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
+class HiddenContentConflictError(SlayerError):
+    """A write conflicts with stored parts the caller cannot access; names only the caller's own document."""
+
+    def __init__(self, *, kind: str, name: str) -> None:
+        self.kind = kind
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The change to {kind} {name!r} conflicts with parts of it you cannot access.",
+            suggestion="Ask a caller with full access to make this change.",
+        ))
+
+
+class AccessTagsEditError(SlayerError):
+    """A caller without bypass tried to set or change a model's ``access_tags``."""
+
+    def __init__(self, *, model: str) -> None:
+        self.model = model
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model {model!r}: only a caller with full access may set or change access_tags.",
+        ))
+
+
+class UnknownJoinTargetError(SlayerError):
+    """A saved join names a model the caller cannot see."""
+
+    def __init__(self, *, model: str, target: str) -> None:
+        self.model = model
+        self.target = target
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model {model!r}: join target {target!r} is not a known model.",
+        ))
 
 
 class QueryBackedCycleError(SlayerError, ValueError):

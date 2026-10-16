@@ -24,9 +24,14 @@ is the coercion from coarser to finer.
    crosses a fanning hop is rejected at save time, a revisiting (circular) path is
    rejected at save time as a circular definition, and an unproven hop is accepted
    with a warning and the query-time backstop (spec: `models/column-definitions`).
+   Revisits are **frame-local**: each spelled path — a query path from its root, a
+   definition (column, filter or saved measure) from its declaring dataset — is
+   judged alone; composing a definition onto a path is never a revisit (from root
+   `a`, `b.d` with `d ≔ a.x` reads a second `a`).
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1930_save_time_arity.py]
    [enforced: test:tests/test_dev1952_derived_revisit.py]
+   [enforced: test:tests/test_dev2074_frame_local_revisit.py]
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
    value per row (an aggregation is counted over it, Axiom 4). Datasets are the
@@ -97,6 +102,12 @@ is the coercion from coarser to finer.
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
    alone (bidirectional traversal).
+   - **3.1 Unrelated datasets.** A dataset no join path reaches from a query's
+     population meets it as the product `P × D`, every row with every row,
+     reached only by naming `D` as a query path's first hop, never by route
+     search. Only aggregates and filters (Axiom 14) read across `×`; any other
+     row-level read is a type error, so `×` never multiplies the population.
+     [enforced: test:tests/test_unrelated_datasets.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home

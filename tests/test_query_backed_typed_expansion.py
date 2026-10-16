@@ -17,6 +17,8 @@ from typing import List, Tuple
 from unittest.mock import patch
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
@@ -87,6 +89,13 @@ async def _engine(*extra_models: SlayerModel) -> Tuple[SlayerQueryEngine, tempfi
         await storage.save_model(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
+
+
+async def _dry_run_sql(engine: SlayerQueryEngine, name: str) -> str:
+    """The SQL a dry run of the saved model ``name`` renders."""
+    sql = (await engine.execute(name, dry_run=True)).sql
+    assert sql is not None
+    return sql
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +180,7 @@ class TestStoredSourceQueriesTopoSort:
         engine, tmp = await _engine()
         try:
             saved = await engine.save_model(non_ordered)
-            assert saved.backing_query_sql is not None
-            assert "orders_t" in saved.backing_query_sql.lower()
+            assert "orders_t" in (await _dry_run_sql(engine, saved.name)).lower()
         finally:
             tmp.cleanup()
 
@@ -492,7 +500,7 @@ class TestVirtualModelColumns:
 
         Save-time persisted ``data_source.default_time_dimension`` follows
         whatever the user passes on construction — the cache populator
-        only updates ``columns`` / ``backing_query_sql`` / ``data_source``,
+        only updates ``columns`` / ``data_source``,
         consistent with legacy behaviour.
         """
         m = SlayerModel(
@@ -732,9 +740,8 @@ class TestNestedQueryBackedSavePath:
         engine, tmp = await _engine(_customers_model(), qb_b)
         try:
             saved = await engine.save_model(qb_a)
-            assert saved.backing_query_sql is not None
-            # Both inner tables must appear in the rendered backing SQL.
-            sql_lower = saved.backing_query_sql.lower()
+            # Both inner tables must appear in the rendered SQL.
+            sql_lower = (await _dry_run_sql(engine, saved.name)).lower()
             assert "orders_t" in sql_lower
             assert "customers_t" in sql_lower
         finally:
@@ -794,13 +801,13 @@ class TestSavePath:
         engine, tmp = await _engine()
         try:
             saved = await engine.save_model(m)
-            assert saved.backing_query_sql is not None
+            sql = await _dry_run_sql(engine, saved.name)
             # The sibling's filter ``amount > {threshold}`` must
             # substitute to ``amount > 100`` (the outer model default),
             # not to ``amount > 0`` (the dry-run placeholder fallback).
-            assert "> 100" in saved.backing_query_sql, (
+            assert "> 100" in sql, (
                 f"Sibling filter must inherit outer model.query_variables; "
-                f"placeholder fill leaked into:\n{saved.backing_query_sql}"
+                f"placeholder fill leaked into:\n{sql}"
             )
         finally:
             tmp.cleanup()
@@ -853,7 +860,7 @@ class TestSavePath:
 
     async def test_create_model_from_query_save_false_populates_cache(self) -> None:
         """``create_model_from_query(..., save=False)`` returns a model
-        whose ``columns`` / ``backing_query_sql`` / ``data_source`` are
+        whose ``columns`` / ``data_source`` are
         populated by the migrated ``_validate_and_populate_cache``.
         """
         engine, tmp = await _engine()
@@ -868,7 +875,6 @@ class TestSavePath:
                 save=False,
             )
             assert built.columns, "save=False must still populate columns"
-            assert built.backing_query_sql is not None
             assert built.data_source == "ds"
         finally:
             tmp.cleanup()
@@ -1191,15 +1197,11 @@ class TestP4ClosureBehavior:
         self,
     ) -> None:
         """A query-backed model that already aggregated ``customers.revenue:sum``
-        exposes the canonical flat name ``customers__revenue_sum``. Outer
-        dotted refs (``customers.revenue:sum``) against the virtual model
-        DO NOT silently re-aggregate via the legacy ``SourceModelOrigin``
-        lineage walk — this is the P4 closure (decision D).
-
-        The exact error surface (``ValueError`` from binder, or empty SQL
-        with no matching ref) depends on the typed pipeline's resolution
-        order; the assertion is that the dotted form does not silently
-        succeed with a duplicate aggregation.
+        exposes the canonical flat name ``customers__revenue_sum``. An outer
+        dotted ref (``customers.revenue:sum``) against the virtual model never
+        re-aggregates that column through the legacy ``SourceModelOrigin``
+        lineage walk (the P4 closure): ``customers``, which no join path
+        reaches from the virtual model, is aggregated over its own rows.
         """
         orders_with_join = _orders_model().model_copy(update={
             "joins": [ModelJoin(
@@ -1237,19 +1239,22 @@ class TestP4ClosureBehavior:
             )
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
-            # The dotted form must surface a clear binder error — not a
-            # silent re-aggregation through the legacy SourceModelOrigin
-            # lineage walk. The error message must reference the failed
-            # ref so callers can correct their query.
             dotted_q = SlayerQuery(
                 source_model="qb_already_aggregated",
                 measures=[{"formula": "customers.revenue:sum"}],
                 dimensions=["status"],
             )
-            with pytest.raises(
-                (ValueError, KeyError),
-                match=r"(customers|revenue|not found|cannot resolve|unknown|join)",
-            ):
-                await engine.execute(dotted_q, dry_run=True)
+            resp = await engine.execute(dotted_q, dry_run=True)
+            assert any(
+                w.kind == "unrelated_dataset" and w.dataset == "customers" for w in resp.warnings or []
+            ), resp.warnings
+            assert resp.sql is not None
+            tree = sqlglot.parse_one(resp.sql, dialect="sqlite")
+            assert not [c for c in tree.find_all(exp.Column) if c.name.startswith("customers__revenue")], resp.sql
+            assert any(
+                not sel.args.get("group") and any(t.alias_or_name == "customers" for t in sel.find_all(exp.Table))
+                and any(c.name == "revenue" for agg in sel.find_all(exp.AggFunc) for c in agg.find_all(exp.Column))
+                for sel in tree.find_all(exp.Select)
+            ), resp.sql
         finally:
             tmp.cleanup()
