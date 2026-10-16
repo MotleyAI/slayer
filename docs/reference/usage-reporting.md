@@ -69,12 +69,14 @@ Usage reporting never changes a command's output or exit code: every usage repor
 Files live in the platform config directory, not in SLayer's model storage:
 `$XDG_CONFIG_HOME/slayer` (default `~/.config/slayer`) on Linux,
 `~/Library/Application Support/slayer` on macOS, `%APPDATA%\slayer` on Windows —
-`usage-reporting.json` (setting, install ID, notice and send bookkeeping) and `usage-reporting-spool/`.
+`usage-reporting.json` (setting, install ID, notice and send bookkeeping), `usage-reporting-spool/`
+and two small lock files that keep concurrent `slayer` processes from overwriting each other.
 
 ## Destination
 
 Reports go to the PostHog EU capture API (`https://eu.i.posthog.com/i/v0/e/`) as one
-`slayer_usage` event per send, keyed by the install ID. Your IP address is not in the report;
+`slayer_usage` event per send, keyed by the install ID, which PostHog keeps as one "person" so that
+all of an install's reports can be deleted together. Your IP address is not in the report;
 PostHog receives it at the network level, our project is configured to discard it, and every
 event disables GeoIP lookup. `SLAYER_USAGE_REPORTING_ENDPOINT` overrides the URL.
 
@@ -83,9 +85,10 @@ event disables GeoIP lookup. `SLAYER_USAGE_REPORTING_ENDPOINT` overrides the URL
 - **Controller**: Motley AI, the maintainer of SLayer.
 - **Purpose**: understanding how SLayer is used, to prioritise its development.
 - **Processor**: PostHog (EU hosting), under a data processing agreement.
-- **Retention**: raw reports (keyed by install ID) are deleted within 12 months: a weekly job deletes
-  every install ID, with all its reports, once it has been replaced; aggregates without install IDs are kept. Aggregates are not published; any future summary suppresses every figure
-  covering fewer than 10 installs.
+- **Retention**: raw reports (keyed by install ID) are deleted within 12 months: an install ID is used
+  for at most 11 months, and a weekly job deletes it, with all its reports, once its first report is
+  11 months and one week old. Aggregates without install IDs are kept but not published; any future
+  summary suppresses every figure covering fewer than 10 installs.
 - **Your rights**: `slayer usage-reporting status` prints your install ID; to have its data deleted,
-  email privacy@motley.ai with that ID, and its reports are deleted, normally within a few days. `slayer usage-reporting disable` stops collection and deletes
-  the local ID and unsent data.
+  email privacy@motley.ai with that ID, and its reports are deleted, normally within a few days.
+  `slayer usage-reporting disable` stops collection and deletes the local ID and unsent data.
