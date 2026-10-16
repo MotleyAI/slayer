@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import sqlalchemy as sa
@@ -90,7 +90,12 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
 
 
-def _server_flags(args) -> dict[str, bool]:
+class _ServerFlags(TypedDict):
+    ingest_on_startup: bool
+    always_load_query: bool
+
+
+def _server_flags(args) -> _ServerFlags:
     """``ingest_on_startup`` / ``always_load_query`` from the CLI flag or its env var."""
     return {
         "ingest_on_startup": getattr(args, "ingest_on_startup", False) or _env_flag("SLAYER_INGEST_ON_STARTUP"),
