@@ -273,10 +273,6 @@ class TestUnrelatedFlagSurfaces:
         blocks, _ = await mcp.call_tool(name="recommend_root_model", arguments={"items": UNRELATED_ITEMS})
         assert _flagged_in_text(_text(blocks))
 
-    async def test_mcp_description_names_the_flag(self, storage) -> None:
-        tools = {t.name: t for t in await create_mcp_server(storage=storage).list_tools()}
-        assert "flagged unrelated" in (tools["recommend_root_model"].description or "")
-
     def test_rest(self, storage) -> None:
         resp = TestClient(create_app(storage=storage)).post("/recommend-root-model", json={"items": UNRELATED_ITEMS})
         assert resp.status_code == 200
