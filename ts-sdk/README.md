@@ -2,7 +2,7 @@
 
 A TypeScript client for [SLayer](https://github.com/MotleyAI/slayer) and the [SLayer Gateway](https://github.com/MotleyAI/slayer-custom).
 
-- Zero runtime dependencies. It uses the built-in `fetch` (Node 18+, Deno, Bun, browsers, edge runtimes).
+- Zero runtime dependencies. It uses the built-in `fetch` (Node 20.3+, Deno, Bun, browsers, edge runtimes).
 - Request and response types are generated from the SLayer OpenAPI schema.
 - It works with both the gateway (JWT, roles, tenants) and a plain `slayer serve`.
 

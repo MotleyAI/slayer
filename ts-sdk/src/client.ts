@@ -29,7 +29,9 @@ export class SlayerClient {
 
   constructor(options: SlayerClientOptions) {
     this.options = options;
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    let baseUrl = options.baseUrl;
+    while (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+    this.baseUrl = baseUrl;
   }
 
   /** A client with the same settings that sends another token, such as the current user's. */
