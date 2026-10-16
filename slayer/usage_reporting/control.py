@@ -15,13 +15,13 @@ def status() -> str:
 
 
 def enable() -> None:
-    settings.write_config(settings.read_config().model_copy(update={"setting": "enabled"}))
+    settings.update_config(lambda config: config.model_copy(update={"setting": "enabled"}))
 
 
 def disable() -> None:
     """Persist ``disabled`` and delete the install ID and every unsent batch."""
     recorder.reset()
-    settings.write_config(settings.read_config().model_copy(update={
+    settings.update_config(lambda config: config.model_copy(update={
         "setting": "disabled", "install_id": None, "install_id_created": None,
     }))
     spool.purge(settings.spool_dir())

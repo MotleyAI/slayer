@@ -10,6 +10,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -17,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from slayer import usage_reporting
-from slayer.usage_reporting import sender, settings, spool
+from slayer.usage_reporting import control, sender, settings, spool
 from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
@@ -558,6 +559,47 @@ def test_running_process_rotates_install_id_before_sending(usage_reporting_env) 
     end_process()
     assert request.json()["distinct_id"] != str(old)
     assert request.json()["distinct_id"] == str(config().install_id)
+
+
+def _disable_during_rotation(monkeypatch: pytest.MonkeyPatch) -> threading.Thread:
+    """Run ``slayer usage-reporting disable`` (as if from another process) while the install ID rotates."""
+    real = settings.with_install_id
+    racer = threading.Thread(target=control.disable)
+
+    def rotate_while_disabling(config: settings.UsageReportingConfig, *, today: datetime.date):
+        racer.start()
+        racer.join(timeout=0.5)
+        return real(config, today=today)
+
+    monkeypatch.setattr(settings, "with_install_id", rotate_while_disabling)
+    monkeypatch.setattr(sender, "with_install_id", rotate_while_disabling, raising=False)
+    return racer
+
+
+def _assert_stays_disabled(racer: threading.Thread) -> None:
+    racer.join(timeout=10)
+    assert not racer.is_alive()
+    final = config()
+    assert final.setting == "disabled"
+    assert final.install_id is None
+
+
+def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+    write_config(install_id=uuid.uuid4(), install_id_created=(_T0 - datetime.timedelta(days=400)).date(),
+                 last_sent=_T0 - datetime.timedelta(days=2))
+    racer = _disable_during_rotation(monkeypatch)
+    paths = sender.Paths(config=settings.config_path(), spool=settings.spool_dir(), lease=settings.lease_path())
+    sender.send(paths, now=_T0, url=sender.endpoint())
+    _assert_stays_disabled(racer)
+
+
+def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+    quiet_config()
+    racer = _disable_during_rotation(monkeypatch)
+    usage_reporting.start()
+    _assert_stays_disabled(racer)
+    end_process()
+    assert not spool_files()
 
 
 def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_reporting_env) -> None:

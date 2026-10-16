@@ -6,12 +6,19 @@ import json
 import os
 import sys
 import uuid
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from enum import StrEnum
 from importlib.metadata import Distribution, distribution
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 DIST_NAME = "motley-slayer"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -85,7 +92,7 @@ def _set(value: str | None) -> bool:
     return value is not None and value.strip().lower() not in _FALSY
 
 
-def resolve_state() -> UsageReportingState:
+def resolve_state(config: UsageReportingConfig | None = None) -> UsageReportingState:
     """The effective state and the first rule (highest precedence first) that decided it."""
     if (os.environ.get("DO_NOT_TRACK") or "").strip().lower() in _TRUTHY:
         return UsageReportingState(enabled=False, rule=DecidingRule.DO_NOT_TRACK)
@@ -98,7 +105,7 @@ def resolve_state() -> UsageReportingState:
         return UsageReportingState(enabled=False, rule=DecidingRule.EDITABLE)
     if not _writable(config_dir()):
         return UsageReportingState(enabled=False, rule=DecidingRule.UNWRITABLE)
-    setting = read_config().setting
+    setting = (config or read_config()).setting
     if setting is not None:
         return UsageReportingState(enabled=setting == "enabled", rule=DecidingRule.PERSISTED)
     return UsageReportingState(enabled=True, rule=DecidingRule.DEFAULT)
@@ -115,8 +122,38 @@ def read_config(path: Path | None = None) -> UsageReportingConfig:
     return config
 
 
-def write_config(config: UsageReportingConfig, path: Path | None = None) -> None:
-    write_private(path or config_path(), config.model_dump_json().encode())
+def update_config(
+    change: Callable[[UsageReportingConfig], UsageReportingConfig], path: Path | None = None,
+) -> tuple[UsageReportingConfig, UsageReportingConfig]:
+    """Apply ``change`` to the stored config under a cross-process lock; returns (before, after)."""
+    target = path or config_path()
+    with exclusive_lock(target.with_name(target.name + ".lock"), wait=True):
+        before = read_config(target)
+        after = change(before)
+        if after != before:
+            write_private(target, after.model_dump_json().encode())
+    return before, after
+
+
+@contextmanager
+def exclusive_lock(path: Path, *, wait: bool) -> Generator[bool]:
+    """Hold an OS lock on ``path`` (freed on close or process death); without ``wait``, yields ``False`` if held."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            if sys.platform == "win32":
+                msvcrt.locking(fd, msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if wait:
+                raise
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
 
 
 def write_private(path: Path, data: bytes) -> None:

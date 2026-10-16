@@ -5,20 +5,13 @@ import json
 import logging
 import os
 import stat
-import sys
 import time
 import uuid
-from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from slayer.usage_reporting.payload import Batch
-from slayer.usage_reporting.settings import write_private
-
-if sys.platform == "win32":
-    import msvcrt
-else:
-    import fcntl
+from slayer.usage_reporting.settings import exclusive_lock, write_private
 
 logger = logging.getLogger(__name__)
 
@@ -101,22 +94,8 @@ def purge(directory: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-@contextmanager
-def _guard(lease: Path) -> Generator[bool]:
-    """Hold an OS lock beside ``lease`` (freed on close or process death); yields ``False`` if held elsewhere."""
-    fd = os.open(lease.with_name(lease.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        try:
-            if sys.platform == "win32":
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            else:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-        else:
-            yield True
-    finally:
-        os.close(fd)
+def _guard(lease: Path) -> AbstractContextManager[bool]:
+    return exclusive_lock(lease.with_name(lease.name + ".lock"), wait=False)
 
 
 def acquire_lease(path: Path, *, now: datetime.datetime) -> str | None:

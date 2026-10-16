@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from slayer.usage_reporting import environment, spool
 from slayer.usage_reporting.payload import Batch, UsageReport, merge
-from slayer.usage_reporting.settings import UsageReportingConfig, read_config, with_install_id, write_config
+from slayer.usage_reporting.settings import UsageReportingConfig, update_config, with_install_id
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +82,11 @@ def send(paths: Paths, *, now: datetime.datetime, url: str) -> None:
 
 
 def _send_leased(paths: Paths, *, now: datetime.datetime, url: str) -> None:
-    config = read_config(paths.config)
+    _, config = update_config(
+        lambda stored: stored if stored.install_id is None else with_install_id(stored, today=now.date()), paths.config,
+    )
     if config.install_id is None or not is_due(config.last_sent, now=now):
         return
-    current = with_install_id(config, today=now.date())
-    if current.install_id != config.install_id:
-        write_config(current, paths.config)
-    config = current
     claimed = spool.claim(paths.spool)
     batches = spool.load(claimed)
     if batches and not _post(build_report(config=config, batches=batches), url=url):
@@ -96,4 +94,4 @@ def _send_leased(paths: Paths, *, now: datetime.datetime, url: str) -> None:
     for path in claimed:
         path.unlink(missing_ok=True)
     if batches:
-        write_config(read_config(paths.config).model_copy(update={"last_sent": now}), paths.config)
+        update_config(lambda stored: stored.model_copy(update={"last_sent": now}), paths.config)

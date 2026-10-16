@@ -238,13 +238,19 @@ def start() -> None:
         return
     now = clock.now()
     paths = sender.Paths(config=settings.config_path(), spool=settings.spool_dir(), lease=settings.lease_path())
-    config = settings.with_install_id(settings.read_config(paths.config), today=now.date())
-    if config.last_sent is None:
-        config = config.model_copy(update={"last_sent": now})
-    show_notice = config.notice_shown_schema != SCHEMA_VERSION
-    config = config.model_copy(update={"notice_shown_schema": SCHEMA_VERSION})
-    settings.write_config(config, paths.config)
-    if show_notice:
+
+    def prepare(config: settings.UsageReportingConfig) -> settings.UsageReportingConfig:
+        if not settings.resolve_state(config).enabled:  # disabled meanwhile by another process
+            return config
+        config = settings.with_install_id(config, today=now.date())
+        if config.last_sent is None:
+            config = config.model_copy(update={"last_sent": now})
+        return config.model_copy(update={"notice_shown_schema": SCHEMA_VERSION})
+
+    before, config = settings.update_config(prepare, paths.config)
+    if config.install_id is None:
+        return
+    if before.notice_shown_schema != SCHEMA_VERSION:
         print(NOTICE, file=sys.stderr)
     with _recorder.lock:
         _recorder.paths = paths
