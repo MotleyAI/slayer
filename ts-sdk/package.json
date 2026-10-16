@@ -1,0 +1,38 @@
+{
+  "name": "@motley-ai/slayer",
+  "version": "0.1.0",
+  "description": "TypeScript client for SLayer and the SLayer Gateway",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.3"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "gen": "cd .. && poetry run python ts-sdk/scripts/openapi.py > ts-sdk/.openapi.json && cd ts-sdk && openapi-typescript .openapi.json -o src/schema.ts && rm .openapi.json",
+    "check:schema": "npm run gen && git diff --exit-code -- src/schema.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

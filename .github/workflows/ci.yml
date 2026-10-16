@@ -13,8 +13,41 @@ on:
     branches: ['**']
 
 jobs:
+  # Gates the jobs below with `if`, not workflow `paths`: a skipped job still satisfies a required check.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ steps.python.outputs.python }}
+      ts: ${{ steps.ts.outputs.ts }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: python
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        with:
+          predicate-quantifier: every
+          filters: |
+            python:
+              - '**'
+              - '!ts-sdk/**'
+      # The SDK types are generated from the Python REST API, so Python changes run the drift check too.
+      - id: ts
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        with:
+          filters: |
+            ts:
+              - 'ts-sdk/**'
+              - 'slayer/**'
+              - 'pyproject.toml'
+              - 'poetry.lock'
+              - '.github/workflows/ci.yml'
+
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +61,8 @@ jobs:
         run: poetry run basedpyright
 
   lint-and-test:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -126,7 +161,8 @@ jobs:
   bigquery-example:
     # Skip on forked-PR runs where the GCP secrets aren't available — the job
     # would fail otherwise and we'd rather not nag external contributors.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: changes
+    if: ${{ needs.changes.outputs.python == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -207,7 +243,8 @@ jobs:
   snowflake-integration:
     # Skip on forked-PR runs where the Snowflake secret isn't available — the
     # job would fail otherwise and we'd rather not nag external contributors.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: changes
+    if: ${{ needs.changes.outputs.python == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -256,3 +293,32 @@ jobs:
       - name: Wipe Snowflake credentials
         if: always()
         run: rm -f ~/.snowflake/connections.toml
+
+  ts-sdk:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ts-sdk/package-lock.json
+
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # Same inputs as the lint-and-test 3.11 leg, so they share the venv cache.
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: SDK types match the Python REST API (run `npm run gen` in ts-sdk/ to fix)
+        run: npm run check:schema
