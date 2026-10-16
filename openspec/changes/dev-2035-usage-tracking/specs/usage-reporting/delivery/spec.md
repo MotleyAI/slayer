@@ -72,15 +72,30 @@ Only one process SHALL send at a time. Spool files included in a send SHALL be d
 - **THEN** a later send includes those files
 
 ### Requirement: Destination and request shape
-A report SHALL be sent as one event to the PostHog EU capture API (`https://eu.i.posthog.com/i/v0/e/`), with event name `slayer_usage`, the install ID as distinct ID, the batch ID as event UUID, GeoIP enrichment disabled and person-profile processing off. `SLAYER_USAGE_REPORTING_ENDPOINT` SHALL override the URL.
+A report SHALL be sent as one event to the PostHog EU capture API (`https://eu.i.posthog.com/i/v0/e/`), with event name `slayer_usage`, the install ID as distinct ID, the batch ID as event UUID and GeoIP enrichment disabled; each install ID SHALL be a PostHog person, so that its reports can be deleted together. `SLAYER_USAGE_REPORTING_ENDPOINT` SHALL override the URL.
 
 #### Scenario: Endpoint override
 - **WHEN** `SLAYER_USAGE_REPORTING_ENDPOINT` points to a local test server and a send is due
 - **THEN** the report is posted to that server with the event name `slayer_usage` and GeoIP disabled
 
 ### Requirement: Install identity and rotation
-The install ID SHALL be a random UUID created on first use and stored in the platform config directory (not in SLayer's model storage). It SHALL be replaced by a new random UUID at the first start after it is 13 months old.
+The install ID SHALL be a random UUID created on first use and stored in the platform config directory (not in SLayer's model storage). It SHALL be replaced by a new random UUID at the first start or send after it is 11 months old, so no report carries an install ID older than that.
 
 #### Scenario: Rotation
-- **WHEN** a process starts and the install ID was created 14 months ago
+- **WHEN** a process starts and the install ID was created 12 months ago
 - **THEN** a new install ID is created and used for subsequent reports
+
+#### Scenario: Rotation in a long-running process
+- **WHEN** a server started while its install ID was 10 months old sends a report two months later
+- **THEN** the report carries a new install ID
+
+### Requirement: Retention and deletion at the destination
+Reports SHALL be deleted from the destination within 12 months of being sent: a weekly scheduled job SHALL delete every install ID whose first report is older than the install-ID lifetime plus one week, together with all its reports. The same job SHALL delete one given install ID and all its reports on request.
+
+#### Scenario: Expired install deleted
+- **WHEN** the weekly job runs and an install ID's first report is 11 months and two weeks old
+- **THEN** that install ID and all its reports are deleted
+
+#### Scenario: Deletion on request
+- **WHEN** the job is run manually with an install ID
+- **THEN** that install ID and all its reports are deleted, and no other install is touched

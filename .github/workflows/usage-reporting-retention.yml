@@ -1,0 +1,30 @@
+name: Usage-reporting retention
+
+# Weekly: delete PostHog usage reports older than the retention window (see docs/reference/usage-reporting.md).
+# Manual run with an install ID: delete that install's reports now (erasure request).
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      install_id:
+        description: "Install ID to delete now (leave empty for the regular retention sweep)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  retention:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Delete expired or requested usage reports
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          INSTALL_ID: ${{ inputs.install_id }}
+        run: python scripts/usage_reporting_retention.py

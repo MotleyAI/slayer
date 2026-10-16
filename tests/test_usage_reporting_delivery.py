@@ -516,7 +516,7 @@ def test_request_shape(usage_reporting_env) -> None:
     assert body["distinct_id"] == properties["install_id"]
     assert body["uuid"] == properties["batch_id"]
     assert properties["$geoip_disable"] is True
-    assert properties["$process_person_profile"] is False
+    assert "$process_person_profile" not in properties
     assert "api_key" in body
     assert "timestamp" not in body
 
@@ -532,7 +532,7 @@ def test_install_id_created_on_first_use(usage_reporting_env) -> None:
     assert current.install_id_created == now_utc().date()
 
 
-@pytest.mark.parametrize(("age_days", "rotated"), [(14 * 31, True), (12 * 30, False)])
+@pytest.mark.parametrize(("age_days", "rotated"), [(11 * 31, True), (10 * 30, False)])
 def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) -> None:
     old = uuid.uuid4()
     write_config(install_id=old, install_id_created=_T0.date())
@@ -544,6 +544,20 @@ def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) 
     if rotated:
         assert current.install_id_created == (_T0 + datetime.timedelta(days=age_days)).date()
         assert show()["install_id"] == str(current.install_id)
+
+
+def test_running_process_rotates_install_id_before_sending(usage_reporting_env) -> None:
+    old = uuid.uuid4()
+    write_config(install_id=old, install_id_created=(_T0 - datetime.timedelta(days=300)).date())
+    quiet_config(last_sent=_T0)
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
+    usage_reporting.start()
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(days=60))
+    usage_reporting.record(surface="mcp", token="query")
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
+    end_process()
+    assert request.json()["distinct_id"] != str(old)
+    assert request.json()["distinct_id"] == str(config().install_id)
 
 
 def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_reporting_env) -> None:

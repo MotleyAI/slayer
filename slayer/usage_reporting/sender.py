@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from slayer.usage_reporting import environment, spool
 from slayer.usage_reporting.payload import Batch, UsageReport, merge
-from slayer.usage_reporting.settings import UsageReportingConfig, read_config, write_config
+from slayer.usage_reporting.settings import UsageReportingConfig, read_config, with_install_id, write_config
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def build_report(*, config: UsageReportingConfig, batches: list[Batch]) -> Usage
 
 def _post(report: UsageReport, *, url: str) -> bool:
     properties = report.model_dump(mode="json")
-    properties.update({"$geoip_disable": True, "$process_person_profile": False})
+    properties["$geoip_disable"] = True
     body = {
         "api_key": API_KEY,
         "event": EVENT,
@@ -85,6 +85,10 @@ def _send_leased(paths: Paths, *, now: datetime.datetime, url: str) -> None:
     config = read_config(paths.config)
     if config.install_id is None or not is_due(config.last_sent, now=now):
         return
+    current = with_install_id(config, today=now.date())
+    if current.install_id != config.install_id:
+        write_config(current, paths.config)
+    config = current
     claimed = spool.claim(paths.spool)
     batches = spool.load(claimed)
     if batches and not _post(build_report(config=config, batches=batches), url=url):

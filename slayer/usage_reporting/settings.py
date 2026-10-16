@@ -16,7 +16,7 @@ from pydantic import BaseModel
 DIST_NAME = "motley-slayer"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"", "0", "false", "no", "off"})
-_ID_LIFETIME_MONTHS = 13
+_ID_LIFETIME_MONTHS = 11
 
 
 class DecidingRule(StrEnum):
@@ -140,7 +140,7 @@ def _add_months(day: datetime.date, months: int) -> datetime.date:
 
 
 def with_install_id(config: UsageReportingConfig, *, today: datetime.date) -> UsageReportingConfig:
-    """``config`` with a current install ID: created on first use, replaced once 13 months old."""
+    """``config`` with a current install ID: created on first use, replaced once 11 months old."""
     created = config.install_id_created
     if config.install_id is not None and created is None:
         return config.model_copy(update={"install_id_created": today})

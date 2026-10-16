@@ -8,7 +8,7 @@ We have no signal on how SLayer is used — active installs, which surfaces, dia
 - Payload carries only SLayer-defined vocabulary: versions, enums, booleans, buckets, counts keyed by built-in names; anything else is `other` / `custom`. No SQL, names, arguments, messages, paths, IPs.
 - Per-process in-memory counters, spooled locally at exit; sent to PostHog EU at most once per 24 h per install, only when SLayer runs anyway (no heartbeat), from a background thread.
 - Controls: `DO_NOT_TRACK=1`, `SLAYER_USAGE_REPORTING=on|off`, auto-off in `CI`, editable installs and unwritable config dirs, and `slayer usage-reporting status|enable|disable|show`.
-- One-time stderr notice; docs page with every field and a privacy notice; random install ID rotated every 13 months.
+- One-time stderr notice; docs page with every field and a privacy notice; random install ID rotated every 11 months; reports deleted at PostHog within 12 months, or on request.
 - Architecture: new precise node `usage_reporting` in the LikeC4 model; new `usage_reporting.arc42.md` (fail-silent, payload vocabulary, privacy principles).
 
 ## Capabilities

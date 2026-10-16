@@ -45,7 +45,7 @@ bucket, a date, a random ID or a count. Anything SLayer does not recognise is re
 | Field | Content |
 |-------|---------|
 | `schema` | Report format version. |
-| `install_id` | Random UUID created on first use, replaced every 13 months. |
+| `install_id` | Random UUID created on first use, replaced every 11 months. |
 | `batch_id` | Random UUID per send (lets the backend drop duplicates). |
 | `period` | First and last **date** covered (no times). |
 | `env` | SLayer version, Python `major.minor`, OS family, CPU architecture, whether it runs in a container, installed SLayer extras (read from package metadata). |
@@ -83,9 +83,9 @@ event disables GeoIP lookup. `SLAYER_USAGE_REPORTING_ENDPOINT` overrides the URL
 - **Controller**: Motley AI, the maintainer of SLayer.
 - **Purpose**: understanding how SLayer is used, to prioritise its development.
 - **Processor**: PostHog (EU hosting), under a data processing agreement.
-- **Retention**: raw reports (keyed by install ID) are deleted after 13 months; aggregates without
-  install IDs are kept. Aggregates are not published; any future summary suppresses every figure
+- **Retention**: raw reports (keyed by install ID) are deleted within 12 months: a weekly job deletes
+  every install ID, with all its reports, once it has been replaced; aggregates without install IDs are kept. Aggregates are not published; any future summary suppresses every figure
   covering fewer than 10 installs.
 - **Your rights**: `slayer usage-reporting status` prints your install ID; to have its data deleted,
-  email privacy@motley.ai with that ID. `slayer usage-reporting disable` stops collection and deletes
+  email privacy@motley.ai with that ID, and its reports are deleted, normally within a few days. `slayer usage-reporting disable` stops collection and deletes
   the local ID and unsent data.

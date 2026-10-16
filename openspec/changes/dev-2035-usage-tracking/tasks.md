@@ -6,7 +6,7 @@
 - [x] 1.4 `tests/test_usage_reporting_controls.py`: full precedence matrix (`DO_NOT_TRACK`, `SLAYER_USAGE_REPORTING`, `CI`, editable via a fake `direct_url.json`, unwritable dir, persisted setting, default); `slayer usage-reporting status|enable|disable|show` per spec; notice once on stderr, re-shown on schema-major bump, none when off. Verify: fails today.
 - [x] 1.5 `tests/test_usage_reporting_counting.py`: CLI leaf tokens, parse errors / `--help` not counted; MCP tool calls counted with ok / error token, `clientInfo` mapping, tool schemas byte-identical with usage reporting on vs off; REST route template counted, `/mcp` mount counted as MCP only; Flight validate+fetch counted once; PG multi-statement and repeated prepared execution counted per execution, probes under their own token. Verify: fails today.
 - [x] 1.6 `tests/test_usage_reporting_features.py`: each structural flag; built-in transform / aggregation names counted by name, user-defined → `custom`; counted per attempt; dialect counts; datasource / model-count buckets; extras detected from metadata without importing (assert module not in `sys.modules`); no storage call or connection made by usage reporting (spy). Verify: fails today.
-- [x] 1.7 `tests/test_usage_reporting_delivery.py`: spool written on normal exit, SIGINT, SIGTERM for stdio `slayer mcp` (handler chained), server shutdown, MCP EOF / broken pipe (subprocess tests); concurrent writers; fork resets counters; 24 h gate (idle → nothing, due → exactly one merged send, future `last_sent` → due); two simultaneous senders → one report; 500 / timeout → spool kept, `last_sent` unchanged; crash after claim recovered; size cap; non-regular files ignored; file mode 0600; `disable` racing a send; request shape (`slayer_usage`, distinct_id, uuid, `$geoip_disable`, `$process_person_profile`); install-ID rotation after 13 months. Verify: fails today.
+- [x] 1.7 `tests/test_usage_reporting_delivery.py`: spool written on normal exit, SIGINT, SIGTERM for stdio `slayer mcp` (handler chained), server shutdown, MCP EOF / broken pipe (subprocess tests); concurrent writers; fork resets counters; 24 h gate (idle → nothing, due → exactly one merged send, future `last_sent` → due); two simultaneous senders → one report; 500 / timeout → spool kept, `last_sent` unchanged; crash after claim recovered; size cap; non-regular files ignored; file mode 0600; `disable` racing a send; request shape (`slayer_usage`, distinct_id, uuid, `$geoip_disable`); install-ID rotation after 11 months, also in a running process. Verify: fails today.
 - [x] 1.8 `tests/test_usage_reporting_isolation.py` (usage_reporting.arc42 P1): endpoint refused / timeout / 500, corrupt spool, unwritable files → command output and exit code identical to usage-reporting-off; usage reporting never writes stdout; a stalled send delays exit by ≤ ~1 s and only when in flight. Verify: fails today.
 
 ## 2. Architecture (each exact edit shown to the user and approved before it lands)
@@ -17,7 +17,7 @@
 
 ## 3. Usage-reporting package
 
-- [x] 3.1 `slayer/usage_reporting/` settings: config-dir resolution, `usage-reporting.json` model, precedence + deciding rule, editable detection, unwritable → off, install ID + 13-month rotation. Verify: 1.4, 1.7 rotation.
+- [x] 3.1 `slayer/usage_reporting/` settings: config-dir resolution, `usage-reporting.json` model, precedence + deciding rule, editable detection, unwritable → off, install ID + 11-month rotation. Verify: 1.4, 1.7 rotation.
 - [x] 3.2 Payload model + fixed token tables (error classes, MCP clients, CLI leaves, buckets, extras list). Verify: 1.2.
 - [x] 3.3 Recorder (no-op until `start()`), fork reset, merge semantics. Verify: 1.3, 1.7 fork.
 - [x] 3.4 Spool (random names, temp + rename, 0600, cap, regular files only) and lease / claim / commit / stale-claim recovery. Verify: 1.7.
@@ -34,11 +34,12 @@
 
 ## 5. Docs and release
 
-- [x] 5.1 `docs/reference/usage-reporting.md`: every field, controls, notice text, destination (IP received at transport, discarded, no GeoIP), privacy notice (Motley as controller, purpose, PostHog EU processor, 13-month raw retention, ID rotation, erasure by install ID + contact address); nav entry in `zensical.toml`. Verify: page renders in nav.
+- [x] 5.1 `docs/reference/usage-reporting.md`: every field, controls, notice text, destination (IP received at transport, discarded, no GeoIP), privacy notice (Motley as controller, purpose, PostHog EU processor, 12-month raw retention, ID rotation, erasure by install ID + contact address); nav entry in `zensical.toml`. Verify: page renders in nav.
 - [x] 5.2 README usage-reporting section (one paragraph + opt-out); CLI reference for `slayer usage-reporting`; release-notes item. Verify: grep.
 
 ## 6. Gates
 
 - [x] 6.1 Full non-integration suite `poetry run pytest -m "not integration" -n auto`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`. Verify: all green.
-- [ ] 6.2 **Release-blocking:** PostHog EU project created with "Discard client IP data", DPA signed, project API key (`phc_…`) received from the user and set as the shipped default; a live smoke send verified in PostHog. Implementation and tests proceed without it via `SLAYER_USAGE_REPORTING_ENDPOINT`.
+- [x] 6.2 **Release-blocking:** PostHog EU project created with "Discard client IP data", DPA signed, project API key (`phc_…`) received from the user and set as the shipped default; a live smoke send verified in PostHog. Implementation and tests proceed without it via `SLAYER_USAGE_REPORTING_ENDPOINT`.
 - [x] 6.3 Update the DEV-2035 issue body: Lifecycle section per design.md decision 7 (SIGTERM unwinding for every server; SIGINT + hard exit for stdio `mcp`), and D10: the payload-vocabulary principle and the other privacy principles live in `usage_reporting.arc42.md` §3, not `system.arc42.md`.
+- [x] 6.4 Retention at PostHog: person profiles on, weekly `.github/workflows/usage-reporting-retention.yml` running `scripts/usage_reporting_retention.py` (deletes install IDs whose first report is older than 11 months + 1 week; manual run deletes one install ID). Verify: `tests/test_usage_reporting_retention.py`.
