@@ -26,7 +26,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "gen": "cd .. && poetry run python ts-sdk/scripts/openapi.py ts-sdk/.openapi.json && cd ts-sdk && openapi-typescript .openapi.json -o src/schema.ts && rm .openapi.json",
+    "gen": "cd .. && poetry run python ts-sdk/scripts/openapi.py > ts-sdk/.openapi.json && cd ts-sdk && openapi-typescript .openapi.json -o src/schema.ts && rm .openapi.json",
     "check:schema": "npm run gen && git diff --exit-code -- src/schema.ts"
   },
   "devDependencies": {
