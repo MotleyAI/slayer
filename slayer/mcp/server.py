@@ -1539,7 +1539,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Recommend the root model (a query's source_model) for a set of model.column / measure items, with each item's reference path from that root, ready to drop into the query (a joined column comes back as customers.regions.name, a root-owned one as status; aggregations are kept).
 
-        The root is the model from which every item is reachable with the fewest join hops. When none reaches everything, root_model is null and coverage lists the best partial roots for a multi-stage query.
+        The root is the model from which every item is reachable with the fewest join hops. With at least one column item, an aggregated item on a model with no join path to the root does not block it: its path is flagged unrelated (aggregated over that model's own rows). When none reaches everything, root_model is null and coverage lists the best partial roots for a multi-stage query.
 
         Call it once the item list is final; explore with search / inspect first.
         """
