@@ -17,8 +17,8 @@ from slayer.usage_reporting.settings import UsageReportingConfig, read_config, w
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = "https://eu.i.posthog.com/i/v0/e/"
-# PostHog EU project key; set before release.
-API_KEY = ""
+# PostHog EU project token: write-only, meant to ship in clients.
+API_KEY = "phc_ttaNssx8sGSD9dY5TYXqnnDuEkxp7fgpZvspyKpSY2EK"  # NOSONAR(S6418) — public write-only PostHog project token, meant to ship in clients
 EVENT = "slayer_usage"
 HTTP_TIMEOUT = 10.0
 SEND_INTERVAL = datetime.timedelta(hours=24)
