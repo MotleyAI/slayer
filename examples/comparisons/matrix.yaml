@@ -525,6 +525,28 @@ rows:
     text: "A measure lives in its own model, so an average of a customer field is per customer by construction."
     caveat: A per-order weighting needs a joining dbt model.
   comment: "From orders, SLayer's plain cross-model average includes customers with no orders; Malloy's includes only those reached through the join."
+- id: Q26
+  group: Query semantics
+  name: Metrics without a join path
+  intent: "Events per customer in one query, though no join path links events to customers."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`count(events.id) / count(*)` from `customers`"
+    caveat: "Computed over events' own rows and repeated on every row (per bucket of a spine time dimension) with an `unrelated_dataset` warning; grouping by an events column is a typed error (verified)."
+  malloy:
+    verdict: partial
+    how: "`extend: { join_cross: events }` · `events.count()`"
+    caveat: "Symmetric aggregates keep totals exact (verified), but you write the join, a time bucket needs a hand-written `on`, and nothing stops a row-multiplying group-by."
+  cube:
+    verdict: partial
+    text: "Unrelated grand totals side by side; any dimension, or the SQL API, fails with `Can't find join path` (verified)."
+    caveat: "The legacy planner refuses even the totals. A model-declared `1 = 1` join gives the total on every customer row (not counted)."
+  metricflow:
+    verdict: partial
+    text: "Metrics from unrelated models combine when grouped by `metric_time` or by nothing (verified)."
+    caveat: "Grouping by a customer is refused, and an empty month reads NULL, not 0; a cross-model ratio is a model-declared derived metric (not counted)."
+  comment: "Only SLayer combines unrelated models under the population's own dimensions without a written join; Cube and MetricFlow stop at totals (MetricFlow also at `metric_time`), and Malloy's `join_cross` is a capable workaround."
 - id: C1
   group: Beyond query semantics
   name: "Rendering & tooling"
@@ -751,23 +773,23 @@ rows:
   comment: Enterprise-governance territory.
 - id: C13
   group: Beyond query semantics
-  name: Embedded analytics
-  intent: "Serve the layer's results inside your own product."
+  name: Embeddable UI components
+  intent: "Ready-made UI components (charts, tables, query builders) that render the layer's results in your own app."
   origin: Cube
   slayer:
     verdict: 'no'
-    text: "APIs only; embedding is the host app's job."
+    text: "Headless: APIs only, no UI components."
   malloy:
     verdict: partial
-    text: Publisher embed / React SDK; token check unfinished per its docs.
+    text: "Results render with `@malloydata/render`; Publisher embed / React SDK; token check unfinished per its docs."
   cube:
     verdict: partial
-    text: REST/GraphQL plus the open-source JS client libraries
+    text: "Headless React bindings (`QueryRenderer`, `QueryBuilder`) over REST; no charts or tables"
     caveat: iframe embedding with sessions is a Cloud feature.
   metricflow:
     verdict: 'no'
     text: Not in open source.
-  comment: Cube Core ships client libraries; hosted embedding is a Cloud feature.
+  comment: "Malloy renders results with its own components; Cube Core ships headless React bindings; hosted embedding is a Cloud feature."
 - id: C14
   group: Beyond query semantics
   name: "Custom calendars & granularities"
@@ -808,22 +830,26 @@ rows:
   comment: Fan-out safety makes this work in all four.
 - id: C16
   group: Beyond query semantics
-  name: Cross-datasource queries
+  name: Cross-database queries
   intent: Join models living in different databases.
   origin: Cube
   slayer:
-    verdict: 'no'
-    text: Refused explicitly.
+    verdict: 'yes'
+    how: "One Trino datasource; `sql_table: postgresql.public.customers` joins `mysql.shop.orders`"
+    caveat: "Verified live against Postgres and MySQL catalogs. Models on two SLayer datasources still can't meet in one query."
   malloy:
-    verdict: partial
-    text: Via a DuckDB connection that attaches other databases.
+    verdict: 'yes'
+    how: "`trino.table('catalog.schema.table')` on one Trino connection"
+    caveat: "Documented. Sources on two Malloy connections can't be joined; a DuckDB connection can also `ATTACH` other databases."
   cube:
-    verdict: partial
-    how: "`rollup_join` pre-aggregations in Cube Store, or SQL API unions"
+    verdict: 'yes'
+    text: "Trino driver; cubes whose `sql_table` names different catalogs join as usual"
+    caveat: "From source, not verified here; catalog-qualified `sql_table` isn't documented. Cubes on two Cube data sources need a `rollup_join` (Preview) in Cube Store."
   metricflow:
-    verdict: 'no'
-    text: One warehouse connection.
-  comment: Nobody does this natively.
+    verdict: 'yes'
+    text: "dbt-trino: models in different catalogs via `database:`, joined through entities"
+    caveat: "From source, not verified here. One adapter per dbt project, so no federation beyond Trino."
+  comment: "All four reach several databases through Trino catalogs; natively, only Cube (`rollup_join`, Preview) and Malloy (a DuckDB connection with `ATTACH`) come close."
 - id: C17
   group: Beyond query semantics
   name: Drill-down to records

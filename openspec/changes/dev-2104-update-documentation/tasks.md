@@ -9,15 +9,15 @@
 
 ## 3. Rival models (pr-implement)
 
-- [ ] 3.1 Add a standalone `events` source to `malloy/model.malloy`, an `events` cube to `cube/model/`, and an `events` semantic model with a simple count metric to the MetricFlow dbt project (cross-model derived metric, if used, in `model_declared.yml`); verify each runner reaches Q26's expected outcomes
-- [ ] 3.2 Run all four runners (Cube `--planner both`) both in a temporary `git worktree` at `git merge-base HEAD origin/main` and on the branch; verify every pre-existing probe's status is identical, no probe is `FAIL`, then remove the worktree
-- [ ] 3.3 If a Q26 outcome contradicts D5, apply D6 (cell follows the probe; a genuine engine bug gets `known_bug` plus a "Known issues" entry in `examples/comparisons/README.md`) and verify the runners exit zero
+- [x] 3.1 Add a standalone `events` source to `malloy/model.malloy`, an `events` cube to `cube/model/`, and an `events` semantic model with a simple count metric to the MetricFlow dbt project (cross-model derived metric, if used, in `model_declared.yml`); verify each runner reaches Q26's expected outcomes
+- [x] 3.2 Run all four runners (Cube `--planner both`) both in a temporary `git worktree` at `git merge-base HEAD origin/main` and on the branch; verify every pre-existing probe's status is identical, no probe is `FAIL`, then remove the worktree
+- [x] 3.3 If a Q26 outcome contradicts D5, apply D6 (cell follows the probe; a genuine engine bug gets `known_bug` plus a "Known issues" entry in `examples/comparisons/README.md`) and verify the runners exit zero
 
 ## 4. Matrix (pr-implement)
 
-- [ ] 4.1 Edit C13 per D2 and C16 per D3 in `matrix.yaml`; verify by diff
-- [ ] 4.2 Add Q26 per D4 after Q25, with verdicts and text set from the actual 3.x probe outcomes under D6; verify by diff against the runner output
-- [ ] 4.3 Run `poetry run python examples/comparisons/export_matrix.py` and verify `tests/test_comparison_matrix.py` passes
+- [x] 4.1 Edit C13 per D2 and C16 per D3 in `matrix.yaml`; verify by diff
+- [x] 4.2 Add Q26 per D4 after Q25, with verdicts and text set from the actual 3.x probe outcomes under D6; verify by diff against the runner output
+- [x] 4.3 Run `poetry run python examples/comparisons/export_matrix.py` and verify `tests/test_comparison_matrix.py` passes
 
 ## 5. README picture (pr-implement)
 

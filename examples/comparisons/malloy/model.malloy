@@ -36,6 +36,11 @@ source: returns is duckdb.table('returns') extend {
   measure: return_total is amount.sum()
 }
 
+// No join path to any other source (Q26).
+source: events is duckdb.table('events') extend {
+  primary_key: id
+}
+
 source: orders_flat is duckdb.table('orders_flat') extend {
   primary_key: id
   measure:

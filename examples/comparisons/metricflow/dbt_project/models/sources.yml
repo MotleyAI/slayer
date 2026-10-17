@@ -7,3 +7,4 @@ sources:
       - name: customers
       - name: orders
       - name: returns
+      - name: events
