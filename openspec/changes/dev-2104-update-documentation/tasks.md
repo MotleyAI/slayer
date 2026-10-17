@@ -21,9 +21,9 @@
 
 ## 5. README picture (pr-implement)
 
-- [ ] 5.1 Write `examples/readme/sql_vs_slayer.html` per D1 with the render command in a header comment; render `docs/images/sql-vs-slayer.png` with headless Chrome and verify the PNG visually (Read it)
-- [ ] 5.2 Point `README.md` line 47 at the raw `main` URL of `docs/images/sql-vs-slayer.png`; verify by diff
+- [x] 5.1 Write `examples/readme/sql_vs_slayer.html` per D1 with the render command in a header comment; render `docs/images/sql-vs-slayer.png` with headless Chrome and verify the PNG visually (Read it)
+- [x] 5.2 Point `README.md` line 47 at the raw `main` URL of `docs/images/sql-vs-slayer.png`; verify by diff
 
 ## 6. Gates (pr-implement)
 
-- [ ] 6.1 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/` and `poetry run basedpyright`; verify all green
+- [x] 6.1 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/` and `poetry run basedpyright`; verify all green

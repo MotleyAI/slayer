@@ -44,7 +44,7 @@ Question (run on the built-in demo Jaffle Shop database): **"show monthly revenu
 
 Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 
-![Example SQL vs SLayer query](https://github.com/user-attachments/assets/a8c73688-e760-402e-9f87-a05591d6cbee)
+![Example SQL vs SLayer query](https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/sql-vs-slayer.png)
 
 ## Quickstart
 
