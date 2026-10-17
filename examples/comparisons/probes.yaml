@@ -3492,6 +3492,166 @@ probes:
       query: |
         run: orders -> { aggregate: v is source.avg(customers.credit) }
 
+  # ------------------------------------------------------------------ Q26 metrics without a join path
+  # No join path links events to customers, orders or regions.
+  - id: Q26-total-per-customer
+    row: Q26
+    title: the total event count on every customer row
+    truth_sql: select name, (select count(*) from events) from customers
+    compare: {keys: [name], values: [n]}
+    slayer:
+      query: {source_model: customers, dimensions: [name], measures: [{formula: "count(events.id)", name: n}]}
+      expect: {warning: unrelated_dataset}
+    malloy:
+      query: |
+        run: customers extend { join_cross: events } -> { group_by: name; aggregate: n is events.count() }
+    cube:
+      rest: {dimensions: [customers.name], measures: [events.count]}
+      expect: {error: "Can't find join path"}
+    metricflow:
+      query:
+        metrics: [event_count]
+        group_by: [customer__name]
+      expect: {error: does not match any of the available group-by-items}
+
+  - id: Q26-ratio
+    row: Q26
+    title: events per customer, count(events) / count(customers) = 5/7
+    truth_sql: select (select count(*) from events) / (select count(*) from customers)
+    compare: {values: [r]}
+    slayer:
+      query: {source_model: customers, measures: [{formula: "count(events.id) / count(*)", name: r}]}
+      expect: {warning: unrelated_dataset}
+    malloy:
+      query: |
+        run: customers extend { join_cross: events } -> { aggregate: r is events.count() / count() }
+    cube:
+      sql: select measure(events.count) * 1.0 / measure(customers.count) as r from events cross join customers
+      expect: {error: "Can't find join path"}
+    metricflow:
+      model_declared: true
+      note: "model-declared workaround (not counted): a cross-model derived metric"
+      query:
+        metrics: [events_per_customer]
+      values: [events_per_customer]
+
+  - id: Q26-two-totals
+    row: Q26
+    title: event and customer counts side by side, no dimensions
+    truth_sql: select (select count(*) from events), (select count(*) from customers)
+    compare: {values: [e, c]}
+    slayer:
+      query: {source_model: customers, measures: [{formula: "count(events.id)", name: e}, {formula: "count(*)", name: c}]}
+      expect: {warning: unrelated_dataset}
+    malloy:
+      query: |
+        run: customers extend { join_cross: events } -> { aggregate: e is events.count(), c is count() }
+    cube:
+      rest: {measures: [events.count, customers.count]}
+      values: [events.count, customers.count]
+      planner_expect:
+        legacy: {error: "Can't find join path"}
+    metricflow:
+      query:
+        metrics: [event_count, customer_count]
+      values: [event_count, customer_count]
+
+  - id: Q26-per-month
+    row: Q26
+    title: orders revenue and event count per month, 2025-01..2025-03
+    truth_sql: |
+      with m as (select * from generate_series(timestamp '2025-01-01', timestamp '2025-03-01', interval 1 month) t(mo)),
+           o as (select date_trunc('month', order_date) mo, sum(amount) v from orders group by 1),
+           e as (select date_trunc('month', event_ts) mo, count(*) n from events group by 1)
+      select m.mo, o.v, coalesce(e.n, 0) from m left join o on m.mo = o.mo left join e on m.mo = e.mo
+    compare: {keys: [mo], values: [v, n]}
+    slayer:
+      query: {time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
+              measures: [{formula: "sum(orders.amount)", name: v}, {formula: "coalesce(count(events.id), 0)", name: n}]}
+      keys: [timestamp]
+      note: no unrelated_dataset warning; events reach the spine through event_ts
+    malloy:
+      query: |
+        source: cal is duckdb.sql("""
+          select cast(mo as date) as mo from generate_series(date '2025-01-01', date '2025-03-01', interval 1 month) t(mo)
+        """) extend {
+          primary_key: mo
+          join_many: o is orders_base on o.order_date.month = mo
+          join_many: e is events on e.event_ts::date.month = mo
+        }
+        run: cal -> { group_by: mo; aggregate: v is o.amount.sum(), n is e.count(); limit: 100 }
+    cube:
+      rest: {measures: [orders.revenue, events.count],
+             timeDimensions: [{dimension: orders.order_date, granularity: month, dateRange: ["2025-01-01", "2025-03-31"]}]}
+      expect: {error: "Can't find join path"}
+    metricflow:
+      query:
+        metrics: [revenue, event_count]
+        group_by: [metric_time__month]
+        start: '2025-01-01'
+        end: '2025-03-31'
+      keys: [metric_time__month]
+      values: [revenue, event_count]
+      expect:
+        known_bug: 'by design: a count metric is NULL, not 0, for a month with no events'
+        buggy_rows: [['2025-01-01', 140, null], ['2025-02-01', 200, null]]
+
+  - id: Q26-per-region-month
+    row: Q26
+    title: region x month, 2025-01..2025-03; each month's event count repeats across regions
+    truth_sql: |
+      with m as (select * from generate_series(timestamp '2025-01-01', timestamp '2025-03-01', interval 1 month) t(mo)),
+           p as (select distinct r.name from customers c left join regions r on c.region_id = r.id),
+           e as (select date_trunc('month', event_ts) mo, count(*) n from events group by 1)
+      select p.name, m.mo, coalesce(e.n, 0) from p cross join m left join e on e.mo = m.mo
+    compare: {keys: [region, mo], values: [n]}
+    slayer:
+      query: {dimensions: [customers.regions.name],
+              time_dimensions: [{dimension: time_spine.timestamp, granularity: month, date_range: ["2025-01-01", "2025-03-31"]}],
+              measures: [{formula: "coalesce(count(events.id), 0)", name: n}]}
+      keys: [customers.regions.name, timestamp]
+      expect: {warning: unrelated_dataset}
+    malloy:
+      query: |
+        source: cal is duckdb.sql("""
+          select cast(mo as date) as mo from generate_series(date '2025-01-01', date '2025-03-01', interval 1 month) t(mo)
+        """) extend {
+          primary_key: mo
+          join_cross: c is customers_base
+          join_many: e is events on e.event_ts::date.month = mo
+        }
+        run: cal -> { group_by: region is c.regions.name, mo; aggregate: n is e.count(); limit: 100 }
+    cube:
+      rest: {dimensions: [regions.name], measures: [events.count],
+             timeDimensions: [{dimension: events.event_ts, granularity: month, dateRange: ["2025-01-01", "2025-03-31"]}]}
+      expect: {error: "Can't find join path"}
+    metricflow:
+      query:
+        metrics: [event_count]
+        group_by: [customer__region__name, metric_time__month]
+        start: '2025-01-01'
+        end: '2025-03-31'
+      expect: {error: does not match any of the available group-by-items}
+
+  - id: Q26-group-by-unrelated-refused
+    row: Q26
+    title: grouping by an events column next to a customer column is a typed error
+    slayer:
+      query: {source_model: customers, dimensions: [name, events.amount], measures: [{formula: "count(*)", name: n}]}
+      expect: {error: UnrelatedDatasetError}
+
+  - id: Q26-cube-fake-join
+    row: Q26
+    title: "a 1 = 1 join from an extended customers cube: model-declared workaround (not counted)"
+    truth_sql: select name, (select count(*) from events) from customers
+    compare: {keys: [name], values: [n]}
+    cube:
+      model_declared: true
+      schema: [model_declared/customers_x.yml]
+      rest: {dimensions: [customers_x.name], measures: [events.count]}
+      keys: [customers_x.name]
+      values: [events.count]
+
   # ------------------------------------------------------------------ C3 row-level security (SLayer)
   - id: C3a
     row: C3

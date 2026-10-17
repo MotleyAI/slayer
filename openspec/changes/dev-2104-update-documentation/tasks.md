@@ -1,11 +1,11 @@
 ## 1. Baseline and runner setup (pr-tests)
 
-- [ ] 1.1 Set up the runners (`npm ci` in `malloy/` and `cube/`, the MetricFlow venv per `examples/comparisons/README.md`) and verify each runs `--row Q25` without `FAIL`
+- [x] 1.1 Set up the runners (`npm ci` in `malloy/` and `cube/`, the MetricFlow venv per `examples/comparisons/README.md`) and verify each runs `--row Q25` without `FAIL`
 
 ## 2. Q26 probes (pr-tests)
 
-- [ ] 2.1 Add the D5 probes to `probes.yaml` under a `Q26` section after Q25, each with one shared `truth_sql`, the D5 per-engine blocks, specific error substrings, `warning: unrelated_dataset` on SLayer's positive probes, and "model-declared workaround (not counted)" in workaround titles; verify the SLayer runner passes `--row Q26`
-- [ ] 2.2 Verify `tests/test_comparison_matrix.py` fails (probe row Q26 not in `matrix.yaml`) and the Malloy, Cube and MetricFlow runners fail Q26 (no `events` source yet)
+- [x] 2.1 Add the D5 probes to `probes.yaml` under a `Q26` section after Q25, each with one shared `truth_sql`, the D5 per-engine blocks, specific error substrings, `warning: unrelated_dataset` on SLayer's positive probes, and "model-declared workaround (not counted)" in workaround titles; verify the SLayer runner passes `--row Q26`
+- [x] 2.2 Verify `tests/test_comparison_matrix.py` fails (probe row Q26 not in `matrix.yaml`) and the Malloy, Cube and MetricFlow runners fail Q26 (no `events` source yet)
 
 ## 3. Rival models (pr-implement)
 

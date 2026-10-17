@@ -61,7 +61,8 @@ Models: a standalone `events` source in `malloy/model.malloy` (no joins), an `ev
 | Probe | SLayer | Malloy | Cube Core | MetricFlow |
 |---|---|---|---|---|
 | `Q26-total-per-customer`: total event count on every customer row | match + warning `unrelated_dataset` | match, query-time `join_cross` | error matching `Can't find join path` | error matching `does not match any of the available group-by-items` |
-| `Q26-ratio`: `count(events)/count(customers)` = 5/7, one row, `source_model: customers` | match + warning | match | two measures, no dimensions, Tesseract: outcome recorded | model-declared cross-model derived metric (title marks it not counted) |
+| `Q26-ratio`: `count(events)/count(customers)` = 5/7, one row, `source_model: customers` | match + warning | match | SQL API `measure(events.count) / measure(customers.count)`: error matching `Can't find join path` | model-declared cross-model derived metric (note marks it not counted) |
+| `Q26-two-totals`: event count and customer count side by side, one row, no dimensions | match + warning | match, query-time `join_cross` | REST, two measures: Tesseract match, legacy error matching `Can't find join path` | match |
 | `Q26-per-month`: orders revenue and event count per month, 2025-01..2025-03 | match (time spine) + warning | match, probe-local calendar `on` | error matching `Can't find join path` | match (`metric_time`) |
 | `Q26-per-region-month`: customer region x month, 2025-01..2025-03, event count per month repeated across regions | match + warning | match or error, recorded | error matching `Can't find join path` | error matching the group-by message |
 | `Q26-group-by-unrelated-refused`: grouping by an events column alongside a customer column | typed error | - | - | - |
