@@ -30,6 +30,7 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
+    ColumnAccessRule,
     ColumnFilterRuleset,
     JoinFilterRule,
     JoinFilterRuleset,
@@ -67,6 +68,8 @@ class ScopedTable(BaseModel):
 # True (column present), False (table confirmed to lack it), or None (presence
 # cannot be confirmed -> fail closed).
 HasColumn = Callable[[ScopedTable, str], Optional[bool]]
+# A table's column names, or None when they cannot be listed (fail closed).
+TableColumns = Callable[[ScopedTable], Optional[list[str]]]
 
 
 def _scoped_table(table: exp.Table) -> ScopedTable:
@@ -291,20 +294,72 @@ def _apply_join_ruleset(
         )
 
 
+# ---------------------------------------------------------------------------
+# Column access
+# ---------------------------------------------------------------------------
+
+
+def _visible_columns(
+    columns: list[str], rules: list[ColumnAccessRule]
+) -> list[str]:
+    """``columns`` minus every rule's denied ones and outside every rule's allow list."""
+    visible = columns
+    for rule in rules:
+        if rule.allow:
+            allowed = {c.casefold() for c in rule.allow}
+            visible = [c for c in visible if c.casefold() in allowed]
+        else:
+            denied = {c.casefold() for c in rule.deny}
+            visible = [c for c in visible if c.casefold() not in denied]
+    return visible
+
+
+def _apply_column_access(
+    ast: Expression, rules: tuple, table_columns: TableColumns
+) -> None:
+    """Replace each restricted table with ``(SELECT <visible columns> FROM <table>) AS <alias>``."""
+    for table in _physical_tables(ast):
+        scoped = _scoped_table(table)
+        qualified = ".".join(p for p in (scoped.catalog, scoped.schema_name, scoped.name) if p)
+        matching = [r for r in rules if r.matches(qualified)]
+        if not matching:
+            continue
+        columns = table_columns(scoped)
+        if not columns:
+            raise ForcedFilterError(
+                f"Column access: could not list the columns of table '{scoped.name}'; failing closed.",
+                table=scoped.name,
+            )
+        visible = _visible_columns(columns, matching)
+        if not visible:
+            raise ForcedFilterError(
+                f"Column access: no column of table '{scoped.name}' is visible.",
+                table=scoped.name,
+            )
+        alias = table.alias_or_name
+        bare = table.copy()
+        bare.set("alias", None)
+        inner = exp.select(*(exp.column(exp.to_identifier(c)) for c in visible)).from_(bare)
+        table.replace(exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(alias))))
+
+
 def apply_session_policy(
     sql: str,
     *,
     dialect: str,
     policy: SessionPolicy,
     has_column: HasColumn,
+    table_columns: Optional[TableColumns] = None,
+    datasource: Optional[str] = None,
 ) -> str:
-    """Wrap every physical-table ref per the policy's ``ruleset``.
+    """Wrap every physical-table ref per the policy's ``column_access`` and ``ruleset``.
 
     ``has_column`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
-    only for a ``ColumnFilterRuleset``. Raises :class:`ForcedFilterError` on any
-    fail-closed condition.
+    only for a ``ColumnFilterRuleset``. ``table_columns`` is required only for
+    ``column_access``. ``datasource`` selects the row ruleset. Raises
+    :class:`ForcedFilterError` on any fail-closed condition.
     """
-    ruleset = policy.ruleset
+    ruleset = policy.ruleset_for(datasource)
 
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(ast, _ALLOWED_ROOTS):
@@ -313,8 +368,13 @@ def apply_session_policy(
             f"({type(ast).__name__}); failing closed."
         )
 
+    # Column access runs first: the row filter then wraps the same physical table inside it.
+    if policy.column_access:
+        if table_columns is None:
+            raise ForcedFilterError("Column access: no column lister was given; failing closed.")
+        _apply_column_access(ast, policy.column_access, table_columns)
     if isinstance(ruleset, ColumnFilterRuleset):
         _apply_column_ruleset(ast, ruleset, has_column)
-    else:  # JoinFilterRuleset
+    elif isinstance(ruleset, JoinFilterRuleset):
         _apply_join_ruleset(ast, ruleset, sql_dialect=get_dialect(dialect))
     return ast.sql(dialect=dialect)

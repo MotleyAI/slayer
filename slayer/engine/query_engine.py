@@ -58,6 +58,7 @@ from slayer.core.models import (
     join_key_error,
 )
 from slayer.core.query import (
+    ModelExtension,
     QueryRefinement,
     SlayerQuery,
     extract_variable_refs,
@@ -686,6 +687,23 @@ def _reject_formulas_unparseable_everywhere(model: SlayerModel) -> None:
             raise SqlTemplateError(f"Model '{model.name}', aggregation '{agg.name}': {errors[0]}")
 
 
+def _reject_inline_sql(queries: List[SlayerQuery]) -> None:
+    """Refuse caller-supplied raw SQL: inline models and extension columns with ``sql``/``filter``."""
+    for query in queries:
+        source = query.source_model
+        if isinstance(source, SlayerModel):
+            raise ForcedFilterError(
+                f"Inline model {source.name!r} is not allowed by the session policy; query a saved model."
+            )
+        if isinstance(source, ModelExtension):
+            for column in source.columns or []:
+                if column.sql is not None or column.filter is not None:
+                    raise ForcedFilterError(
+                        f"Extension column {column.name!r} with raw SQL is not allowed by the session policy.",
+                        column=column.name,
+                    )
+
+
 class SlayerQueryEngine:
     """Central orchestrator: resolves queries via storage, generates SQL, executes."""
 
@@ -705,8 +723,8 @@ class SlayerQueryEngine:
         # Keyed so same-name Snowflake datasources (differing warehouse/role) get distinct clients.
         self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         self._policy = policy
-        # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
-        self._column_presence_cache: dict[tuple, bool] = {}
+        # Table column lists; an unlistable ``None`` is re-probed, never cached.
+        self._table_columns_cache: dict[tuple, list[str]] = {}
         # Live-schema facts reused by query-time drift attribution.
         self._drift_snapshots = LiveSnapshotCache()
 
@@ -745,6 +763,10 @@ class SlayerQueryEngine:
             has_column=lambda scoped, column: self._column_present(
                 datasource=datasource, scoped_table=scoped, column=column
             ),
+            table_columns=lambda scoped: self._table_columns(
+                datasource=datasource, scoped_table=scoped
+            ),
+            datasource=datasource.name,
         )
 
     async def _require_correlated_subqueries(
@@ -774,7 +796,19 @@ class SlayerQueryEngine:
         scoped_table: ScopedTable,
         column: str,
     ) -> bool | None:
-        """Whether ``column`` exists on ``scoped_table``: ``True``/``False``/``None`` (only confirmed results cached)."""
+        """Whether ``column`` exists on ``scoped_table``: ``True``/``False``/``None`` (cannot confirm)."""
+        columns = self._table_columns(datasource=datasource, scoped_table=scoped_table)
+        if not columns:
+            return None
+        return column.lower() in {c.lower() for c in columns}
+
+    def _table_columns(
+        self,
+        *,
+        datasource: DatasourceConfig,
+        scoped_table: ScopedTable,
+    ) -> list[str] | None:
+        """Column names of ``scoped_table``, or ``None`` when they cannot be listed (only listed results cached)."""
         schema = scoped_table.schema_name or datasource.schema_name
         # Cross-catalog refs can't be confirmed (introspection takes no catalog
         # argument) — fail closed rather than risk an under-filter.
@@ -789,10 +823,9 @@ class SlayerQueryEngine:
             scoped_table.catalog,
             schema,
             scoped_table.name,
-            column,
         )
-        if key in self._column_presence_cache:
-            return self._column_presence_cache[key]
+        if key in self._table_columns_cache:
+            return self._table_columns_cache[key]
         try:
             sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
             inspector = sa.inspect(sa_engine)
@@ -804,20 +837,17 @@ class SlayerQueryEngine:
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(
-                "Forced filter: column-presence probe failed for %s.%s "
-                "(column %r): %s",
+                "Session policy: column listing failed for %s.%s: %s",
                 schema or "<default>",
                 scoped_table.name,
-                column,
                 exc,
             )
             return None
-        if not cols:
-            return None  # no columns resolved -> cannot confirm
-        names = {str(c.get("name", "")).lower() for c in cols}
-        present = column.lower() in names
-        self._column_presence_cache[key] = present
-        return present
+        names = [str(c.get("name", "")) for c in cols or []]
+        if not any(names):
+            return None
+        self._table_columns_cache[key] = names
+        return names
 
     @classmethod
     def _topologically_order_queries(
@@ -870,6 +900,9 @@ class SlayerQueryEngine:
         main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
             run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
+        # A run-by-name executes stored stages, which are trusted like stored models.
+        if self.policy is not None and not self.policy.allow_inline_sql and not splice_chain:
+            _reject_inline_sql([*named_queries.values(), main_query])
         response = await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,

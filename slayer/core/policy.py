@@ -1,14 +1,15 @@
 """Session-policy data model for forced-filter RLS.
 
-A ``SessionPolicy`` is immutable, agent-invisible engine state carrying exactly
-one required ``ruleset``; the no-filtering case is ``policy=None`` at the
-engine/client, so a bare ``SessionPolicy()`` raises. The rewrite it drives lives
+A ``SessionPolicy`` is immutable, agent-invisible engine state: an optional row
+``ruleset``, optional ``column_access`` rules and an inline-SQL switch. The
+no-restriction case is ``policy=None`` at the engine/client, so a bare
+``SessionPolicy()`` raises. The rewrite it drives lives
 in ``slayer/sql/session_policy.py``.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Tuple, Union
+from typing import Annotated, Dict, Literal, Optional, Tuple, Union
 
 from pydantic import (
     BaseModel,
@@ -355,15 +356,75 @@ FilterRuleset = Annotated[
 ]
 
 
+class ColumnAccessRule(BaseModel):
+    """Restrict the physical columns of ``table`` that queries can read.
+
+    ``table`` is a bare or qualified physical name, or ``"*"`` for every table. Give
+    either ``deny`` (these columns are hidden) or ``allow`` (only these are visible).
+    A hidden column does not exist for the query, so any reference to it fails.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    table: str
+    deny: Tuple[str, ...] = ()
+    allow: Tuple[str, ...] = ()
+
+    @field_validator("table")
+    @classmethod
+    def _non_blank(cls, v: str, info: ValidationInfo) -> str:
+        return _require_non_blank(v, info)
+
+    @field_validator("deny", "allow", mode="before")
+    @classmethod
+    def _coerce_tuple(cls, v):
+        return tuple(v) if isinstance(v, list) else v
+
+    @model_validator(mode="after")
+    def _exactly_one_list(self):
+        if bool(self.deny) == bool(self.allow):
+            raise ValueError("ColumnAccessRule needs exactly one of 'deny' or 'allow'")
+        return self
+
+    def matches(self, table: str) -> bool:
+        return self.table == "*" or _table_names_match(self.table, table)
+
+
 class SessionPolicy(BaseModel):
-    """Immutable, engine-global forced-filter configuration."""
+    """Immutable, engine-global forced-filter and access configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     # Pinned so an unknown schema version fails closed rather than being silently
     # interpreted by the v1 rewrite path.
     version: Literal[1] = 1
-    ruleset: FilterRuleset
+    ruleset: Optional[FilterRuleset] = None
+    # Per-datasource row rulesets that replace ``ruleset``; ``None`` leaves that datasource unfiltered.
+    datasource_rulesets: Dict[str, Optional[FilterRuleset]] = Field(default_factory=dict)
+    column_access: Tuple[ColumnAccessRule, ...] = ()
+    # Inline models and extension columns carry raw SQL that can call any database function.
+    allow_inline_sql: bool = True
+
+    @field_validator("column_access", mode="before")
+    @classmethod
+    def _coerce_column_access(cls, v):
+        return tuple(v) if isinstance(v, list) else v
+
+    @model_validator(mode="after")
+    def _not_a_no_op(self):
+        has_rows = self.ruleset is not None or any(r is not None for r in self.datasource_rulesets.values())
+        if not has_rows and not self.column_access and self.allow_inline_sql:
+            raise ValueError(
+                "SessionPolicy restricts nothing; set 'ruleset', 'datasource_rulesets', "
+                "'column_access' or 'allow_inline_sql=False', or pass policy=None"
+            )
+        return self
+
+    def ruleset_for(self, datasource: Optional[str]) -> Optional[FilterRuleset]:
+        """The row ruleset for queries on ``datasource``."""
+        if datasource is not None and datasource in self.datasource_rulesets:
+            return self.datasource_rulesets[datasource]
+        return self.ruleset
 
 
 __all__ = [
@@ -373,5 +434,6 @@ __all__ = [
     "JoinFilterRule",
     "JoinFilterRuleset",
     "FilterRuleset",
+    "ColumnAccessRule",
     "SessionPolicy",
 ]

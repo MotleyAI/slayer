@@ -498,13 +498,18 @@ def test_target_named_like_internal_alias_no_collision():
     assert out.rstrip().endswith("AS _rls_src")
 
 
+def _join_ruleset_of(policy: SessionPolicy) -> JoinFilterRuleset:
+    assert isinstance(policy.ruleset, JoinFilterRuleset)
+    return policy.ruleset
+
+
 def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
     """A model_copy leaving a join's terminal short of the anchor fails closed at SQL
     generation rather than landing the tenant predicate on a non-anchor table."""
     good = SessionPolicy(ruleset=_join_ruleset())  # anchor=customers
     # Corrupting at the policy level skips both the SessionPolicy and the nested
     # ruleset validators that would otherwise reject this.
-    corrupted_ruleset = good.ruleset.model_copy(update={"table": "different_anchor"})
+    corrupted_ruleset = _join_ruleset_of(good).model_copy(update={"table": "different_anchor"})
     bad_policy = good.model_copy(update={"ruleset": corrupted_ruleset})
     with pytest.raises(ForcedFilterError) as exc:
         apply_session_policy(
@@ -523,10 +528,10 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
     good = SessionPolicy(ruleset=_join_ruleset())  # target orders -> customers
     # Break the path so orders is no longer an endpoint (target_table unchanged);
     # model_copy at each level skips validation.
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = _join_ruleset_of(good).joins[0].model_copy(
         update={"join_path": ("foo.a = customers.b",)}
     )
-    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_ruleset = _join_ruleset_of(good).model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError) as exc:
         apply_session_policy(
@@ -551,10 +556,10 @@ def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
             joins=[rule],
         )
     )
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = _join_ruleset_of(good).joins[0].model_copy(
         update={"join_path": ("public.orders.customer_id = customers.id",)}
     )
-    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_ruleset = _join_ruleset_of(good).model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError):
         apply_session_policy(
@@ -570,7 +575,7 @@ def test_corrupted_anchor_as_intermediate_fails_closed():
     because _build_exists re-runs the full per-rule validation, not just reachability."""
     good = SessionPolicy(ruleset=_join_ruleset())  # anchor customers, target orders
     # orders -> customers -> x -> customers: anchor 'customers' appears twice.
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = _join_ruleset_of(good).joins[0].model_copy(
         update={
             "join_path": (
                 "orders.customer_id = customers.id",
@@ -579,7 +584,7 @@ def test_corrupted_anchor_as_intermediate_fails_closed():
             )
         }
     )
-    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_ruleset = _join_ruleset_of(good).model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError):
         apply_session_policy(
