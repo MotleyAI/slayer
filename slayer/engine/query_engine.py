@@ -572,6 +572,8 @@ class SlayerResponse(BaseModel):
     # The effective population model and whether it was inferred.
     population: Optional[str] = None
     population_inferred: bool = False
+    # The datasource the query ran on; never serialized.
+    datasource: Optional[DatasourceConfig] = PydanticField(default=None, exclude=True, repr=False)
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -1368,6 +1370,7 @@ class SlayerQueryEngine:
                 warnings=[*prepared.slack_warnings, *explained.warnings],
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
+                datasource=prepared.datasource,
             )
 
         # Capture refresh-key baselines before the data query (cached data then
@@ -1386,6 +1389,7 @@ class SlayerQueryEngine:
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
             population=prepared.population,
             population_inferred=prepared.population_inferred,
+            datasource=prepared.datasource,
         )
 
         if use_cache:
@@ -1574,6 +1578,7 @@ class SlayerQueryEngine:
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
             population=prepared.population,
             population_inferred=prepared.population_inferred,
+            datasource=prepared.datasource,
         )
         return self._build_cache_entry(
             prepared=prepared,

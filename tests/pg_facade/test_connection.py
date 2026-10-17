@@ -231,7 +231,7 @@ async def _run(
     return writer
 
 
-def _messages(buf: bytes, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
+def _messages(buf: bytes | bytearray, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
     return proto.split_messages(bytes(buf[leading_raw:]))
 
 
@@ -2722,3 +2722,25 @@ async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
     await conn._maybe_refresh_catalog()
     assert conn._catalog is pinned
     assert conn._catalog_fingerprint == "v2"
+
+
+_UNTOKENIZABLE = "SELECT revenue_sum FROM orders WHERE status = 'x'\";--'"
+
+
+async def test_untokenizable_simple_query_is_a_syntax_error() -> None:
+    writer = await _run(_startup(user="u", database="jaffle") + _query(_UNTOKENIZABLE) + _query("SELECT 1") + _terminate())
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_SYNTAX_ERROR
+    assert _types(msgs).count("Z") >= 3
+
+
+async def test_untokenizable_extended_query_errors_and_session_continues() -> None:
+    writer = await _run(
+        _startup(user="u", database="jaffle")
+        + _parse("", _UNTOKENIZABLE) + _bind("", "") + _execute("") + _sync()
+        + _query("SELECT 1") + _terminate(),
+    )
+    msgs = _messages(writer.buffer)
+    assert any(t == "E" for t, _ in msgs)
+    assert _types(msgs)[-1] == "Z"

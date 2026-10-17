@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import traceback
 from contextlib import redirect_stderr, redirect_stdout
 
 from pydantic import BaseModel
@@ -28,13 +29,15 @@ class CliResult(BaseModel):
 
 
 def run_cli_in_process(
-    args: list[str], *, stdin: str = "", env: dict[str, str] | None = None
+    args: list[str], *, stdin: str = "", env: dict[str, str] | None = None, uncaught_exit: bool = False,
 ) -> CliResult:
     """Invoke ``slayer.cli.main()`` in-process and capture its result.
 
     ``sys.argv`` becomes ``["slayer", *args]``; ``sys.stdin`` is fed ``stdin``.
     A normal return maps to exit code 0; ``SystemExit`` maps to its code
-    (``None`` → 0, non-int → 1). argv/stdin/stdout/stderr/environ are restored.
+    (``None`` → 0, non-int → 1); with ``uncaught_exit`` any other exception
+    maps to 1 with its traceback on stderr, as in a real process.
+    argv/stdin/stdout/stderr/environ are restored.
 
     ``env`` replaces ``os.environ`` for the call (runtime-read vars only); it does
     not affect import-time constants like ``slayer.cli._STORAGE_DEFAULT`` — pass
@@ -54,6 +57,11 @@ def run_cli_in_process(
             main()
     except SystemExit as exc:
         code = 0 if exc.code is None else exc.code if isinstance(exc.code, int) else 1
+    except Exception:
+        if not uncaught_exit:
+            raise
+        code = 1
+        err.write(traceback.format_exc())
     finally:
         sys.argv, sys.stdin = old_argv, old_stdin
         os.environ.clear()
