@@ -1030,6 +1030,12 @@ class DatasourceConfig(BaseModel):
         ).render_as_string(hide_password=False)
 
     def get_connection_string(self) -> str:
+        """The connection URL; one naming no driver gets the type's default driver."""
+        return dialect_for_ds_type(self.type).driver_facts(self.type).pin_default_driver(
+            self._unpinned_connection_string()
+        )
+
+    def _unpinned_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
         # Dialect-specific hook (e.g. Snowflake); others return None and fall through.

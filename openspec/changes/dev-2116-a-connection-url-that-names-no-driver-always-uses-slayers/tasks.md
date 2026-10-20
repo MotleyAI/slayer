@@ -8,14 +8,14 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 `slayer/sql/dialects/base.py`: `sync_driver` becomes a property on `SqlDialect` and `DriverFacts`; add `url_backend_aliases` field + `DriverFacts.url_backends` property; add `DriverFacts.pin_default_driver`; verify 1.3 passes
-- [ ] 2.2 `postgres.py`: `url_scheme = "postgresql+psycopg2"`, drop `sync_driver`; `mysql.py`: drop `sync_driver`, declare `url_backend_aliases = {"mariadb"}`; verify 1.3 passes
-- [ ] 2.3 `slayer/core/models.py`: `get_connection_string()` pins its result via the private-helper split; verify 1.1, 1.2 pass
-- [ ] 2.4 `slayer/sql/client.py` `_async_connection_string`: `url_backends` match, URL's own backend, drop the plain-URL leg; verify 1.4 passes
-- [ ] 2.5 `slayer/sql/dialects/drivers.py` `_is_default_driver`: `url_backends` match, fold `scheme_driver` into `sync_driver`; verify the missing-driver suite passes
-- [ ] 2.6 `pyproject.toml`: `sqlalchemy = ">=2.0,<2.1"`; `poetry lock` (no upgrades — lock stays on 2.0.49); verify `poetry check --lock`
+- [x] 2.1 `slayer/sql/dialects/base.py`: `sync_driver` becomes a property on `SqlDialect` and `DriverFacts`; add `url_backend_aliases` field + `DriverFacts.url_backends` property; add `DriverFacts.pin_default_driver`; verify 1.3 passes
+- [x] 2.2 `postgres.py`: `url_scheme = "postgresql+psycopg2"`, drop `sync_driver`; `mysql.py`: drop `sync_driver`, declare `url_backend_aliases = {"mariadb"}`; verify 1.3 passes
+- [x] 2.3 `slayer/core/models.py`: `get_connection_string()` pins its result via the private-helper split; verify 1.1, 1.2 pass
+- [x] 2.4 `slayer/sql/client.py` `_async_connection_string`: `url_backends` match, URL's own backend, drop the plain-URL leg; verify 1.4 passes
+- [x] 2.5 `slayer/sql/dialects/drivers.py` `_is_default_driver`: `url_backends` match, fold `scheme_driver` into `sync_driver`; verify the missing-driver suite passes
+- [x] 2.6 `pyproject.toml`: `sqlalchemy = ">=2.0,<2.1"`; `poetry lock` (no upgrades — lock stays on 2.0.49); verify `poetry check --lock`
 
 ## 3. Docs and gates
 
-- [ ] 3.1 One sentence in `docs/configuration/datasources.md`: a `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another
-- [ ] 3.2 Full unit suite (`poetry run pytest -m "not integration" -n logical`), `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check` all green
+- [x] 3.1 One sentence in `docs/configuration/datasources.md`: a `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another
+- [x] 3.2 Full unit suite (`poetry run pytest -m "not integration" -n logical`), `ruff check slayer/ tests/`, `basedpyright` (no new errors vs baseline), `la-arch-check` all green

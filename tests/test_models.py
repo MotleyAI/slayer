@@ -88,7 +88,7 @@ class TestOrderItem:
         assert item.raw_formula == "revenue:sum"
 
     def test_funcstyle_builtin_agg_preserved(self) -> None:
-        """DEV-1826: the functional spelling is preserved verbatim — a
+        """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
         item = OrderItem(column="sum(revenue)", direction="desc")
         assert item.column.name == _FUNCSTYLE_PENDING
@@ -118,7 +118,7 @@ class TestOrderItem:
 
 
 class TestOrderShorthandHealing:
-    """DEV-1575: heal LLM-shorthand ``order`` items and harden direction validation.
+    """Heal LLM-shorthand ``order`` items and harden direction validation.
 
     Shorthand ``{col: "desc"}`` (single- or multi-key) heals to canonical
     ``{"column": col, "direction": "desc"}``; direction is normalized
@@ -382,7 +382,7 @@ class TestSlayerModel:
         assert ModelMeasure(name="cumsum", formula="revenue:sum").name == "cumsum"
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
-        """DEV-1336: a ``ModelMeasure`` formula containing raw `OVER (...)` SQL
+        """A ``ModelMeasure`` formula containing raw `OVER (...)` SQL
         cannot be parsed by SLayer's formula grammar (Python AST) and would
         produce invalid SQL on every dialect if used as a filter. Reject at
         construction time with an actionable error pointing at SLayer's
@@ -444,7 +444,7 @@ class TestSlayerModel:
         assert meas.sql == "orders.amount"
 
     def test_model_name_allows_double_underscore(self) -> None:
-        # DEV-1743: `__` is legal in model names (the dotted-canonical flip
+        # `__` is legal in model names (the dotted-canonical flip
         # made join-path ambiguity structurally impossible).
         model = SlayerModel(name="my__model", sql_table="t", data_source="test")
         assert model.name == "my__model"
@@ -464,7 +464,7 @@ class TestSlayerModel:
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_allows_double_underscore(self) -> None:
-        # DEV-1743: `__` is legal in query names.
+        # `__` is legal in query names.
         q = SlayerQuery(name="my__query", source_model="orders")
         assert q.name == "my__query"
 
@@ -499,7 +499,7 @@ class TestSlayerModel:
         assert meas.name == "order_total_sum"
 
     def test_model_data_source_rejects_dot(self) -> None:
-        """DEV-1405: dots in data_source would let a sibling datasource
+        """Dots in data_source would let a sibling datasource
         ``prod.legacy`` collide with cascade-delete of ``prod``."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
             SlayerModel(
@@ -507,7 +507,7 @@ class TestSlayerModel:
             )
 
     def test_datasource_name_rejects_dot(self) -> None:
-        """DEV-1405: dots in DatasourceConfig.name break canonical-id
+        """Dots in DatasourceConfig.name break canonical-id
         namespace boundaries."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
             DatasourceConfig(name="prod.legacy", type="postgres")
@@ -1153,7 +1153,7 @@ class TestDatasourceConfig:
         assert "sqlserver" in cs
         assert "slayer_demo" in cs
 
-    # Issue #240: the generic (non-tsql) connection-string branch must not
+    # The generic (non-tsql) connection-string branch must not
     # corrupt credentials whose password contains reserved URL characters.
     # The password below exercises every generic-branch delimiter: '@'
     # (userinfo/host), ':' (userinfo/port), '/' (path), '#' (fragment),
@@ -1163,13 +1163,12 @@ class TestDatasourceConfig:
     @pytest.mark.parametrize(
         ("ds_type", "expected_driver"),
         [
-            ("postgres", "postgresql"),
-            ("postgresql", "postgresql"),
+            ("postgres", "postgresql+psycopg2"),
+            ("postgresql", "postgresql+psycopg2"),
             ("mysql", "mysql+pymysql"),
             ("mariadb", "mysql+pymysql"),
             ("clickhouse", "clickhouse+http"),
-            # Fallback dialect (issue #240 names "fallback dialects"): an
-            # unmapped type keeps its own name as the driver and must still
+            # An unmapped type keeps its own name as the driver and must still
             # encode reserved-char credentials safely.
             ("customdb", "customdb"),
         ],
@@ -1204,8 +1203,8 @@ class TestDatasourceConfig:
         assert url.database == "analytics"
 
     def test_reserved_char_username_round_trips(self) -> None:
-        # Issue #240 names manually interpolated usernames as affected too,
-        # not just passwords. URL.create must percent-encode reserved
+        # Manually interpolated usernames are affected too, not just
+        # passwords. URL.create must percent-encode reserved
         # characters in the username so it round-trips intact.
         username = "user@tenant/name:role"
         ds = DatasourceConfig(
@@ -1362,7 +1361,7 @@ class TestTimeGranularity:
         end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
         assert end == datetime.date(2024, 3, 31)
 
-    # DEV-1572: WEEK_SUNDAY — Sunday-anchored week. period_start rounds back to
+    # WEEK_SUNDAY — Sunday-anchored week. period_start rounds back to
     # the Sunday at or before the date; period_end is the following Saturday.
     # 2024-01-07 is a Sunday; 2024-01-08..13 are Mon..Sat of that week, all of
     # which belong to the Sunday-week [2024-01-07 .. 2024-01-13].
@@ -1571,7 +1570,7 @@ class TestAggregationValidation:
             Aggregation(name="my_agg")
 
     def test_name_with_dot_rejected(self) -> None:
-        """DEV-1567: ``Aggregation.name`` must enforce the same identifier
+        """``Aggregation.name`` must enforce the same identifier
         rules as ``Column.name`` and ``ModelMeasure.name``. Otherwise the
         ``column_x_custom_aggs`` catalog expansion produces a same-model
         metric like ``amount_my.agg`` whose dotted name the cross-model
@@ -1640,7 +1639,7 @@ class TestMeasureFilter:
 
 
 class TestSubstituteVariables:
-    # DEV-1625 made ``escape`` a required keyword-only argument. These legacy
+    # ``escape`` is a required keyword-only argument. These legacy
     # generic tests use ``escape="python"`` (the Mode-B query-filter lineage);
     # none of the values here contain quotes/backslashes so both modes agree.
     def test_string_variable(self) -> None:
@@ -1709,7 +1708,7 @@ class TestSubstituteVariables:
     def test_invalid_type_raises(self) -> None:
 
         # A dict is neither scalar nor list/tuple → rejected. (Lists ARE now a
-        # valid IN-list body — DEV-1730 — covered in
+        # valid IN-list body, covered in
         # tests/test_mode_a_variable_substitution.py.)
         with pytest.raises(ValueError, match="must be a string, number, or list/tuple"):
             substitute_variables(
@@ -2083,7 +2082,7 @@ class TestStripSourceModelPrefix:
 
 
 class TestColumnTypeLenientValidator:
-    """DEV-1361: a Pydantic ``before``-validator absorbs legacy lowercase type
+    """A Pydantic ``before``-validator absorbs legacy lowercase type
     spellings on ``Column.type`` so old MCP/REST input keeps working after
     the sqlglot-aligned enum rename. No deprecation warning."""
 
@@ -2181,7 +2180,7 @@ class TestOpaqueColumn:
 
 
 class TestModelMeasureType:
-    """DEV-1361: ModelMeasure gains an optional ``type`` declaring the formula's
+    """ModelMeasure has an optional ``type`` declaring the formula's
     result type. None (default) → no cast. Set value → outer CAST on the
     aggregation expression. Surfaces transparently on
     ``SlayerQuery.measures[i]`` since query measures use the same shape."""
@@ -2217,7 +2216,7 @@ class TestModelMeasureType:
 
 
 class TestColumnSampledValuesAndDistinctCount:
-    """DEV-1480: ``Column`` gains a structured sibling ``sampled_values`` for
+    """``Column`` has a structured sibling ``sampled_values`` for
     the text ``sampled`` string, and a ``distinct_count`` integer for the
     column's total cardinality at profile time. Both default to ``None``."""
 
@@ -2281,8 +2280,8 @@ class TestColumnSampledValuesAndDistinctCount:
 
 class TestSlayerModelVersionBump:
     """SlayerModel.version tracks ``CURRENT_VERSIONS['SlayerModel']`` — v8 added
-    the optional ``source_kind`` field; DEV-1743 bumped to v9 (the ``__`` ban
-    lift + legacy-alias load-path rewrite). Both forward steps are no-op
+    the optional ``source_kind`` field; v9 lifted the ``__`` ban and added the
+    legacy-alias load-path rewrite. Both forward steps are no-op
     converters."""
 
     def test_slayer_model_version_matches_current(self) -> None:
