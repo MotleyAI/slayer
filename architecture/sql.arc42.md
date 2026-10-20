@@ -31,6 +31,9 @@ flowchart TD
   ir["Intermediate representation"]
   storage["Storage backends"]
   importers("Importers")
+  subgraph usage_reporting["Usage reporting"]
+    usage_reporting__features["Features"]
+  end
   surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
@@ -44,8 +47,9 @@ flowchart TD
   sql --> ir
   storage --> sql
   surfaces --> sql
+  usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,surfaces leaf;
+  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,ir,storage,importers,usage_reporting__features,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->

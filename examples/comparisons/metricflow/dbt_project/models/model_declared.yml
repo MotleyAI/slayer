@@ -58,3 +58,10 @@ metrics:
     type_params:
       measure: revenue
       cumulative_type_params: {window: 90 days, period_agg: last}
+  - name: events_per_customer
+    type: derived
+    type_params:
+      expr: event_count / customer_count
+      metrics:
+        - {name: event_count}
+        - {name: customer_count}

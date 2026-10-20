@@ -26,6 +26,7 @@ flowchart TD
   search("Search & embeddings")
   memories("Agent memories")
   protocols("BI wire protocols")
+  usage_reporting["Usage reporting"]
   surfaces("User-facing surfaces")
   core -.-> engine
   core -.-> sql
@@ -66,12 +67,16 @@ flowchart TD
   surfaces --> search
   surfaces --> sql
   surfaces --> storage
+  protocols --> usage_reporting
+  surfaces --> usage_reporting
+  usage_reporting --> core
+  usage_reporting --> sql
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->
 
-Ten nodes: precise `core`, `sql`, `ir`,
-`engine`, `storage` around the query pipeline; virtual buckets `importers`,
+Eleven nodes: precise `core`, `sql`, `ir`,
+`engine`, `storage` around the query pipeline, and `usage_reporting`; virtual buckets `importers`,
 `search`, `memories`, `protocols`, `surfaces` for the rest. Package claims and
 spec mapping are node metadata in [model.c4](model.c4); the
 legacy-arrow baseline is in [index.yaml](index.yaml).

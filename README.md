@@ -44,7 +44,7 @@ Question (run on the built-in demo Jaffle Shop database): **"show monthly revenu
 
 Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 
-![Example SQL vs SLayer query](https://github.com/user-attachments/assets/a8c73688-e760-402e-9f87-a05591d6cbee)
+![A 17-line SQL query with a CTE, a join and two LAG window functions, next to the SLayer query {"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "month(ordered_at)"]}](https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/sql-vs-slayer.png)
 
 ## Quickstart
 
@@ -82,6 +82,10 @@ claude mcp add slayer -- slayer mcp --ingest-on-startup
 Now SLayer MCP will be visible in Claude Code next time you start it. Make sure to launch Claude Code from a shell where `DB_PASSWORD` is exported — the MCP subprocess inherits its environment from the launching process.
 
 Read more on how to get started with [MCP](https://docs.motley.ai/slayer/getting-started/mcp/), [CLI](https://docs.motley.ai/slayer/getting-started/cli/), [REST API](https://docs.motley.ai/slayer/getting-started/rest-api/), [Python](https://docs.motley.ai/slayer/getting-started/python/) in the docs.
+
+## Usage reporting
+
+The `slayer` command sends anonymous, aggregated usage statistics (command, tool and query-feature counts, versions) at most once a day — never queries, names, data or credentials; library use sends nothing. Opt out with `SLAYER_USAGE_REPORTING=off`, `DO_NOT_TRACK=1` or `slayer usage-reporting disable`; see [Usage reporting](https://docs.motley.ai/slayer/reference/usage-reporting/) for every field.
 
 ## License
 
