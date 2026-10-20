@@ -1065,7 +1065,7 @@ class TestDatasourceConfig:
             password="pass",
         )
         cs = ds.get_connection_string()
-        assert cs == "postgresql://user:pass@localhost:5432/mydb"
+        assert cs == "postgresql+psycopg2://user:pass@localhost:5432/mydb"
 
     def test_explicit_connection_string(self) -> None:
         ds = DatasourceConfig(

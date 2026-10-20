@@ -87,7 +87,7 @@ class TestGetEngine:
             result = engine_factory.get_engine(ds)
         assert result is fake
         args, kwargs = create_engine_mock.call_args
-        assert args[0].startswith("postgresql://")
+        assert args[0].startswith("postgresql+psycopg2://")
         assert kwargs.get("pool_pre_ping") is True
 
 
