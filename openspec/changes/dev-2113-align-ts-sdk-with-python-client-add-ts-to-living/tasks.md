@@ -4,15 +4,15 @@ Gate: group 6 needs `living-architecture@0.3.1` on npm (`npm view living-archite
 
 ## 1. Typed REST responses
 
-- [ ] 1.1 Pin current JSON bodies of `/health`, `GET /models`, `GET /models/{name}`, `POST /models`, `DELETE /models/{name}`, `GET /datasources`, `POST /datasources`, `GET`/`PUT /datasources/priority`, `POST /memories`, `DELETE /memories/{memory_id}`, `/search`, `/inspect`, `/recommend-root-model` in tests; verify they pass before any route change
+- [x] 1.1 Pin current JSON bodies of `/health`, `GET /models`, `GET /models/{name}`, `POST /models`, `DELETE /models/{name}`, `GET /datasources`, `POST /datasources`, `GET`/`PUT /datasources/priority`, `POST /memories`, `DELETE /memories/{memory_id}`, `/search`, `/inspect`, `/recommend-root-model` in tests; verify they pass before any route change
 - [ ] 1.2 Add Pydantic v2 response models in `slayer/api` (`HealthResponse`, `ModelSummary`, `DatasourceSummary`, `DatasourcePriority`, `InspectResponse`, status responses); declare `response_model` on those routes reusing `SearchResponse`, `RootModelRecommendation`, `SaveMemoryResponse`, `ForgetMemoryResponse`; `GET /models/{name}` via `responses=` only; verify 1.1 tests still pass and an OpenAPI test finds a named schema for every listed route
 - [ ] 1.3 Regenerate `ts-sdk/src/schema.ts` (`npm --prefix ts-sdk run gen`); verify `npm --prefix ts-sdk run check:schema` is clean after commit
 
 ## 2. Parity harness
 
-- [ ] 2.1 Write `tests/client_parity.json`: operations (python, ts, method, path), `python_only` (`*_sync`, `query_df`), per-language call args + expected request for every operation and the spec scenarios (name+refine, stage list, variables merge, flags omitted, search/inspect defaults, encoded model name, token + headers, data_source query param), and a fixed-clock token-signing case; verify it parses and every operation has ≥1 case
-- [ ] 2.2 Write `tests/test_client_parity.py` (method set = manifest; replay cases on a mocked httpx; query bodies compared after server request-model validation); verify it fails against the current client for the expected reasons
-- [ ] 2.3 Write `ts-sdk/test/parity.test.ts` (method set = manifest; replay on mocked `fetch`; exact JSON) and `ts-sdk/test/portability.test.ts` (no `node:` import outside `src/node.ts`; no `dependencies` in package.json); verify parity fails against the current client and portability passes
+- [x] 2.1 Write `tests/client_parity.json`: operations (python, ts, method, path), `python_only` (`*_sync`, `query_df`), per-language call args + expected request for every operation and the spec scenarios (name+refine, stage list, variables merge, flags omitted, search/inspect defaults, encoded model name, token + headers, data_source query param), and a fixed-clock token-signing case; verify it parses and every operation has ≥1 case
+- [x] 2.2 Write `tests/test_client_parity.py` (method set = manifest; replay cases on a mocked httpx; query bodies compared after normalising each query/stage through `SlayerQuery`); verify it fails against the current client for the expected reasons
+- [x] 2.3 Write `ts-sdk/test/parity.test.ts` (method set = manifest; replay on mocked `fetch`; exact JSON) and `ts-sdk/test/portability.test.ts` (no `node:` import outside `src/node.ts`; no `dependencies` in package.json); verify parity fails against the current client and portability passes
 
 ## 3. Python client
 

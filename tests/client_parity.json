@@ -1,0 +1,276 @@
+{
+  "base_url": "http://slayer.test",
+  "operations": [
+    {"python": "query", "ts": "query", "method": "POST", "path": "/query"},
+    {"python": "sql", "ts": "sql", "method": "POST", "path": "/query"},
+    {"python": "explain", "ts": "explain", "method": "POST", "path": "/query"},
+    {"python": "list_models", "ts": "listModels", "method": "GET", "path": "/models"},
+    {"python": "get_model", "ts": "getModel", "method": "GET", "path": "/models/{name}"},
+    {"python": "create_model", "ts": "createModel", "method": "POST", "path": "/models"},
+    {"python": "delete_model", "ts": "deleteModel", "method": "DELETE", "path": "/models/{name}"},
+    {"python": "list_datasources", "ts": "listDatasources", "method": "GET", "path": "/datasources"},
+    {"python": "create_datasource", "ts": "createDatasource", "method": "POST", "path": "/datasources"},
+    {"python": "get_datasource_priority", "ts": "getDatasourcePriority", "method": "GET", "path": "/datasources/priority"},
+    {"python": "set_datasource_priority", "ts": "setDatasourcePriority", "method": "PUT", "path": "/datasources/priority"},
+    {"python": "save_memory", "ts": "saveMemory", "method": "POST", "path": "/memories"},
+    {"python": "forget_memory", "ts": "forgetMemory", "method": "DELETE", "path": "/memories/{memory_id}"},
+    {"python": "search", "ts": "search", "method": "POST", "path": "/search"},
+    {"python": "inspect", "ts": "inspect", "method": "POST", "path": "/inspect"},
+    {"python": "recommend_root_model", "ts": "recommendRootModel", "method": "POST", "path": "/recommend-root-model"},
+    {"python": "health", "ts": "health", "method": "GET", "path": "/health"},
+    {"python": "with_token", "ts": "withToken", "method": null, "path": null}
+  ],
+  "python_only": [
+    "query_sync", "sql_sync", "explain_sync", "inspect_sync", "recommend_root_model_sync",
+    "list_models_sync", "get_model_sync", "query_df"
+  ],
+  "ts_only": [],
+  "responses": {
+    "query": {"data": [{"n": 1}], "row_count": 1, "columns": ["n"], "sql": "SELECT 1", "attributes": {"dimensions": {}, "measures": {}}, "population": null, "population_inferred": false, "warnings": []},
+    "sql": {"data": [], "row_count": 0, "columns": [], "sql": "SELECT 1", "attributes": {"dimensions": {}, "measures": {}}, "population": null, "population_inferred": false, "warnings": []},
+    "explain": {"data": [{"plan": "SCAN"}], "row_count": 1, "columns": ["plan"], "sql": "SELECT 1", "attributes": {"dimensions": {}, "measures": {}}, "population": null, "population_inferred": false, "warnings": []},
+    "list_models": [{"name": "orders", "data_source": "ds", "description": "Orders"}],
+    "get_model": {"name": "orders", "sql_table": "orders_t", "data_source": "ds", "columns": []},
+    "create_model": {"status": "created", "name": "orders"},
+    "delete_model": {"status": "deleted", "name": "a/b c"},
+    "list_datasources": [{"name": "ds", "type": "sqlite"}],
+    "create_datasource": {"status": "created", "name": "ds2"},
+    "get_datasource_priority": {"priority": ["ds"]},
+    "set_datasource_priority": {"status": "ok", "priority": ["ds", "ds2"]},
+    "save_memory": {"memory_id": "mem1", "resolved_entities": ["ds.orders.status"], "warnings": []},
+    "forget_memory": {"deleted_id": "team.mem-1"},
+    "search": {"results": [], "resolved_input_entities": [], "warnings": []},
+    "inspect": {"result": "# orders"},
+    "recommend_root_model": {"data_source": "ds", "root_model": "orders", "reachable": true, "item_paths": [{"input_item": "orders.amount", "path": "amount", "attachment": false, "unrelated": false}], "coverage": [], "message": "ok", "warnings": []},
+    "health": {"status": "ok"}
+  },
+  "cases": [
+    {
+      "name": "single query: runtime variables override, dry_run sent",
+      "op": "query",
+      "python": {"args": [{"source_model": "orders", "measures": ["revenue"], "variables": {"a": 1, "b": 2}}], "kwargs": {"variables": {"b": 3}, "dry_run": true}},
+      "ts": {"args": [{"source_model": "orders", "measures": ["revenue"], "variables": {"a": 1, "b": 2}}, {"variables": {"b": 3}, "dryRun": true}]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"source_model": "orders", "measures": ["revenue"], "variables": {"a": 1, "b": 3}, "dry_run": true}}
+    },
+    {
+      "name": "single query: flags omitted when not set",
+      "op": "query",
+      "python": {"args": [{"source_model": "orders", "measures": ["revenue"], "dimensions": ["status"]}], "kwargs": {}},
+      "ts": {"args": [{"source_model": "orders", "measures": ["revenue"], "dimensions": ["status"]}]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"source_model": "orders", "measures": ["revenue"], "dimensions": ["status"]}}
+    },
+    {
+      "name": "saved query by name with refine",
+      "op": "query",
+      "python": {"args": ["monthly_revenue"], "kwargs": {"refine": {"limit": 5}}},
+      "ts": {"args": ["monthly_revenue", {"refine": {"limit": 5}}]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"name": "monthly_revenue", "refine": {"limit": 5}}}
+    },
+    {
+      "name": "stage list",
+      "op": "query",
+      "python": {"args": [[{"name": "s1", "source_model": "orders", "measures": ["revenue"]}, {"source_model": "s1", "measures": ["revenue:sum"]}]], "kwargs": {}},
+      "ts": {"args": [[{"name": "s1", "source_model": "orders", "measures": ["revenue"]}, {"source_model": "s1", "measures": ["revenue:sum"]}]]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"queries": [{"name": "s1", "source_model": "orders", "measures": ["revenue"]}, {"source_model": "s1", "measures": ["revenue:sum"]}]}}
+    },
+    {
+      "name": "stage list with top-level variables and explain",
+      "op": "query",
+      "python": {"args": [[{"source_model": "orders", "measures": ["revenue"]}]], "kwargs": {"variables": {"x": 1}, "explain": true}},
+      "ts": {"args": [[{"source_model": "orders", "measures": ["revenue"]}], {"variables": {"x": 1}, "explain": true}]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"queries": [{"source_model": "orders", "measures": ["revenue"]}], "variables": {"x": 1}, "explain": true}}
+    },
+    {
+      "name": "sql is a dry run",
+      "op": "sql",
+      "python": {"args": [{"source_model": "orders", "measures": ["revenue"]}], "kwargs": {}},
+      "ts": {"args": [{"source_model": "orders", "measures": ["revenue"]}]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"source_model": "orders", "measures": ["revenue"], "dry_run": true}},
+      "returns": "SELECT 1"
+    },
+    {
+      "name": "explain sets explain",
+      "op": "explain",
+      "python": {"args": ["monthly_revenue"], "kwargs": {}},
+      "ts": {"args": ["monthly_revenue"]},
+      "expect": {"method": "POST", "path": "/query", "query": {}, "body": {"name": "monthly_revenue", "explain": true}}
+    },
+    {
+      "name": "list models",
+      "op": "list_models",
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/models", "query": {}, "body": null}
+    },
+    {
+      "name": "list models of one datasource",
+      "op": "list_models",
+      "python": {"args": [], "kwargs": {"data_source": "ds"}},
+      "ts": {"args": [{"dataSource": "ds"}]},
+      "expect": {"method": "GET", "path": "/models", "query": {"data_source": "ds"}, "body": null}
+    },
+    {
+      "name": "get model: name is percent-encoded",
+      "op": "get_model",
+      "python": {"args": ["a/b c"], "kwargs": {}},
+      "ts": {"args": ["a/b c"]},
+      "expect": {"method": "GET", "path": "/models/a%2Fb%20c", "query": {}, "body": null}
+    },
+    {
+      "name": "get model of one datasource",
+      "op": "get_model",
+      "python": {"args": ["orders"], "kwargs": {"data_source": "ds"}},
+      "ts": {"args": ["orders", {"dataSource": "ds"}]},
+      "expect": {"method": "GET", "path": "/models/orders", "query": {"data_source": "ds"}, "body": null}
+    },
+    {
+      "name": "create model",
+      "op": "create_model",
+      "python": {"args": [{"name": "orders", "sql_table": "orders_t", "data_source": "ds", "columns": []}], "kwargs": {}},
+      "ts": {"args": [{"name": "orders", "sql_table": "orders_t", "data_source": "ds", "columns": []}]},
+      "expect": {"method": "POST", "path": "/models", "query": {}, "body": {"name": "orders", "sql_table": "orders_t", "data_source": "ds", "columns": []}}
+    },
+    {
+      "name": "delete model: encoded name and datasource",
+      "op": "delete_model",
+      "python": {"args": ["a/b c"], "kwargs": {"data_source": "ds"}},
+      "ts": {"args": ["a/b c", {"dataSource": "ds"}]},
+      "expect": {"method": "DELETE", "path": "/models/a%2Fb%20c", "query": {"data_source": "ds"}, "body": null}
+    },
+    {
+      "name": "list datasources",
+      "op": "list_datasources",
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/datasources", "query": {}, "body": null}
+    },
+    {
+      "name": "create datasource",
+      "op": "create_datasource",
+      "python": {"args": [{"name": "ds2", "type": "sqlite", "database": ":memory:"}], "kwargs": {}},
+      "ts": {"args": [{"name": "ds2", "type": "sqlite", "database": ":memory:"}]},
+      "expect": {"method": "POST", "path": "/datasources", "query": {}, "body": {"name": "ds2", "type": "sqlite", "database": ":memory:"}}
+    },
+    {
+      "name": "get datasource priority",
+      "op": "get_datasource_priority",
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/datasources/priority", "query": {}, "body": null},
+      "returns": ["ds"]
+    },
+    {
+      "name": "set datasource priority",
+      "op": "set_datasource_priority",
+      "python": {"args": [["ds", "ds2"]], "kwargs": {}},
+      "ts": {"args": [["ds", "ds2"]]},
+      "expect": {"method": "PUT", "path": "/datasources/priority", "query": {}, "body": {"priority": ["ds", "ds2"]}}
+    },
+    {
+      "name": "save memory",
+      "op": "save_memory",
+      "python": {"args": [], "kwargs": {"learning": "paid means settled", "linked_entities": ["orders.status"], "id": "mem1", "description": "Paid status"}},
+      "ts": {"args": [{"learning": "paid means settled", "linkedEntities": ["orders.status"], "id": "mem1", "description": "Paid status"}]},
+      "expect": {"method": "POST", "path": "/memories", "query": {}, "body": {"learning": "paid means settled", "linked_entities": ["orders.status"], "id": "mem1", "description": "Paid status"}}
+    },
+    {
+      "name": "save memory: optional fields omitted",
+      "op": "save_memory",
+      "python": {"args": [], "kwargs": {"learning": "paid means settled", "linked_entities": ["orders.status"]}},
+      "ts": {"args": [{"learning": "paid means settled", "linkedEntities": ["orders.status"]}]},
+      "expect": {"method": "POST", "path": "/memories", "query": {}, "body": {"learning": "paid means settled", "linked_entities": ["orders.status"]}}
+    },
+    {
+      "name": "forget memory: id is percent-encoded",
+      "op": "forget_memory",
+      "python": {"args": ["team/mem 1"], "kwargs": {}},
+      "ts": {"args": ["team/mem 1"]},
+      "expect": {"method": "DELETE", "path": "/memories/team%2Fmem%201", "query": {}, "body": null}
+    },
+    {
+      "name": "search with defaults",
+      "op": "search",
+      "python": {"args": [], "kwargs": {"question": "revenue"}},
+      "ts": {"args": [{"question": "revenue"}]},
+      "expect": {"method": "POST", "path": "/search", "query": {}, "body": {"question": "revenue", "max_results": 10, "compact": true}}
+    },
+    {
+      "name": "search with every option",
+      "op": "search",
+      "python": {"args": [], "kwargs": {"entities": ["orders"], "query": {"source_model": "orders", "measures": ["revenue"]}, "question": "q", "datasource": "ds", "max_results": 5, "cypher_filter": "n.kind = 'model'", "compact": false}},
+      "ts": {"args": [{"entities": ["orders"], "query": {"source_model": "orders", "measures": ["revenue"]}, "question": "q", "datasource": "ds", "maxResults": 5, "cypherFilter": "n.kind = 'model'", "compact": false}]},
+      "expect": {"method": "POST", "path": "/search", "query": {}, "body": {"entities": ["orders"], "query": {"source_model": "orders", "measures": ["revenue"]}, "question": "q", "datasource": "ds", "max_results": 5, "cypher_filter": "n.kind = 'model'", "compact": false}}
+    },
+    {
+      "name": "inspect with defaults",
+      "op": "inspect",
+      "python": {"args": [], "kwargs": {"reference": "orders", "entity_type": "model"}},
+      "ts": {"args": [{"entityType": "model", "reference": "orders"}]},
+      "expect": {"method": "POST", "path": "/inspect", "query": {}, "body": {"reference": "orders", "entity_type": "model", "compact": true, "format": "markdown", "num_rows": 3, "show_sql": false}},
+      "returns": "# orders"
+    },
+    {
+      "name": "inspect a collection with every option",
+      "op": "inspect",
+      "python": {"args": [], "kwargs": {"entity_type": "datasource", "compact": false, "format": "json", "num_rows": 0, "show_sql": true, "sections": ["columns"], "descriptions_max_chars": 80}},
+      "ts": {"args": [{"entityType": "datasource", "compact": false, "format": "json", "numRows": 0, "showSql": true, "sections": ["columns"], "descriptionsMaxChars": 80}]},
+      "expect": {"method": "POST", "path": "/inspect", "query": {}, "body": {"reference": null, "entity_type": "datasource", "compact": false, "format": "json", "num_rows": 0, "show_sql": true, "sections": ["columns"], "descriptions_max_chars": 80}}
+    },
+    {
+      "name": "recommend root model",
+      "op": "recommend_root_model",
+      "python": {"args": [["orders.amount"]], "kwargs": {"data_source": "ds", "root_hint": "orders"}},
+      "ts": {"args": [["orders.amount"], {"dataSource": "ds", "rootHint": "orders"}]},
+      "expect": {"method": "POST", "path": "/recommend-root-model", "query": {}, "body": {"items": ["orders.amount"], "data_source": "ds", "root_hint": "orders"}}
+    },
+    {
+      "name": "recommend root model: optional fields omitted",
+      "op": "recommend_root_model",
+      "python": {"args": [["orders.amount"]], "kwargs": {}},
+      "ts": {"args": [["orders.amount"]]},
+      "expect": {"method": "POST", "path": "/recommend-root-model", "query": {}, "body": {"items": ["orders.amount"]}}
+    },
+    {
+      "name": "health without a token sends no Authorization",
+      "op": "health",
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/health", "query": {}, "body": null, "absent_headers": ["authorization"]}
+    },
+    {
+      "name": "static token and extra headers",
+      "op": "health",
+      "client": {"token": "t1", "headers": {"X-Tenant": "acme"}},
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/health", "query": {}, "body": null, "headers": {"authorization": "Bearer t1", "x-tenant": "acme"}}
+    },
+    {
+      "name": "with_token copy keeps headers and swaps the token",
+      "op": "health",
+      "client": {"token": "t1", "headers": {"X-Tenant": "acme"}},
+      "with_token": "user-jwt",
+      "python": {"args": [], "kwargs": {}},
+      "ts": {"args": []},
+      "expect": {"method": "GET", "path": "/health", "query": {}, "body": null, "headers": {"authorization": "Bearer user-jwt", "x-tenant": "acme"}}
+    }
+  ],
+  "signing": [
+    {
+      "name": "fixed clock",
+      "claims": {"sub": "report-job", "tenant": "acme", "roles": ["analyst"]},
+      "secret": "0123456789abcdef0123456789abcdef",
+      "python": {"kwargs": {"ttl_seconds": 600, "now": 1700000000}},
+      "ts": {"options": {"ttlSeconds": 600, "now": 1700000000}},
+      "expected": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDYwMCwic3ViIjoicmVwb3J0LWpvYiIsInRlbmFudCI6ImFjbWUiLCJyb2xlcyI6WyJhbmFseXN0Il19.Go6y3YEQz0Z6tiMXFNrByNG2LuU0uz_bL607c7uDqR0"
+    },
+    {
+      "name": "secret shorter than 32 bytes",
+      "claims": {"sub": "x", "tenant": "acme", "roles": []},
+      "secret": "too-short",
+      "python": {"kwargs": {}},
+      "ts": {"options": {}},
+      "error": true
+    }
+  ]
+}

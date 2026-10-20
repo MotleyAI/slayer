@@ -7,7 +7,7 @@ const url = process.env.SLAYER_E2E_URL;
 const secret = process.env.GATEWAY_JWT_SECRET ?? "demo-secret-change-me-at-least-32-bytes";
 
 describe.skipIf(!url)("gateway demo", () => {
-  const client = new SlayerClient({ baseUrl: url ?? "", timeoutMs: 10_000 });
+  const client = new SlayerClient({ url: url ?? "", timeoutMs: 10_000 });
   const as = (tenant: string, role: string) =>
     client.withToken(signGatewayToken({ sub: "e2e", tenant, roles: [role] }, secret));
 
