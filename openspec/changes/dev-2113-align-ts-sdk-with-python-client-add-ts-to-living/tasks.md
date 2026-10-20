@@ -6,7 +6,7 @@ Gate: group 6 needs `living-architecture@0.3.1` on npm (`npm view living-archite
 
 - [x] 1.1 Pin current JSON bodies of `/health`, `GET /models`, `GET /models/{name}`, `POST /models`, `DELETE /models/{name}`, `GET /datasources`, `POST /datasources`, `GET`/`PUT /datasources/priority`, `POST /memories`, `DELETE /memories/{memory_id}`, `/search`, `/inspect`, `/recommend-root-model` in tests; verify they pass before any route change
 - [x] 1.2 Add Pydantic v2 response models in `slayer/api` (`HealthResponse`, `ModelSummary`, `DatasourceSummary`, `DatasourcePriority`, `InspectResponse`, status responses); declare `response_model` on those routes reusing `SearchResponse`, `RootModelRecommendation`, `SaveMemoryResponse`, `ForgetMemoryResponse`; `GET /models/{name}` via `responses=` only; verify 1.1 tests still pass and an OpenAPI test finds a named schema for every listed route
-- [ ] 1.3 Regenerate `ts-sdk/src/schema.ts` (`npm --prefix ts-sdk run gen`); verify `npm --prefix ts-sdk run check:schema` is clean after commit
+- [x] 1.3 Regenerate `ts-sdk/src/schema.ts` (`npm --prefix ts-sdk run gen`); verify `npm --prefix ts-sdk run check:schema` is clean after commit
 
 ## 2. Parity harness
 
