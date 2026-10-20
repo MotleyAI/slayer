@@ -184,4 +184,4 @@ is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C20-sp
 2. A `where` filter without Jinja (`revenue > 100`) binds to the row-level measure column named like the metric and
    filters individual orders before aggregation. Probe: `Q9-mf-raw-where-alias`.
 3. By design: a count metric is NULL, not 0, for a parent with no children, so a metric filter `= 0` matches nothing
-   (`Q10-mf-antijoin-eq0`).
+   (`Q10-mf-antijoin-eq0`), and for a `metric_time` bucket with no rows (`Q26-per-month`).

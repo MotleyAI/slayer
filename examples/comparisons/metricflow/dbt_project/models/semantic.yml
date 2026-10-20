@@ -127,6 +127,25 @@ semantic_models:
         agg: count
         expr: id
 
+  # No entity shared with any other semantic model (Q26).
+  - name: events
+    model: ref('stg_events')
+    defaults:
+      agg_time_dimension: event_ts
+    entities:
+      - name: event
+        type: primary
+        expr: id
+    dimensions:
+      - name: event_ts
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: event_count
+        agg: count
+        expr: id
+
 metrics:
   - name: revenue
     type: simple
@@ -149,6 +168,9 @@ metrics:
   - name: region_count
     type: simple
     type_params: {measure: region_count}
+  - name: event_count
+    type: simple
+    type_params: {measure: event_count}
 
 saved_queries:
   - name: revenue_by_region_month
