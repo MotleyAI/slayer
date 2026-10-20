@@ -82,6 +82,14 @@ model {
         specs ['facade']
       }
     }
+    usage_reporting = node 'Usage reporting' {
+      metadata {
+        package 'slayer.usage_reporting'
+        arc42 'architecture/usage_reporting.arc42.md'
+        specs ['usage-reporting']
+      }
+      features = node 'Features'
+    }
     surfaces = bucket 'User-facing surfaces' {
       metadata {
         packages ['slayer.api', 'slayer.mcp', 'slayer.cli', 'slayer.client', 'slayer.inspect', 'slayer.demo', 'slayer.__main__']
@@ -146,5 +154,9 @@ model {
     surfaces -> search
     surfaces -> sql
     surfaces -> storage
+    protocols -> usage_reporting
+    surfaces -> usage_reporting
+    usage_reporting.features -> core
+    usage_reporting.features -> sql
   }
 }
