@@ -533,7 +533,7 @@ rows:
   slayer:
     verdict: 'yes'
     how: "`count(events.id) / count(*)` from `customers`"
-    caveat: "Computed over events' own rows and repeated on every row (per bucket of a spine time dimension) with an `unrelated_dataset` warning; grouping by an events column is a typed error (verified)."
+    caveat: "Computed over events' own rows and repeated on every row with an `unrelated_dataset` warning; a spine time dimension buckets it per period, warning-free when it is the only dimension; grouping by an events column is a typed error (verified)."
   malloy:
     verdict: partial
     how: "`extend: { join_cross: events }` · `events.count()`"

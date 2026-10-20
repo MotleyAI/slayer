@@ -3594,7 +3594,8 @@ probes:
       values: [revenue, event_count]
       expect:
         known_bug: 'by design: a count metric is NULL, not 0, for a month with no events'
-        buggy_rows: [['2025-01-01', 140, null], ['2025-02-01', 200, null]]
+        buggy_rows: [['2025-01-01', 140, null], ['2025-02-01', 200, null], ['2025-03-01', 140, 5]]
+        buggy_row_count: 3
 
   - id: Q26-per-region-month
     row: Q26

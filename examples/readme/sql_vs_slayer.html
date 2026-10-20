@@ -12,16 +12,16 @@
     --bg: #ffffff;
     --bar: #f3f3f3;
     --rule: #e5e5e5;
-    --gutter: #8c8c8c;
+    --gutter: #767676;
     --guide: #d8d8d8;
     --text: #333333;
-    --keyword: #e36209;
+    --keyword: #bc4c00;
     --func: #d73a49;
-    --string: #50a14f;
-    --column: #22a39f;
+    --string: #2f7d32;
+    --column: #0f7a74;
     --number: #8250df;
     --paren: #0550ae;
-    --key: #2b9fd3;
+    --key: #0b6fa4;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -38,7 +38,7 @@
     background: var(--bg); border-top: 2px solid #e8a33d; border-right: 1px solid var(--rule);
     font: 14px/1 -apple-system, "Segoe UI", "DejaVu Sans", sans-serif; color: #333;
   }
-  .tab .x { color: #888; margin-left: 6px; }
+  .tab .x { color: #767676; margin-left: 6px; }
   .code { padding-top: 8px; counter-reset: line; }
   .l { white-space: pre; }
   .l::before {
@@ -71,18 +71,15 @@
 <div class="l"><span class="k">SELECT</span></div>
 <div class="l"><i class="g"></i>store,</div>
 <div class="l"><i class="g"></i><span class="k">month</span>,</div>
-<div class="l"><i class="g"></i><span class="f">ROUND</span>(revenue, <span class="n">2</span>) <span class="k">AS</span> revenue,</div>
-<div class="l"><i class="g"></i><span class="f">ROUND</span>(</div>
-<div class="l"><i class="g"></i><i class="g"></i><span class="n">100.0</span> <span class="f">*</span> (revenue <span class="f">-</span> <span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>))</div>
-<div class="l"><i class="g"></i><i class="g"></i><span class="f">/ NULLIF</span>(<span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>), <span class="n">0</span>),</div>
-<div class="l"><i class="g"></i><i class="g"></i><span class="n">2</span></div>
-<div class="l"><i class="g"></i>) <span class="k">AS</span> mom_pct_change</div>
+<div class="l"><i class="g"></i>revenue,</div>
+<div class="l"><i class="g"></i>(revenue <span class="f">-</span> <span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>))</div>
+<div class="l"><i class="g"></i><i class="g"></i><span class="f">/ NULLIF</span>(<span class="f">LAG</span>(revenue) <span class="k">OVER</span> (<span class="k">PARTITION BY</span> store <span class="k">ORDER BY</span> <span class="k">month</span>), <span class="n">0</span>) <span class="k">AS</span> mom_pct_change</div>
 <div class="l"><span class="k">FROM</span> monthly</div>
 <div class="l"><span class="k">ORDER BY</span> store, <span class="k">month</span>;</div>
   </div>
 </section>
 <section class="pane">
-  <div class="tabs"><div class="tab"><span style="color:#b8a12f">{}</span>query.json<span class="x">&#10005;</span></div></div>
+  <div class="tabs"><div class="tab"><span style="color:#8a6d00">{}</span>query.json<span class="x">&#10005;</span></div></div>
   <div class="code">
 <div class="l"><span class="p">{</span></div>
 <div class="l"><i class="g"></i><span class="y">"source_model"</span>: <span class="s">"orders"</span>,</div>

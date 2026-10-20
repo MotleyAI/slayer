@@ -15,7 +15,7 @@ See proposal.md - Why. The matrix lives in `examples/comparisons/matrix.yaml`, i
 ## Decisions
 
 ### D1. README picture: committed HTML source rendered to a PNG
-`examples/readme/sql_vs_slayer.html` is a two-pane, syntax-highlighted mock of the current screenshot: left `query.sql` with the current SQL unchanged, right `query.json` with
+`examples/readme/sql_vs_slayer.html` is a two-pane, syntax-highlighted mock of the current screenshot: left `query.sql` with the current SQL minus its `100.0 *` and `ROUND` wrappers, so both panes return the same values, right `query.json` with
 
 ```json
 {
