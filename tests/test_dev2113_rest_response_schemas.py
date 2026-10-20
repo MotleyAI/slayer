@@ -1,17 +1,18 @@
 """Client-called REST routes publish named response schemas; their JSON bodies stay as they were."""
 
-import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 CLIENT_ROUTES = [
@@ -35,10 +36,9 @@ CLIENT_ROUTES = [
 @pytest.fixture
 def api(tmp_path: Path) -> Iterator[TestClient]:
     db = tmp_path / "shop.db"
-    with sqlite3.connect(db) as conn:
+    with transaction(db) as conn:
         conn.execute("CREATE TABLE orders_t (id REAL, status TEXT, amount REAL)")
         conn.execute("INSERT INTO orders_t VALUES (1, 'paid', 10), (2, 'open', 5)")
-    conn.close()
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     run_sync(storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db))))
     run_sync(storage.save_model(SlayerModel(
@@ -71,6 +71,7 @@ def _ok(response: Any) -> Any:
 
 @pytest.mark.parametrize(("method", "path"), CLIENT_ROUTES)
 def test_route_declares_named_response_schema(api: TestClient, method: str, path: str) -> None:
+    assert isinstance(api.app, FastAPI)
     schema = api.app.openapi()["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
     named = schema.get("$ref") or schema.get("items", {}).get("$ref")
     assert named, f"{method.upper()} {path} has an anonymous response schema: {schema}"

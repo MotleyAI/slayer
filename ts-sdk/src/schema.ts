@@ -306,6 +306,19 @@ export interface components {
             };
         };
         /**
+         * CandidateCoverage
+         * @description A partial-root candidate for the no-common-root diagnostic: which
+         *     input items it can reach and which it cannot.
+         */
+        CandidateCoverage: {
+            /** Model Name */
+            model_name: string;
+            /** Reachable Items */
+            reachable_items: string[];
+            /** Unreachable Items */
+            unreachable_items: string[];
+        };
+        /**
          * Column
          * @description A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure.
          */
@@ -451,6 +464,11 @@ export interface components {
              */
             granularities?: components["schemas"]["CustomGranularity"][];
         };
+        /** DatasourcePriority */
+        DatasourcePriority: {
+            /** Priority */
+            priority: string[];
+        };
         /**
          * DatasourcePriorityRequest
          * @description Body for ``PUT /datasources/priority``. A request model — rather
@@ -465,16 +483,40 @@ export interface components {
              */
             priority: string[];
         };
+        /** DatasourcePriorityUpdate */
+        DatasourcePriorityUpdate: {
+            /** Status */
+            status: string;
+            /** Priority */
+            priority: string[];
+        };
+        /** DatasourceSummary */
+        DatasourceSummary: {
+            /** Name */
+            name: string;
+            /** Type */
+            type?: string | null;
+        };
         /** FieldMetadataResponse */
         FieldMetadataResponse: {
             /** Label */
             label?: string | null;
             format?: components["schemas"]["NumberFormat"] | null;
         };
+        /** ForgetMemoryResponse */
+        ForgetMemoryResponse: {
+            /** Deleted Id */
+            deleted_id: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HealthResponse */
+        HealthResponse: {
+            /** Status */
+            status: string;
         };
         /** IngestRequest */
         IngestRequest: {
@@ -534,6 +576,34 @@ export interface components {
             sections?: string[] | null;
             /** Descriptions Max Chars */
             descriptions_max_chars?: number | null;
+        };
+        /** InspectResponse */
+        InspectResponse: {
+            /** Result */
+            result: string;
+        };
+        /**
+         * ItemPath
+         * @description One input item paired with its join-qualified reference path from
+         *     the recommended root (relative to the root, root name excluded — the
+         *     same form used inside a ``SlayerQuery`` whose ``source_model`` is the
+         *     root). Any aggregation suffix is preserved verbatim.
+         */
+        ItemPath: {
+            /** Input Item */
+            input_item: string;
+            /** Path */
+            path: string;
+            /**
+             * Attachment
+             * @default false
+             */
+            attachment: boolean;
+            /**
+             * Unrelated
+             * @default false
+             */
+            unrelated: boolean;
         };
         /**
          * JoinCardinality
@@ -608,6 +678,15 @@ export interface components {
             meta?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** ModelSummary */
+        ModelSummary: {
+            /** Name */
+            name: string;
+            /** Data Source */
+            data_source?: string | null;
+            /** Description */
+            description?: string | null;
         };
         /**
          * NumberFormat
@@ -738,7 +817,7 @@ export interface components {
             /** Name */
             name?: string | null;
             /** Source Model */
-            source_model?: (string | components["schemas"]["ModelExtension"] | components["schemas"]["SlayerModel"]) | null;
+            source_model?: (string | components["schemas"]["ModelExtension"] | components["schemas"]["SlayerModel-Input"]) | null;
             /** Measures */
             measures?: (string | {
                 [key: string]: unknown;
@@ -820,6 +899,45 @@ export interface components {
             root_hint?: string | null;
         };
         /**
+         * RootModelRecommendation
+         * @description Outcome of :meth:`SlayerQueryEngine.recommend_root_model`.
+         *
+         *     When ``reachable`` is ``True``, ``root_model`` names the recommended
+         *     ``source_model`` and ``item_paths`` gives every item's path from it.
+         *     When ``False``, no single model reaches all items: ``root_model`` is
+         *     ``None``, ``item_paths`` is empty, and ``coverage`` lists the Pareto
+         *     frontier of partial roots so the caller can split the work into a
+         *     multi-stage query.
+         */
+        RootModelRecommendation: {
+            /** Data Source */
+            data_source: string;
+            /** Root Model */
+            root_model: string | null;
+            /** Reachable */
+            reachable: boolean;
+            /**
+             * Item Paths
+             * @default []
+             */
+            item_paths: components["schemas"]["ItemPath"][];
+            /**
+             * Coverage
+             * @default []
+             */
+            coverage: components["schemas"]["CandidateCoverage"][];
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /**
          * SaveMemoryRequest
          * @description Body for ``POST /memories``.
          *
@@ -848,6 +966,52 @@ export interface components {
             id?: string | null;
             /** Description */
             description?: string | null;
+        };
+        /** SaveMemoryResponse */
+        SaveMemoryResponse: {
+            /** Memory Id */
+            memory_id: string;
+            /** Resolved Entities */
+            resolved_entities: string[];
+            /** Warnings */
+            warnings?: string[];
+        };
+        /**
+         * SearchHit
+         * @description A unified search result. ``kind`` is ``"memory"`` for
+         *     memories, or the entity kind string (``"datasource"``, ``"model"``,
+         *     ``"column"``, ``"measure"``, ``"aggregation"``) for entity hits.
+         *
+         *     ``id`` is the raw storage id for memories (suitable for
+         *     ``forget_memory(id=hit.id)``) and the canonical entity string for
+         *     entity hits. ``score`` is always the Reciprocal-Rank-Fusion score
+         *     (``Σ 1 / (k + rank)``, ``k=60``); even single-channel searches go
+         *     through RRF, so the value is comparable across channels but is not
+         *     directly the raw BM25 / tantivy / cosine score.
+         *
+         *     ``matched_entities`` and ``query`` are populated for memory hits
+         *     only; entity hits carry empty / ``None`` defaults.
+         *
+         *     ``description`` carries a compact preview. For memory
+         *     hits in compact mode it is ``Memory.description`` (or a
+         *     first-paragraph fallback computed from ``learning``); for entity
+         *     hits in any mode it is the entity's structured ``description``
+         *     field. Under compact mode ``text`` is left empty for both kinds.
+         */
+        SearchHit: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: string;
+            /** Score */
+            score: number;
+            /** Text */
+            text: string;
+            /** Description */
+            description?: string | null;
+            /** Matched Entities */
+            matched_entities?: string[];
+            query?: components["schemas"]["SlayerQuery"] | null;
         };
         /**
          * SearchRequest
@@ -885,8 +1049,22 @@ export interface components {
              */
             compact: boolean;
         };
+        /**
+         * SearchResponse
+         * @description Unified search response. ``results`` is a single flat
+         *     list ranked by RRF score; consumers partition by ``kind`` (or by
+         *     ``query is None`` for the memory subset) at the call site.
+         */
+        SearchResponse: {
+            /** Results */
+            results?: components["schemas"]["SearchHit"][];
+            /** Resolved Input Entities */
+            resolved_input_entities?: string[];
+            /** Warnings */
+            warnings?: string[];
+        };
         /** SlayerModel */
-        SlayerModel: {
+        "SlayerModel-Input": {
             /**
              * Version
              * @default 15
@@ -936,7 +1114,158 @@ export interface components {
             meta?: {
                 [key: string]: unknown;
             } | null;
-            source_model_origin?: components["schemas"]["SourceModelOrigin"] | null;
+            source_model_origin?: components["schemas"]["SourceModelOrigin-Input"] | null;
+        };
+        /** SlayerModel */
+        "SlayerModel-Output": {
+            /**
+             * Version
+             * @default 15
+             */
+            version: number;
+            /** Name */
+            name: string;
+            /** Sql Table */
+            sql_table?: string | null;
+            /** Source Kind */
+            source_kind?: ("table" | "view" | "materialized_view") | null;
+            /** Sql */
+            sql?: string | null;
+            /** Source Queries */
+            source_queries?: unknown[] | null;
+            /** Query Variables */
+            query_variables?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Data Source
+             * @default
+             */
+            data_source: string;
+            /** Columns */
+            columns?: components["schemas"]["Column"][];
+            /** Measures */
+            measures?: components["schemas"]["ModelMeasure"][];
+            /** Aggregations */
+            aggregations?: components["schemas"]["Aggregation"][];
+            /** Joins */
+            joins?: components["schemas"]["ModelJoin"][];
+            /** Filters */
+            filters?: string[];
+            /** Default Time Dimension */
+            default_time_dimension?: string | null;
+            /** Description */
+            description?: string | null;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /** Access Tags */
+            access_tags?: string[];
+            /** Meta */
+            meta?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * SlayerQuery
+         * @description User-facing query object — what to retrieve from a model, as names/references, no SQL.
+         */
+        SlayerQuery: {
+            /**
+             * Version
+             * @default 6
+             */
+            version: number;
+            /**
+             * Name
+             * @description Stage name. In a list of query objects every entry but the last carries a name, and later stages use it as their source_model. A STAGE IS NOT NEEDED for top N per group (filter on `rank(...)` in the same stage), for averaging or bucketing per-entity totals (a nested aggregate, or a computed dimension with `partition_by`), or for shares and totals (`partition_by`). A filter on a transform's value (`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over every row the other filters keep. Stages ARE needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result: a row filter or date_range applies before a running total, lag / lead, rank, ntile, consecutive_periods or `partition_by` total (change, change_pct, time_shift and window= still read past date_range or a filter on their own time dimension, but not past other filters). Compute the value in an inner stage and filter in the outer one. An outer stage sees the inner result's columns with dotted paths flattened to __: an inner dimension customers.regions.name is customers__regions__name outside; a measure keeps its name. More: inspect(reference=["memory:help.queries"], entity_type="memory").
+             */
+            name?: string | null;
+            /**
+             * Source Model
+             * @description The population: the rows the result lists. When the question asks for every X (each region, zero included), root at X so rows without facts appear: rooted at regions, the measures count(customers.orders.id) and {"formula": "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))", "name": "orders_2025"} list every region, including those without orders (a count over no rows is 0, any other aggregate NULL). Always name a conditional aggregate. Otherwise root where the facts are (rows without facts then drop out), or omit to infer the smallest model determining every dimension and row-level condition column (reported in the response). A saved model or stage name, an inline extension {"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query columns, or a full inline model.
+             */
+            source_model?: (string | components["schemas"]["ModelExtension"] | components["schemas"]["SlayerModel-Output"]) | null;
+            /**
+             * Measures
+             * @description Values to return: formula strings or {"formula": ..., "name": ...} (name sets the result key; a bare name references a saved model measure). Formulas combine aggregations with arithmetic, also across models: rooted at customers, sum(orders.amount) / count(*) divides the orders' total by the number of customers.
+             *     - Aggregations: count(*), sum(amount), count_distinct(customer_id), avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.
+             *     - partition_by= computes an aggregate at a coarser grain, repeated on every row; spell its keys exactly like the query's dimensions (a joined column by its dotted path; its bare name fails). Share of group: sum(amount) / sum(amount, partition_by=customers.regions.name); share of the grand total: sum(amount) / sum(amount, partition_by=[]).
+             *     - window= turns any aggregation into a trailing time window ending at each time bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): count_distinct(customer_id, window='90d').
+             *     - Nesting aggregates per-group values: avg(sum(amount, partition_by=[customers.regions.name, customers.id]), partition_by=[customers.regions.name]) averages the per-customer totals in each region.
+             *     - Transforms wrap an aggregate; all but the rank family need a time dimension: cumsum(sum(amount)) running total; change(sum(amount)) / change_pct(sum(amount)) period-over-period delta / ratio; time_shift(sum(amount), -1) the previous bucket's value ('year' as a third argument for year-over-year); lag(x, n) / lead(x, n) n rows back / ahead; rank(x, direction='desc') / dense_rank(x, direction='asc') with direction required and partition_by= to rank within groups; ntile(x, n=4) buckets, lowest first; consecutive_periods(sum(amount) > 0) trailing run length.
+             *     - A joined model's aggregate such as sum(customers.credit) from orders is computed over that model's own rows, each customer once. Sliced by a dimension it cannot be attributed to (an order's status), it repeats its total on every row with a warning; to_many_handling='associate' splits it per group. Rooted at customers, sum(orders.amount) and sum(returns.amount) in one query are each computed over their own rows: several child models never fan out or double count. A child row without a parent (an order with no customer) has NULL parent columns: it counts in the NULL row of a parent dimension when that row exists, and in an ungrouped total; never add it again. An aggregate over a model no join path reaches from the root is computed over that model's own rows and repeated on every row (per bucket of a time_spine time dimension), with an unrelated_dataset warning: rooted at customers, count(events.id) / count(*).
+             *     More (every aggregation, empty-input values, nesting and transform rules): inspect(reference=["memory:help.aggregations", "memory:help.transforms"], entity_type="memory").
+             */
+            measures?: components["schemas"]["ModelMeasure"][] | null;
+            /**
+             * Dimensions
+             * @description Group-by columns, one result row per distinct combination: names, dotted paths to joined columns (customers.regions.name), or computed {"expression": ..., "name": ...}. A granularity call buckets a timestamp like a time_dimensions entry: month(created_at); granularities are second, minute, hour, day, week, week_sunday, month, quarter, year, or the datasource's custom ones. An aggregate inside a computed dimension needs partition_by= to fix its grain: {"expression": "iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')", "name": "spend_band"}. Group by naturally readable labels: a name (customers.regions.name), never by an id alone unless ids are asked for; when a name may repeat (people, products), by the id and the name.
+             */
+            dimensions?: (components["schemas"]["ColumnRef"] | components["schemas"]["ComputedDimension"])[] | null;
+            /**
+             * Time Dimensions
+             * @description Time-bucketed group-bys — one result row per bucket. Each entry is a TimeDimension dict or the functional string gran(col), e.g. "month(created_at)". Buckets without rows are absent. To return every bucket, empty ones included, bucket time_spine.timestamp with a lower date_range bound and measure models by dotted path: {"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} with sum(orders.amount) returns all twelve months. It also lines several models up on one time axis.
+             */
+            time_dimensions?: (components["schemas"]["TimeDimension"] | string)[] | null;
+            /**
+             * Main Time Dimension
+             * @description Name of the time dimension that time-ordered transforms (change, lag, ...) key off; overrides auto-detection when the query has multiple time dimensions.
+             */
+            main_time_dimension?: string | null;
+            /**
+             * Filters
+             * @description Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate filtering (HAVING) or filtering after transforms. Operators: == != < <= > >=, in, like, is null / is not null, and / or / not; build text literals from the column's sampled values.
+             *     - Aggregates and transforms filter too, by formula or by a measure's name: sum(amount) > 100; top N per group: rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.
+             *     - Anti-join: rooted at customers, orders.id is null keeps the customers without orders.
+             *     - Time points: a string compared with a date/time column is a half-open period: '2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or relative: 'today', 'last month', 'last 7 days' (excludes the current day), 'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, order_date in '2025-Q1' is inside it.
+             *     - {variable} placeholders take values from variables.
+             *     More: inspect(reference=["memory:help.time", "memory:help.joins"], entity_type="memory").
+             */
+            filters?: string[] | null;
+            /**
+             * Variables
+             * @description {placeholder} values scoped to this query object / stage; the tool-level variables argument overrides.
+             */
+            variables?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Order
+             * @description Sort keys, [{"column": ..., "direction": "asc" | "desc"}]. column is a result column name or any aggregate or transform expression, displayed or not: with measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by an amount it does not return. Add limit for the top N. Return only the columns the question asks for: never add the sort value to measures just to sort by it.
+             */
+            order?: components["schemas"]["OrderItem"][] | null;
+            /**
+             * Limit
+             * @description Max rows to return: the top N, or a limit covering a list longer than the 20 rows an uncapped MCP response returns (with a notice). Never use it to cut a list asked for in full.
+             */
+            limit?: number | null;
+            /**
+             * Offset
+             * @description Rows to skip.
+             */
+            offset?: number | null;
+            /**
+             * Whole Periods Only
+             * @description Snap date filters to whole time buckets and drop the current incomplete bucket.
+             * @default false
+             */
+            whole_periods_only: boolean;
+            /**
+             * Distinct Dimension Values
+             * @description Default true: dimension-only queries return distinct dimension combinations (GROUP BY the projected dimensions). Set false for raw per-record rows — requires empty `measures` and no measure reference in `filters`/`order`. For rows plus a count, keep the default and add `count(*)`.
+             * @default true
+             */
+            distinct_dimension_values: boolean;
+            /**
+             * To Many Handling
+             * @description What happens when an aggregation is sliced by a dimension not attributable to it: broadcast (default — repeat the value across the cells, with a warning) | associate (aggregate per cell over the distinct associated entities) | error (refuse).
+             * @default broadcast
+             * @enum {string}
+             */
+            to_many_handling: "broadcast" | "associate" | "error";
         };
         /**
          * SourceModelOrigin
@@ -947,14 +1276,39 @@ export interface components {
          *     re-aggregate, so a dimension that merely looks like an aggregation canonical
          *     isn't silently re-summed.
          */
-        SourceModelOrigin: {
+        "SourceModelOrigin-Input": {
             /** Name */
             name: string;
             /** Data Source */
             data_source?: string | null;
-            parent?: components["schemas"]["SourceModelOrigin"] | null;
+            parent?: components["schemas"]["SourceModelOrigin-Input"] | null;
             /** Agg Column Names */
             agg_column_names?: string[];
+        };
+        /**
+         * SourceModelOrigin
+         * @description In-memory lineage breadcrumb for virtual stage models: a linked list of
+         *     upstream names so outer-stage dotted-ref lookup can strip prefixes.
+         *
+         *     ``agg_column_names`` marks columns safe for the cross-stage intercept to
+         *     re-aggregate, so a dimension that merely looks like an aggregation canonical
+         *     isn't silently re-summed.
+         */
+        "SourceModelOrigin-Output": {
+            /** Name */
+            name: string;
+            /** Data Source */
+            data_source?: string | null;
+            parent?: components["schemas"]["SourceModelOrigin-Output"] | null;
+            /** Agg Column Names */
+            agg_column_names?: string[];
+        };
+        /** StatusResponse */
+        StatusResponse: {
+            /** Status */
+            status: string;
+            /** Name */
+            name: string;
         };
         /**
          * TimeDimension
@@ -1022,9 +1376,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["HealthResponse"];
                 };
             };
         };
@@ -1084,9 +1436,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["ModelSummary"][];
                 };
             };
             /** @description Validation Error */
@@ -1109,7 +1459,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SlayerModel"];
+                "application/json": components["schemas"]["SlayerModel-Input"];
             };
         };
         responses: {
@@ -1119,9 +1469,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
             /** @description Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure). */
@@ -1161,9 +1509,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SlayerModel-Output"];
                 };
             };
             /** @description Model not found. */
@@ -1202,7 +1548,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SlayerModel"];
+                "application/json": components["schemas"]["SlayerModel-Input"];
             };
         };
         responses: {
@@ -1212,9 +1558,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
             /** @description Body name does not match path name, or model failed validation. */
@@ -1254,9 +1598,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
             /** @description Model not found. */
@@ -1299,9 +1641,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string[];
-                    };
+                    "application/json": components["schemas"]["DatasourcePriority"];
                 };
             };
         };
@@ -1325,9 +1665,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["DatasourcePriorityUpdate"];
                 };
             };
             /** @description Priority list contains a name that is not a registered DatasourceConfig. */
@@ -1363,9 +1701,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["DatasourceSummary"][];
                 };
             };
         };
@@ -1389,9 +1725,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
             /** @description Name conflicts with an existing datasource (differs only by case). */
@@ -1551,9 +1885,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RootModelRecommendation"];
                 };
             };
             /** @description Unresolvable / wrong-kind / cross-datasource items. */
@@ -1633,9 +1965,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SaveMemoryResponse"];
                 };
             };
             /** @description Invalid input: empty learning, empty entity list, ambiguous bare-name reference, or unknown entity. */
@@ -1673,9 +2003,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ForgetMemoryResponse"];
                 };
             };
             /** @description Invalid memory id (charset violation). */
@@ -1722,9 +2050,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SearchResponse"];
                 };
             };
             /** @description Invalid input: ambiguous bare-name reference, unknown entity, or malformed query payload. */
@@ -1764,9 +2090,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["InspectResponse"];
                 };
             };
             /** @description Invalid input: bad entity_type / format, negative descriptions_max_chars, or an unresolvable reference. */

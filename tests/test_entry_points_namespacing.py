@@ -350,7 +350,7 @@ class TestClientNamespacing:
 
         client = SlayerClient(storage=storage)
         m = await client.get_model("users", data_source="db_a")
-        assert m is not None
+        assert isinstance(m, SlayerModel)
         assert m.data_source == "db_a"
 
     async def test_set_datasource_priority(self, storage) -> None:

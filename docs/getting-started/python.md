@@ -116,6 +116,10 @@ result = client.query(SlayerQuery(
 print(result.data)
 ```
 
+For a server behind authentication, such as the SLayer Gateway, pass `token=` (a string or a function returning one) and optionally `headers=`. Requests time out after 60 seconds by default (`timeout=None` turns this off). See [Connection settings](../reference/python-client.md#connection-settings).
+
+The [TypeScript SDK](typescript.md) offers the same operations for Node, Deno, Bun and browsers.
+
 ## DataFrame integration
 
 ```python

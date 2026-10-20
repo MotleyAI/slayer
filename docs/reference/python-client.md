@@ -33,6 +33,32 @@ df = client.query_df(query)
 print(df)
 ```
 
+#### Connection settings
+
+```python
+client = SlayerClient(
+    url="https://slayer-gateway.example.com",   # default "http://localhost:5143"
+    token=user_jwt,                              # or a function returning one, sync or async
+    headers={"X-Request-Id": "abc"},             # sent with every request
+    timeout=60.0,                                # seconds (the default); None turns it off
+)
+
+# Same URL, headers and timeout, another token — e.g. per user in a backend
+user_client = client.with_token(request_token)
+```
+
+- A token function is called for every request, so it can return a refreshed token.
+- The timeout default is 60 seconds. Earlier versions used httpx's implicit 5 seconds.
+- `token`, `headers` and `with_token` are remote-only: they raise `ValueError` in local mode.
+
+For local development and service accounts, `sign_gateway_token` signs an HS256 token for the [SLayer Gateway](https://github.com/MotleyAI/slayer-custom)'s `auth.hs256_secret`:
+
+```python
+from slayer.client import sign_gateway_token
+
+token = sign_gateway_token({"sub": "report-job", "tenant": "acme", "roles": ["analyst"]}, secret, ttl_seconds=3600)
+```
+
 ### Local Mode
 
 No server needed — queries execute directly against the storage backend:
@@ -93,12 +119,27 @@ model = client.get_model("orders")
 # Create a model
 client.create_model({"name": "orders", "sql_table": "public.orders", ...})
 
+# Delete a model (data_source= disambiguates a name used in several datasources)
+client.delete_model("orders", data_source="mydb")
+
 # List datasources
 datasources = client.list_datasources()
 
 # Create a datasource
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
+
+# Which datasource wins when a model name exists in several
+client.get_datasource_priority()
+client.set_datasource_priority(["mydb", "warehouse"])
+
+# The query root for a set of items, plus each item's path from it
+client.recommend_root_model(["orders.amount", "customers.region"])
+
+# Server liveness
+client.health()   # {"status": "ok"}
 ```
+
+All of these are async (`await client.list_models()`); `list_models_sync` and `get_model_sync` are synchronous variants. Over HTTP, `list_models` returns dicts with `name`, `data_source` and `description`, and `get_model` returns the model as a dict; in local mode they return model names and a `SlayerModel`. Model names are percent-encoded in request paths.
 
 ### Inspect
 

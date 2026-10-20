@@ -2,12 +2,21 @@ import type { components } from "./schema.js";
 
 type Schemas = components["schemas"];
 
-export type SlayerModel = Schemas["SlayerModel"];
+/** The input form: fields with defaults are optional, as in GET /models/{name} (which omits null fields). */
+export type SlayerModel = Schemas["SlayerModel-Input"];
 export type ModelExtension = Schemas["ModelExtension"];
 export type TimeGranularity = Schemas["TimeGranularity"];
-export type InspectRequest = Schemas["InspectRequest"];
-export type SearchRequest = Schemas["SearchRequest"];
 export type DatasourceConfig = Schemas["DatasourceConfig"];
+export type QueryRefinement = Schemas["QueryRefinement"];
+export type HealthResponse = Schemas["HealthResponse"];
+export type ModelSummary = Schemas["ModelSummary"];
+export type DatasourceSummary = Schemas["DatasourceSummary"];
+export type StatusResponse = Schemas["StatusResponse"];
+export type SaveMemoryResponse = Schemas["SaveMemoryResponse"];
+export type ForgetMemoryResponse = Schemas["ForgetMemoryResponse"];
+export type SearchResponse = Schemas["SearchResponse"];
+export type SearchHit = Schemas["SearchHit"];
+export type RootModelRecommendation = Schemas["RootModelRecommendation"];
 
 /** A measure: a formula string, or a formula with a result name. */
 export type Measure = string | { formula: string; name?: string; label?: string };
@@ -37,23 +46,61 @@ export interface Query extends Omit<Schemas["QueryRequest"], "measures" | "dimen
   order?: OrderItem[] | null;
 }
 
+/** A query object, a list of stages (the last is the result), or the name of a saved query-backed model. */
+export type QueryInput = Query | Query[] | string;
+
 export type Row = Record<string, unknown>;
 
-export interface QueryResult<T extends Row = Row> extends Omit<Schemas["QueryResponse"], "data"> {
+export interface SlayerResponse<T extends Row = Row> extends Omit<Schemas["QueryResponse"], "data"> {
   data: T[];
 }
 
 export interface QueryOptions {
+  /** Only with a saved query name. */
+  refine?: QueryRefinement | Record<string, unknown>;
+  /** Override the query's own variables. */
   variables?: Record<string, unknown>;
   dryRun?: boolean;
   explain?: boolean;
   signal?: AbortSignal;
 }
 
-/** A model as listed by GET /models. */
-export interface ModelSummary {
-  name: string;
-  data_source?: string;
-  description?: string | null;
-  [key: string]: unknown;
+export interface DataSourceOptions {
+  dataSource?: string;
+}
+
+export interface SaveMemoryOptions {
+  learning: string;
+  /** Entity references, or a query to extract them from. */
+  linkedEntities: string[] | Query;
+  id?: string;
+  description?: string;
+}
+
+export interface SearchOptions {
+  entities?: string[];
+  query?: Query;
+  question?: string;
+  datasource?: string;
+  maxResults?: number;
+  cypherFilter?: string;
+  compact?: boolean;
+}
+
+export interface InspectOptions {
+  entityType: string;
+  /** One id, a same-kind batch, or omitted for a whole collection. */
+  reference?: string | string[] | null;
+  compact?: boolean;
+  format?: string;
+  numRows?: number;
+  showSql?: boolean;
+  sections?: string[];
+  descriptionsMaxChars?: number;
+}
+
+export interface RecommendRootModelOptions {
+  dataSource?: string;
+  /** Forces the root when it reaches every item. */
+  rootHint?: string;
 }

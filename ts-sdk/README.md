@@ -1,6 +1,6 @@
 # @motley-ai/slayer
 
-A TypeScript client for [SLayer](https://github.com/MotleyAI/slayer) and the [SLayer Gateway](https://github.com/MotleyAI/slayer-custom).
+A TypeScript client for [SLayer](https://github.com/MotleyAI/slayer) and the [SLayer Gateway](https://github.com/MotleyAI/slayer-custom). It mirrors SLayer's Python `SlayerClient`: the same operations, sending the same requests.
 
 - Zero runtime dependencies. It uses the built-in `fetch` (Node 20.3+, Deno, Bun, browsers, edge runtimes).
 - Request and response types are generated from the SLayer OpenAPI schema.
@@ -17,7 +17,7 @@ npm install @motley-ai/slayer
 ```ts
 import { SlayerClient } from "@motley-ai/slayer";
 
-const slayer = new SlayerClient({ baseUrl: "http://slayer-gateway:5143", token: userJwt });
+const slayer = new SlayerClient({ url: "http://slayer-gateway:5143", token: userJwt });
 
 const { data } = await slayer.query<{ "orders.customers.name": string; "orders.revenue": number }>({
   source_model: "orders",
@@ -27,6 +27,10 @@ const { data } = await slayer.query<{ "orders.customers.name": string; "orders.r
   order: [{ column: "revenue", direction: "desc" }],
 });
 ```
+
+`query` also takes a list of stages or the name of a saved query-backed model (`slayer.query("rev_by_region", { refine: { limit: 5 } })`). SDK options are camelCase; queries, models and responses keep SLayer's own field names.
+
+Full guide, with every method and its Python counterpart: [TypeScript SDK docs](https://github.com/MotleyAI/slayer/blob/main/docs/getting-started/typescript.md).
 
 ### Tokens
 
@@ -40,22 +44,9 @@ import { signGatewayToken } from "@motley-ai/slayer/node";
 const token = signGatewayToken({ sub: "report-job", tenant: "acme", roles: ["analyst"] }, process.env.GATEWAY_JWT_SECRET!);
 ```
 
-### Methods
+### Timeouts and errors
 
-| Method | Endpoint |
-|---|---|
-| `query(query, { variables, dryRun, explain, signal })` | `POST /query` |
-| `queryStages([stage1, stage2])` | `POST /query` (multi-stage) |
-| `run(name)` | `POST /query` (saved query-backed model) |
-| `listModels(dataSource?)`, `getModel(name)` | `GET /models` |
-| `inspect(request)`, `search(request)` | `POST /inspect`, `POST /search` |
-| `saveModel(model)`, `deleteModel(name)` | `PUT/DELETE /models/{name}` |
-| `listDatasources()` | `GET /datasources` |
-| `health()` | `GET /health` |
-
-### Errors
-
-A non-2xx response throws `SlayerApiError`. It has `status`, `detail`, `isUnauthorized` (401) and `isForbidden` (403).
+Requests time out after 60 seconds (`timeoutMs`; `null` turns it off). A non-2xx response throws `SlayerApiError`, with `status`, `detail`, `isUnauthorized` (401) and `isForbidden` (403).
 
 ### MCP
 
@@ -65,8 +56,10 @@ The gateway also serves MCP over SSE at `/mcp/sse`. For AI agents, connect `@mod
 
 ```bash
 npm install
-npm test                                   # unit tests
+npm test                                   # unit and parity tests
 SLAYER_E2E_URL=http://localhost:5143 npm test   # plus end-to-end tests against the slayer-custom demo stack
 npm run gen                                # regenerate src/schema.ts from SLayer's Python API (needs `poetry install` in the repo root)
 npm run build
 ```
+
+`test/parity.test.ts` and the Python `tests/test_client_parity.py` replay the shared `tests/client_parity.json`. Add an entry there when you add a method to either client.

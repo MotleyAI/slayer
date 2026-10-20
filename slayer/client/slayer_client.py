@@ -1,7 +1,10 @@
 """Python client for SLayer API."""
 
+import inspect
 import logging
 from collections.abc import (
+    Awaitable,
+    Callable,
     Mapping,
     Mapping as ABCMapping,
     Sequence,
@@ -14,9 +17,13 @@ from typing import (
 from urllib.parse import quote
 
 from slayer.async_utils import run_sync
+from pydantic import TypeAdapter, ValidationError
+
 from slayer.core.format import NumberFormat
+from slayer.core.models import SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import RootModelRecommendation
+from slayer.core.warnings import AnySlayerWarning
 from slayer.engine.query_engine import (
     FieldMetadata,
     ResponseAttributes,
@@ -58,6 +65,19 @@ QueryInput = (
 )
 Refinement = QueryRefinement | Mapping[str, Any] | None
 Variables = Mapping[str, Any] | None
+# A static bearer token, or a callable returning one (sync or async), resolved per request.
+TokenSource = str | Callable[[], str | Awaitable[str]]
+
+_WARNING_ADAPTER: TypeAdapter[AnySlayerWarning] = TypeAdapter(AnySlayerWarning)
+
+
+async def _await(value: Awaitable[str]) -> str:
+    return await value
+
+
+def _path_segment(value: object) -> str:
+    # Percent-encode: names and ids may hold reserved URL characters.
+    return quote(str(value), safe="")
 
 
 class SlayerClient:
@@ -74,11 +94,19 @@ class SlayerClient:
         storage: Any | None = None,
         *,
         policy: "SessionPolicy | None" = None,
+        token: TokenSource | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = 60.0,
     ):
         self.url = url.rstrip("/")
         self._storage = storage
         self._engine = None
+        self._token = token
+        self._headers = dict(headers or {})
+        self._timeout = timeout  # ignored in local mode
         if storage is not None:
+            if token is not None or headers is not None:
+                raise ValueError("token= and headers= are remote-only; local-engine mode (storage=...) sends no HTTP.")
             self._engine = SlayerQueryEngine(storage=storage, policy=policy)
         elif policy is not None:
             # Forced-filter policy is local-engine only; fail fast rather than
@@ -89,6 +117,25 @@ class SlayerClient:
                 "available."
             )
 
+    def with_token(self, token: TokenSource) -> "SlayerClient":
+        """A client with the same settings that sends another token, such as the current user's."""
+        if self._storage is not None:
+            raise ValueError("with_token() is remote-only; local-engine mode (storage=...) sends no HTTP.")
+        return SlayerClient(url=self.url, token=token, headers=self._headers, timeout=self._timeout)
+
+    def _with_auth(self, token: str | None) -> dict[str, str]:
+        if token is None:
+            return dict(self._headers)
+        return {**self._headers, "Authorization": f"Bearer {token}"}
+
+    async def _auth_headers(self) -> dict[str, str]:
+        token = self._token() if callable(self._token) else self._token
+        return self._with_auth(await token if inspect.isawaitable(token) else token)
+
+    def _auth_headers_sync(self) -> dict[str, str]:
+        token = self._token() if callable(self._token) else self._token
+        return self._with_auth(run_sync(_await(token)) if inspect.isawaitable(token) else token)
+
     async def _request(
         self,
         method: str,
@@ -98,9 +145,10 @@ class SlayerClient:
     ) -> Any:
         if httpx is None:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
-        async with httpx.AsyncClient() as client:
+        headers = await self._auth_headers()
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.request(
-                method=method, url=f"{self.url}{path}", json=json, params=params
+                method=method, url=f"{self.url}{path}", json=json, params=params, headers=headers
             )
             resp.raise_for_status()
             return resp.json()
@@ -114,9 +162,10 @@ class SlayerClient:
     ) -> Any:
         if httpx is None:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
-        with httpx.Client() as client:
+        headers = self._auth_headers_sync()
+        with httpx.Client(timeout=self._timeout) as client:
             resp = client.request(
-                method=method, url=f"{self.url}{path}", json=json, params=params
+                method=method, url=f"{self.url}{path}", json=json, params=params, headers=headers
             )
             resp.raise_for_status()
             return resp.json()
@@ -232,9 +281,21 @@ class SlayerClient:
             columns=result.get("columns") or [],
             sql=result.get("sql"),
             attributes=attributes,
+            warnings=SlayerClient._parse_warnings(result.get("warnings") or []),
             population=result.get("population"),
             population_inferred=bool(result.get("population_inferred", False)),
         )
+
+    @staticmethod
+    def _parse_warnings(raw: list[Any]) -> list[AnySlayerWarning]:
+        parsed = []
+        for item in raw:
+            try:
+                parsed.append(_WARNING_ADAPTER.validate_python(item))
+            except ValidationError:
+                # A newer server's warning kind must not fail the whole query.
+                logger.warning("Skipping unrecognised response warning: %r", item)
+        return parsed
 
     # ----- Async API -----
 
@@ -278,7 +339,11 @@ class SlayerClient:
         """Run the database's EXPLAIN on a query (same input union)."""
         return await self.query(query=query, refine=refine, variables=variables, explain=True)
 
-    async def list_models(self, data_source: str | None = None) -> list[str]:
+    async def health(self) -> dict[str, str]:
+        return await self._request(method="GET", path="/health")
+
+    async def list_models(self, data_source: str | None = None) -> list[str] | list[dict[str, Any]]:
+        """Model names in local mode; ``name``/``data_source``/``description`` dicts over HTTP."""
         if self._storage is not None:
             names = await self._storage.list_models(data_source=data_source)
             return list(names)
@@ -289,16 +354,24 @@ class SlayerClient:
         self,
         name: str,
         data_source: str | None = None,
-    ) -> Any | None:
+    ) -> SlayerModel | dict[str, Any] | None:
+        """A ``SlayerModel`` in local mode; its JSON dict over HTTP."""
         if self._storage is not None:
             return await self._storage.get_model(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="GET", path=f"/models/{_path_segment(name)}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def create_model(self, model: dict[str, Any]) -> dict[str, str]:
         return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def list_datasources(self) -> list[str]:
+    async def delete_model(self, name: str, data_source: str | None = None) -> None:
+        if self._storage is not None:
+            await self._storage.delete_model(name, data_source=data_source)
+            return
+        params = {"data_source": data_source} if data_source else None
+        await self._request(method="DELETE", path=f"/models/{_path_segment(name)}", params=params)
+
+    async def list_datasources(self) -> list[dict[str, Any]]:
         return await self._request(method="GET", path="/datasources")
 
     async def create_datasource(self, datasource: dict[str, Any]) -> dict[str, str]:
@@ -374,11 +447,8 @@ class SlayerClient:
             return await self._memory_service().forget_memory(
                 identifier=identifier
             )
-        # Percent-encode: ids are arbitrary strings that may hold reserved
-        # URL characters.
-        encoded = quote(str(identifier), safe="")
         result = await self._request(
-            method="DELETE", path=f"/memories/{encoded}",
+            method="DELETE", path=f"/memories/{_path_segment(identifier)}",
         )
         return ForgetMemoryResponse.model_validate(result)
 
@@ -616,8 +686,8 @@ class SlayerClient:
         result = self.query_sync(query=query, refine=refine, variables=variables)
         return pd.DataFrame(result.data)
 
-    def list_models_sync(self) -> list[str]:
+    def list_models_sync(self) -> list[dict[str, Any]]:
         return self._request_sync(method="GET", path="/models")
 
     def get_model_sync(self, name: str) -> dict[str, Any]:
-        return self._request_sync("GET", f"/models/{name}")
+        return self._request_sync(method="GET", path=f"/models/{_path_segment(name)}")

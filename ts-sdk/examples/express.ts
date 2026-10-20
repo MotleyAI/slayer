@@ -2,9 +2,9 @@
 // Run it with your web framework of choice; this sketch uses Express-style handlers.
 import { SlayerApiError, SlayerClient } from "@motley-ai/slayer";
 
-const baseUrl = process.env.SLAYER_URL;
-if (!baseUrl) throw new Error("Set SLAYER_URL to the gateway address");
-const slayer = new SlayerClient({ baseUrl, timeoutMs: 30_000 });
+const url = process.env.SLAYER_URL;
+if (!url) throw new Error("Set SLAYER_URL to the gateway address");
+const slayer = new SlayerClient({ url, timeoutMs: 30_000 });
 
 interface Req {
   headers: Record<string, string | undefined>;

@@ -40,9 +40,28 @@ jobs:
             ts:
               - 'ts-sdk/**'
               - 'slayer/**'
+              - 'tests/client_parity.json'
               - 'pyproject.toml'
               - 'poetry.lock'
               - '.github/workflows/ci.yml'
+
+  # The model spans Python and TypeScript, so the cross-walk runs on every change; Node runs its TS twin.
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # Same inputs as the lint-and-test 3.11 leg, so they share the venv cache.
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Check living-architecture cross-walk
+        run: poetry run la-arch-check
 
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -118,9 +137,6 @@ jobs:
 
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
-
-      - name: Check living-architecture cross-walk
-        run: poetry run la-arch-check
 
       - name: Run unit tests
         timeout-minutes: 20

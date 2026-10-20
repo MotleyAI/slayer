@@ -22,14 +22,16 @@ from slayer.core.errors import (
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
+from slayer.core.recommend import RootModelRecommendation
 from slayer.async_utils import run_sync
 from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
+from slayer.memories.models import ForgetMemoryResponse, SaveMemoryResponse
 from slayer.memories.service import MemoryService
-from slayer.search.service import SearchService
+from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
@@ -119,6 +121,39 @@ class QueryResponse(BaseModel):
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
     warnings: list[dict[str, Any]] = []
+
+
+class HealthResponse(BaseModel):
+    status: str
+
+
+class ModelSummary(BaseModel):
+    name: str
+    data_source: str | None = None
+    description: str | None = None
+
+
+class DatasourceSummary(BaseModel):
+    name: str
+    type: str | None = None
+
+
+class DatasourcePriority(BaseModel):
+    priority: list[str]
+
+
+class DatasourcePriorityUpdate(BaseModel):
+    status: str
+    priority: list[str]
+
+
+class StatusResponse(BaseModel):
+    status: str
+    name: str
+
+
+class InspectResponse(BaseModel):
+    result: str
 
 
 class IngestRequest(BaseModel):
@@ -308,8 +343,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     app.mount(_MCP_MOUNT, mcp_app)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> HealthResponse:
+        return HealthResponse(status="ok")
 
     @app.post(
         "/query",
@@ -429,29 +464,33 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # SlayerError subclasses ValueError; both map to 400.
             raise HTTPException(status_code=400, detail=str(e))
 
-    @app.get("/models")
+    # exclude_unset: a stored model without a description omits the key.
+    @app.get("/models", response_model_exclude_unset=True)
     async def list_models(
         data_source: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ModelSummary]:
         result = []
         for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
             if model.hidden:
                 continue
-            entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
+            entry = ModelSummary(name=model.name, data_source=model.data_source)
             if model.description:
-                entry["description"] = model.description
+                entry.description = model.description
             result.append(entry)
         datasources = [data_source] if data_source is not None else await storage.list_datasources()
         for ds_name in datasources:
             result.extend(
-                {"name": m.name, "data_source": ds_name, "description": m.description}
+                ModelSummary(name=m.name, data_source=ds_name, description=m.description)
                 for m in await storage.builtin_models(ds_name)
             )
         return result
 
+    # Documented, not validated: the body drops hidden columns and None fields.
     @app.get(
         "/models/{name}",
+        response_model=None,
         responses={
+            200: {"model": SlayerModel},
             404: {"description": "Model not found."},
             409: {
                 "description": (
@@ -487,20 +526,20 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> dict[str, str]:
+    async def create_model(model: SlayerModel) -> StatusResponse:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
         try:
             await engine.save_model(model)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": model.name}
+        return StatusResponse(status="created", name=model.name)
 
     @app.put(
         "/models/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> dict[str, str]:
+    async def update_model(name: str, model: SlayerModel) -> StatusResponse:
         if model.name != name:
             raise HTTPException(
                 status_code=400,
@@ -510,7 +549,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             await engine.save_model(model)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "updated", "name": name}
+        return StatusResponse(status="updated", name=name)
 
     @app.delete(
         "/models/{name}",
@@ -528,7 +567,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def delete_model(
         name: str,
         data_source: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> StatusResponse:
         try:
             deleted = await storage.delete_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -541,11 +580,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
-        return {"status": "deleted", "name": name}
+        return StatusResponse(status="deleted", name=name)
 
     @app.get("/datasources/priority")
-    async def get_datasource_priority() -> dict[str, list[str]]:
-        return {"priority": await storage.get_datasource_priority()}
+    async def get_datasource_priority() -> DatasourcePriority:
+        return DatasourcePriority(priority=await storage.get_datasource_priority())
 
     @app.put(
         "/datasources/priority",
@@ -558,22 +597,23 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def put_datasource_priority(body: DatasourcePriorityRequest) -> dict[str, Any]:
+    async def put_datasource_priority(body: DatasourcePriorityRequest) -> DatasourcePriorityUpdate:
         priority = list(body.priority)
         try:
             await storage.set_datasource_priority(priority)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return {"status": "ok", "priority": priority}
+        return DatasourcePriorityUpdate(status="ok", priority=priority)
 
-    @app.get("/datasources")
-    async def list_datasources() -> list[dict[str, Any]]:
+    # exclude_unset: a name with no loadable config omits ``type``.
+    @app.get("/datasources", response_model_exclude_unset=True)
+    async def list_datasources() -> list[DatasourceSummary]:
         result = []
         for name in await storage.list_datasources():
             ds = await storage.get_datasource(name)
-            entry: dict[str, Any] = {"name": name}
+            entry = DatasourceSummary(name=name)
             if ds:
-                entry["type"] = ds.type
+                entry.type = ds.type
             result.append(entry)
         return result
 
@@ -598,12 +638,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/datasources",
         responses={400: {"description": "Name conflicts with an existing datasource (differs only by case)."}},
     )
-    async def create_datasource(datasource: DatasourceConfig) -> dict[str, str]:
+    async def create_datasource(datasource: DatasourceConfig) -> StatusResponse:
         try:
             await storage.save_datasource(datasource)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": datasource.name}
+        return StatusResponse(status="created", name=datasource.name)
 
     @app.delete(
         "/datasources/{name}",
@@ -660,7 +700,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def recommend_root_model_endpoint(
         request: RecommendRootModelRequest,
-    ) -> dict[str, Any]:
+    ) -> RootModelRecommendation:
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
@@ -672,7 +712,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
-        return rec.model_dump(mode="json")
+        return rec
 
     @app.post(
         "/ingest",
@@ -773,7 +813,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def save_memory(request: SaveMemoryRequest) -> dict[str, Any]:
+    async def save_memory(request: SaveMemoryRequest) -> SaveMemoryResponse:
         try:
             response = await memory_service.save_memory(
                 learning=request.learning,
@@ -783,7 +823,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         except ValueError as exc:  # EntityResolutionError/AmbiguousModelError are ValueError subclasses
             raise HTTPException(status_code=400, detail=str(exc))
-        return response.model_dump(mode="json")
+        return response
 
     @app.delete(
         "/memories/{memory_id}",
@@ -792,14 +832,14 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             404: {"description": "Memory not found."},
         },
     )
-    async def delete_memory(memory_id: str) -> dict[str, Any]:
+    async def delete_memory(memory_id: str) -> ForgetMemoryResponse:
         try:
             response = await memory_service.forget_memory(identifier=memory_id)
         except MemoryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return response.model_dump(mode="json")
+        return response
 
     # ---------- Semantic search -----------------------------
 
@@ -818,7 +858,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def search(request: SearchRequest) -> dict[str, Any]:
+    async def search(request: SearchRequest) -> SearchResponse:
         try:
             response = await search_service.search(
                 entities=request.entities,
@@ -831,7 +871,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
-        return response.model_dump(mode="json")
+        return response
 
     inspect_service = InspectService(storage=storage, engine=engine)
 
@@ -846,7 +886,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def inspect(request: InspectRequest) -> dict[str, Any]:
+    async def inspect(request: InspectRequest) -> InspectResponse:
         try:
             result = await inspect_service.inspect(
                 reference=request.reference,
@@ -860,6 +900,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         except ValueError as exc:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(exc))
-        return {"result": result}
+        return InspectResponse(result=result)
 
     return app
