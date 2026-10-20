@@ -44,7 +44,7 @@ Question (run on the built-in demo Jaffle Shop database): **"show monthly revenu
 
 Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 
-![Example SQL vs SLayer query](https://github.com/user-attachments/assets/a8c73688-e760-402e-9f87-a05591d6cbee)
+![A 17-line SQL query with a CTE, a join and two LAG window functions, next to the SLayer query {"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "month(ordered_at)"]}](https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/sql-vs-slayer.png)
 
 ## Quickstart
 
