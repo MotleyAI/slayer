@@ -37,11 +37,21 @@ def _isolated_engine_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine_factory, "_engine_cache", OrderedDict())
 
 
-@pytest.fixture
-def sa21_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def _simulate_sa21_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """SQLAlchemy 2.1's default: bare ``postgresql://`` resolves to psycopg 3."""
     monkeypatch.setattr(pg_base, "dialect", PGDialect_psycopg)
     assert make_url("postgresql://").get_dialect().driver == "psycopg"
+
+
+@pytest.fixture
+def sa21_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _simulate_sa21_postgres_default(monkeypatch)
+
+
+@pytest.fixture(params=[False, True], ids=["installed", "sa21-postgres-default"])
+def sqlalchemy_postgres_default(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.param:
+        _simulate_sa21_postgres_default(monkeypatch)
 
 
 def _url(ds_type: str | None, connection_string: str) -> str:
@@ -159,11 +169,9 @@ def test_default_driver_types_match_registry() -> None:
     assert declared == set(_DEFAULT_DRIVER)
 
 
-@pytest.mark.parametrize("simulate_sa21", [False, True], ids=["installed", "sa21-postgres-default"])
+@pytest.mark.usefixtures("sqlalchemy_postgres_default")
 @pytest.mark.parametrize("ds_type", sorted(_DEFAULT_DRIVER))
-def test_sqlalchemy_resolves_declared_default_driver(request, ds_type, simulate_sa21) -> None:
-    if simulate_sa21:
-        request.getfixturevalue("sa21_postgres_default")
+def test_sqlalchemy_resolves_declared_default_driver(ds_type) -> None:
     driver, backend = _DEFAULT_DRIVER[ds_type]
     structured = DatasourceConfig(name="d", type=ds_type, host="h", database="db", username="u", password="p")
     for url in (structured.get_connection_string(), _url(ds_type, f"{backend}://u@h/d")):
