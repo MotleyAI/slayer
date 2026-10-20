@@ -10,15 +10,15 @@
 
 ## 3. Implementation (pr-implement stage)
 
-- [ ] 3.1 Create `slayer/storage/legacy_backends.py` with the two adapters (design D2–D4): nearest-`_save_datasource_impl` classification with an adapter-made marker, rebind-and-delete for root 0.9.x classes, check-first wrapper for 0.9.x children, the `_list_memories_rows` async `functools.wraps` wrapper with a warned-once flag per defining class, and `FutureWarning` messages. Verify the R1/R2 tests pass.
-- [ ] 3.2 Add `StorageBackend.__init_subclass__(**kwargs)` in `slayer/storage/base.py`, calling `super().__init_subclass__(**kwargs)` then both adapters, with imports at the top. Verify the bundled YAML / SQLite / access-filtered backends still pass `tests/test_memories_storage.py` and `tests/test_model_access.py`.
+- [x] 3.1 Create `slayer/storage/legacy_backends.py` with the two adapters (design D2–D4): nearest-`_save_datasource_impl` classification with an adapter-made marker, rebind-and-delete for root 0.9.x classes, check-first wrapper for 0.9.x children, the `_list_memories_rows` async `functools.wraps` wrapper with a warned-once flag per defining class, and `FutureWarning` messages. Verify the R1/R2 tests pass.
+- [x] 3.2 Add `StorageBackend.__init_subclass__(**kwargs)` in `slayer/storage/base.py`, calling `super().__init_subclass__(**kwargs)` then both adapters, with imports at the top. Verify the bundled YAML / SQLite / access-filtered backends still pass `tests/test_memories_storage.py` and `tests/test_model_access.py`.
 
 ## 4. Docs
 
-- [ ] 4.1 Rewrite the Custom Backends example in `docs/configuration/storage.md`: every abstract hook with its current signature (`_save_datasource_impl`; the memory hooks with `_list_memories_rows -> Loaded[Memory]`; `update_column_sampled`; `get_datasource_priority`, `_set_datasource_priority_raw`; the four embedding hooks) plus the imports it needs (`Loaded`, `Memory`, `Embedding`). Point the `check_datasource_id_collision` sentence at `_save_datasource_impl`. Verify a class copied from the example (bodies filled with `...`) has empty `__abstractmethods__`.
-- [ ] 4.2 Add the single-sentence upgrade note: "A backend written against 0.9.x that overrides `save_datasource` or returns a plain list from `_list_memories_rows` keeps working, with a `FutureWarning`, until 2.0 — move it to `_save_datasource_impl` and the `(memories, failed_rows)` return shape, and override only the hooks listed above." Verify by reading the rendered section.
+- [x] 4.1 Rewrite the Custom Backends example in `docs/configuration/storage.md`: every abstract hook with its current signature (`_save_datasource_impl`; the memory hooks with `_list_memories_rows -> Loaded[Memory]`; `update_column_sampled`; `get_datasource_priority`, `_set_datasource_priority_raw`; the four embedding hooks) plus the imports it needs (`Loaded`, `Memory`, `Embedding`). Point the `check_datasource_id_collision` sentence at `_save_datasource_impl`. Verify a class copied from the example (bodies filled with `...`) has empty `__abstractmethods__`.
+- [x] 4.2 Add the single-sentence upgrade note: "A backend written against 0.9.x that overrides `save_datasource` or returns a plain list from `_list_memories_rows` keeps working, with a `FutureWarning`, until 2.0 — move it to `_save_datasource_impl` and the `(memories, failed_rows)` return shape, and override only the hooks listed above." Verify by reading the rendered section.
 
 ## 5. Gates
 
-- [ ] 5.1 Run `poetry run pytest -m "not integration"` (full unit suite), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green.
+- [x] 5.1 Run `poetry run pytest -m "not integration"` (full unit suite), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green.
 - [ ] 5.2 Add a "Release note" line to the PR description (release notes files stay untracked).

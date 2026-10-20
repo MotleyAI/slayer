@@ -2,6 +2,7 @@
 
 import contextlib
 import inspect
+from abc import abstractmethod
 import re
 import warnings
 from collections.abc import Callable, Generator
@@ -234,8 +235,9 @@ class TestLegacySaveDatasource:
     async def test_invalid_granularity_rejected_before_old_body(self) -> None:
         with _quiet():
             backend = _legacy_cls()()
+        invalid = _invalid()
         with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(_invalid())
+            await backend.save_datasource(invalid)
         assert backend.log == []
         assert backend.datasources == {}
 
@@ -256,13 +258,34 @@ class TestLegacySaveDatasource:
         for needle in ("Legacy09Child", "save_datasource", "_save_datasource_impl", "2.0"):
             assert needle in child_warnings[0]
         backend = Legacy09Child()  # pyright: ignore[reportAbstractUsage]
+        invalid = _invalid()
         with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(_invalid())
+            await backend.save_datasource(invalid)
         assert backend.log == []
         assert backend.datasources == {}
         await backend.save_datasource(_valid())
         assert backend.log == (["child", "body"] if calls_super else ["child"])
         assert await backend.get_datasource("shop") == _valid()
+
+    async def test_legacy_backend_below_abstract_redeclaration_is_adapted(self, spy_check: list[str]) -> None:
+        class ReDeclaringBase(_DictStore):
+            @abstractmethod
+            async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None: ...
+
+        with _recorded() as caught:
+            class Legacy09OnAbstractBase(ReDeclaringBase):
+                async def save_datasource(self, datasource: DatasourceConfig) -> None:
+                    self.log.append("body")
+                    self.datasources[datasource.name] = datasource
+
+                async def _list_memories_rows(self, *, entities: list[str] | None) -> Loaded[Memory]:
+                    return [], []
+        assert len(_future(caught)) == 1
+        assert Legacy09OnAbstractBase.__abstractmethods__ == frozenset()
+        backend = Legacy09OnAbstractBase()  # pyright: ignore[reportAbstractUsage]
+        backend.log = spy_check
+        await backend.save_datasource(_valid())
+        assert spy_check == ["check", "body"]
 
     async def test_new_style_backend_untouched(self, spy_check: list[str]) -> None:
         with _recorded() as caught:
@@ -272,8 +295,9 @@ class TestLegacySaveDatasource:
         backend.log = spy_check
         await backend.save_datasource(_valid())
         assert spy_check == ["check", "impl"]
+        invalid = _invalid()
         with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(_invalid())
+            await backend.save_datasource(invalid)
         assert spy_check == ["check", "impl", "check"]
 
     async def test_bundled_backend_subclass_override_untouched(self, tmp_path) -> None:
@@ -290,8 +314,9 @@ class TestLegacySaveDatasource:
         await backend.save_datasource(_valid())
         assert backend.log == ["override"]
         assert await backend.get_datasource("shop") == _valid()
+        invalid = _invalid()
         with pytest.raises(GranularityDefinitionError):
-            await backend.save_datasource(_invalid())
+            await backend.save_datasource(invalid)
 
 
 async def _store_memories(*, backend: StorageBackend, count: int) -> list[Memory]:
@@ -338,6 +363,17 @@ class TestListMemoriesRowsShape:
         for needle in ("ListRowsBackend", "_list_memories_rows", _SHAPE, "2.0"):
             assert needle in messages[0]
 
+    async def test_old_shape_warning_survives_an_error_filter(self) -> None:
+        backend = _list_rows_cls()()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            with pytest.raises(FutureWarning):
+                await backend.list_memories()
+        with _recorded() as caught:
+            await backend.list_memories()
+            await backend.list_memories()
+        assert len(_future(caught)) == 1
+
     async def test_inheriting_subclass_shares_defining_class_warning(self) -> None:
         parent = _list_rows_cls()
 
@@ -356,8 +392,9 @@ class TestListMemoriesRowsShape:
         backend = _list_rows_cls()()
         await _store_memories(backend=backend, count=1)
         backend.memories["9"] = {"id": "9", "learning": None}
+        call = getattr(backend, method)
         with _quiet(), pytest.raises(ValueError):
-            await getattr(backend, method)()
+            await call()
 
     @pytest.mark.parametrize("cls", [YAMLStorage, SQLiteStorage, AccessFilteredStorage])
     def test_bundled_overrides_are_shape_checked(self, cls: type[StorageBackend]) -> None:
