@@ -21,4 +21,4 @@
 ## 5. Gates
 
 - [x] 5.1 Run `poetry run pytest -m "not integration"` (full unit suite), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline) and `poetry run la-arch-check`; all green.
-- [ ] 5.2 Add a "Release note" line to the PR description (release notes files stay untracked).
+- [x] 5.2 Add a "Release note" line to the PR description (release notes files stay untracked).
