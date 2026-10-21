@@ -135,7 +135,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
     return blockers, attached
 
 
-def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
+def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
     """Row-level refs outside aggregate subtrees not available at query grain.
     A subtree equal to a query dimension's bound key IS the grouped value —
     available at query grain wholesale."""
@@ -187,7 +187,7 @@ def type_position_conjunct(
     if not field_blockers:
         return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
     if has_measure_position:
-        measure_blockers = _measure_blockers(cj, dim_keys)
+        measure_blockers = row_refs_off_grain(cj, dim_keys)
         if not measure_blockers:
             return ConjunctTyping(MaskTyping.MEASURE, 1)
         raise PositionTypingError(
@@ -221,7 +221,7 @@ def check_measures_at_query_grain(prebound: PreboundQuery) -> None:
         if dm.is_dimension:
             continue
         root = dm.bound.value_key
-        blockers = _measure_blockers(root, dim_keys)
+        blockers = row_refs_off_grain(root, dim_keys)
         if not blockers:
             continue
         names = ", ".join(_key_display(k) for k in blockers)

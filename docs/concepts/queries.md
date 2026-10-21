@@ -226,7 +226,7 @@ What each shape of an *undeclared* order target does:
 | An inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`, `change(sum(amount)) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`sum(amount, window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
-| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
+| A raw row column or row-level expression (`amount - fee`), in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
 | A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
 
 Ordering by an undeclared row column in a grouped query is **not** the same as
@@ -239,6 +239,7 @@ NULLs sort **last** in both directions, on every database, so the same query
 returns the same row order regardless of backend. (SQL Server is the one
 exception: its native ordering is used because the portable emulation makes the
 statement fail there.)
+An explicit `nulls` (`first` or `last`) places NULLs there on every database, SQL Server included.
 
 An order target that names nothing SLayer can resolve is an error, never a
 silently unsorted result.
