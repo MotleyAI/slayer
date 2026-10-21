@@ -18,14 +18,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ds type → (url_scheme, sync_driver, async_driver, install_extra)
 _EXPECTED = {
-    "postgres": ("postgresql", "psycopg2", "asyncpg", "postgres"),
-    "postgresql": ("postgresql", "psycopg2", "asyncpg", "postgres"),
+    "postgres": ("postgresql+psycopg2", "psycopg2", "asyncpg", "postgres"),
+    "postgresql": ("postgresql+psycopg2", "psycopg2", "asyncpg", "postgres"),
     "mysql": ("mysql+pymysql", "pymysql", "aiomysql", "mysql"),
     "mariadb": ("mysql+pymysql", "pymysql", "aiomysql", "mysql"),
-    "clickhouse": ("clickhouse+http", None, None, "clickhouse"),
-    "mssql": ("mssql+pyodbc", None, None, "sqlserver"),
-    "sqlserver": ("mssql+pyodbc", None, None, "sqlserver"),
-    "tsql": ("mssql+pyodbc", None, None, "sqlserver"),
+    "clickhouse": ("clickhouse+http", "http", None, "clickhouse"),
+    "mssql": ("mssql+pyodbc", "pyodbc", None, "sqlserver"),
+    "sqlserver": ("mssql+pyodbc", "pyodbc", None, "sqlserver"),
+    "tsql": ("mssql+pyodbc", "pyodbc", None, "sqlserver"),
     "snowflake": ("snowflake", None, None, "snowflake"),
     "bigquery": ("bigquery", None, None, "bigquery"),
     "sqlite": ("sqlite", None, None, None),
@@ -56,6 +56,33 @@ def test_dialect_declares_driver_facts(ds_type) -> None:
 def test_unregistered_type_gets_no_fallback_driver_facts() -> None:
     facts = dialect_for_ds_type("foo").driver_facts("foo")
     assert facts == DriverFacts(url_scheme="foo")
+    assert facts.sync_driver is None
+
+
+@pytest.mark.parametrize(
+    "url_scheme,sync_driver",
+    [("postgresql+psycopg2", "psycopg2"), ("mssql+pyodbc", "pyodbc"), ("sqlite", None), (None, None)],
+)
+def test_sync_driver_is_the_scheme_driver(url_scheme, sync_driver) -> None:
+    assert DriverFacts(url_scheme=url_scheme).sync_driver == sync_driver
+
+
+@pytest.mark.parametrize(
+    "ds_type,backends",
+    [
+        ("postgres", {"postgresql"}),
+        ("mysql", {"mysql", "mariadb"}),
+        ("mariadb", {"mysql", "mariadb"}),
+        ("sqlserver", {"mssql"}),
+        ("foo", {"foo"}),
+    ],
+)
+def test_url_backends(ds_type, backends) -> None:
+    assert dialect_for_ds_type(ds_type).driver_facts(ds_type).url_backends == backends
+
+
+def test_no_scheme_serves_no_backend() -> None:
+    assert DriverFacts(url_backend_aliases=frozenset({"mariadb"})).url_backends == frozenset()
 
 
 def test_install_extras_exist_in_pyproject() -> None:
@@ -83,8 +110,10 @@ def test_registry_is_the_one_driver_table(monkeypatch) -> None:
     monkeypatch.setitem(dialects._BY_DS_TYPE, "postgres", swapped)
     ds = DatasourceConfig(name="d", type="postgres", **_STRUCTURED)
     assert ds.get_connection_string().startswith("postgresql+psycopg://")
+    bare = DatasourceConfig(name="d", type="postgres", connection_string="postgresql://h/d")
+    assert bare.get_connection_string() == "postgresql+psycopg://h/d"
     assert client._async_connection_string(
-        connection_string="postgresql://h/d", db_type="postgres",
+        connection_string=bare.get_connection_string(), db_type="postgres",
     ) == "postgresql+psycopg://h/d"
 
 
@@ -96,8 +125,8 @@ def test_registry_is_the_one_driver_table(monkeypatch) -> None:
 @pytest.mark.parametrize(
     "ds_type,expected",
     [
-        ("postgres", "postgresql://u:p%40ss@h.example:1234/db"),
-        ("postgresql", "postgresql://u:p%40ss@h.example:1234/db"),
+        ("postgres", "postgresql+psycopg2://u:p%40ss@h.example:1234/db"),
+        ("postgresql", "postgresql+psycopg2://u:p%40ss@h.example:1234/db"),
         ("mysql", "mysql+pymysql://u:p%40ss@h.example:1234/db"),
         ("mariadb", "mysql+pymysql://u:p%40ss@h.example:1234/db"),
         ("clickhouse", "clickhouse+http://u:p%40ss@h.example:1234/db"),

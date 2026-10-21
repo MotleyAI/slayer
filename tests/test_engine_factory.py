@@ -1,4 +1,4 @@
-"""Tests for the shared SQLAlchemy engine factory (DEV-1551).
+"""Tests for the shared SQLAlchemy engine factory.
 
 The factory itself is dialect-agnostic. Each dialect's ``SqlDialect``
 strategy class carries the runtime hooks; this module covers:
@@ -87,7 +87,7 @@ class TestGetEngine:
             result = engine_factory.get_engine(ds)
         assert result is fake
         args, kwargs = create_engine_mock.call_args
-        assert args[0].startswith("postgresql://")
+        assert args[0].startswith("postgresql+psycopg2://")
         assert kwargs.get("pool_pre_ping") is True
 
 
@@ -112,7 +112,7 @@ class TestSessionOverridesListener:
                 engine_factory.get_engine(ds)
         listens_for_mock.assert_called_once()
         _engine_arg, event_name = listens_for_mock.call_args.args
-        # DEV-1551: use ``checkout`` (not ``connect``) so session state
+        # Use ``checkout`` (not ``connect``) so session state
         # is re-applied on every pool checkout, not just on the first
         # physical connection.
         assert event_name == "checkout"
@@ -822,7 +822,7 @@ def _in_worker(fn):
 
 
 class TestInMemorySqliteBuilder:
-    """DEV-1943 D2 — the factory's single StaticPool builder for in-memory SQLite."""
+    """The factory's single StaticPool builder for in-memory SQLite."""
 
     def test_builder_uses_static_pool(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
@@ -866,7 +866,7 @@ class TestInMemorySqliteBuilder:
 
 
 class TestInMemoryFactoryCoherence:
-    """DEV-1943 — in-memory SQLite through the shared factory: one db per
+    """In-memory SQLite through the shared factory: one db per
     datasource name, coherent across threads, disposed cleanly on reset."""
 
     @staticmethod
