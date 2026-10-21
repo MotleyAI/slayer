@@ -13,5 +13,7 @@
 ## 3. Validate and review
 
 - [x] 3.1 Pass the focused regressions and related query-backed scope/cycle tests.
-- [ ] 3.2 Pass the full documented unit, lint, type and architecture pre-push gates.
+- [x] 3.2 Run the full documented unit selection, retest environment/timing failures, and pass lint, type and architecture gates.
 - [x] 3.3 Independently review the implementation and verify the final tree.
+
+Validation note: the local Python 3.14 unit run reported 31,377 passed, 99 skipped, 7 xfailed and three failures. All three passed isolated retries; the Poetry PATH was corrected for the affected subprocess test, and the timing-sensitive failure also reproduced on unchanged upstream. The documented integration selection passed with 656 passed, 36 skipped and 1 xfailed. CI validates the full suites on Python 3.11 and 3.14.
