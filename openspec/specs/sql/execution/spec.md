@@ -389,8 +389,9 @@ default driver on the URL's own backend, whatever the installed SQLAlchemy's own
 that backend is. Credentials, host, port, database and query parameters SHALL be preserved.
 
 A URL that names a driver, whose backend the type does not serve, or that cannot be parsed as a
-URL, and every URL of a type without a declared default driver, SHALL be used exactly as given. A
-stored `connection_string` SHALL NOT be rewritten.
+URL, and every URL of a type without a declared default driver, SHALL be used exactly as given; the
+asynchronous path then derives its URL from this one as "The asynchronous path honours the user's
+driver choice" requires. A stored `connection_string` SHALL NOT be rewritten.
 
 #### Scenario: Bare Postgres URL uses psycopg2
 - **WHEN** a postgres datasource's `connection_string` is
