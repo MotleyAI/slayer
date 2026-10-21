@@ -127,18 +127,19 @@ class TestClockCalls:
             op="<=", left=Ref(name="created_at"), right=ScalarCall(name="now", args=()))
 
 
-class TestKeywordArgsRejected:
-    @pytest.mark.parametrize("expr", [
-        "date_add(created_at, n=1, unit='day')",
-        "date_part(part='year', ts=created_at)",
-        "date_diff('day', start=created_at, end=shipped_at)",
-        "order_date + interval(n=1, unit='day')",
-        "now(tz='UTC')",
-        "current_date(tz='UTC')",
+class TestEqualsInDateCallsIsComparison:
+    # Scalar calls take no keywords: `name=value` is a comparison, so these fail on what it breaks.
+    @pytest.mark.parametrize(("expr", "match"), [
+        ("date_add(created_at, n=1, unit='day')", "unit of date_add"),
+        ("date_part(part='year', ts=created_at)", "part of date_part"),
+        ("date_diff('day', start=created_at, end=shipped_at)", "Cannot resolve reference 'start'"),
+        ("order_date + interval(n=1, unit='day')", "unit of interval"),
+        ("now(tz='UTC')", "'now' takes 0 arguments"),
+        ("current_date(tz='UTC')", "'current_date' takes 0 arguments"),
     ])
-    def test_keywords(self, expr: str) -> None:
-        with pytest.raises(ValueError, match="keyword"):
-            parse_expr(expr)
+    def test_keyword_spelling_fails(self, expr: str, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            _bind(expr)
 
 
 class TestIntervalRewrite:

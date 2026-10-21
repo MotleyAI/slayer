@@ -551,11 +551,10 @@ class TestRejection:
         with pytest.raises(ValueError):
             parse_expr("revenue:sum:avg")
 
-    def test_scalar_function_with_kwarg_rejected(self):
-        # Scalar functions in SCALAR_FUNCTIONS take only positional args.
-        # `lower(name=...)` is invalid.
-        with pytest.raises((ValueError, UnknownFunctionError)):
-            parse_expr("lower(name='x')")
+    def test_equals_inside_scalar_call_is_comparison(self):
+        assert parse_expr("lower(name='x')") == ScalarCall(
+            name="lower", args=(Cmp(op="==", left=Ref(name="name"), right=Literal(value="x")),),
+        )
 
     def test_colon_inside_string_literal_preserved(self):
         # `status == 'revenue:sum'` — the string literal is data, not
