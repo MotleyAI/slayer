@@ -1240,3 +1240,17 @@ def test_relationship_keyed_on_renamed_field_names_the_field(shop_engine):
     key = orders.get_column("cust_key")
     assert key is not None
     assert key.physical_name == "customer_id"
+
+
+def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount")),
+                                     OSIField(name="status", expression=_expr("status"))])],
+        metrics=[OSIMetric(name="paid_share",
+                           expression=_expr("SUM(CASE WHEN status = 'paid' THEN amount END) / COUNT(*)"))],
+    )
+    orders = _by_name(_convert(shop_engine, doc))["orders"]
+    formula = {m.name: m for m in orders.measures}["paid_share"].formula
+    parse_expr(formula)
+    assert '"' not in formula and "\\" not in formula and " | " not in formula

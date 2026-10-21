@@ -95,6 +95,14 @@ from tests._dev2046_fixtures import (
     orders_q,
     seed_statements as dev2046_seed_statements,
 )
+from tests._dev2101_fixtures import (
+    check_filtered_aggregations,
+    check_null_ordering,
+    check_server_forms,
+    check_try_cast,
+    dev2101_models,
+    seed_server as dev2101_seed_server,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1604,3 +1612,42 @@ def test_every_sqlserver_alias_failure_is_quoted(sqlserver_container) -> None:
             ) == []
     finally:
         _drop_module_db(sqlserver_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Mode-B SQL grammar (spec: queries/expression-grammar, queries/casts, queries/positions)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_dev2101_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            raw = engine.raw_connection()
+            try:
+                dev2101_seed_server(raw.cursor(), dialect="tsql")
+                raw.commit()
+            finally:
+                raw.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dev2101")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in dev2101_models(data_source="testmssql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerModeBGrammar:
+    async def test_sql_forms(self, _sqlserver_dev2101_storage) -> None:
+        await check_server_forms(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_null_ordering_over_aliased_targets(self, _sqlserver_dev2101_storage) -> None:
+        await check_null_ordering(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_try_cast(self, _sqlserver_dev2101_storage) -> None:
+        await check_try_cast(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_filtered_aggregations(self, _sqlserver_dev2101_storage) -> None:
+        await check_filtered_aggregations(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
