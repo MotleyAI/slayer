@@ -131,8 +131,15 @@ def _stage_scope_and_bundle_unframed(
     if sib is not None and isinstance(src, ModelExtension):
         base = model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
+            joins=(bundle.query_backed[sib].joins if sib in bundle.query_backed else []),
         )
-        overlaid = apply_extension_overlay(base, src)
+        extension = src
+        if sib in bundle.query_backed and src.joins:
+            # Keep the existing repeated-join workaround idempotent for saved relations.
+            extension = src.model_copy(update={
+                "joins": [join for join in src.joins if join not in base.joins],
+            })
+        overlaid = apply_extension_overlay(base, extension)
         others = {n: s for n, s in stage_schemas.items() if n != sib}
         sb = stage_bundle_with_siblings(
             bundle=bundle, source_model=overlaid,
@@ -144,12 +151,15 @@ def _stage_scope_and_bundle_unframed(
     if isinstance(src, str) and src in stage_schemas:
         synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
+            joins=(bundle.query_backed[src].joins if src in bundle.query_backed else []),
         )
         others = {n: s for n, s in stage_schemas.items() if n != src}
         sb = stage_bundle_with_siblings(
             bundle=bundle, source_model=synth,
             sibling_schemas=others, data_source=data_source,
         )
+        if src in bundle.query_backed:
+            return ModelScope(source_model=synth), sb
         return stage_schemas[src], sb
 
     # 3. Model-scoped: the stage's own resolved source model.

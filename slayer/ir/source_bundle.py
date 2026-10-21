@@ -13,6 +13,7 @@ from slayer.core.enums import DataType
 from slayer.core.granularity import CustomGranularity
 from slayer.core.models import (
     Column,
+    ModelJoin,
     SlayerModel,
     _check_column_measure_namespace,
     _check_join_keys,
@@ -50,7 +51,7 @@ class ResolvedSourceBundle(BaseModel):
     dialect: str  # sqlglot dialect the query renders in
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
-    # Stored query-backed models the statement may splice (stored form, joins dropped).
+    # Stored query-backed models the statement may splice, including result joins.
     query_backed: Dict[str, SlayerModel] = Field(default_factory=dict)
     # Query-backed models whose stages are being planned, outermost first.
     splice_chain: Tuple[str, ...] = ()
@@ -185,6 +186,7 @@ def model_from_stage_schema(
     sql: Optional[str] = None,
     column_sql: Optional[Dict[str, str]] = None,
     default_time_dimension: Optional[str] = None,
+    joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
     """The model a stage's output is read as: over its CTE (``sql=None``) or over ``sql``.
 
@@ -194,7 +196,8 @@ def model_from_stage_schema(
     composite = len(grain) > 1
     column_sql = column_sql or {}
     model = SlayerModel(
-        name="_stage",
+        # Validate saved joins at their real identity; minted flat stages need the temporary name.
+        name=name if joins else "_stage",
         data_source=data_source,
         sql_table="_stage" if sql is None else None,
         sql=sql,
@@ -212,6 +215,7 @@ def model_from_stage_schema(
             ).with_respellings(c.respellings)
             for c in schema.columns
         ],
+        joins=joins or [],
     )
     # A minted stage identity carries the reserved prefix the name validator rejects.
     return model.model_copy(update={
@@ -237,7 +241,8 @@ def stage_bundle_with_siblings(
     """
     synths = [
         model_from_stage_schema(
-            name=n, schema=s, data_source=data_source
+            name=n, schema=s, data_source=data_source,
+            joins=(bundle.query_backed[n].joins if n in bundle.query_backed else []),
         )
         for n, s in sibling_schemas.items()
     ]
