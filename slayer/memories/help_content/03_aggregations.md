@@ -22,7 +22,7 @@ restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 `sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
 A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
-conditional aggregate uses `iif`: `sum(iif(status == 'paid', amount, 0))`; always give
+conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
 it a `name`.
 
 ## Empty input

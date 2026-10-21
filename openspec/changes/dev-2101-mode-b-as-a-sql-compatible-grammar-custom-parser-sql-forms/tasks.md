@@ -21,43 +21,43 @@
 
 ## 3. Architecture move
 
-- [ ] 3.1 Move `slayer/engine/syntax.py` → `slayer/core/syntax.py` with `la:deterministic-refactor`; move `ALL_TRANSFORMS` / `TIME_TRANSFORMS` / `TIMELESS_TRANSFORMS` to `slayer/core/enums.py`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
-- [ ] 3.2 Apply the approved harness edits H1–H6 exactly as in the "Approved harness edits" section below, then `la-arch-diagrams` (H7); verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`
+- [x] 3.1 Move `slayer/engine/syntax.py` → `slayer/core/syntax.py` with `la:deterministic-refactor`; move `ALL_TRANSFORMS` / `TIME_TRANSFORMS` / `TIMELESS_TRANSFORMS` to `slayer/core/enums.py`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
+- [x] 3.2 Apply the approved harness edits H1–H6 exactly as in the "Approved harness edits" section below, then `la-arch-diagrams` (H7); verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`
 
 ## 4. Grammar
 
-- [ ] 4.1 Add `pyparsing` to `pyproject.toml` / `poetry.lock`; verify `poetry install -E all`
+- [x] 4.1 Add `pyparsing` to `pyproject.toml` / `poetry.lock`; verify `poetry install -E all`
 - [ ] 4.2 Implement the grammar (design D2) producing the existing `ParsedExpr` nodes plus `Cast` and the `FILTER` predicate; delete `ast.parse`, every pre-pass and `parse_filter_expr`; repoint every caller (`core/query.py`, `engine/bind_inputs.py`, `binding.py`, `population.py`, `model_reads.py`, `schema_drift.py`, `unrelated.py`, `query_engine.py`, `memories/resolver.py`); verify 2.1 / 2.2 parse-level tests and the SQL golden baselines byte-identical
-- [ ] 4.3 Quoted identifiers end to end and the single-quote hint in the unresolved-reference error; verify the expression-grammar identifier scenarios
-- [ ] 4.4 Rejections with hints (`|`, `//`, `TRIM(BOTH…)`, two-argument scalar `min` / `max`, `TIME '…'`, `SIMILAR TO`, `REGEXP` / `RLIKE`, raw `OVER`) and syntax-error positions; verify their scenarios
+- [x] 4.3 Quoted identifiers end to end and the single-quote hint in the unresolved-reference error; verify the expression-grammar identifier scenarios
+- [x] 4.4 Rejections with hints (`|`, `//`, `TRIM(BOTH…)`, two-argument scalar `min` / `max`, `TIME '…'`, `SIMILAR TO`, `REGEXP` / `RLIKE`, raw `OVER`) and syntax-error positions; verify their scenarios
 
 ## 5. Keys, binding, rendering
 
-- [ ] 5.1 `CastKey` (design D3): traversal protocol, binding, checker typing, render via `exp.Cast` with the author's type and the dialect-expressibility check; verify the CAST scenarios
-- [ ] 5.2 `TRY_CAST` lowering per dialect, SQLite `slayer_try_cast` registration, MySQL guard, Postgres server profile (`server_profile_sql`, `parse_server_profile`) and render-time profile plumbing; verify 2.3
+- [x] 5.1 `CastKey` (design D3): traversal protocol, binding, checker typing, render via `exp.Cast` with the author's type and the dialect-expressibility check; verify the CAST scenarios
+- [x] 5.2 `TRY_CAST` lowering per dialect, SQLite `slayer_try_cast` registration, MySQL guard, Postgres server profile (`server_profile_sql`, `parse_server_profile`) and render-time profile plumbing; verify 2.3
 - [ ] 5.3 `FILTER (WHERE c)` binding (row-level check) and lowering by masking every row-level input incl. the `first` / `last` ranking key; verify 2.4
 - [ ] 5.4 `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE|FALSE`, `ILIKE`, `||`, `POSITION`, `SUBSTRING FROM FOR`, interval literals, typed literals, clock keywords; `**` → `pow`; verify 2.2, 2.6, 2.10
 - [ ] 5.5 `OrderItem.nulls` plumbing (design D7) and the multi-term `build_ordered` with the T-SQL emulation over the resolved expression; verify 2.7
-- [ ] 5.6 The binder rejects a `round` `ndigits` that is not an integer literal (`round(x, 2.5)`, `round(x, col)`) with an error naming `round` (ruling 2026-10-21: the check moves from the deleted importer parser); verify the `tests/test_dev1576_heals.py` arity cases
+- [x] 5.6 The binder rejects a `round` `ndigits` that is not an integer literal (`round(x, 2.5)`, `round(x, col)`) with an error naming `round` (ruling 2026-10-21: the check moves from the deleted importer parser); verify the `tests/test_dev1576_heals.py` arity cases
 
 ## 6. Variables
 
-- [ ] 6.1 Offset-preserving placeholder masking, the three grammar slots, binding into the tree at the existing substitution points, names from the written text, `date_range` literal-only substitution; delete the Mode-B `escape="python"` path and `ComputedDimension.substituted`'s text splice; verify 2.5
+- [x] 6.1 Offset-preserving placeholder masking, the three grammar slots, binding into the tree at the existing substitution points, names from the written text, `date_range` literal-only substitution; delete the Mode-B `escape="python"` path and `ComputedDimension.substituted`'s text splice; verify 2.5
 
 ## 7. Migration
 
-- [ ] 7.1 Stored-only steps SlayerModel 15 → 16, SlayerQuery 6 → 7, Memory 4 → 5 (design D6), ordered before the legacy load-path repairs; verify 2.8 and the 0.10.2 corpus
+- [x] 7.1 Stored-only steps SlayerModel 15 → 16, SlayerQuery 6 → 7, Memory 4 → 5 (design D6), ordered before the legacy load-path repairs; verify 2.8 and the 0.10.2 corpus
 
 ## 8. One parser (DEV-1831)
 
 - [ ] 8.1 Port the dbt, Cube and OSI importers to `parse_expr` with the shared namespace-aware dependency walk; delete `parse_formula`, `FieldSpec`, `_rewrite_funcstyle_aggregations`, `_preprocess_agg_refs`, `_expand_named_measures`; verify 2.9 and the importer fixture suites
-- [ ] 8.2 Check the Mode-B text the facade translator and the importers emit against the new grammar (single quotes, no backslash escapes, no `|`); fix emitters; verify the facade and importer suites
+- [x] 8.2 Check the Mode-B text the facade translator and the importers emit against the new grammar (single quotes, no backslash escapes, no `|`); fix emitters; verify the facade and importer suites
 
 ## 9. Docs and agent surfaces
 
-- [ ] 9.1 `docs/concepts/formulas.md` (Parsing Internals, operators incl. `**` / `%`, FILTER, the CASE section), `references.md` (two-mode table, string and identifier rules, casts and `TRY_CAST`, interval and typed literals), `queries.md` (filters operator table, Variables / "Trusted input", OrderItem `nulls`), `time.md` if touched; `zensical.toml` only if a page is added; verify `grep` finds no "Python AST" / "Python-AST" claims and no double-quoted string examples in Mode-B docs
-- [ ] 9.2 MCP `Field` descriptions in `slayer/core/query.py` / `slayer/mcp/server.py` and `slayer/memories/help_content/*` (strings single-quoted, SQL forms, `nulls`); verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
-- [ ] 9.3 Release-notes draft (untracked, never staged): double-quoted strings, backslash escapes, `|` / `//`, `{var}` literal-only, `parse_formula` removal, `CAST` / `TRY_CAST`, Postgres < 16 `TRY_CAST`
+- [x] 9.1 `docs/concepts/formulas.md` (Parsing Internals, operators incl. `**` / `%`, FILTER, the CASE section), `references.md` (two-mode table, string and identifier rules, casts and `TRY_CAST`, interval and typed literals), `queries.md` (filters operator table, Variables / "Trusted input", OrderItem `nulls`), `time.md` if touched; `zensical.toml` only if a page is added; verify `grep` finds no "Python AST" / "Python-AST" claims and no double-quoted string examples in Mode-B docs
+- [x] 9.2 MCP `Field` descriptions in `slayer/core/query.py` / `slayer/mcp/server.py` and `slayer/memories/help_content/*` (strings single-quoted, SQL forms, `nulls`); verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
+- [x] 9.3 Release-notes draft (untracked, never staged): double-quoted strings, backslash escapes, `|` / `//`, `{var}` literal-only, `parse_formula` removal, `CAST` / `TRY_CAST`, Postgres < 16 `TRY_CAST`
 
 ## 10. Gates
 

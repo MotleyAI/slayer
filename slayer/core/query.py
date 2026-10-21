@@ -1253,9 +1253,9 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
-            "filtering (HAVING) or filtering after transforms. Operators: == != < <= > >=, in, "
-            "like, is null / is not null, and / or / not; build text literals from the column's "
-            "sampled values.\n"
+            "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
+            "between, like / ilike, is null / is not null, and / or / not; strings are "
+            "single-quoted ('paid'); build them from the column's sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
             "sum(amount) > 100; top N per group: "
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
@@ -1266,7 +1266,7 @@ class SlayerQuery(BaseModel):
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
             "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
             "order_date in '2025-Q1' is inside it.\n"
-            "- {variable} placeholders take values from variables.\n"
+            "- {variable} placeholders take literal values from variables.\n"
             'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
             'entity_type="memory").'
         ),
@@ -1281,8 +1281,9 @@ class SlayerQuery(BaseModel):
     order: OrderField = Field(
         default=None,
         description=(
-            'Sort keys, [{"column": ..., "direction": "asc" | "desc"}]. column is a result '
-            "column name or any aggregate or transform expression, displayed or not: with "
+            'Sort keys, [{"column": ..., "direction": "asc" | "desc", "nulls": "first" | "last"}] '
+            "(nulls optional). column is a result column name or any aggregate or transform "
+            "expression, displayed or not: with "
             'measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by '
             "an amount it does not return. Add limit for the top N. Return only the columns the "
             "question asks for: never add the sort value to measures just to sort by it."

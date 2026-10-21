@@ -196,6 +196,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 ## OrderItem
 
 A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`count(*)`); `direction` is `asc` or `desc`.
+An optional `nulls` (`first` or `last`) places NULL values first or last on every dialect; without it the database's default placement applies.
 
 ```json
 {"column": "count(*)", "direction": "desc"}
@@ -319,6 +320,9 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
+| `ilike` | `"name ilike '%acme%'"` |
+| `between` | `"amount between 100 and 1000"` |
+| `is distinct from` | `"discount is distinct from 0"` |
 
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
@@ -464,7 +468,7 @@ The same placeholders work in measure formulas, computed-dimension expressions, 
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`), backslash, or control character (newline, tab) can't break out of that literal or the filter parser (DEV-1727). Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
+- Values must be strings, numbers, or **lists**, and every value binds as a literal: **you write the surrounding quotes** for a string (`status = '{status}'`, an embedded `'` is doubled), an unquoted placeholder takes a number (a numeric string included), and a placeholder in a name position (`sum({col})`, `customers.{c}`, `{f}(x)`, `partition_by={x}`) is rejected, so no value can change the expression's structure; non-finite floats (`nan`/`inf`) are rejected.
 - **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
 
     ```json
@@ -476,13 +480,13 @@ This produces the filter `status = 'completed' AND amount > 100`.
     }
     ```
 
-    An empty list raises (`IN ()` is invalid SQL). Under the hood a list renders as a Python tuple (with a trailing comma, e.g. `('US',)`) so that even a single-element list is treated as membership rather than a bare value — you may see that trailing comma in `show_sql` output; it is not a typo.
+    An empty list raises (`IN ()` is invalid SQL).
 - `{{` and `}}` produce literal `{` and `}`
 - Undefined variables raise an error
 - The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
 
 !!! note "Trusted input"
-    Substituted values are treated as trusted. The automatic escaping keeps a string value inside the quoted literal you wrote, but a `{var}` placed in an **unquoted** position is still raw SQL/expression substitution — do not feed untrusted end-user input through `variables`.
+    In query fields a value is always bound as a literal, but in a model's raw-SQL (Mode A) surfaces it is substituted as text, so do not feed untrusted end-user input through `variables` there.
 
 #### Variables passed as a runtime kwarg
 
