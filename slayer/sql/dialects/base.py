@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
@@ -133,7 +134,7 @@ def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
 
 
 #: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
-VENDOR_ONLY_CAST_TYPES: frozenset[exp.DataType.Type] = frozenset({
+VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
     exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
 })
 
@@ -326,6 +327,8 @@ class SqlDialect(BaseModel):
 
     # The server's profile, when SQL generation needs it (Postgres TRY_CAST); unknown otherwise.
     server_profile: ServerProfile = ServerProfile()
+    # Whether rendering a TRY_CAST reads ``server_profile``.
+    try_cast_reads_profile: bool = False
 
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
@@ -370,7 +373,7 @@ class SqlDialect(BaseModel):
         return dt
 
     # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
-    vendor_cast_types: ClassVar[frozenset[exp.DataType.Type]] = frozenset()
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """Whether this dialect can express a CAST to ``data_type``."""
@@ -408,6 +411,18 @@ class SqlDialect(BaseModel):
         elif nulls == "last":
             kwargs["nulls_first"] = False
         return exp.Ordered(**kwargs)
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,  # NOSONAR(S1172) — read by the T-SQL emulation
+    ) -> list[exp.Ordered]:
+        """The ``ORDER BY`` terms of one entry; ``resolved`` is the expression ``order_col`` names, when it is
+        an alias of the SELECT being ordered."""
+        return [self.build_ordered(order_col, descending=descending, nulls=nulls)]
 
     def native_nulls_first(self, *, descending: bool) -> bool:
         """Where NULLs natively sort for ``descending``, read from sqlglot's emitter."""

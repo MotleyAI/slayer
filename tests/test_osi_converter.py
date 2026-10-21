@@ -1253,4 +1253,6 @@ def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
     orders = _by_name(_convert(shop_engine, doc))["orders"]
     formula = {m.name: m for m in orders.measures}["paid_share"].formula
     parse_expr(formula)
-    assert '"' not in formula and "\\" not in formula and " | " not in formula
+    assert '"' not in formula
+    assert "\\" not in formula
+    assert " | " not in formula

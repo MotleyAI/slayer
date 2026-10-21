@@ -46,16 +46,19 @@ class TestOrderItemField:
             SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["id"],
                                         "order": [{"column": "discount", "nulls": "middle"}]})
         msg = str(info.value)
-        assert "first" in msg and "last" in msg, msg
+        assert "first" in msg, msg
+        assert "last" in msg, msg
 
     def test_survives_query_round_trip(self) -> None:
         query = discount_rows_query(direction="desc", nulls="first")
         again = SlayerQuery.model_validate(query.model_dump(mode="json"))
-        assert again.order is not None and again.order[0].nulls == "first"
+        assert again.order is not None
+        assert again.order[0].nulls == "first"
 
     def test_expression_order_item_keeps_the_policy(self) -> None:
         item = OrderItem.model_validate({"column": "sum(amount) * 2", "nulls": "last"})
-        assert item.nulls == "last" and item.raw_formula == "sum(amount) * 2"
+        assert item.nulls == "last"
+        assert item.raw_formula == "sum(amount) * 2"
 
 
 class TestExecutedPlacement:
@@ -116,7 +119,8 @@ class TestEmission:
     async def test_tsql_orders_over_the_resolved_expression(self) -> None:
         sql = await emit(hidden_max_query(direction="asc", nulls="last"), dialect="tsql")
         null_keys = [t for t in _null_policy_terms(sql, dialect="tsql") if t.this.find(exp.Is) is not None]
-        assert null_keys and all(t.this.find(exp.Max) is not None for t in null_keys), sql
+        assert null_keys, sql
+        assert all(t.this.find(exp.Max) is not None for t in null_keys), sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
     async def test_no_policy_emits_no_modifier(self, dialect: str) -> None:

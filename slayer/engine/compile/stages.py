@@ -3486,6 +3486,7 @@ def _rewrite_regrouped_prebound(
                     value_key=substitute_value_keys(sp.bound.value_key, mapping),
                 ),
                 direction=sp.direction,
+                nulls=sp.nulls,
             )
             for sp in prebound.order_specs
         ],
@@ -4191,6 +4192,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             slot_id=sid,
             direction=direction,
             phase=order_slot.key.phase,
+            nulls=spec.nulls,
         ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)

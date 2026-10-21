@@ -93,9 +93,10 @@ class TestEverySurface:
         assert [m.formula for m in query.measures or []] == [
             "sum(iif(region == 'EU', amount, 0))", "count_distinct(status || 'x')",
         ]
-        assert [d.expression for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
+        assert [getattr(d, "expression") for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
         assert query.filters == ["status == 'paid'"]
-        assert query.order is not None and query.order[0].raw_formula == "sum(iif(status == 'paid', amount, 0))"
+        assert query.order is not None
+        assert query.order[0].raw_formula == "sum(iif(status == 'paid', amount, 0))"
 
     def test_inline_extension_measures(self) -> None:
         query = _query(source_model={"source_name": "orders", "measures": [
@@ -110,7 +111,8 @@ class TestEverySurface:
 
     def test_memory_query(self) -> None:
         mem = Memory.model_validate(memory_v2(memory_id="m", version=4, query=rev_query(filters=['status == "ok"'])))
-        assert mem.query is not None and mem.query.filters == ["status == 'ok'"]
+        assert mem.query is not None
+        assert mem.query.filters == ["status == 'ok'"]
 
     def test_mode_a_text_is_untouched(self) -> None:
         doc = _model_doc(formula="sum(amount)")
@@ -152,7 +154,8 @@ class TestStoredResultsUnchanged:
         assert model is not None
         [loaded] = model.source_queries or []
         assert loaded.filters == ["status == 'ok'"]
-        assert loaded.measures is not None and loaded.measures[0].formula == "sum(iif(status == 'ok', amount, 0))"
+        assert loaded.measures is not None
+        assert loaded.measures[0].formula == "sum(iif(status == 'ok', amount, 0))"
         resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 80.0
 
@@ -160,7 +163,8 @@ class TestStoredResultsUnchanged:
         stage = rev_query(filters=['ordered_at >= "2024-01-01T00:00:00Z"'])
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=stage)
         model = await storage.get_model("rev_q", data_source=DS)
-        assert model is not None and (model.source_queries or [])[0].filters == ["ordered_at >= '2024-01-01T00:00:00'"]
+        assert model is not None
+        assert (model.source_queries or [])[0].filters == ["ordered_at >= '2024-01-01T00:00:00'"]
         resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 200.0
 
@@ -180,7 +184,8 @@ class TestStoredResultsUnchanged:
                                   models=[orders_v10(), customers_v10()],
                                   memories=[memory_v2(memory_id="m_q", query=query)])
         mem = await storage.get_memory("m_q")
-        assert mem.query is not None and mem.query.filters == ["status == 'ok'"]
+        assert mem.query is not None
+        assert mem.query.filters == ["status == 'ok'"]
         assert measure_total(await run(storage, mem.query), measure="rev") == 80.0
 
     async def test_resave_writes_the_new_spelling(self, tmp_path, shop_ds) -> None:

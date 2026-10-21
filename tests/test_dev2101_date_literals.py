@@ -53,8 +53,9 @@ class TestIntervalLiterals:
         assert ids(resp) == {4, 5}
 
     async def test_multi_unit_literal_suggests_a_chain(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=["id"], filters=["order_date + INTERVAL '1 day 2 hours' > now()"])
         with pytest.raises(ValueError) as info:
-            await engine.execute(q(dimensions=["id"], filters=["order_date + INTERVAL '1 day 2 hours' > now()"]))
+            await engine.execute(query)
         assert "+ INTERVAL '1 day' + INTERVAL '2 hours'" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize("filt", [
@@ -66,14 +67,16 @@ class TestIntervalLiterals:
         "order_date + (INTERVAL '1 day' + INTERVAL '1 day') > order_date",
     ])
     async def test_stray_interval_literal_points_to_date_add(self, engine: SlayerQueryEngine, filt: str) -> None:
+        query = q(dimensions=["id"], filters=[filt])
         with pytest.raises(ValueError) as info:
-            await engine.execute(q(dimensions=["id"], filters=[filt]))
+            await engine.execute(query)
         assert "date_add" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize("literal", ["INTERVAL 'x days'", "INTERVAL '1.5 days'", "INTERVAL '7 fortnights'"])
     async def test_bad_count_or_unit(self, engine: SlayerQueryEngine, literal: str) -> None:
+        query = q(dimensions=["id"], filters=[f"order_date + {literal} > order_date"])
         with pytest.raises(ValueError):
-            await engine.execute(q(dimensions=["id"], filters=[f"order_date + {literal} > order_date"]))
+            await engine.execute(query)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_emits_everywhere(self, dialect: str) -> None:
@@ -95,8 +98,9 @@ class TestTypedLiterals:
     @pytest.mark.parametrize("filt", ["created_at >= DATE '2024-02-30'", "created_at >= TIMESTAMP '2024-01-01 25:00'",
                                       "order_date >= DATE 'tomorrow'"])
     async def test_impossible_or_malformed_literal(self, engine: SlayerQueryEngine, filt: str) -> None:
+        query = q(dimensions=["id"], filters=[filt])
         with pytest.raises(TimeLiteralError) as info:
-            await engine.execute(q(dimensions=["id"], filters=[filt]))
+            await engine.execute(query)
         literal = filt.split("'")[1]
         assert literal in str(info.value), str(info.value)
 

@@ -9,6 +9,8 @@ The §3 error-message split and end-to-end execution live in
 ``tests/test_aggregation_gating.py`` and the integration suites respectively.
 """
 
+from decimal import Decimal
+
 import pytest
 
 from slayer.core.enums import (
@@ -148,11 +150,13 @@ class TestColonSyntaxAliasHealing:
     def test_custom_agg_named_like_alias_not_healed(self) -> None:
         # An exact custom-name match takes precedence over the alias.
         key = _bind("revenue:countd", custom=("countd",))
-        assert isinstance(key, AggregateKey) and key.agg == "countd"
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "countd"
 
     def test_alias_still_heals_when_custom_name_differs(self) -> None:
         key = _bind("revenue:countd", custom=("some_other_agg",))
-        assert isinstance(key, AggregateKey) and key.agg == "count_distinct"
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "count_distinct"
 
 
 # ---------------------------------------------------------------------------
@@ -165,14 +169,15 @@ def _agg_names(parsed) -> set[str]:
 
 
 def _scalar(parsed, name: str) -> ScalarCall:
-    assert isinstance(parsed, ScalarCall) and parsed.name.lower() == name, parsed
+    assert isinstance(parsed, ScalarCall), parsed
+    assert parsed.name.lower() == name, parsed
     return parsed
 
 
 class TestScalarFunctionsParse:
     def test_round_two_args(self) -> None:
         result = _scalar(parse_expr("round(revenue:sum, 2)"), "round")
-        assert result.args[1] == Literal(value=2)
+        assert result.args[1] == Literal(value=Decimal(2))
         assert _agg_names(result) == {"sum"}
         assert not any(isinstance(n, TransformCall) for n in _nodes(result))
 
@@ -248,4 +253,5 @@ class TestScalarPassthroughPolicy:
     @pytest.mark.parametrize("raw", ["countd(revenue)", "countDistinct(revenue)"])
     def test_funcstyle_aggregation_alias_heals(self, raw: str) -> None:
         key = _bind(raw)
-        assert isinstance(key, AggregateKey) and key.agg == "count_distinct"
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "count_distinct"

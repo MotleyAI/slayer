@@ -119,7 +119,7 @@ class TestKeywordsOnlyInTheirSlot:
         assert parse_expr(f"sum({name})") == AggCall(source=Ref(name=name), agg="sum")
 
     def test_case_is_conditional_only_before_when(self) -> None:
-        assert parse_expr("case + 1").left == Ref(name="case")
+        assert getattr(parse_expr("case + 1"), "left") == Ref(name="case")
         assert isinstance(parse_expr("CASE WHEN a THEN 1 END"), ScalarCall)
 
     def test_date_literal_vs_date_column(self) -> None:
@@ -175,7 +175,8 @@ class TestKeywordArguments:
 
     def test_comparison_inside_scalar_call(self) -> None:
         parsed = parse_expr("sum(iif(status = 'paid', amount, 0))")
-        assert isinstance(parsed, AggCall) and isinstance(parsed.source, ScalarCall)
+        assert isinstance(parsed, AggCall)
+        assert isinstance(parsed.source, ScalarCall)
         assert parsed.source.args[0] == parse_expr("status == 'paid'")
 
     def test_comparison_first_argument_of_coalesce(self) -> None:
@@ -205,8 +206,10 @@ class TestColonAndCast:
 
     def test_chained_casts(self) -> None:
         parsed = parse_expr("amount::int::text")
-        assert isinstance(parsed, Cast) and parsed.type_text.upper() == "TEXT"
-        assert isinstance(parsed.source, Cast) and parsed.source.type_text.upper() == "INT"
+        assert isinstance(parsed, Cast)
+        assert parsed.type_text.upper() == "TEXT"
+        assert isinstance(parsed.source, Cast)
+        assert parsed.source.type_text.upper() == "INT"
         assert parsed.source.source == Ref(name="amount")
 
     def test_cast_call_equals_double_colon(self) -> None:
@@ -220,12 +223,14 @@ class TestColonAndCast:
 
     def test_try_cast(self) -> None:
         parsed = parse_expr("TRY_CAST(code AS INT)")
-        assert isinstance(parsed, Cast) and parsed.try_ is True
+        assert isinstance(parsed, Cast)
+        assert parsed.try_ is True
         assert parsed != parse_expr("CAST(code AS INT)")
 
     def test_cast_inside_aggregation(self) -> None:
         parsed = parse_expr("sum(CAST(amount AS DECIMAL(10,2)))")
-        assert isinstance(parsed, AggCall) and isinstance(parsed.source, Cast)
+        assert isinstance(parsed, AggCall)
+        assert isinstance(parsed.source, Cast)
 
     def test_colon_aggregation_over_cast_free_text(self) -> None:
         assert isinstance(parse_expr("revenue:sum"), AggCall)
@@ -279,19 +284,23 @@ class TestFilterClause:
 
     def test_unfiltered_aggregation_has_no_filter(self) -> None:
         parsed = parse_expr("sum(amount)")
-        assert isinstance(parsed, AggCall) and parsed.filter is None
+        assert isinstance(parsed, AggCall)
+        assert parsed.filter is None
 
     def test_keywords_case_insensitive(self) -> None:
         same("count(*) filter (where status = 'paid')", "count(*) FILTER (WHERE status = 'paid')")
 
     def test_filter_with_kwargs(self) -> None:
         parsed = parse_expr("sum(amount, partition_by=region) FILTER (WHERE status = 'paid')")
-        assert isinstance(parsed, AggCall) and parsed.filter is not None
+        assert isinstance(parsed, AggCall)
+        assert parsed.filter is not None
         assert dict(parsed.kwargs)["partition_by"] == Ref(name="region")
 
     def test_filtered_aggregation_in_arithmetic(self) -> None:
         parsed = parse_expr("sum(amount) FILTER (WHERE status = 'paid') / sum(amount)")
-        assert isinstance(parsed.left, AggCall) and parsed.left.filter is not None
+        left = getattr(parsed, "left")
+        assert isinstance(left, AggCall)
+        assert left.filter is not None
 
     @pytest.mark.parametrize("text", [
         "sum(amount) FILTER (status = 'paid')",

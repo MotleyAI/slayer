@@ -20,8 +20,11 @@ async def engine(request):
 
 
 async def _rejected(engine: SlayerQueryEngine, *needles: str, **kw: Any) -> str:
-    with pytest.raises(ValueError) as info:
+    async def run() -> None:  # construction or execution may reject
         await engine.execute(q(**kw))
+
+    with pytest.raises(ValueError) as info:
+        await run()
     msg = str(info.value)
     for needle in needles:
         assert needle.lower() in msg.lower(), msg

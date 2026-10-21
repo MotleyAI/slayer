@@ -8,6 +8,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from typing import ClassVar, Optional
@@ -416,7 +417,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     # Any type name is a column affinity on SQLite.
-    vendor_cast_types: ClassVar[frozenset[exp.DataType.Type]] = VENDOR_ONLY_CAST_TYPES
+    vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""

@@ -135,12 +135,14 @@ class TestCastEmission:
     async def test_mysql_text_cast_uses_its_character_type(self) -> None:
         sql = await emit(q(dimensions=["id", {"expression": "amount::text", "name": "x"}]), dialect="mysql")
         casts = [c for c in _casts(sql, dialect="mysql") if "amount" in c.this.sql().lower()]
-        assert casts and all("CHAR" in c.to.sql(dialect="mysql").upper() for c in casts), sql
+        assert casts, sql
+        assert all("CHAR" in c.to.sql(dialect="mysql").upper() for c in casts), sql
 
     async def test_chained_casts_nest(self) -> None:
         sql = await emit(q(dimensions=["id", {"expression": "amount::int::text", "name": "x"}]), dialect="postgres")
         outer = next(c for c in _casts(sql, dialect="postgres") if isinstance(c.this, exp.Cast))
-        assert outer.to.is_type(exp.DataType.Type.TEXT) and outer.this.to.is_type(exp.DataType.Type.INT), sql
+        assert outer.to.is_type(exp.DataType.Type.TEXT), sql
+        assert outer.this.to.is_type(exp.DataType.Type.INT), sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_cast_emits_everywhere(self, dialect: str) -> None:
@@ -159,10 +161,12 @@ class TestCastEmission:
 
     @pytest.mark.parametrize("dialect", ["bigquery", "mysql", "trino", "snowflake", "clickhouse"])
     async def test_inexpressible_type_rejected_at_plan_time(self, dialect: str) -> None:
+        query = q(measures=[m("sum(CAST(amount AS MONEY))")])
         with pytest.raises(QueryTypeError) as info:
-            await emit(q(measures=[m("sum(CAST(amount AS MONEY))")]), dialect=dialect)
+            await emit(query, dialect=dialect)
         msg = str(info.value).lower()
-        assert "money" in msg and dialect in msg, msg
+        assert "money" in msg, msg
+        assert dialect in msg, msg
 
 
 _TRY_CAST_MARKERS = {
@@ -227,7 +231,8 @@ class TestPostgresTryCast:
     async def test_older_or_unknown_server_gets_a_plain_cast(self, monkeypatch, version) -> None:
         _patch_profile(monkeypatch, version=version)
         sql = await emit(TRY_Q, dialect="postgres")
-        assert "PG_INPUT_IS_VALID(" not in sql.upper() and "TRY_CAST" not in sql.upper(), sql
+        assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
+        assert "TRY_CAST" not in sql.upper(), sql
         assert _casts(sql, dialect="postgres"), sql
 
     async def test_failed_probe_gets_a_plain_cast(self, monkeypatch) -> None:

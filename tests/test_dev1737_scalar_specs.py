@@ -68,16 +68,17 @@ class TestFormulaParser:
     ])
     def test_recognises_date_functions(self, text: str) -> None:
         parsed = parse_expr(text)
-        top = parsed if isinstance(parsed, ScalarCall) else parsed.right
-        assert isinstance(top, ScalarCall) and top.name.lower() in DATE_NAMES, parsed
+        top = parsed if isinstance(parsed, ScalarCall) else getattr(parsed, "right")
+        assert isinstance(top, ScalarCall), parsed
+        assert top.name.lower() in DATE_NAMES, parsed
 
     def test_unknown_call_lists_date_functions(self) -> None:
         model = SlayerModel(name="orders", sql_table="orders", data_source="t",
                             columns=[Column(name="revenue", type=DataType.DOUBLE)])
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
+        parsed, scope = parse_expr("bogus_fn(revenue:sum)"), ModelScope(source_model=model)
         with pytest.raises(ValueError, match="date_diff"):
-            bind_expr(parse_expr("bogus_fn(revenue:sum)"), scope=ModelScope(source_model=model), bundle=bundle,
-                      allow_measures=True)
+            bind_expr(parsed, scope=scope, bundle=bundle, allow_measures=True)
 
 
 class TestOsiDoesNotCarryDateFunctions:

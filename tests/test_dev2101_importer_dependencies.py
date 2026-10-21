@@ -55,7 +55,8 @@ class TestDbtDependencyCheck:
 
     def test_bare_column_outside_an_aggregation_is_dangling(self) -> None:
         kept, dropped = self._prune(_measures({"i": "amount + a"}))
-        assert "i" in dropped and "i" not in kept
+        assert "i" in dropped
+        assert "i" not in kept
 
     def test_custom_aggregation_name_is_in_the_namespace(self) -> None:
         kept, _ = self._prune(_measures({"j": "wsum(price, weight=quantity) + a"}))

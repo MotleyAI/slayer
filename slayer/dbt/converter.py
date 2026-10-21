@@ -24,7 +24,7 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.formula import parse_formula
+from slayer.core.syntax import measure_dependency_problems
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -261,32 +261,24 @@ class DbtToSlayerConverter:
             self._prune_model_measures(model)
 
     def _prune_model_measures(self, model: SlayerModel) -> None:
-        agg_names = frozenset(a.name for a in model.aggregations)
-        changed = True
-        while changed:
-            changed = False
-            named = {m.name: m.formula for m in model.measures if m.name}
-            survivors: list[ModelMeasure] = []
-            for m in model.measures:
-                others = {k: v for k, v in named.items() if k != m.name}
-                try:
-                    parse_formula(m.formula, extra_agg_names=agg_names, named_measures=others)
-                    survivors.append(m)
-                except (ValueError, RecursionError) as exc:
-                    self._unconverted.append(ConversionWarning(
-                        model_name=model.name,
-                        metric_name=m.name,
-                        category="dangling_reference",
-                        severity="dropped",
-                        message=(
-                            f"Measure '{m.name}' references a name that does not resolve "
-                            f"on model '{model.name}' and was dropped: {exc}"
-                        ),
-                        suggestion="Ensure every referenced metric/measure converts successfully.",
-                    ))
-                    changed = True
-            if changed:
-                model.measures = survivors
+        problems = measure_dependency_problems(
+            [(m.name, m.formula) for m in model.measures],
+            aggregations=frozenset(a.name for a in model.aggregations),
+        )
+        for m, problem in zip(model.measures, problems):
+            if problem is not None:
+                self._unconverted.append(ConversionWarning(
+                    model_name=model.name,
+                    metric_name=m.name,
+                    category="dangling_reference",
+                    severity="dropped",
+                    message=(
+                        f"Measure '{m.name}' references a name that does not resolve "
+                        f"on model '{model.name}' and was dropped: {problem}"
+                    ),
+                    suggestion="Ensure every referenced metric/measure converts successfully.",
+                ))
+        model.measures = [m for m, problem in zip(model.measures, problems) if problem is None]
 
     def _convert_regular_models(self, existing_names: set) -> list[SlayerModel]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.errors import UnknownReferenceError
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -151,7 +152,8 @@ class TestExpressionGrammarScenarios:
     async def test_boolean_tests_partition_the_rows(self, engine: SlayerQueryEngine) -> None:
         kept = ids(await engine.execute(q(dimensions=["id"], filters=["(amount > 15) IS TRUE"])))
         rest = ids(await engine.execute(q(dimensions=["id"], filters=["(amount > 15) IS NOT TRUE"])))
-        assert kept | rest == ALL_IDS and not kept & rest
+        assert kept | rest == ALL_IDS
+        assert not kept & rest
         assert 5 in rest
 
     async def test_concatenation_dimension(self, engine: SlayerQueryEngine) -> None:
@@ -206,10 +208,12 @@ class TestExpressionGrammarScenarios:
         assert by_key(resp, "customers.Region") == {"North": 2, "South": 2, None: 1}
 
     async def test_double_quoted_string_hint(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=["id"], filters=['status = "paid"'])
         with pytest.raises(UnknownReferenceError) as info:
-            await engine.execute(q(dimensions=["id"], filters=['status = "paid"']))
+            await engine.execute(query)
         msg = str(info.value)
-        assert "paid" in msg and "single quote" in msg.lower(), msg
+        assert "paid" in msg, msg
+        assert "single quote" in msg.lower(), msg
 
     async def test_doubled_quote(self, engine: SlayerQueryEngine) -> None:
         assert ids(await engine.execute(q(dimensions=["id"], filters=["customer_name = 'O''Brien'"]))) == {1}
@@ -244,7 +248,7 @@ class TestEmission:
     async def test_ilike_is_case_insensitive_everywhere(self, dialect: str) -> None:
         sql = await emit(q(dimensions=["id"], filters=["status ILIKE 'PA%'"]), dialect=dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
-        native = tree.find(sqlglot.exp.ILike) is not None or (dialect == "sqlite" and " LIKE " in sql.upper())
+        native = tree.find(exp.ILike) is not None or (dialect == "sqlite" and " LIKE " in sql.upper())
         assert native or "LOWER(" in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", TIER1)

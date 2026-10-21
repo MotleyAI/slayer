@@ -272,8 +272,9 @@ class TestTypedLiteral:
     async def test_interval_value_cannot_hold_a_quote_or_backslash(self, dialect: str, value: str, formula: str) -> None:
         kwarg = exp.Literal.string(value).sql(dialect=dialect)
         agg = _agg(formula, name="days", n="2")
+        formula_text = f"days(amount, n={_mode_b_string(kwarg)})"
         with pytest.raises(SqlTemplateError) as ei:
-            await _dry(f"days(amount, n={_mode_b_string(kwarg)})", agg=agg, dialect=dialect)
+            await _dry(formula_text, agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", formula=formula)
 
 

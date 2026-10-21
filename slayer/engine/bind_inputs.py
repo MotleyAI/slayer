@@ -285,6 +285,7 @@ def _map_bound_keys(
                 routed_dotted=spec.bound.routed_dotted,
             ),
             direction=spec.direction,
+            nulls=spec.nulls,
         )
         for spec in order_specs
     ]
@@ -430,6 +431,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         granularity=_td_granularity(matching_td, bundle=bundle),
                     ).bound,
                     direction=o.direction,
+                    nulls=o.nulls or "default",
                 ))
                 continue
             # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
@@ -442,6 +444,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         dimension_alias_map=dim_alias_map,
                     ),
                     direction=o.direction,
+                    nulls=o.nulls or "default",
                 ))
                 continue
             # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
@@ -460,7 +463,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     for k in walk_value_keys(_part_bound.value_key)
                 ):
                     order_specs.append(OrderSpec(
-                        bound=_part_bound, direction=o.direction,
+                        bound=_part_bound, direction=o.direction, nulls=o.nulls or "default",
                     ))
                     continue
             # A FOREIGN-qualified order ref must not resolve to a same-named local column via the bare-leaf shortcut.
@@ -493,7 +496,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     scope=scope,
                     bundle=bundle,
                 )
-            order_specs.append(OrderSpec(bound=bo, direction=o.direction))
+            order_specs.append(OrderSpec(bound=bo, direction=o.direction, nulls=o.nulls or "default"))
 
     column_type = scope_column_type(scope=scope, bundle=bundle)
     check_date_operands(

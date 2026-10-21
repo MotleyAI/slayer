@@ -36,7 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
-from slayer.core.syntax import AggCall, DottedRef, Ref, canonical_measure_text, parse_expr, walk_parsed_refs
+from slayer.core.syntax import AggCall, DottedRef, Ref, canonical_measure_text, parse_expr
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
@@ -662,12 +662,6 @@ class ComputedDimension(BaseModel):
         """The expression as written, before ``{var}`` substitution."""
         return self._template or self.expression
 
-    def substituted(self, expression: str) -> "ComputedDimension":
-        """A copy carrying the substituted ``expression`` and remembering its template."""
-        out = self.model_copy(update={"expression": expression})
-        out._template = self.template
-        return out
-
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
         if self.name is None:
@@ -862,6 +856,7 @@ class OrderItem(BaseModel):
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
+    nulls: Literal["first", "last"] | None = None
     raw_formula: str | None = Field(
         default=None,
         description="Internal — captured automatically from expression strings; do not set.",
@@ -1071,7 +1066,9 @@ def _strip_order(order: list[OrderItem] | None, model_name: str, pattern: re.Pat
         if stripped is item.column and raw_formula == item.raw_formula:
             new_order.append(item)
         else:
-            new_order.append(OrderItem(column=stripped, direction=item.direction, raw_formula=raw_formula))
+            new_order.append(OrderItem(
+                column=stripped, direction=item.direction, nulls=item.nulls, raw_formula=raw_formula,
+            ))
     return None if all(n is o for n, o in zip(new_order, order)) else new_order
 
 

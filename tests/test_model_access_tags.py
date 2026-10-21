@@ -44,9 +44,9 @@ class TestField:
     def test_defaults_to_untagged(self) -> None:
         assert _model().access_tags == []
 
-    def test_schema_version_is_15(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 15
-        assert _model().version == 15
+    def test_schema_version_is_16(self) -> None:
+        assert CURRENT_VERSIONS["SlayerModel"] == 16
+        assert _model().version == 16
 
     def test_json_round_trip(self) -> None:
         model = _model(access_tags=["hr", "HR Team"], hidden=True)
@@ -63,7 +63,7 @@ class TestStorage:
 
 
 @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
-async def test_v14_model_loads_untagged_and_writes_back_at_v15(backend: str) -> None:
+async def test_v14_model_loads_untagged_and_writes_back_at_v16(backend: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = await raw_store(
             backend=backend, base=tmp,
@@ -71,7 +71,7 @@ async def test_v14_model_loads_untagged_and_writes_back_at_v15(backend: str) -> 
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
         assert (await must_get(storage, "orders", SHOP)).access_tags == []
-        assert (await raw_doc(storage, "orders"))["version"] == 15
+        assert (await raw_doc(storage, "orders"))["version"] == 16
 
 
 class TestMcp:

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text
@@ -43,7 +44,7 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
-    vendor_cast_types: ClassVar[frozenset[exp.DataType.Type]] = frozenset({exp.DataType.Type.MONEY})
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ilike_native: ClassVar[bool] = True
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
@@ -52,6 +53,7 @@ class PostgresDialect(SqlDialect):
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
+    try_cast_reads_profile: bool = True
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"

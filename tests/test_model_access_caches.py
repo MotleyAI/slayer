@@ -200,5 +200,5 @@ async def test_concurrent_first_reads_of_a_pre_v15_store_agree(backend: str) -> 
         models = await asyncio.gather(*(fin.get_model("orders", data_source="shop") for _ in range(8)))
         assert all(sorted(names) == ["customers", "orders"] for names in listings)
         assert all(m is not None and [j.target_model for j in m.joins] == ["customers"] for m in models)
-        assert (await raw_doc(inner, "orders"))["version"] == 15
+        assert (await raw_doc(inner, "orders"))["version"] == 16
         assert sorted(await fin.list_models("shop")) == ["customers", "orders"]

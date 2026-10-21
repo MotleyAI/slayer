@@ -156,8 +156,9 @@ class TestFilterConditionIsRowLevel:
         [m("sum(amount) FILTER (WHERE amount > avg(amount, partition_by=region))")],
     ], ids=["aggregate", "transform", "partitioned-aggregate"])
     async def test_non_row_level_condition_rejected(self, engine: SlayerQueryEngine, measures) -> None:
+        query = q(measures=measures)
         with pytest.raises(QueryTypeError) as info:
-            await engine.execute(q(measures=measures))
+            await engine.execute(query)
         assert "FILTER" in str(info.value), str(info.value)
 
 

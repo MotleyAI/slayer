@@ -35,7 +35,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     canonical_path,
@@ -1021,7 +1021,7 @@ def _bind_expression_agg_source(
     agg: str,
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
-) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey:
+) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey:
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-model leaves and operands carrying ``Column.filter`` are both
@@ -1189,16 +1189,26 @@ def _bind_filtered_agg(
     )
     if not isinstance(key, AggregateKey) or is_attached_source(key.source):
         raise _filter_error("applies only to an aggregation over rows.")
-    if isinstance(key.source, StarKey) or key.agg in RANKED_AGGREGATIONS:
-        return key.model_copy(update={"filter": condition})
+    if key.agg in RANKED_AGGREGATIONS:
+        return _carrying_filter(key, condition=condition)
+    value = LiteralKey(value=normalize_scalar(1)) if isinstance(key.source, StarKey) else key.source
     masked = key.model_copy(update={
-        "source": _masked(key.source, condition=condition),
+        "source": _masked(value, condition=condition),
         "kwargs": tuple((k, _masked(v, condition=condition) if isinstance(v, _ROW_INPUT_KINDS) else v)
                         for k, v in key.kwargs),
     })
-    if source_anchor_path(masked.source) != source_anchor_path(key.source):
-        raise _filter_error("must read the aggregated rows' own model or models joined to it one-to-one.")
-    return masked
+    if source_anchor_path(masked.source) == source_anchor_path(key.source):
+        return masked
+    if isinstance(key.source, StarKey) and not source_anchor_path(key.source):
+        # The condition reads a joined model: the star keeps the count's home.
+        return _carrying_filter(key, condition=condition)
+    raise _filter_error("must read the aggregated rows' own model or models joined to it one-to-one.")
+
+
+def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
+    if window_kwarg_of(key) is not None:
+        raise _filter_error("cannot combine with window= here; filter the query's rows instead.")
+    return key.model_copy(update={"filter": condition})
 
 
 # Row-valued aggregation parameters a FILTER masks (literals and attached values are not rows).

@@ -4,6 +4,8 @@ direction spelled as its bare value)."""
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from slayer.core import errors as core_errors
@@ -354,7 +356,7 @@ class TestImporterParity:
         parsed = parse_expr("ntile(sum(amount), n=4)")
         assert isinstance(parsed, TransformCall)
         assert "direction" not in dict(parsed.kwargs)
-        assert dict(parsed.kwargs)["n"] == Literal(value=4)
+        assert dict(parsed.kwargs)["n"] == Literal(value=Decimal(4))
 
 
 # --------------------------------------------------------------------------- #
