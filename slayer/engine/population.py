@@ -23,7 +23,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,

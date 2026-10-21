@@ -12,7 +12,7 @@ from slayer.core.errors import UnknownFunctionError
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Cmp, Literal, Ref, parse_expr
+from slayer.core.syntax import AggCall, Cmp, Literal, Ref, parse_expr
 from tests._engine_helpers import _engine_generate
 from tests._query_heal_fixtures import (
     BACKENDS,

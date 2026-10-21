@@ -18,7 +18,7 @@ from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     check_scalar_arity,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     BoolOp,
     Cmp,
     Literal,

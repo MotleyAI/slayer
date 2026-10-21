@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date, datetime
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name, TIME_TRANSFORMS
 from slayer.core.errors import (
     AmbiguousJoinPathError,
     AmbiguousReferenceError,
@@ -17,7 +17,6 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.time_spine import is_spine, is_spine_query, names_spine
 from slayer.core.join_walker import resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
@@ -98,7 +97,7 @@ from slayer.engine.key_metadata import (
     scope_column_type,
     stage_measure_type,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,

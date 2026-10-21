@@ -13,7 +13,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, render_probe_text
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
-from slayer.engine.syntax import DottedRef, Ref, parse_expr, parse_filter_expr
+from slayer.core.syntax import DottedRef, Ref, parse_expr, parse_filter_expr
 from slayer.ir.source_bundle import apply_extension_overlay, follow_sibling_chain, source_name_if_sibling
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 

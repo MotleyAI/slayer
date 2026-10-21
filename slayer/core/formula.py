@@ -26,34 +26,12 @@ from collections.abc import Mapping
 from pydantic import BaseModel, Field
 
 from slayer.core.direction import rank_direction, with_direction_kwarg
-from slayer.core.enums import (
-    BUILTIN_AGGREGATIONS,
-    RANK_FAMILY_TRANSFORMS,
-    normalize_aggregation_name,
-)
+from slayer.core.enums import BUILTIN_AGGREGATIONS, RANK_FAMILY_TRANSFORMS, normalize_aggregation_name, ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
 )
-
-# Transforms that require a time dimension for ORDER BY
-TIME_TRANSFORMS = {
-    "cumsum",
-    "change",
-    "change_pct",
-    "time_shift",
-    "first",
-    "last",
-    "lag",
-    "lead",
-    "consecutive_periods",
-}
-
-# Transforms that don't need time ordering
-TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
-
-ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 CallCategory = Literal["transform", "scalar", "unknown"]
 

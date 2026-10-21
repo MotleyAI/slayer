@@ -11,7 +11,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.engine.column_dependency import _unproven_arity_message
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from tests._dev1832_fixtures import gen, orders_q
 from tests._engine_helpers import orders_agg_sql

@@ -6,7 +6,7 @@
 family, and the typed error/warning vocabulary. It is the bottom layer: it is
 meant to import no other SLayer node; the remaining crossings are the
 grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
-`engine.syntax`, `sql.*`, `storage.migrations`), slated to die (system
+`sql.*`, `storage.migrations`), slated to die (system
 principle 2).
 
 ## 2. Building blocks
@@ -20,6 +20,7 @@ flowchart TD
   subgraph core["Core domain models"]
     core__query["Query"]
     core__models["Models"]
+    core__syntax["Syntax"]
   end
   subgraph sql["SQL generation"]
     sql__dialects["Dialects"]
@@ -27,7 +28,8 @@ flowchart TD
     sql__window_detect["Window detect"]
   end
   subgraph engine["Query engine"]
-    engine__syntax["Syntax"]
+    engine__binding["Binding"]
+    engine__bind_inputs["Bind inputs"]
   end
   ir["Intermediate representation"]
   subgraph storage["Storage backends"]
@@ -41,7 +43,6 @@ flowchart TD
     usage_reporting__features["Features"]
   end
   surfaces("User-facing surfaces")
-  core__query -.-> engine__syntax
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
   core__models -.-> sql__window_detect
@@ -50,6 +51,9 @@ flowchart TD
   core__query -.-> storage__migrations
   core__models -.-> core__query
   core__query --> core__models
+  core__query --> core__syntax
+  engine__binding --> core__syntax
+  engine__bind_inputs --> core__syntax
   engine --> core
   importers --> core
   ir --> core
@@ -61,14 +65,14 @@ flowchart TD
   surfaces --> core
   usage_reporting__features --> core
   classDef leaf fill:none;
-  class core__query,core__models,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,core__syntax,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->
 
 Identity: `keys.py`; scopes:
 `scope.py`; errors/warnings: `errors.py`, `warnings.py`; Pydantic domain
-models alongside.
+models alongside; the Mode B grammar: `syntax.py`.
 
 ## 3. Principles
 

@@ -20,7 +20,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import ScalarCall, parse_expr
+from slayer.core.syntax import ScalarCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 DATE_NAMES = {"date_part", "date_diff", "date_add", "interval", "current_date", "now"}

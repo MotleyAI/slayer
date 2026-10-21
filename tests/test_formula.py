@@ -7,7 +7,7 @@ import pytest
 
 from slayer.core.models import Aggregation
 from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
-from slayer.engine.syntax import AggCall, BoolOp, Cmp, Literal, Ref, ScalarCall, parse_expr
+from slayer.core.syntax import AggCall, BoolOp, Cmp, Literal, Ref, ScalarCall, parse_expr
 
 
 class TestFilterInjection:

@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.keys import SCALAR_FUNCTION_ARITY, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.engine.binding import bind_expr, bind_filter
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Cmp,
     Literal,

@@ -23,8 +23,7 @@ from pydantic import (
 )
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
-from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.granularity import GranularitySpec, granularity_key
@@ -37,7 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
-from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
+from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 

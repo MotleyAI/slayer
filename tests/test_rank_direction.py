@@ -11,7 +11,7 @@ from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import Literal, TransformCall, parse_expr
+from slayer.core.syntax import Literal, TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (

@@ -21,7 +21,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.engine.syntax import DottedRef, parse_expr, parse_filter_expr
+from slayer.core.syntax import DottedRef, parse_expr, parse_filter_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]

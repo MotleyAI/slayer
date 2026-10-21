@@ -11,7 +11,7 @@ import pytest
 from slayer.core.errors import GranularityDefinitionError, SlayerError
 from slayer.core.models import Aggregation, DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import Arith, Cmp, Literal, Ref, parse_expr
+from slayer.core.syntax import Arith, Cmp, Literal, Ref, parse_expr
 from tests._dev1737_fixtures import PARTS
 from tests._query_heal_fixtures import (
     BACKENDS,

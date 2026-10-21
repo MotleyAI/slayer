@@ -272,6 +272,24 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
 # Named once so classifier, planner and renderer agree.
 RANKED_AGGREGATIONS = ("first", "last")
 
+# Transforms that require a time dimension for ORDER BY
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
+
+# Transforms that don't need time ordering
+TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
+
 # Default partition is the whole result set, not the group-by dimensions;
 # ``partition_by=`` opts into per-partition ranking.
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}

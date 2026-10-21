@@ -39,7 +39,7 @@ from slayer.core.errors import DateOperandTypeError
 from slayer.core.keys import InKey, LiteralKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     Cmp,
     DottedRef,
     Literal,

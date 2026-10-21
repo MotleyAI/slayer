@@ -98,7 +98,7 @@ from slayer.core.recommend import (
     ItemPath,
     RootModelRecommendation,
 )
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,

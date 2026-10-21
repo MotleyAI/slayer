@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.errors import IllegalWindowInFilterError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     BoolOp,

@@ -19,7 +19,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import BoolOp, Cmp, Literal, Ref, parse_expr
+from slayer.core.syntax import BoolOp, Cmp, Literal, Ref, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 

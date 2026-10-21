@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
-from slayer.engine.syntax import AggCall, Ref, parse_expr
+from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
     OSIDataset,

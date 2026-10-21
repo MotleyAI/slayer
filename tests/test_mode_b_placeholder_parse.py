@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.errors import QueryTypeError, SlayerError, UnresolvedPlaceholderError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     Cmp,

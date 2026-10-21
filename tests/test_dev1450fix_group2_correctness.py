@@ -30,7 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _measure_formula_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr, parse_expr as _parse
+from slayer.core.syntax import parse_expr, parse_expr as _parse
 from slayer.storage.yaml_storage import YAMLStorage
 
 

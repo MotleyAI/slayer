@@ -19,7 +19,7 @@ from slayer.cube.models import (
     CubeSegment,
 )
 from slayer.cube.report import CubeIssueCategory
-from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr
+from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
 from tests._cube_helpers import DS, column, convert, measure, meta
 
 

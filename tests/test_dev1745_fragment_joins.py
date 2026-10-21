@@ -35,7 +35,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1746_fixtures import cte_names_in_order, find_cte

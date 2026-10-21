@@ -24,7 +24,7 @@ from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin,
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,

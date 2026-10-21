@@ -22,7 +22,7 @@ from slayer.core.keys import AggregateKey, ValueKey
 from slayer.core.models import Aggregation, Column, SlayerModel
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import AggCall, Literal, Ref, ScalarCall, TransformCall, parse_expr
+from slayer.core.syntax import AggCall, Literal, Ref, ScalarCall, TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 

@@ -1,6 +1,6 @@
 """Stage 7a.3 (DEV-1450) — Mode-B Python-AST parser tests.
 
-The parser at ``slayer.engine.syntax.parse_expr`` consumes a Mode-B
+The parser at ``slayer.core.syntax.parse_expr`` consumes a Mode-B
 expression string (the SLayer DSL) and emits a typed ``ParsedExpr`` AST
 the binder (stage 7a.5) compiles to ``BoundExpr``. Coverage:
 
@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     BoolOp,

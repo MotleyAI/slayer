@@ -31,7 +31,7 @@ from slayer.engine.schema_drift import (
     _filter_refs_dsl,
     _measure_formula_refs,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,

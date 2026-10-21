@@ -25,7 +25,7 @@ from slayer.engine import bind_inputs, param_binding, schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
 from slayer.engine.join_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql import column_expansion
 

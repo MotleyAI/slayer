@@ -15,7 +15,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
@@ -42,7 +42,6 @@ from slayer.core.errors import (
     UnrelatedDatasetError,
     UnsafeJoinInputError,
 )
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
