@@ -58,6 +58,7 @@ model {
       metadata {
         package 'slayer.storage'
         arc42 'architecture/storage.arc42.md'
+        specs ['storage']
       }
       migrations = node 'Migrations'
     }

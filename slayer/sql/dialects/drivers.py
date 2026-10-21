@@ -44,12 +44,11 @@ def _missing_driver(
 
 def _is_default_driver(facts: DriverFacts, *, url: URL, driver: str | None) -> bool:
     """Whether ``url`` selects SLayer's default driver; ``driver=None`` (none named) judges the backend alone."""
-    if url.get_backend_name() != facts.url_backend:
+    if url.get_backend_name() not in facts.url_backends:
         return False
-    scheme_driver = (facts.url_scheme or "").partition("+")[2]
-    if driver is None or ("+" not in url.drivername and not scheme_driver):
+    if driver is None or ("+" not in url.drivername and not facts.sync_driver):
         return True
-    return driver in {facts.sync_driver, facts.async_driver, scheme_driver}
+    return driver in {facts.sync_driver, facts.async_driver}
 
 
 @contextlib.contextmanager

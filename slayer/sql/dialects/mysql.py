@@ -45,7 +45,7 @@ class MysqlDialect(SqlDialect):
     # Conservative: MySQL allows 256 for column aliases but errors (not truncates).
     max_identifier_bytes: int | None = 64
     url_scheme: str | None = "mysql+pymysql"
-    sync_driver: str | None = "pymysql"
+    url_backend_aliases: frozenset[str] = frozenset({"mariadb"})
     async_driver: str | None = "aiomysql"
     install_extra: str | None = "mysql"
 

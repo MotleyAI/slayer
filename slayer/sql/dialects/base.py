@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, g
 from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
@@ -192,6 +194,10 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
+def _scheme_driver(url_scheme: str | None) -> str | None:
+    return (url_scheme or "").partition("+")[2] or None
+
+
 def _digest(secret: str | None) -> str:
     """Non-reversible 16-hex id for secret material in cache keys."""
     if not secret:
@@ -215,7 +221,7 @@ class DriverFacts(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     url_scheme: str | None = None
-    sync_driver: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
     async_driver: str | None = None
     install_extra: str | None = None
 
@@ -223,6 +229,31 @@ class DriverFacts(BaseModel):
     def url_backend(self) -> str:
         """The SQLAlchemy backend name of ``url_scheme``."""
         return (self.url_scheme or "").partition("+")[0]
+
+    @property
+    def url_backends(self) -> frozenset[str]:
+        """Every SQLAlchemy backend this type serves; none without a scheme."""
+        if self.url_scheme is None:
+            return frozenset()
+        return frozenset({self.url_backend}) | self.url_backend_aliases
+
+    @property
+    def sync_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
+
+    def pin_default_driver(self, url: str) -> str:
+        """``url`` with the default driver named when it names none on a served backend; else unchanged."""
+        if self.sync_driver is None:
+            return url
+        try:
+            parsed = make_url(url)
+        except (ArgumentError, ValueError):
+            return url
+        backend = parsed.get_backend_name()
+        if "+" in parsed.drivername or backend not in self.url_backends:
+            return url
+        return parsed.set(drivername=f"{backend}+{self.sync_driver}").render_as_string(hide_password=False)
 
 
 class SqlDialect(BaseModel):
@@ -259,12 +290,17 @@ class SqlDialect(BaseModel):
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
-    # URL scheme (``None`` = datasource type), sync/async DBAPI drivers, and their pip extra;
-    # read through ``driver_facts``.
+    # URL scheme (``None`` = datasource type; its ``+driver`` is the default driver), extra URL
+    # backends served, async DBAPI driver, and their pip extra; read through ``driver_facts``.
     url_scheme: str | None = None
-    sync_driver: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
     async_driver: str | None = None
     install_extra: str | None = None
+
+    @property
+    def sync_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
 
     def driver_facts(self, ds_type: str | None) -> DriverFacts:
         """``ds_type``'s driver facts: this dialect's when it serves ``ds_type``, else only ``ds_type`` as scheme."""
@@ -272,7 +308,7 @@ class SqlDialect(BaseModel):
             return DriverFacts(url_scheme=ds_type)
         return DriverFacts(
             url_scheme=self.url_scheme or ds_type,
-            sync_driver=self.sync_driver,
+            url_backend_aliases=self.url_backend_aliases,
             async_driver=self.async_driver,
             install_extra=self.install_extra,
         )

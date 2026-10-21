@@ -65,6 +65,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `bigquery` | `motley-slayer[bigquery]` | `bigquery://project/dataset` |
 | `trino` | `motley-slayer[trino]` | `trino://user@host:8080/catalog/schema` |
 
+A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another.
 A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
