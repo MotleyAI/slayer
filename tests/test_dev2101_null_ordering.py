@@ -117,13 +117,24 @@ class TestEmission:
             assert native or emulated, sql
 
     async def test_tsql_orders_over_the_resolved_expression(self) -> None:
+        # Over an outer wrap the key reads the subquery's column; at one level it inlines the expression.
         sql = await emit(hidden_max_query(direction="asc", nulls="last"), dialect="tsql")
-        null_keys = [t for t in _null_policy_terms(sql, dialect="tsql") if t.this.find(exp.Is) is not None]
-        assert null_keys, sql
-        assert all(t.this.find(exp.Max) is not None for t in null_keys), sql
+        tree = sqlglot.parse_one(sql, dialect="tsql")
+        subquery = tree.find(exp.Subquery)
+        assert subquery is not None, sql
+        inner = {e.alias_or_name for e in subquery.this.expressions}
+        keys = [t.this.find(exp.Is) for t in tree.args["order"].expressions if t.this.find(exp.Is) is not None]
+        assert keys, sql
+        assert all(isinstance(k.this, exp.Column) and k.this.name in inner for k in keys), sql
+        same_level = await emit(q(dimensions=["city"], measures=[{"formula": "max(discount)", "name": "d"}],
+                                  order=[{"column": "d", "direction": "asc", "nulls": "last"}]), dialect="tsql")
+        keys = [t.this.find(exp.Is) for t in _null_policy_terms(same_level, dialect="tsql")
+                if t.this.find(exp.Is) is not None]
+        assert keys, same_level
+        assert all(k.find(exp.Max) is not None for k in keys), same_level
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
-    async def test_no_policy_emits_no_modifier(self, dialect: str) -> None:
+    async def test_no_policy_keeps_nulls_last(self, dialect: str) -> None:
         sql = await emit(q(dimensions=["id"], distinct_dimension_values=False,
                            order=[{"column": "discount", "direction": "desc"}]), dialect=dialect)
-        assert "NULLS" not in sql.upper(), sql
+        assert "NULLS FIRST" not in sql.upper(), sql

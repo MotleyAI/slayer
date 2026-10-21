@@ -194,8 +194,10 @@ class TestExpressionGrammarScenarios:
         assert ids(resp) == {1}
 
     async def test_substring_and_position_equal_their_calls(self, engine: SlayerQueryEngine) -> None:
-        sql_form = await engine.execute(q(dimensions=["id", "SUBSTRING(status FROM 1 FOR 3)", "POSITION('a' IN status)"]))
-        calls = await engine.execute(q(dimensions=["id", "substr(status, 1, 3)", "instr(status, 'a')"]))
+        sql_form = await engine.execute(q(dimensions=["id", "SUBSTRING(status FROM 1 FOR 3)", "POSITION('a' IN status)"],
+                                          order=[{"column": "id"}]))
+        calls = await engine.execute(q(dimensions=["id", "substr(status, 1, 3)", "instr(status, 'a')"],
+                                       order=[{"column": "id"}]))
         assert sql_form.columns == calls.columns
         assert sql_form.data == calls.data
         assert sql_form.sql == calls.sql
