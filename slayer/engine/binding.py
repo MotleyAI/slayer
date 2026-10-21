@@ -133,6 +133,7 @@ def bind_expr(
     scope: ModelScope | StageSchema,
     bundle: ResolvedSourceBundle,
     allow_measures: bool = False,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundExpr:
     """Bind a parsed expression against a scope into a ``BoundExpr``.
@@ -140,6 +141,7 @@ def bind_expr(
     ``allow_measures`` enables saved-measure resolution (bare and dotted) in
     the eligible positions — measure formulas and computed-dimension
     expressions; off everywhere else, so a saved-measure name there errors.
+    ``alias_map`` resolves query aliases as in :func:`bind_filter`.
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
     the dimension's bound key; it applies ONLY there."""
     _reject_placeholders(parsed)
@@ -148,7 +150,7 @@ def bind_expr(
         if allow_measures else None
     )
     value_key = _bind(
-        parsed, scope=scope, bundle=bundle, in_filter=False, measure_ctx=measure_ctx,
+        parsed, scope=scope, bundle=bundle, in_filter=False, alias_map=alias_map, measure_ctx=measure_ctx,
         dim_alias_map=dimension_alias_map,
     )
     return BoundExpr(

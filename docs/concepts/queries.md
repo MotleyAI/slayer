@@ -246,11 +246,7 @@ silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
 `{"column": "sum(revenue) / sum(cnt)"}` and `{"column": "change(sum(revenue))"}` both
-work without declaring a measure. One limit: the operands must be written as
-formulas, not as the *names* of measures you declared in the same query —
-`{"column": "rev / cnt"}` is rejected at validation, because referencing a
-declared measure by its alias inside an expression is not supported anywhere in
-SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
+work without declaring a measure, and their operands may also be the names of measures declared in the same query (`{"column": "rev / cnt"}`), as in filters.
 
 Windowed measures work in declared composites and transforms too — see [formulas](formulas.md#windowed-aggregations).
 

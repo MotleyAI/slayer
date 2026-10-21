@@ -441,6 +441,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         parsed=parse_expr(o.raw_formula),
                         scope=scope,
                         bundle=bundle,
+                        alias_map=filter_alias_map,
                         dimension_alias_map=dim_alias_map,
                     ),
                     direction=o.direction,
@@ -454,6 +455,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 _part_bound = bind_expr(
                     parsed=parse_expr(o.raw_formula),
                     scope=scope, bundle=bundle,
+                    alias_map=filter_alias_map,
                     dimension_alias_map=dim_alias_map,
                 )
                 if any(
@@ -487,6 +489,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     parsed=parse_expr(o.raw_formula),
                     scope=scope,
                     bundle=bundle,
+                    alias_map=filter_alias_map,
                     dimension_alias_map=dim_alias_map,
                 )
             else:
