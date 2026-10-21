@@ -75,8 +75,11 @@ from slayer.core.syntax import (
     TupleLit,
     UnaryOp,
     canonical_measure_text,
+    comparison_hint,
+    keyword_spelling,
     parse_expr,
     placeholder_names,
+    positional_hint,
 )
 from slayer.sql.sql_expr import build_cast_type, has_window_function
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
@@ -360,7 +363,7 @@ def _bind(
                 measure_ctx=measure_ctx,
             )
         except UnknownReferenceError as e:
-            raise _with_quote_hint(e) if parsed.quoted else e
+            raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
 
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=_bind(
@@ -442,9 +445,11 @@ def _bind(
     )
 
 
-def _with_quote_hint(error: UnknownReferenceError) -> UnknownReferenceError:
-    """``error`` for a double-quoted name, adding that strings take single quotes."""
-    hint = f"{error.name!r} was written in double quotes, which name a column; strings use single quotes ('…')."
+_QUOTE_HINT = "{name!r} was written in double quotes, which name a column; strings use single quotes ('…')."
+
+
+def _with_hint(error: UnknownReferenceError, *, hint: str) -> UnknownReferenceError:
+    """``error`` with ``hint`` leading its suggestion."""
     return UnknownReferenceError(
         name=error.name, scope_kind=error.scope_kind, scope_summary=error.scope_summary,
         suggestion=f"{hint} {error.suggestion}" if error.suggestion else hint,
@@ -1297,6 +1302,7 @@ def _bind_agg(
     _check_agg_kwarg_names(
         agg=effective_agg, source=source, bundle=bundle,
         names=[*folded, *(k for k, _ in parsed.kwargs if k != "partition_by")],
+        keywords=frozenset(k for k, _ in parsed.kwargs),
     )
     args = tuple(
         _bind_agg_arg(a, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
@@ -1373,7 +1379,7 @@ def _declared_agg_param_names(
 
 
 def _check_agg_kwarg_names(
-    *, agg: str, source, bundle: ResolvedSourceBundle, names: List[str],
+    *, agg: str, source, bundle: ResolvedSourceBundle, names: List[str], keywords: frozenset[str],
 ) -> None:
     """Reject an argument name the rendered ``agg`` never reads (only its placeholders or own parameters, plus ``window``)."""
     if not names:
@@ -1392,13 +1398,14 @@ def _check_agg_kwarg_names(
             raise SqlTemplateError(reserved_value_param_message(agg))
         if name in accepted:
             continue
+        hint = f" Note: {comparison_hint(name)}" if name in keywords else ""
         if accepted == {"window"}:
             raise AggregationArgumentError(
-                f"Aggregation '{agg}' takes no args or kwargs other than window; got '{name}'."
+                f"Aggregation '{agg}' takes no args or kwargs other than window; got '{name}'.{hint}"
             )
         raise AggregationArgumentError(
             f"Aggregation '{agg}' does not accept argument '{name}'; "
-            f"accepted: {', '.join(sorted(accepted))}."
+            f"accepted: {', '.join(sorted(accepted))}.{hint}"
         )
 
 
@@ -1712,7 +1719,8 @@ def _bind_transform_params(
         if k not in allowed_kwargs:
             raise TransformArgumentError(
                 summary=f"Transform {op!r} does not accept keyword "
-                f"argument {k!r}. Accepted: {sorted(advertised)}."
+                f"argument {k!r}. Accepted: {sorted(advertised)}.",
+                suggestion=comparison_hint(k),
             )
         seen_kwargs.add(k)
         scalar = _fold_to_scalar(v)
@@ -1797,9 +1805,12 @@ def _bind_scalar(
         )
     # Check arity for every allowlisted scalar: sqlglot's handling is
     # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
+    spelled = [n for n in map(keyword_spelling, parsed.args) if n is not None]
     arity_error = check_scalar_arity(
         name=parsed.name, argc=len(parsed.args),
     )
+    if arity_error is not None and spelled:
+        raise ValueError(f"{arity_error} Note: {positional_hint(spelled[0])}")
     if arity_error is not None:
         if parsed.name == "like":
             raise ValueError(
@@ -1822,7 +1833,12 @@ def _bind_scalar(
         return type_date_values(key) if in_temporal_slot else key
 
     slots = set(DATE_OPERAND_ARGS.get(parsed.name, ()))
-    args = tuple(bind(a, in_temporal_slot=i in slots) for i, a in enumerate(parsed.args))
+    try:
+        args = tuple(bind(a, in_temporal_slot=i in slots) for i, a in enumerate(parsed.args))
+    except UnknownReferenceError as e:
+        if e.name not in spelled:
+            raise
+        raise _with_hint(e, hint=positional_hint(e.name)) from e
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])
     return ScalarCallKey(name=parsed.name, args=args)

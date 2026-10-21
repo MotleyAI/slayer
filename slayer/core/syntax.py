@@ -141,6 +141,14 @@ class Cmp(_BaseNode):
     op: str
     left: Any
     right: Any
+    # Written as a single `=`; not part of identity.
+    single_eq: bool = False
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Cmp) and (self.op, self.left, self.right) == (other.op, other.left, other.right)
+
+    def __hash__(self) -> int:
+        return hash(("Cmp", self.op, self.left, self.right))
 
 
 class BoolOp(_BaseNode):
@@ -844,7 +852,7 @@ _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
 
 _CMP_SUFFIX = (
     _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
-            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1]))
+            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
@@ -1402,6 +1410,21 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     )
 
 
+def keyword_spelling(node: Any) -> Optional[str]:
+    """The name of a ``name = value`` argument, which a scalar call reads as a comparison."""
+    if isinstance(node, Cmp) and node.single_eq and isinstance(node.left, Ref) and not node.left.quoted:
+        return node.left.name
+    return None
+
+
+def positional_hint(name: str) -> str:
+    return f"scalar functions take positional arguments; `{name} = …` here is a comparison."
+
+
+def comparison_hint(name: str) -> str:
+    return f"to pass a comparison instead, write `{name} == …` or `({name} = …)`."
+
+
 # Position of the count argument of the date-offset calls.
 _COUNT_ARG = {"date_add": 1, "interval": 0}
 
@@ -1425,9 +1448,10 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     accepted = ", ".join(words)
     what = "part" if name == "date_part" else "unit"
     if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
+        spelled = keyword_spelling(arg)
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: the {what} of {name}() must be a "
-            f"string literal, one of: {accepted}."
+            f"string literal, one of: {accepted}." + (f" Note: {positional_hint(spelled)}" if spelled else "")
         )
     word = arg.value.lower()
     if name == "date_part":
@@ -1642,5 +1666,6 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 __all__ = [
     "AggCall", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
     "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "bind_variables", "canonical_measure_text", "measure_dependency_problems", "parse_expr", "placeholder_names", "split_entity_agg_ref", "walk_parsed_refs",
+    "bind_variables", "canonical_measure_text", "comparison_hint", "keyword_spelling", "measure_dependency_problems",
+    "parse_expr", "placeholder_names", "positional_hint", "split_entity_agg_ref", "walk_parsed_refs",
 ]

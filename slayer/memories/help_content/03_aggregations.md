@@ -13,6 +13,8 @@ filters, order, and computed dimensions.
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), plus the model's custom aggregations
 (`inspect` the model to list them).
+`name=value` is a keyword argument in an aggregation or transform but a comparison in a
+scalar function (`iif(status = 'paid', …)`); write `==` for a comparison in a keyword slot.
 
 A sole primary-key column only takes `count`, `count_distinct`,
 `count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
