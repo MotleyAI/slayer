@@ -64,6 +64,7 @@ from slayer.core.keys import (
     Grain,
     InKey,
     LiteralKey,
+    CastKey,
     ScalarCallKey,
     TimePointCmpKey,
     TimeTruncKey,
@@ -1023,6 +1024,8 @@ def _operand_display(k: object) -> str:
         return f"'{k}'"
     if isinstance(k, ScalarCallKey):
         return f"{k.name}({', '.join(_operand_display(a) for a in k.args)})"
+    if isinstance(k, CastKey):
+        return f"{'TRY_CAST' if k.try_ else 'CAST'}({_operand_display(k.source)} AS {k.type_text})"
     if isinstance(k, ArithmeticKey):
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
@@ -1036,7 +1039,7 @@ _LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
     bool: DataType.BOOLEAN, str: DataType.TEXT,
 })
 _SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
-    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
+    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN, "ilike": DataType.BOOLEAN,
 })
 
 
@@ -1049,6 +1052,8 @@ def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[Data
         return DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
         return _SCALAR_RESULT_TYPES.get(key.name)
+    if isinstance(key, CastKey) and key.data_type is not DataType.UNKNOWN:
+        return key.data_type
     return None
 
 
@@ -1245,9 +1250,9 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
@@ -1257,9 +1262,11 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
+    if isinstance(key, CastKey):
+        return [key.source]
     if isinstance(key, TimePointCmpKey):
         return [key.operand]
     if isinstance(key, InKey):

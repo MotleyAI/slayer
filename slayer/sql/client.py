@@ -389,7 +389,7 @@ def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> Iterator[list[StatementTimeoutSkippedWarning]]:
     """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
-    if not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = conn.connection.dbapi_connection
@@ -415,7 +415,9 @@ async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
     """Async sibling of ``_statement_timeout``."""
-    if not dialect.timeout_permitted(await _server_profile_async(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(
+        await _server_profile_async(conn, engine=engine, dialect=dialect),
+    ):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = (await conn.get_raw_connection()).dbapi_connection

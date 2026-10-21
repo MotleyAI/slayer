@@ -36,7 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
-from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
+from slayer.core.syntax import AggCall, DottedRef, Ref, canonical_measure_text, parse_expr, walk_parsed_refs
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
@@ -671,9 +671,19 @@ class ComputedDimension(BaseModel):
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
         if self.name is None:
-            self.name = auto_name_from_expression(self.expression)
+            self.name = computed_dimension_name(self.expression)
         _validate_model_name(self.name, "Computed dimension")
         return self
+
+
+def computed_dimension_name(expression: str) -> str:
+    """An unnamed computed dimension's name: its expression's canonical text, sanitised, so every
+    spelling of one expression names it alike."""
+    try:
+        text = canonical_measure_text(parse_expr(expression))
+    except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
+        text = expression
+    return auto_name_from_expression(text)
 
 
 def _coerce_column_ref(v: Any) -> Any:
@@ -696,24 +706,18 @@ ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
 
 
 def _order_formula_candidate(v: str) -> str | None:
-    """``v`` verbatim if it carries a measure expression (legacy colon spelling,
-    call-style text, or an expression containing an aggregation), else
-    ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
-    so they can't drift. The author's spelling is preserved — resolution
-    happens at binding via the native parser. Bare-alias
-    arithmetic (``rev / cnt``) is deliberately NOT a candidate — it falls
-    through to ColumnRef validation and fails fast."""
+    """``v`` verbatim if it is an expression rather than a column reference, else ``None``;
+    shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift.
+    Binding judges whether the expression is legal there."""
     if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
         return v
     if _is_valid_column_ref_name(v):
         return None
     try:
-        parsed = parse_expr(v)
+        parse_expr(v)
     except Exception:
         return None
-    if any(isinstance(node, AggCall) for node in walk_parsed_refs(parsed)):
-        return v
-    return None
+    return v
 
 
 def _is_valid_column_ref_name(name: str) -> bool:

@@ -1,25 +1,36 @@
-"""Mode-B Python-AST parser.
+"""The Mode-B grammar.
 
-``parse_expr(text) -> ParsedExpr`` lowers a Mode-B DSL string
-(``ModelMeasure.formula``, ``SlayerQuery.measures`` / ``.filters``) to a typed
-tree — pure syntax, no scope resolution or named-measure expansion (binder's
-job). Grammar: bare/dotted refs; functional or legacy colon aggregations, which
-collapse to one ``AggCall``; transform calls; a closed scalar
-allowlist; arithmetic / comparison / boolean / unary; grouping. Rejects
-non-allowlisted calls, raw ``OVER(...)``, and chained comparisons.
+``parse_expr(text) -> ParsedExpr`` parses a Mode-B expression (``ModelMeasure.formula``,
+query measures / dimensions / filters / order) with one SQL-compatible pyparsing grammar —
+pure syntax, no scope resolution or named-measure expansion (binder's job). Every spelling
+of a construct collapses to one node: CASE → ``iif``, ``EXTRACT`` → ``date_part``,
+``count(distinct x)`` → ``count_distinct``, ``BETWEEN`` → its conjunction, ``x::t`` →
+``Cast``, interval literals → ``date_add``.
 """
 
 from __future__ import annotations
 
-import ast
 import re
+import threading
+import unicodedata
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
+import pyparsing as pp
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, GRANULARITY_NAMES, ambiguous_weekday_message, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.enums import (
+    ALL_TRANSFORMS,
+    AMBIGUOUS_WEEKDAY_NAMES,
+    BUILTIN_AGGREGATIONS,
+    DATE_PART_ALIASES,
+    GRANULARITY_NAMES,
+    TimeGranularity,
+    ambiguous_weekday_message,
+    normalize_aggregation_name,
+)
 from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
@@ -36,10 +47,26 @@ class _BaseNode(BaseModel):
 
 class Ref(_BaseNode):
     name: str
+    # Written double-quoted; not part of identity.
+    quoted: bool = False
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Ref) and self.name == other.name
+
+    def __hash__(self) -> int:
+        return hash(("Ref", self.name))
 
 
 class DottedRef(_BaseNode):
     parts: Tuple[str, ...]
+    # Some segment was written double-quoted; not part of identity.
+    quoted: bool = False
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DottedRef) and self.parts == other.parts
+
+    def __hash__(self) -> int:
+        return hash(("DottedRef", self.parts))
 
 
 class StarSource(_BaseNode):
@@ -50,30 +77,32 @@ class Literal(_BaseNode):
     value: Decimal | str | bool | None = None
 
 
+class TemporalLiteral(_BaseNode):
+    """``DATE '…'`` / ``TIMESTAMP '…'``; the text is validated at binding."""
+
+    kind: str
+    text: str
+
+
 class Placeholder(_BaseNode):
-    """An unsubstituted ``{name}`` variable placeholder; admitted wherever a ``Literal`` is."""
+    """An unsubstituted ``{name}`` variable in a literal slot."""
 
     name: str
 
 
 class TupleLit(_BaseNode):
-    """Literal-only tuple/list RHS for ``IN`` / ``NOT IN``; non-literal
-    elements and empty tuples are rejected at parse time."""
+    """Literal-only list RHS for ``IN`` / ``NOT IN``."""
 
     elements: Tuple[Literal, ...]
 
 
 class AggCall(_BaseNode):
-    # source may also be an aggregation-free scalar expression (``sum(a - b)``),
-    # or — for a re-aggregation — a nested AggCall or a grained
-    # TransformCall, alone or composed.
-    source: (
-        Ref | DottedRef | StarSource | Literal | Placeholder | ScalarCall | Arith | UnaryOp
-        | AggCall | TransformCall | Cmp | BoolOp
-    )
+    source: Any
     agg: str
     args: Tuple[Any, ...] = ()
     kwargs: Tuple[Tuple[str, Any], ...] = ()
+    # ``FILTER (WHERE …)`` predicate.
+    filter: Any = None
 
 
 class TransformCall(_BaseNode):
@@ -86,6 +115,14 @@ class TransformCall(_BaseNode):
 class ScalarCall(_BaseNode):
     name: str
     args: Tuple[Any, ...] = ()
+
+
+class Cast(_BaseNode):
+    """``CAST(x AS t)`` / ``x::t`` / ``TRY_CAST(x AS t)``; ``type_text`` is the normalised author type."""
+
+    source: Any
+    type_text: str
+    try_: bool = False
 
 
 class Arith(_BaseNode):
@@ -111,439 +148,746 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, Placeholder, TupleLit,
-    AggCall, TransformCall, ScalarCall,
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit,
+    AggCall, TransformCall, ScalarCall, Cast,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
 
-# ``AggCall.source`` forward-references ScalarCall / Arith / UnaryOp (defined
-# below it) for expression aggregation sources.
-AggCall.model_rebuild()
-
 
 # ---------------------------------------------------------------------------
-# Constants
+# Lexical helpers
 # ---------------------------------------------------------------------------
 
 
-# The ``__slayer_`` prefix is reserved from user input (P3). Matched only at an
-# identifier boundary so a legal embedded name (``foo__slayer_bar``) stays
-# referenceable; ``\w`` is Unicode-aware, covering ``é__slayer_bar`` too.
+# The ``__slayer_`` prefix is reserved from user input (P3).
 _RESERVED_EXPR_PREFIX = "__slayer_"
-_RESERVED_EXPR_PREFIX_RE = re.compile(r"(?<!\w)__slayer_")
-_PLACEHOLDER_PREFIX = "__slayer_agg_"
-_PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
-# ``_preprocess_star_args`` mints this for a call's first-arg ``*`` (``count(*)``);
-# Python's AST cannot parse a bare ``*``.
-_STAR_ARG_TOKEN = "__slayer_star__"
-_OVER_RE = re.compile(r"\b[oO][vV][eE][rR]\s*\(")
-# Escape-aware Python-string matcher — blanks literals before keyword scans so
-# an ``OVER(`` / ``:sum`` inside a quoted value isn't mistaken for syntax.
-_PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
-# SQL ``[NOT] LIKE`` → the ``like(col, pattern)`` scalar. LHS bare/
-# dotted ident or one scalar call; RHS a single-quoted (escape-aware) pattern.
-# Keyword as ASCII classes, not ``re.IGNORECASE`` — IGNORECASE folds spoofs like
-# ``lıke`` (dotless ı) into ``like``.
-_SQL_LIKE_RE = re.compile(
-    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+"
-    r"([nN][oO][tT]\s+)?[lL][iI][kK][eE]\s+"
-    r"('(?:\\.|[^'\\])*')"
-)
-
-
-def _rewrite_sql_like(text: str) -> str:
-    """``col LIKE 'p%'`` → ``like(col, 'p%')``; ``col NOT LIKE 'p%'`` →
-    ``not like(col, 'p%')``. Matches starting inside string literals are
-    left untouched."""
-    spans = [(m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)]
-
-    def _sub(m: "re.Match[str]") -> str:
-        # Skip a match inside a string literal, or one whose LHS is only part of
-        # a larger reference the ``\b``/``\w`` LHS token can't lex whole — a
-        # ``.``-rooted dotted path (``℘.name``) or a Unicode-fused prefix
-        # (``℘name``, decomposed ``éname``); that name is not a LIKE operand.
-        if any(s <= m.start() < e for s, e in spans) or _continues_ref(
-            text=text, pos=m.start() - 1
-        ):
-            return m.group(0)
-        lhs, neg, pat = m.group(1), m.group(2), m.group(3)
-        call = f"like({lhs}, {pat})"
-        return f"not {call}" if neg else call
-
-    return _SQL_LIKE_RE.sub(_sub, text)
-
-
-# SQL ``CASE WHEN … END`` → nested ``iif(cond, then, otherwise)``. Lowered to the
-# host language (a plain call) so binding + per-dialect emission reuse the whole
-# scalar-call machinery. Only the WHEN-condition segments are operator-normalised
-# (so ``CASE WHEN a = 5 …`` works in measures too); THEN/ELSE values are sliced
-# verbatim and only recursed for nested CASE, so a value like ``'a AND b'`` is
-# never rewritten. String literals are single tokens, so keywords inside them are
-# invisible to the keyword scan. Identifiers lex complete (Unicode-aware start,
-# dotted paths as ONE token), so a name containing or qualified by a keyword
-# (``customers.case``, ``écase``) can never equal one.
-_CASE_TOKEN_RE = re.compile(
-    r"(?P<str>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
-    r"|(?P<id>[^\W\d]\w*(?:\s*\.\s*[^\W\d]\w*)*)"
-    r"|(?P<lp>[(\[])"
-    r"|(?P<rp>[)\]])",
-    re.DOTALL,
-)
-_CASE_STOPS_OPERAND = frozenset({"WHEN", "THEN", "ELSE", "END"})
-_CASE_KEYWORDS = _CASE_STOPS_OPERAND | {"CASE"}
-
-
-def _is_ident_adjacent(text: str, pos: int) -> bool:
-    """Whether ``text[pos]`` is identifier material the ``\\w`` token class
-    misses (combining marks, ``Other_ID_Start`` symbols like ``℘``)."""
-    return 0 <= pos < len(text) and ("a" + text[pos]).isidentifier()
-
-
-def _continues_ref(text: str, pos: int) -> bool:
-    """Whether ``text[pos]`` extends a reference token past a keyword span — a
-    ``.`` join separator, or identifier material the ``\\w`` class misses. A
-    keyword touching such a char is a name component (``a.NULL``, ``℘case``),
-    not a keyword."""
-    return _is_ident_adjacent(text=text, pos=pos) or (
-        0 <= pos < len(text) and text[pos] == "."
-    )
-
-
-def _sub_keyword_isolated(pattern: "re.Pattern[str]", repl: str, text: str) -> str:
-    """``pattern.sub(repl, text)`` but leaving a keyword match that is really a
-    reference component untouched — a dotted leaf/root (``a.NULL`` → keeps
-    ``NULL``) or one fused to ``Other_ID_Start`` / combining marks the ``\\b``
-    boundary splits (``℘NULL`` → ``℘None``, ``℘AND`` → ``℘and``). Both would
-    silently rebind the reference (mirrors ``_case_keyword``'s guard)."""
-    def _guard(m: "re.Match[str]") -> str:
-        if _continues_ref(text=text, pos=m.start() - 1) or _continues_ref(
-            text=text, pos=m.end()
-        ):
-            return m.group(0)
-        return repl
-    return pattern.sub(_guard, text)
-
-
-def _case_keyword(text: str, tok: Tuple[Optional[str], str, int, int]) -> Optional[str]:
-    """The CASE-grammar keyword a token spells, or None for an identifier.
-
-    ASCII-exact (``caſe`` uppercases to ``CASE`` only via Unicode folding) and
-    rejected when adjacent raw text continues an identifier around the token.
-    """
-    kind, val, start, end = tok
-    if kind != "id" or not val.isascii():
-        return None
-    up = val.upper()
-    if up not in _CASE_KEYWORDS:
-        return None
-    if _is_ident_adjacent(text, start - 1) or _is_ident_adjacent(text, end):
-        return None
-    return up
-
-
-def _case_has_when(
-    text: str, toks: List[Tuple[Optional[str], str, int, int]], i: int,
-) -> bool:
-    """Whether the CASE at ``toks[i]`` opens a conditional: a depth-0 ``WHEN``
-    follows before any other structural keyword, an unmatched ``)``, or end.
-
-    Accepted mislex edge: a BARE keyword-named simple-CASE operand
-    (``CASE case WHEN 1 …``) is genuinely ambiguous and errors loudly —
-    parenthesize the operand (``CASE (case) WHEN 1 …``) to disambiguate.
-    """
-    depth = 0
-    for j in range(i + 1, len(toks)):
-        kind = toks[j][0]
-        if kind == "lp":
-            depth += 1
-        elif kind == "rp":
-            if depth == 0:
-                return False
-            depth -= 1
-        elif kind == "id" and depth == 0:
-            kw = _case_keyword(text, toks[j])
-            if kw is not None:
-                return kw == "WHEN"
-    return False
-
-
-def _rewrite_case_when(text: str) -> str:
-    if "case" not in text.lower():
-        return text
-    toks = [
-        (m.lastgroup, m.group(), m.start(), m.end())
-        for m in _CASE_TOKEN_RE.finditer(text)
-    ]
-    if not any(_case_keyword(text, t) == "CASE" for t in toks):
-        return text
-    result, _ = _rw_value(text, toks, 0, frozenset(), 0)
-    return result
-
-
-def _rw_value(text, toks, i, stop_kws, start_char):  # NOSONAR(S3776) — one cohesive token-scan over a value/condition span: paren-depth tracking, the depth-0 stop-keyword break, and nested-CASE recursion are each one decision, and splitting them scatters the slice-and-recurse contract that preserves the original text.
-    """Rewrite one value/condition span → ``(rewritten, next_index)``.
-
-    ``start_char`` is the span start (end of the keyword just consumed): bare
-    values (``1``) have no token, so non-CASE content is recovered by slicing the
-    original text (preserving colons/dots/spacing). Stops at a depth-0 stop
-    keyword or an unmatched ``)``.
-    """
-    parts: List[str] = []
-    depth = 0
-    last = start_char
-    while i < len(toks):
-        kind, _, start, _ = toks[i]
-        if kind == "lp":
-            depth += 1
-        elif kind == "rp":
-            if depth == 0:
-                break
-            depth -= 1
-        elif kind == "id":
-            kw = _case_keyword(text, toks[i])
-            if depth == 0 and kw in stop_kws:
-                break
-            if kw == "CASE" and _case_has_when(text, toks, i):
-                parts.append(text[last:start])
-                nested, i = _rw_case(text, toks, i)
-                parts.append(nested)
-                last = toks[i - 1][3]
-                continue
-        i += 1
-    stop_char = toks[i][2] if i < len(toks) else len(text)
-    parts.append(text[last:stop_char])
-    return "".join(parts).strip(), i
-
-
-def _rw_case(text, toks, i):
-    """Rewrite a ``CASE … END`` starting at ``toks[i]`` (the CASE keyword)."""
-    i += 1  # consume CASE
-    operand, i = _rw_value(text, toks, i, _CASE_STOPS_OPERAND, toks[i - 1][3])
-    is_simple = bool(operand)
-    branches: List[Tuple[str, str]] = []
-    while i < len(toks) and _case_keyword(text, toks[i]) == "WHEN":
-        i += 1
-        cond, i = _rw_value(text, toks, i, frozenset({"THEN"}), toks[i - 1][3])
-        if not (i < len(toks) and _case_keyword(text, toks[i]) == "THEN"):
-            raise ValueError(
-                f"Malformed CASE expression in {text!r}: a WHEN branch is "
-                f"missing its THEN."
-            )
-        i += 1
-        then_val, i = _rw_value(
-            text, toks, i, frozenset({"WHEN", "ELSE", "END"}), toks[i - 1][3],
-        )
-        branches.append((cond, then_val))
-    else_val = "None"
-    if i < len(toks) and _case_keyword(text, toks[i]) == "ELSE":
-        i += 1
-        else_val, i = _rw_value(text, toks, i, frozenset({"END"}), toks[i - 1][3])
-        else_val = else_val or "None"
-    if not (i < len(toks) and _case_keyword(text, toks[i]) == "END"):
-        raise ValueError(
-            f"Malformed CASE expression in {text!r}: missing END."
-        )
-    i += 1  # consume END
-    if not branches:
-        raise ValueError(
-            f"Malformed CASE expression in {text!r}: needs at least one "
-            f"WHEN … THEN branch."
-        )
-    result = else_val
-    for cond, then_val in reversed(branches):
-        if is_simple:
-            cond_expr = f"{operand} == {cond}"
-        else:
-            cond_expr = _normalize_sql_filter_operators(cond)
-        result = f"iif({cond_expr}, {then_val}, {result})"
-    return result, i
-
-
-# Tokens of the call-shape rewriters (``extract``, ``count(distinct …)``): literals
-# whole, identifiers Unicode-aware, so keyword text inside either never matches.
-_CALL_TOKEN_RE = re.compile(
-    r"(?P<str>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
-    r"|(?P<id>[^\W\d]\w*)"
-    r"|(?P<lp>\()|(?P<rp>\))|(?P<comma>,)"
-    r"|(?P<op>==|!=|<=|>=|=)"
-    r"|(?P<other>\S)",
-    re.DOTALL,
-)
-_Token = Tuple[str, str, int, int]
+# Masked ``{name}`` placeholders: the braces become private-use sentinels, so offsets hold.
+_PH_OPEN, _PH_CLOSE = "", ""
+_VAR_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_CODE_PLACEHOLDER_RE = re.compile(r"\{\{|\}\}|\{(" + _VAR_NAME + r")\}")
+_LITERAL_VALUES = "variables supply literal values"
 _DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
 
 
-def _call_tokens(text: str) -> List[_Token]:
-    return [(m.lastgroup or "", m.group(), m.start(), m.end()) for m in _CALL_TOKEN_RE.finditer(text)]
+class _Problem(ValueError):
+    """A grammar-level rejection; ``parse_expr`` prefixes the expression text."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
-def _is_word(text: str, toks: List[_Token], i: int, word: str) -> bool:
-    """Whether ``toks[i]`` is the bare ASCII keyword ``word`` (any case), not part of a reference."""
-    kind, val, start, end = toks[i]
-    return (
-        kind == "id" and val.isascii() and val.lower() == word
-        and not _is_ident_adjacent(text, start - 1) and not _continues_ref(text=text, pos=end)
-        and not (i > 0 and toks[i - 1][1] == ".")
-    )
+class _Region(BaseModel):
+    kind: str  # "code" | "string" | "ident"
+    start: int
+    end: int
 
 
-def _matching_rp(toks: List[_Token], lp: int) -> Optional[int]:
-    depth = 0
-    for j in range(lp, len(toks)):
-        if toks[j][0] == "lp":
-            depth += 1
-        elif toks[j][0] == "rp":
-            depth -= 1
-            if depth == 0:
-                return j
+def _regions(text: str) -> List[_Region]:
+    """Split ``text`` into code, ``'…'`` string and ``"…"`` identifier spans (doubled quotes escape)."""
+    out: List[_Region] = []
+    i = start = 0
+    n = len(text)
+    while i < n:
+        quote = text[i]
+        if quote not in ("'", '"'):
+            i += 1
+            continue
+        if i > start:
+            out.append(_Region(kind="code", start=start, end=i))
+        j = i + 1
+        while j < n:
+            if text[j] == quote:
+                if j + 1 < n and text[j + 1] == quote:
+                    j += 2
+                    continue
+                break
+            j += 1
+        end = min(j + 1, n)
+        out.append(_Region(kind="string" if quote == "'" else "ident", start=i, end=end))
+        i = start = end
+    if start < n:
+        out.append(_Region(kind="code", start=start, end=n))
+    return out
+
+
+def _mask_placeholders(text: str) -> str:
+    """``{name}`` outside string literals → sentinel-bracketed name of the same length."""
+    if _PH_OPEN in text or _PH_CLOSE in text:
+        raise _Problem("unsupported character in expression.")
+    parts: List[str] = []
+    for region in _regions(text):
+        chunk = text[region.start:region.end]
+        if region.kind == "code":
+            chunk = _CODE_PLACEHOLDER_RE.sub(
+                lambda m: f"{_PH_OPEN}{m.group(1)}{_PH_CLOSE}" if m.group(1) else m.group(0), chunk,
+            )
+            if "{" in chunk or "}" in chunk:
+                raise _Problem(
+                    "unsupported AST node Set: a brace expression is not a variable placeholder; "
+                    "write a variable as {name}."
+                )
+        elif region.kind == "ident" and re.search(r"\{" + _VAR_NAME + r"\}", chunk):
+            raise _Problem(f"{_LITERAL_VALUES}, never an identifier.")
+        parts.append(chunk)
+    return "".join(parts)
+
+
+class _State:
+    """Per-parse scratch: the expression text and the farthest failure offset."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.farthest = 0
+
+
+_STATE = _State()
+_PARSE_LOCK = threading.Lock()
+
+
+def _record_failure(_s: str, loc: int, _expr: Any, _err: Any) -> None:
+    if loc > _STATE.farthest:
+        _STATE.farthest = loc
+
+
+def _t(element: pp.ParserElement) -> pp.ParserElement:
+    """A terminal whose failures feed the farthest-failure error position."""
+    element.set_fail_action(_record_failure)
+    return element
+
+
+def _fail(detail: str) -> pp.ParserElement:
+    """Matches nothing and raises ``detail`` — the committed branch of a construct."""
+    def _raise(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
+        raise _Problem(detail)
+    return pp.Empty().set_parse_action(_raise)
+
+
+def _need(element: pp.ParserElement, detail: str) -> pp.ParserElement:
+    return element | _fail(detail)
+
+
+_RUN_CHAR = r"[^\x00-\x20\x7f!-/:-@\[-^`{-~\s]"
+_RUN = r"(?!\d)" + _RUN_CHAR + r"+"
+
+
+class _Word:
+    """A lexed identifier: the raw spelling, its NFKC name, and whether it was double-quoted."""
+
+    __slots__ = ("raw", "name", "quoted")
+
+    def __init__(self, raw: str, name: str, quoted: bool) -> None:
+        self.raw = raw
+        self.name = name
+        self.quoted = quoted
+
+
+def _check_reserved(name: str) -> None:
+    if name.startswith(_RESERVED_EXPR_PREFIX):
+        raise _Problem(
+            f"the identifier {name!r} uses the reserved {_RESERVED_EXPR_PREFIX!r} prefix, which is "
+            f"reserved for SLayer-internal names."
+        )
+
+
+def _bare_word(s: str, loc: int, toks: pp.ParseResults) -> _Word:
+    raw = toks[0]
+    name = unicodedata.normalize("NFKC", raw)
+    if not name.isidentifier():
+        raise pp.ParseException(s, loc, f"{raw!r} is not an identifier")
+    _check_reserved(name)
+    return _Word(raw=raw, name=name, quoted=False)
+
+
+def _quoted_word(toks: pp.ParseResults) -> _Word:
+    raw = toks[0]
+    name = raw[1:-1].replace('""', '"')
+    if not name:
+        raise _Problem('an empty quoted identifier "" names nothing.')
+    _check_reserved(name)
+    return _Word(raw=raw, name=name, quoted=True)
+
+
+def _kw(*words: str) -> pp.ParserElement:
+    """An ASCII-exact, case-insensitive keyword (a Unicode case-fold spoof is never one)."""
+    wanted = frozenset(words)
+    return _t(pp.Regex(_RUN).add_condition(
+        lambda toks: toks[0].isascii() and toks[0].lower() in wanted,
+    ).set_name("/".join(w.upper() for w in words)))
+
+
+def _sym(pattern: str, name: str) -> pp.ParserElement:
+    return _t(pp.Regex(pattern).set_name(name))
+
+
+LPAR, RPAR = pp.Suppress(_sym(r"\(", "'('")), pp.Suppress(_sym(r"\)", "')'"))
+LBRACK, RBRACK = pp.Suppress(_sym(r"\[", "'['")), pp.Suppress(_sym(r"\]", "']'"))
+COMMA = pp.Suppress(_sym(",", "','"))
+DOT = pp.Suppress(_sym(r"\.", "'.'"))
+STAR = _sym(r"\*(?!\*)", "'*'")
+COLON = pp.Suppress(_sym(r":(?!:)", "':'"))
+DCOLON = pp.Suppress(_sym("::", "'::'"))
+EQ = pp.Suppress(_sym(r"=(?!=)", "'='"))
+
+_BARE = _t(pp.Regex(_RUN).set_name("identifier")).set_parse_action(_bare_word)
+_QUOTED = _t(pp.Regex(r'"(?:[^"]|"")*"').set_name("quoted identifier")).set_parse_action(_quoted_word)
+_PLACEHOLDER = _t(pp.Regex(_PH_OPEN + "(" + _VAR_NAME + ")" + _PH_CLOSE).set_name("variable"))
+
+
+def _number(toks: pp.ParseResults) -> Literal:
+    text = toks[0]
+    return Literal(value=Decimal(int(text)) if text.isdigit() else Decimal(str(float(text))))
+
+
+def _string(toks: pp.ParseResults) -> Literal:
+    return Literal(value=toks[0][1:-1].replace("''", "'"))
+
+
+_NUMBER = _t(pp.Regex(r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?").set_name("number")).set_parse_action(_number)
+_STRING = _t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")).set_parse_action(_string)
+_CONSTANT_WORDS = {"True": True, "False": False, "None": None}
+_SQL_CONSTANT_WORDS = {"true": True, "false": False, "null": None}
+
+
+def _constant_value(raw: str) -> Tuple[bool, Any]:
+    if raw in _CONSTANT_WORDS:
+        return True, _CONSTANT_WORDS[raw]
+    if raw.isascii() and raw.lower() in _SQL_CONSTANT_WORDS:
+        return True, _SQL_CONSTANT_WORDS[raw.lower()]
+    return False, None
+
+
+def _constant(s: str, loc: int, toks: pp.ParseResults) -> Literal:
+    known, value = _constant_value(toks[0])
+    if not known:
+        raise pp.ParseException(s, loc, "not a constant")
+    return Literal(value=value)
+
+
+_CONSTANT = _t(pp.Regex(_RUN).set_name("constant")).set_parse_action(_constant)
+
+
+def _placeholder_node(s: str, loc: int, toks: pp.ParseResults) -> Placeholder:
+    end = loc + len(toks[0])
+    rest = s[end:].lstrip()
+    if rest.startswith(("(", ".")) or (rest.startswith(":") and not rest.startswith("::")):
+        raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a function, column or path.")
+    return Placeholder(name=toks[0][1:-1])
+
+
+def _reject_placeholder(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
+    raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a column or path segment.")
+
+
+def _reject_placeholder_kwarg(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
+    raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a keyword argument.")
+
+
+# ---------------------------------------------------------------------------
+# Grammar
+# ---------------------------------------------------------------------------
+
+
+pp.ParserElement.enable_packrat()
+
+expr = pp.Forward().set_name("expression")
+_concat_level = pp.Forward()
+
+_SEGMENT = _BARE | _QUOTED
+_PATH = pp.Group(_SEGMENT + pp.ZeroOrMore(DOT + (_SEGMENT | _PLACEHOLDER.copy().set_parse_action(_reject_placeholder))))
+
+
+def _path_node(words: List[_Word]) -> Ref | DottedRef:
+    quoted = any(w.quoted for w in words)
+    if len(words) == 1:
+        return Ref(name=words[0].name, quoted=quoted)
+    return DottedRef(parts=tuple(w.name for w in words), quoted=quoted)
+
+
+_PATH_STAR = pp.Group(_PATH + DOT + pp.Suppress(STAR))
+
+
+class _Kw:
+    __slots__ = ("name", "value")
+
+    def __init__(self, name: str, value: Any) -> None:
+        self.name = name
+        self.value = value
+
+
+class _Distinct:
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+_ARG_END = pp.FollowedBy(_sym(r"[,)]", "',' or ')'"))
+_STAR_ARG = (pp.Suppress(STAR) + _ARG_END).set_parse_action(lambda: StarSource())
+_PATH_STAR_ARG = (_PATH_STAR + _ARG_END).set_parse_action(
+    lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"), quoted=any(w.quoted for w in toks[0][0])),
+)
+_SEQ_ITEMS = pp.Group(pp.Optional(pp.DelimitedList(expr, allow_trailing_delim=True)))
+_LIST_VALUE = (LBRACK + _SEQ_ITEMS + RBRACK).set_parse_action(lambda toks: tuple(toks[0]))
+_TUPLE_VALUE = (LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR).set_parse_action(
+    lambda toks: tuple(toks[0]),
+)
+_DISTINCT_VALUE = _kw("distinct") + _fail(f"{_DISTINCT_ONLY}.")
+_KW_VALUE = _DISTINCT_VALUE | _LIST_VALUE | _TUPLE_VALUE | _STAR_ARG | _PATH_STAR_ARG | expr
+_KWARG = (_BARE + EQ + _KW_VALUE).set_parse_action(lambda toks: _Kw(name=toks[0].name, value=toks[1]))
+_PH_KWARG = (_PLACEHOLDER + EQ).set_parse_action(_reject_placeholder_kwarg)
+_VALUE_ARG = _STAR_ARG | _PATH_STAR_ARG | expr
+_DISTINCT_ARG = (pp.Suppress(_kw("distinct")) + _need(_VALUE_ARG, f"{_DISTINCT_ONLY}.")).set_parse_action(
+    lambda toks: _Distinct(value=toks[0]),
+)
+_UNPACKING = _sym(r"\*\*", "'**'") + _fail("dictionary unpacking (**kwargs) is not supported in calls.")
+_ANY_ARG = _UNPACKING | _PH_KWARG | _KWARG | _DISTINCT_ARG | _VALUE_ARG
+_POSITIONAL_ARG = _UNPACKING | _PH_KWARG | _DISTINCT_ARG | _VALUE_ARG
+
+
+def _arg_list(first: pp.ParserElement, rest: pp.ParserElement) -> pp.ParserElement:
+    return pp.Group(pp.Optional(first + pp.ZeroOrMore(COMMA + rest) + pp.Optional(COMMA)))
+
+
+def _callee_is(kind: str):
+    def _check(toks: pp.ParseResults) -> bool:
+        name = toks[0][-1].name
+        if kind == "scalar":
+            return name.lower() in SCALAR_FUNCTIONS or name.lower() in DATE_PART_ALIASES
+        return normalize_aggregation_name(name) in BUILTIN_AGGREGATIONS or name in ALL_TRANSFORMS
+    return _check
+
+
+_SCALAR_CALL = _PATH.copy().add_condition(_callee_is("scalar")) + LPAR + _arg_list(_POSITIONAL_ARG, _POSITIONAL_ARG) + RPAR
+_VALUE_FIRST_CALL = _PATH.copy().add_condition(_callee_is("value")) + LPAR + _arg_list(_POSITIONAL_ARG, _ANY_ARG) + RPAR
+_OTHER_CALL = _PATH + LPAR + _arg_list(_ANY_ARG, _ANY_ARG) + RPAR
+_CALL = _SCALAR_CALL | _VALUE_FIRST_CALL | _OTHER_CALL
+
+
+def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...], bool]:
+    positional: List[Any] = []
+    kwargs: List[Tuple[str, Any]] = []
+    distinct = False
+    for i, item in enumerate(items):
+        if isinstance(item, _Kw):
+            if any(k == item.name for k, _ in kwargs):
+                raise _Problem(f"{call}() got keyword argument {item.name!r} more than once.")
+            kwargs.append((item.name, item.value))
+            continue
+        if kwargs:
+            raise _Problem(f"{call}(): a positional argument follows a keyword argument.")
+        if isinstance(item, _Distinct):
+            if i != 0:
+                raise _Problem(f"{_DISTINCT_ONLY}.")
+            distinct = True
+            item = item.value
+        if isinstance(item, tuple):
+            raise _Problem(f"{call}(): a list is only valid as a keyword-argument value.")
+        positional.append(item)
+    return tuple(positional), tuple(kwargs), distinct
+
+
+class _PendingCall:
+    """A parsed call, dispatched once its postfix is known (a trailing ``OVER (`` rejects first)."""
+
+    __slots__ = ("words", "items")
+
+    def __init__(self, words: List[_Word], items: List[Any]) -> None:
+        self.words = words
+        self.items = items
+
+
+def _resolve(node: Any) -> Any:
+    return _dispatch_pending(node) if isinstance(node, _PendingCall) else node
+
+
+def _dispatch_pending(call: _PendingCall) -> Any:
+    words = call.words
+    name = words[-1].name
+    args, kwargs, distinct = _split_args(call.items, call=name)
+    if distinct:
+        if name.lower() != "count" or len(words) > 1 or len(args) != 1 or isinstance(args[0], StarSource):
+            raise _Problem(f"{_DISTINCT_ONLY}.")
+        name = "count_distinct"
+    if len(words) > 1:
+        return _method_call(path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs)
+    return _dispatch_call(name, args=args, kwargs=kwargs, original=_STATE.text)
+
+
+_CALL.set_parse_action(lambda toks: _PendingCall(words=list(toks[0]), items=list(toks[1])))
+
+_COLON_SOURCE = (pp.Suppress(STAR).set_parse_action(lambda: StarSource())
+                 | _PATH_STAR.copy().set_parse_action(
+                     lambda toks: DottedRef(parts=(*(w.name for w in toks[0][0]), "*"),
+                                            quoted=any(w.quoted for w in toks[0][0])))
+                 | _PATH.copy().set_parse_action(lambda toks: _path_node(list(toks[0]))))
+_COLON_AGG = _COLON_SOURCE + COLON + _BARE + pp.Optional(LPAR + _arg_list(_ANY_ARG, _ANY_ARG) + RPAR)
+
+
+def _colon_node(toks: pp.ParseResults) -> AggCall:
+    source, agg = toks[0], toks[1].name
+    args, kwargs, distinct = _split_args(list(toks[2]) if len(toks) > 2 else [], call=agg)
+    if distinct:
+        raise _Problem(f"{_DISTINCT_ONLY}.")
+    _reject_bare_star_args(args, kwargs, func_name=agg, original=_STATE.text)
+    return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
+
+
+_COLON_AGG.set_parse_action(_colon_node)
+_REF = _PATH.copy().set_parse_action(lambda toks: _path_node(list(toks[0])))
+
+# -- CASE ----------------------------------------------------------------------
+
+_CASE_WORDS = ("case", "when", "then", "else", "end")
+WHEN, THEN, ELSE, END = (pp.Suppress(_kw(w)) for w in _CASE_WORDS[1:])
+_MISSING_THEN = "Malformed CASE expression: a WHEN branch is missing its THEN."
+_WHEN_CLAUSE = pp.Group(WHEN + _need(expr, "Malformed CASE expression: a WHEN needs a condition.")
+                        + _need(THEN, _MISSING_THEN)
+                        + _need(expr, "Malformed CASE expression: a THEN needs a value."))
+_CASE_TAIL = (pp.Group(pp.OneOrMore(_WHEN_CLAUSE))
+              + pp.Group(pp.Optional(ELSE + _need(expr, "Malformed CASE expression: an ELSE needs a value.")))
+              + _need(END, "Malformed CASE expression: missing END."))
+_SEARCHED_CASE = pp.Suppress(_kw("case")) + pp.FollowedBy(WHEN) + pp.Group(pp.Empty()) + _CASE_TAIL
+# A bare keyword-named simple-CASE operand (``CASE case WHEN …``) is ambiguous: no CASE.
+_SIMPLE_CASE = (pp.Suppress(_kw("case")) + ~(_kw(*_CASE_WORDS) + WHEN)
+                + pp.Group(expr) + pp.FollowedBy(WHEN) + _CASE_TAIL)
+
+
+def _case_node(toks: pp.ParseResults) -> ScalarCall:
+    operand = toks[0][0] if len(toks[0]) else None
+    branches = [(b[0], b[1]) for b in toks[1]]
+    result = toks[2][0] if len(toks[2]) else Literal(value=None)
+    for cond, value in reversed(branches):
+        test = Cmp(op="==", left=operand, right=cond) if operand is not None else cond
+        result = ScalarCall(name="iif", args=(test, value, result))
+    return result
+
+
+_CASE = (_SEARCHED_CASE | _SIMPLE_CASE).set_parse_action(_case_node)
+
+# -- CAST / EXTRACT / POSITION / SUBSTRING / TRIM ------------------------------
+
+_TYPE_EXTRA_WORDS = ("precision", "varying", "with", "without", "time", "zone", "local", "unsigned", "signed")
+_TYPE_WORD = _t(pp.Regex(r"[A-Za-z_][A-Za-z0-9_]*").set_name("type name"))
+_TYPE_SPEC = (pp.Group(_TYPE_WORD + pp.ZeroOrMore(_kw(*_TYPE_EXTRA_WORDS)))
+              + pp.Group(pp.Optional(LPAR + pp.DelimitedList(_sym(r"\d+", "type parameter")) + RPAR)))
+
+
+def _type_text(toks: pp.ParseResults) -> str:
+    words, params = toks
+    text = " ".join(w.upper() for w in words)
+    return f"{text}({','.join(params)})" if len(params) else text
+
+
+_TYPE_SPEC.set_parse_action(_type_text)
+_CAST = ((pp.Suppress(_kw("cast")) | _kw("try_cast")) + LPAR
+         + _need(expr, "CAST needs a value: CAST(x AS <type>).")
+         + _need(pp.Suppress(_kw("as")), "CAST needs AS <type>: CAST(x AS <type>).")
+         + _need(_TYPE_SPEC, "CAST needs a type after AS.")
+         + _need(RPAR, "CAST(x AS <type>) is missing its ')'."))
+
+
+def _cast_node(toks: pp.ParseResults) -> Cast:
+    try_ = len(toks) == 3
+    return Cast(source=toks[-2], type_text=toks[-1], try_=try_)
+
+
+_CAST.set_parse_action(_cast_node)
+
+_EXTRACT = (pp.Suppress(_kw("extract")) + LPAR + (_STRING | _BARE) + pp.Suppress(_kw("from"))
+            + expr + RPAR)
+
+
+def _extract_node(toks: pp.ParseResults) -> ScalarCall:
+    part, value = toks
+    word = part.value if isinstance(part, Literal) else part.name
+    return ScalarCall(name="date_part", args=_date_args(
+        name="date_part", args=(Literal(value=word), value), original=_STATE.text,
+    ))
+
+
+_EXTRACT.set_parse_action(_extract_node)
+_POSITION = (pp.Suppress(_kw("position")) + LPAR + _concat_level + pp.Suppress(_kw("in")) + expr + RPAR).set_parse_action(
+    lambda toks: ScalarCall(name="instr", args=(toks[1], toks[0])),
+)
+_SUBSTRING = (pp.Suppress(_kw("substring")) + LPAR + expr + pp.Suppress(_kw("from")) + expr
+              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR).set_parse_action(
+    lambda toks: ScalarCall(name="substr", args=tuple(toks)),
+)
+_TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
+    "TRIM(BOTH | LEADING | TRAILING …) is not supported; use trim(x), ltrim(x) or rtrim(x).",
+)
+
+# -- typed literals, intervals, clock keywords ----------------------------------
+
+_TEMPORAL = (_kw("date", "timestamp") + _STRING).set_parse_action(
+    lambda toks: TemporalLiteral(kind=toks[0].lower(), text=toks[1].value),
+)
+_TIME_LITERAL = (_kw("time") + _STRING) + _fail(
+    "TIME '…' literals are not supported (there is no time-of-day type); compare with a TIMESTAMP '…' literal.",
+)
+_UNIT_WORDS = frozenset(g.value for g in TimeGranularity)
+
+
+def _unit_of(word: str) -> Optional[str]:
+    low = word.lower()
+    if low in _UNIT_WORDS:
+        return low
+    if low.endswith("s") and low[:-1] in _UNIT_WORDS:
+        return low[:-1]
     return None
 
 
-def _top_level(toks: List[_Token], lp: int, rp: int) -> Iterator[int]:
-    """Indices of the tokens directly inside the parens at ``lp`` / ``rp``."""
-    depth = 0
-    for j in range(lp + 1, rp):
-        kind = toks[j][0]
-        if kind == "lp":
-            depth += 1
-        elif kind == "rp":
-            depth -= 1
-        elif depth == 0:
-            yield j
+_UNIT = _t(pp.Regex(_RUN).add_condition(lambda toks: toks[0].isascii() and _unit_of(toks[0]) is not None))
+_INTERVAL = (pp.Suppress(_kw("interval")) + (_STRING | _NUMBER) + pp.Optional(_UNIT))
 
 
-def _extract_call(text: str, toks: List[_Token], i: int) -> Optional[Tuple[int, int]]:
-    """``(rp, from)`` token indices when ``toks[i]`` opens ``extract(… from …)``."""
-    if not (_is_word(text, toks, i, "extract") and i + 1 < len(toks) and toks[i + 1][0] == "lp"):
-        return None
-    rp = _matching_rp(toks, i + 1)
-    if rp is None:
-        return None
-    frm = next((j for j in _top_level(toks, i + 1, rp) if _is_word(text, toks, j, "from")), None)
-    return None if frm is None else (rp, frm)
+def _interval_count(text: str) -> Literal:
+    if not re.fullmatch(r"[+-]?\d+", text.strip()):
+        raise _Problem(f"an interval count must be a whole number; got {text.strip()!r}.")
+    return Literal(value=Decimal(int(text)))
 
 
-def _rewrite_extract(text: str, *, original: str) -> str:
-    """``extract(<part> from x)`` → ``date_part('<part>', x)``."""
-    if "extract" not in text.lower():
-        return text
-    toks = _call_tokens(text)
-    out: List[str] = []
-    last = i = 0
-    while i < len(toks):
-        call = _extract_call(text, toks, i)
-        if call is None:
-            i += 1
-            continue
-        rp, frm = call
-        part = toks[i + 2:frm]
-        operand = text[toks[frm][3]:toks[rp][2]].strip()
-        if len(part) != 1 or part[0][0] not in ("id", "str") or not operand:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: write extract(<part> from <value>), "
-                f"e.g. extract(day from created_at)."
+def _interval_node(toks: pp.ParseResults) -> ScalarCall:
+    quantity = toks[0]
+    unit_word = toks[1] if len(toks) > 1 else None
+    if isinstance(quantity.value, str):
+        pieces = quantity.value.split()
+    else:
+        pieces = [str(quantity.value)]
+    if unit_word is not None:
+        pieces.append(unit_word)
+    if len(pieces) > 2 and len(pieces) % 2 == 0 and unit_word is None:
+        chain = " ".join(f"+ INTERVAL '{n} {u}'" for n, u in zip(pieces[::2], pieces[1::2]))
+        raise _Problem(f"an interval literal names one unit; write a chain: x {chain}.")
+    if len(pieces) != 2:
+        raise _Problem(
+            "write an interval literal as INTERVAL '<n> <unit>', INTERVAL '<n>' <unit> or INTERVAL <n> <unit>."
+        )
+    count, word = pieces
+    unit = _unit_of(word)
+    if unit is None:
+        accepted = ", ".join(g.value for g in TimeGranularity)
+        raise _Problem(f"unknown interval unit {word!r}; accepted: {accepted}.")
+    return ScalarCall(name="interval", args=(_interval_count(count), Literal(value=unit)))
+
+
+_INTERVAL.set_parse_action(_interval_node)
+_CLOCK = (_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)).set_parse_action(
+    lambda toks: ScalarCall(name="current_date" if toks[0].lower() == "current_date" else "now"),
+)
+
+# -- primary, postfix ----------------------------------------------------------
+
+_PAREN = LPAR + expr + RPAR
+_PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
+_ATOM = (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL
+         | _INTERVAL | _CLOCK | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
+         | _CALL | _COLON_AGG | _REF)
+
+_FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
+                  + _need(pp.Suppress(_kw("where")), "FILTER needs (WHERE <condition>).")
+                  + _need(expr, "FILTER (WHERE …) needs a condition.")
+                  + _need(RPAR, "FILTER (WHERE <condition>) is missing its ')'."))
+
+
+def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
+    raise IllegalWindowInFilterError(
+        filter_expr=_STATE.text,
+        source="raw OVER(...) is not allowed in Mode-B DSL",
+        suggestion="use a transform instead (rank, percent_rank, dense_rank, ntile, cumsum, lag, lead, time_shift, …).",
+    )
+
+
+_OVER = (_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over)
+_PRIMARY = _ATOM + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+
+
+def _primary_node(toks: pp.ParseResults) -> Any:
+    node = _resolve(toks[0])
+    for clause in toks[1]:
+        if not isinstance(node, AggCall):
+            raise _Problem("FILTER (WHERE …) applies only to an aggregation, e.g. sum(x) FILTER (WHERE c).")
+        if node.filter is not None:
+            raise _Problem("an aggregation takes one FILTER (WHERE …) clause.")
+        node = node.model_copy(update={"filter": clause[0]})
+    return node
+
+
+_PRIMARY.set_parse_action(_primary_node)
+_CAST_LEVEL = (_PRIMARY + pp.ZeroOrMore(DCOLON + _need(_TYPE_SPEC, "'::' needs a type."))).set_parse_action(
+    lambda toks: _fold_casts(list(toks)),
+)
+
+
+def _fold_casts(items: List[Any]) -> Any:
+    node = items[0]
+    for type_text in items[1:]:
+        node = Cast(source=node, type_text=type_text)
+    return node
+
+
+# -- operator ladder -----------------------------------------------------------
+
+_MINUS, _PLUS = _sym("-", "'-'"), _sym(r"\+", "'+'")
+_power = pp.Forward()
+_power_rhs = pp.Forward()
+_power_rhs <<= ((_MINUS | _PLUS) + _power_rhs) | _power
+_power <<= _CAST_LEVEL + pp.Optional(pp.Suppress(_sym(r"\*\*", "'**'")) + _power_rhs)
+
+
+def _signed(items: List[Any]) -> Any:
+    node = items[-1]
+    for sign in reversed(items[:-1]):
+        if sign == "-":
+            node = UnaryOp(op="-", operand=node)
+    return node
+
+
+_power_rhs.set_parse_action(lambda toks: _signed(list(toks)))
+_power.set_parse_action(lambda toks: ScalarCall(name="pow", args=(toks[0], toks[1])) if len(toks) == 2 else toks[0])
+_UNARY = (pp.ZeroOrMore(_MINUS | _PLUS) + _power).set_parse_action(lambda toks: _signed(list(toks)))
+
+_FLOORDIV = _sym("//", "'//'") + _fail("'//' is not an operator; use div(a, b) or floor(a / b).")
+_MUL_LEVEL = _UNARY + pp.ZeroOrMore((_FLOORDIV | _sym(r"\*(?!\*)|/(?!/)|%", "'*', '/' or '%'")) + _UNARY)
+_ADD_LEVEL = _MUL_LEVEL + pp.ZeroOrMore(_sym("[+-]", "'+' or '-'") + _MUL_LEVEL)
+
+
+def _fold_arith(items: List[Any]) -> Any:
+    node = items[0]
+    for op, right in zip(items[1::2], items[2::2]):
+        node = _interval_as_date_add(op=op, left=node, right=right) or Arith(op=op, left=node, right=right)
+    return node
+
+
+_MUL_LEVEL.set_parse_action(lambda toks: _fold_arith(list(toks)))
+_ADD_LEVEL.set_parse_action(lambda toks: _fold_arith(list(toks)))
+_PIPE = _sym(r"\|(?!\|)", "'|'") + _fail("'|' is not an operator; use || to concatenate strings.")
+_concat_level <<= _ADD_LEVEL + pp.ZeroOrMore(pp.Suppress(_PIPE | _sym(r"\|\|", "'||'")) + _ADD_LEVEL)
+
+
+def _fold_concat(items: List[Any]) -> Any:
+    node = items[0]
+    for right in items[1:]:
+        node = ScalarCall(name="concat", args=(node, right))
+    return node
+
+
+_concat_level.set_parse_action(lambda toks: _fold_concat(list(toks)))
+
+# -- comparison level ----------------------------------------------------------
+
+_CMP_OPS = {"=": "==", "==": "==", "<>": "!=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
+_IS = pp.Suppress(_kw("is"))
+_NOT_FLAG = pp.Optional(_kw("not")).set_parse_action(lambda toks: bool(len(toks)))
+
+
+class _Suffix:
+    """A comparison-level suffix: builds the predicate node from its left operand."""
+
+    __slots__ = ("build",)
+
+    def __init__(self, build) -> None:
+        self.build = build
+
+
+def _suffix(element: pp.ParserElement, build) -> pp.ParserElement:
+    return element.set_parse_action(lambda toks: _Suffix(lambda left: build(left, toks)))
+
+
+def _negated(node: Any, negate: bool) -> Any:
+    return UnaryOp(op="not", operand=node) if negate else node
+
+
+def _truth_test(left: Any, toks: pp.ParseResults) -> Any:
+    negate, word = toks[0], toks[1].lower()
+    known = Cmp(op="is not", left=left, right=Literal(value=None))
+    test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
+    return _negated(test, negate)
+
+
+def _in_rhs_elements(items: List[Any]) -> TupleLit:
+    if not items:
+        raise _Problem(
+            "an empty list is not allowed on the right-hand side of in / not in (dialect-dependent SQL); "
+            "use a non-empty literal list."
+        )
+    elements: List[Literal] = []
+    for item in items:
+        if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
+                and isinstance(item.operand.value, Decimal)):
+            item = Literal(value=-item.operand.value)
+        if not isinstance(item, Literal):
+            raise _Problem(
+                "every element on the right-hand side of in / not in must be a literal (string, number, or "
+                f"boolean); got {type(item).__name__}."
             )
-        word = part[0][1] if part[0][0] == "str" else f"'{part[0][1]}'"
-        out += [text[last:toks[i][2]], f"date_part({word}, {_rewrite_extract(operand, original=original)})"]
-        last, i = toks[rp][3], rp + 1
-    out.append(text[last:])
-    return "".join(out)
+        elements.append(item)
+    return TupleLit(elements=tuple(elements))
 
 
-def _single_distinct_operand(toks: List[_Token], i: int, rp: int) -> bool:
-    """Whether ``distinct`` at ``toks[i]`` is followed by one non-star operand and only keyword arguments."""
-    commas = [j for j in _top_level(toks, i - 1, rp) if toks[j][0] == "comma"]
-    operand = toks[i + 1:commas[0] if commas else rp]
-    if not operand or [t[1] for t in operand] == ["*"]:
-        return False
-    return all(toks[c + 1][0] == "id" and toks[c + 2][1] == "=" for c in commas)
+_IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
+            | _PLACEHOLDER_ATOM
+            | (LPAR + _SEQ_ITEMS + RPAR).set_parse_action(lambda toks: _in_rhs_elements(list(toks[0])))
+            | (LBRACK + _SEQ_ITEMS + RBRACK).set_parse_action(lambda toks: _in_rhs_elements(list(toks[0])))
+            | _STRING
+            | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
-
-def _in_call_top_level(toks: List[_Token], i: int) -> bool:
-    """Whether ``toks[i]`` sits directly inside a call's parentheses."""
-    depth = 0
-    for j in range(i - 1, -1, -1):
-        kind = toks[j][0]
-        if kind == "rp":
-            depth += 1
-        elif kind == "lp":
-            if depth == 0:
-                return j > 0 and toks[j - 1][0] == "id"
-            depth -= 1
-    return False
-
-
-def _is_later_distinct_arg(text: str, toks: List[_Token], i: int) -> bool:
-    """Whether ``toks[i]`` is a ``distinct`` keyword opening a non-first call argument or a keyword value."""
-    opens_arg = 0 < i < len(toks) - 1 and (toks[i - 1][0] == "comma" or toks[i - 1][1] == "=")
-    if not (opens_arg and _is_word(text, toks, i, "distinct")):
-        return False
-    kind, val = toks[i + 1][:2]
-    return (kind in ("id", "str", "lp") or val.isdigit() or val == "*") and _in_call_top_level(toks, i)
-
-
-def _rewrite_count_distinct(text: str, *, original: str) -> str:
-    """``count(distinct x, …)`` → ``count_distinct(x, …)``; any other ``distinct`` keyword in a call raises."""
-    if "distinct" not in text.lower():
-        return text
-    toks = _call_tokens(text)
-    edits: List[Tuple[int, int, str]] = []
-    for i in range(2, len(toks)):
-        if _is_later_distinct_arg(text, toks, i):
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {_DISTINCT_ONLY}.")
-        if not (_is_word(text, toks, i, "distinct") and toks[i - 1][0] == "lp" and toks[i - 2][0] == "id"):
-            continue
-        rp = _matching_rp(toks, i - 1)
-        if rp is None:
-            continue
-        if not (_is_word(text, toks, i - 2, "count") and _single_distinct_operand(toks, i, rp)):
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {_DISTINCT_ONLY}.")
-        edits += [(toks[i - 2][2], toks[i - 2][3], "count_distinct"), (toks[i][2], toks[i][3], "")]
-    for start, end, repl in reversed(edits):
-        text = text[:start] + repl + text[end:]
-    return text
-
-
-_COLON_AGG_RE = re.compile(
-    r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
-    r":"
-    r"([a-zA-Z_]\w*)"
-    # No (args) consumption — Python's AST handles that.
-)
-
-_FILTER_KEYWORDS = frozenset({"and", "or", "not", "in", "is"})
-_SCAN_TOKEN_RE = re.compile(
-    r"(?P<ws>\s+)"
-    r"|(?P<string>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
-    r"|(?P<ident>[A-Za-z_]\w*)"
-    r"|(?P<number>\d+(?:\.\d*)?|\.\d+)"
-    r"|(?P<op_eq2>==|<=|>=|!=)"
-    r"|(?P<op_eq>=)"
-    r"|(?P<lparen>\()"
-    r"|(?P<rparen>\))"
-    r"|(?P<lbrack>\[)"
-    r"|(?P<rbrack>\])"
-    r"|(?P<comma>,)"
-    r"|(?P<other>.)",
-    re.DOTALL,
+_CMP_SUFFIX = (
+    _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
+            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1]))
+    | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
+              lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
+    | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
+              lambda left, t: Cmp(op="is not" if t[0] else "is", left=left, right=Literal(value=None)))
+    | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
+    | _suffix(_IS + _NOT_FLAG + _concat_level,
+              lambda left, t: Cmp(op="is not" if t[0] else "is", left=left, right=t[1]))
+    | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST,
+              lambda left, t: Cmp(op="not in" if t[0] else "in", left=left, right=t[1]))
+    | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
+              lambda left, t: _negated(BoolOp(op="and", operands=(
+                  Cmp(op=">=", left=left, right=t[1]), Cmp(op="<=", left=left, right=t[2]),
+              )), t[0]))
+    | _suffix(_NOT_FLAG + _kw("like", "ilike") + _concat_level,
+              lambda left, t: _negated(ScalarCall(name=t[1].lower(), args=(left, t[2])), t[0]))
+    | (_NOT_FLAG + _kw("similar") + _kw("to")) + _fail("SIMILAR TO is not supported; use LIKE or ILIKE.")
+    | (_kw("regexp", "rlike") + _fail("the REGEXP / RLIKE operators are not supported; use LIKE or ILIKE."))
 )
 
 
-_BIN_OP_MAP: Dict[type, str] = {
-    ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
-    ast.Mod: "%", ast.Pow: "**", ast.FloorDiv: "//",
-}
-_CMP_OP_MAP: Dict[type, str] = {
-    ast.Eq: "==", ast.NotEq: "!=",
-    ast.Lt: "<", ast.LtE: "<=",
-    ast.Gt: ">", ast.GtE: ">=",
-    # SQL ``IS [NOT] NULL`` lowers to ``is [not] None``; rendered back as
-    # ``IS [NOT] NULL`` by the SQL generator.
-    ast.Is: "is", ast.IsNot: "is not",
-    # ``IN`` / ``NOT IN`` with a literal-tuple RHS (shape enforced in
-    # the ``ast.Compare`` branch).
-    ast.In: "in", ast.NotIn: "not in",
-}
+def _comparison_node(toks: pp.ParseResults) -> Any:
+    left, suffixes = toks[0], list(toks[1:])
+    if len(suffixes) > 1:
+        raise _Problem(
+            "chained comparisons are not supported. Each comparison must be a single comparison; split "
+            "(e.g.) `1 < x < 10` into `1 < x and x < 10`."
+        )
+    return suffixes[0].build(left) if suffixes else left
+
+
+_COMPARISON = (_concat_level + pp.ZeroOrMore(_CMP_SUFFIX)).set_parse_action(_comparison_node)
+_NOT_LEVEL = (pp.ZeroOrMore(_kw("not")) + _COMPARISON).set_parse_action(
+    lambda toks: _negate_n(len(toks) - 1, toks[-1]),
+)
+
+
+def _negate_n(count: int, node: Any) -> Any:
+    for _ in range(count):
+        node = UnaryOp(op="not", operand=node)
+    return node
+
+
+def _bool_level(operand: pp.ParserElement, word: str) -> pp.ParserElement:
+    level = operand + pp.ZeroOrMore(pp.Suppress(_kw(word)) + operand)
+    return level.set_parse_action(lambda toks: BoolOp(op=word, operands=tuple(toks)) if len(toks) > 1 else toks[0])
+
+
+_TERNARY = _kw("if") + _fail(
+    "the Python conditional 'x if cond else y' is not supported; use CASE WHEN cond THEN x ELSE y END or iif(cond, x, y).",
+)
+expr <<= _bool_level(_bool_level(_NOT_LEVEL, "and"), "or") + pp.Optional(_TERNARY)
+_EXPRESSION = expr + pp.StringEnd().set_fail_action(_record_failure)
 
 
 # ---------------------------------------------------------------------------
@@ -551,52 +895,24 @@ _CMP_OP_MAP: Dict[type, str] = {
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=8192)
 def parse_expr(text: str) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``.
 
-    ``__`` in identifiers is legal; only the ``__slayer_`` prefix is
-    reserved. Raises ``ValueError`` (empty/syntax/unsupported node/chained
-    comparison/reserved prefix), ``UnknownFunctionError``, or
-    ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
+    Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix),
+    ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
     """
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
-
-    _reject_reserved_expr_token(text)
-
-    # Scan for raw ``OVER(`` after blanking string literals so a quoted value
-    # (``status == 'OVER('``) isn't mistaken for window usage. Skip an ``OVER``
-    # that only continues a reference — a Unicode-fused (``℘OVER(``) or dotted
-    # (``a.OVER(``) name the leading ``\b`` splits.
-    blanked = _PY_STRING_LITERAL_RE.sub("", text)
-    if any(
-        not _continues_ref(text=blanked, pos=m.start() - 1)
-        for m in _OVER_RE.finditer(blanked)
-    ):
-        raise IllegalWindowInFilterError(
-            filter_expr=text,
-            source="raw OVER(...) is not allowed in Mode-B DSL",
-            suggestion=(
-                "use a transform instead (rank, percent_rank, dense_rank, "
-                "ntile, cumsum, lag, lead, time_shift, …)."
-            ),
-        )
-
-    sql_spelled = _rewrite_count_distinct(_rewrite_extract(text, original=text), original=text)
-    preprocessed, agg_map = _preprocess_colons(_rewrite_case_when(sql_spelled))
-    # AFTER the legacy colon pass — ``customers.*:count`` must become a
-    # placeholder first, so the only ``*`` left in call-first-arg position is
-    # the functional spelling (``count(*)`` / ``count(customers.*)``).
-    preprocessed = _preprocess_star_args(preprocessed)
-
-    try:
-        py_ast = ast.parse(preprocessed, mode="eval").body
-    except SyntaxError as e:
-        raise ValueError(
-            f"Invalid Mode-B expression {text!r}: {e}"
-        )
-
-    parsed = _convert(py_ast, agg_map=agg_map, original=text)
+    with _PARSE_LOCK:
+        _STATE.text, _STATE.farthest = text, 0
+        try:
+            masked = _mask_placeholders(text)
+            parsed = _EXPRESSION.parse_string(masked, parse_all=True)[0]
+        except _Problem as problem:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+        except pp.ParseBaseException as e:
+            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
     if any(_is_interval(n) for n in _walk_parsed(parsed)):
         raise ValueError(
             f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
@@ -606,225 +922,25 @@ def parse_expr(text: str) -> ParsedExpr:
     return parsed
 
 
-def parse_filter_expr(text: str) -> ParsedExpr:
-    """Parse a Mode-B *filter* string, accepting SQL operator spellings.
-
-    Filters historically accepted SQL-style operators (``=``, ``<>``, ``NULL``,
-    and the keyword forms ``AND`` / ``OR`` / ``NOT`` / ``IS`` / ``IN``)
-    alongside the Python spellings. This wrapper normalizes those to their
-    Python equivalents (string-literal-aware, so quoted contents are
-    untouched) and then delegates to :func:`parse_expr`. Measures / order use
-    ``parse_expr`` directly — only filters get the SQL-operator leniency.
-    """
-    return parse_expr(_normalize_sql_filter_operators(text))
-
-
-# SQL keyword rewrites as explicit ASCII character classes — ``re.IGNORECASE``
-# folds Unicode spoofs (``ıs`` → ``is``) into keywords.
-_SQL_NULL_RE = re.compile(r"\b[nN][uU][lL][lL]\b")
-_SQL_KEYWORD_RES: Tuple[Tuple[re.Pattern, str], ...] = tuple(
-    (re.compile(r"\b" + "".join(f"[{c}{c.upper()}]" for c in kw) + r"\b"), kw)
-    for kw in ("is", "not", "and", "or", "in")
-)
-
-
-def _normalize_sql_filter_operators(text: str) -> str:
-    """Rewrite SQL operator spellings to Python ones outside string literals.
-
-    ``NULL`` → ``None``; ``IS`` / ``NOT`` / ``AND`` / ``OR`` / ``IN`` →
-    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``; ``col [NOT] LIKE
-    'p%'`` → ``[not ]like(col, 'p%')``.
-    """
-    # LIKE first, on the whole string (its pattern is a quoted literal). The
-    # rest run per non-literal part (escape-aware split) so a keyword inside a
-    # quoted value isn't rewritten.
-    text = _rewrite_sql_like(text)
-    parts = _PY_STRING_LITERAL_RE.split(text)
-    literals = _PY_STRING_LITERAL_RE.findall(text)
-    result: List[str] = []
-    for i, part in enumerate(parts):
-        part = _sub_keyword_isolated(_SQL_NULL_RE, "None", part)
-        for kw_re, kw in _SQL_KEYWORD_RES:
-            part = _sub_keyword_isolated(kw_re, kw, part)
-        part = part.replace("<>", "!=")
-        # SQL ``||`` → Python ``|`` (BitOr), desugared to ``concat`` in
-        # ``_convert``; same precedence relative to comparisons.
-        part = part.replace("||", "|")
-        result.append(part)
-        if i < len(literals):
-            result.append(literals[i])
-    # ``=`` → ``==`` runs last, on the rejoined string, via a paren-aware scanner
-    # that leaves kwarg ``=`` inside non-scalar calls alone.
-    return _rewrite_comparison_equals("".join(result))
-
-
-def _classify_paren(
-    hist: List[Tuple[str, str]],
-) -> Tuple[bool, Optional[str]]:
-    """Classify an open ``(`` as a CALL or GROUPING paren.
-
-    A call paren follows a bare identifier or a ``)`` / ``]``; lowercase keywords
-    (``and`` / ``not`` / ``in`` …) do not open one. After a legacy colon
-    (``revenue:first(...)``) the callee is dropped to ``None`` so
-    :func:`_is_kwarg_equals` treats it as an aggregation, not a transform.
-    """
-    prev_kind = hist[-1][0] if hist else None
-    prev_text = hist[-1][1] if hist else ""
-    is_call = prev_kind == "NAME" or prev_text in (")", "]")
-    callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
-    if callee is not None and len(hist) >= 2 and hist[-2] == ("OTHER", ":"):
-        callee = None
-    return is_call, callee
-
-
-def _is_kwarg_equals(
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> bool:
-    """Whether a lone ``=`` is a Python keyword-argument separator.
-
-    Scalars never take kwargs. Transforms take the value first, so a kwarg only
-    follows a ``,`` (keeping ``consecutive_periods(status = 'paid')`` a
-    predicate). Aggregations/unknowns may take a kwarg first, so ``=`` follows
-    ``(`` or ``,``.
-    """
-    top = stack[-1] if stack else None
-    if top is None or not top[0]:
-        return False
-    callee = top[1]
-    if callee is not None and callee.lower() in SCALAR_FUNCTIONS:
-        return False
-    prev_kind = hist[-1][0] if hist else None
-    if prev_kind != "NAME":
-        return False
-    prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
-    if callee is not None and callee in ALL_TRANSFORMS:
-        return prev_prev_kind == "COMMA"
-    return prev_prev_kind in ("LPAREN", "COMMA")
-
-
-def _push_hist(hist: List[Tuple[str, str]], kind: str, text: str) -> None:
-    """Append ``(kind, text)`` and trim ``hist`` to the last 2 entries."""
-    hist.append((kind, text))
-    if len(hist) > 2:
-        del hist[0]
-
-
-def _handle_pass_through(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    """Whitespace and string literals: emit verbatim, don't touch hist."""
-    out.append(m.group(0))
-
-
-def _handle_ident(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    ident = m.group(0)
-    out.append(ident)
-    _push_hist(hist, "KW" if ident in _FILTER_KEYWORDS else "NAME", ident)
-
-
-def _handle_other(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    """Numbers, compound ops (``==``/``<=``/``>=``/``!=``), brackets, and
-    any single char not otherwise classified (``:``, ``.``, ``+``, ``-``,
-    ``*``, ``/``, ``%``, ``<``, ``>``, ``!``, ``|``, ``{``, ``}``, ...)."""
-    text = m.group(0)
-    out.append(text)
-    _push_hist(hist, "OTHER", text)
-
-
-def _handle_comma(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    out.append(",")
-    _push_hist(hist, "COMMA", ",")
-
-
-def _handle_lparen(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    stack.append(_classify_paren(hist))
-    out.append("(")
-    _push_hist(hist, "LPAREN", "(")
-
-
-def _handle_rparen(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    if stack:
-        stack.pop()
-    out.append(")")
-    _push_hist(hist, "OTHER", ")")
-
-
-def _handle_op_eq(
-    m: "re.Match[str]",
-    out: List[str],
-    stack: List[Tuple[bool, Optional[str]]],
-    hist: List[Tuple[str, str]],
-) -> None:
-    out.append("=" if _is_kwarg_equals(stack, hist) else "==")
-    _push_hist(hist, "OTHER", "=")
-
-
-_HANDLERS: Dict[str, Any] = {
-    "ws": _handle_pass_through,
-    "string": _handle_pass_through,
-    "ident": _handle_ident,
-    "number": _handle_other,
-    "op_eq2": _handle_other,
-    "op_eq": _handle_op_eq,
-    "lparen": _handle_lparen,
-    "rparen": _handle_rparen,
-    "lbrack": _handle_other,
-    "rbrack": _handle_other,
-    "comma": _handle_comma,
-    "other": _handle_other,
-}
-
-
-def _rewrite_comparison_equals(text: str) -> str:
-    """Rewrite SQL ``=`` to Python ``==`` except where it is a kwarg separator.
-
-    A lone ``=`` is kept (kwarg) inside a non-scalar CALL paren when it follows
-    ``ident`` after ``(`` or ``,`` — Python's kwarg grammar (see
-    :func:`_is_kwarg_equals`); inside scalars a ``=`` is always the user's
-    comparison. Compound ops and string literals pass through untouched.
-    Token dispatch is keyed by the scan regex's ``lastgroup``.
-    """
-    out: List[str] = []
-    # Each frame: (is_call, callee) — callee is the ident before ``(``, else None.
-    stack: List[Tuple[bool, Optional[str]]] = []
-    # Last 2 significant tokens (NAME / KW / LPAREN / COMMA / OTHER; no strings).
-    hist: List[Tuple[str, str]] = []
-    for m in _SCAN_TOKEN_RE.finditer(text):
-        _HANDLERS[m.lastgroup](m, out, stack, hist)
-    return "".join(out)
+def _syntax_message(text: str, error: pp.ParseBaseException) -> str:
+    pos = max(_STATE.farthest, error.loc)
+    if pos >= len(text.rstrip()):
+        return f"unexpected end of expression at column {pos + 1}."
+    return f"syntax error at column {pos + 1}, near {text[pos:pos + 12]!r}."
 
 
 # ---------------------------------------------------------------------------
-# Reference walk (best-effort textual extraction)
+# Variables
+# ---------------------------------------------------------------------------
+
+
+def placeholder_names(parsed: Any) -> List[str]:
+    """Names of every ``Placeholder`` in a parsed tree, in walk order."""
+    return [n.name for n in _walk_parsed(parsed) if isinstance(n, Placeholder)]
+
+
+# ---------------------------------------------------------------------------
+# Reference walk
 # ---------------------------------------------------------------------------
 
 
@@ -834,10 +950,8 @@ def walk_parsed_refs(
     """Yield the reference-bearing leaves (``Ref`` / ``DottedRef`` / ``AggCall``)
     of a tree — scope-free name extraction for schema-drift / memory tagging.
 
-    Descent (matches the binder's walk): ``AggCall`` yielded whole (args/kwargs
-    opaque, so ``weighted_avg(weight=quantity)`` surfaces ``price`` not
-    ``quantity``); ``TransformCall`` descends ``input`` only; ``ScalarCall`` /
-    arithmetic / comparison / boolean descend operands; literals yield nothing.
+    ``AggCall`` is yielded whole (args/kwargs/filter opaque); ``TransformCall``
+    descends ``input`` only; every other composite descends its operands.
     """
     if isinstance(parsed, (Ref, DottedRef, AggCall)):
         yield parsed
@@ -849,11 +963,10 @@ def walk_parsed_refs(
         for a in parsed.args:
             yield from walk_parsed_refs(a)
         return
-    if isinstance(parsed, Arith):
-        yield from walk_parsed_refs(parsed.left)
-        yield from walk_parsed_refs(parsed.right)
+    if isinstance(parsed, Cast):
+        yield from walk_parsed_refs(parsed.source)
         return
-    if isinstance(parsed, Cmp):
+    if isinstance(parsed, (Arith, Cmp)):
         yield from walk_parsed_refs(parsed.left)
         yield from walk_parsed_refs(parsed.right)
         return
@@ -863,443 +976,56 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
-    # Literal / Placeholder / StarSource / TupleLit → no references (TupleLit
-    # holds only Literals by construction).
 
 
 # ---------------------------------------------------------------------------
-# Internals
+# Call dispatch
 # ---------------------------------------------------------------------------
-
-
-def _reject_reserved_expr_token(text: str) -> None:
-    """Reject the reserved ``__slayer_`` token in RAW Mode-B input (P3).
-
-    Runs BEFORE ``_preprocess_colons`` mints its own ``__slayer_agg_N__``
-    placeholders, so a legacy colon-spelling ``revenue:sum`` is unaffected while a
-    literal ``__slayer_agg_0__`` spoof is rejected [C3]. String literals are
-    blanked first (Python syntax, so escapes count) so quoted data is never
-    mistaken for an identifier. Matched at an identifier boundary so a legal
-    embedded name like ``foo__slayer_bar`` stays referenceable.
-    """
-    if _RESERVED_EXPR_PREFIX_RE.search(_PY_STRING_LITERAL_RE.sub("", text)):
-        raise ValueError(
-            f"Mode-B expression {text!r} uses the reserved "
-            f"{_RESERVED_EXPR_PREFIX!r} identifier prefix, which is reserved "
-            f"for SLayer-internal placeholders."
-        )
-
-
-def _preprocess_colons(
-    text: str,
-) -> Tuple[str, Dict[int, Tuple[Ref | DottedRef | StarSource, str]]]:
-    """Replace the legacy colon spelling ``<source>:<agg>`` with placeholder identifiers.
-
-    Captures source kind + agg name. Any trailing ``(args)`` is left in
-    place so Python's AST parses it naturally as a Call. String literal
-    spans are skipped — the literal text is user data, not DSL syntax.
-    """
-    agg_map: Dict[int, Tuple[Ref | DottedRef | StarSource, str]] = {}
-    counter = [0]
-    literal_spans = [
-        # Escape-aware, so escaped quotes don't leak colon rewrites into the string body.
-        (m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)
-    ]
-
-    def _in_literal(pos: int) -> bool:
-        return any(s <= pos < e for s, e in literal_spans)
-
-    def _replace(match: re.Match) -> str:
-        if _in_literal(match.start()):
-            return match.group(0)
-        source_str = match.group(1)
-        agg_name = match.group(2)
-        source: Ref | DottedRef | StarSource
-        if source_str == "*":
-            source = StarSource()
-        elif "." in source_str:
-            source = DottedRef(parts=tuple(source_str.split(".")))
-        else:
-            source = Ref(name=source_str)
-        idx = counter[0]
-        counter[0] += 1
-        agg_map[idx] = (source, agg_name)
-        return f"{_PLACEHOLDER_PREFIX}{idx}__"
-
-    return _COLON_AGG_RE.sub(_replace, text), agg_map
-
-
-def _preprocess_star_args(text: str) -> str:  # NOSONAR(S3776) — one token-scan with two star shapes (bare ``(*``, dotted ``path.*``); the prev/next-significant-token checks ARE the grammar being recognised, and splitting them hides the call-first-argument contract.
-    """Replace a call's first-argument ``*`` / ``path.*`` with the reserved
-    star token (``count(*)`` → ``count(__slayer_star__)``) so Python's AST can
-    parse it. Token-aware, string-literal-safe; multiplication is untouched
-    (a multiplying ``*`` never directly follows a call's ``(`` or a ``.``).
-    """
-    if "*" not in text:
-        return text
-    toks = [(m.lastgroup, m.group(0)) for m in _SCAN_TOKEN_RE.finditer(text)]
-    n = len(toks)
-
-    def _prev(i: int) -> int:
-        j = i - 1
-        while j >= 0 and toks[j][0] == "ws":
-            j -= 1
-        return j
-
-    def _next(i: int) -> int:
-        j = i + 1
-        while j < n and toks[j][0] == "ws":
-            j += 1
-        return j
-
-    def _is_call_lparen(i: int) -> bool:
-        p = _prev(i)
-        return p >= 0 and toks[p][0] == "ident"
-
-    def _dotted_star_opens_call(dot_idx: int) -> bool:
-        # Walk ``ident(.ident)*`` back from the ``.`` before the star; the
-        # path must open a call's first argument (directly after ``ident(``).
-        j = dot_idx
-        while True:
-            q = _prev(j)
-            if q < 0 or toks[q][0] != "ident":
-                return False
-            r = _prev(q)
-            if r >= 0 and toks[r] == ("other", "."):
-                j = r
-                continue
-            return r >= 0 and toks[r][0] == "lparen" and _is_call_lparen(r)
-
-    out: List[str] = []
-    for i, (kind, val) in enumerate(toks):
-        if kind == "other" and val == "*":
-            nx = _next(i)
-            closes_arg = nx < n and toks[nx][1] in (",", ")")
-            p = _prev(i)
-            if closes_arg and p >= 0:
-                if toks[p][0] == "lparen" and _is_call_lparen(p):
-                    out.append(_STAR_ARG_TOKEN)
-                    continue
-                if toks[p] == ("other", ".") and _dotted_star_opens_call(p):
-                    out.append(_STAR_ARG_TOKEN)
-                    continue
-        out.append(val)
-    return "".join(out)
-
-
-def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # NOSONAR(S3776) — one-pass dispatch over ast node kinds (Constant/Name/Compare/BinOp/UnaryOp/BoolOp/Call/Attribute…) producing typed ParsedExpr; the branches are flat and short, and splitting hides the exhaustive ast-kind coverage one read scans for. Surfaces ParsedExpr.kind contract directly.
-    if isinstance(node, ast.Constant):
-        return _convert_constant(node, original=original)
-
-    if isinstance(node, ast.Name):
-        m = _PLACEHOLDER_RE.match(node.id)
-        if m:
-            idx = int(m.group(1))
-            source, agg = agg_map[idx]
-            return AggCall(source=source, agg=agg)
-        if node.id == _STAR_ARG_TOKEN:
-            return StarSource()
-        # SQL-cased boolean / null literals: Python's ast only treats True/False/None
-        # as constants, so `true`/`FALSE`/`NULL`/... arrive as names. All are
-        # reserved words in every target dialect, never columns.
-        if node.id.lower() in ("true", "false"):
-            return Literal(value=node.id.lower() == "true")
-        if node.id.lower() == "null":
-            return Literal(value=None)
-        return Ref(name=node.id)
-
-    if isinstance(node, ast.Attribute):
-        parts = _flatten_attribute(node, original=original)
-        # ``count(customers.*)`` — the star pre-pass turned the trailing ``*``
-        # into the star token; restore it so the DottedRef matches the legacy colon form.
-        parts = ["*" if p == _STAR_ARG_TOKEN else p for p in parts]
-        return DottedRef(parts=tuple(parts))
-
-    if isinstance(node, ast.Call):
-        return _convert_call(node, agg_map=agg_map, original=original)
-
-    if isinstance(node, ast.BinOp):
-        op_type = type(node.op)
-        if op_type is ast.BitOr:
-            # SQL ``||`` (normalized to ``|``) desugars to the ``concat`` scalar.
-            return ScalarCall(
-                name="concat",
-                args=(
-                    _convert(node.left, agg_map=agg_map, original=original),
-                    _convert(node.right, agg_map=agg_map, original=original),
-                ),
-            )
-        if op_type not in _BIN_OP_MAP:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: unsupported "
-                f"binary operator {op_type.__name__}."
-            )
-        left = _convert(node.left, agg_map=agg_map, original=original)
-        right = _convert(node.right, agg_map=agg_map, original=original)
-        return _interval_as_date_add(op=_BIN_OP_MAP[op_type], left=left, right=right) or Arith(
-            op=_BIN_OP_MAP[op_type], left=left, right=right,
-        )
-
-    if isinstance(node, ast.UnaryOp):
-        op_type = type(node.op)
-        if op_type is ast.USub:
-            return UnaryOp(
-                op="-",
-                operand=_convert(node.operand, agg_map=agg_map, original=original),
-            )
-        if op_type is ast.UAdd:
-            # `+x` is a no-op; collapse to the operand directly.
-            return _convert(node.operand, agg_map=agg_map, original=original)
-        if op_type is ast.Not:
-            return UnaryOp(
-                op="not",
-                operand=_convert(node.operand, agg_map=agg_map, original=original),
-            )
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: unsupported unary "
-            f"operator {op_type.__name__}."
-        )
-
-    if isinstance(node, ast.Compare):
-        if len(node.ops) != 1 or len(node.comparators) != 1:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: chained "
-                f"comparisons are not supported. Each Cmp must be a "
-                f"single comparison; split (e.g.) `1 < x < 10` into "
-                f"`1 < x and x < 10`."
-            )
-        op_type = type(node.ops[0])
-        if op_type not in _CMP_OP_MAP:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: unsupported "
-                f"comparison operator {op_type.__name__}."
-            )
-        # ``IN`` / ``NOT IN`` carry a literal-only tuple RHS, or a single string
-        # (a time-point membership); empty and non-literal RHS are rejected.
-        if op_type in (ast.In, ast.NotIn):
-            rhs_node = node.comparators[0]
-            if isinstance(rhs_node, ast.Constant) and isinstance(rhs_node.value, str):
-                return Cmp(
-                    op=_CMP_OP_MAP[op_type],
-                    left=_convert(node.left, agg_map=agg_map, original=original),
-                    right=Literal(value=rhs_node.value),
-                )
-            placeholder = _placeholder_of(rhs_node)
-            if placeholder is not None:
-                return Cmp(
-                    op=_CMP_OP_MAP[op_type],
-                    left=_convert(node.left, agg_map=agg_map, original=original),
-                    right=placeholder,
-                )
-            if not isinstance(rhs_node, (ast.Tuple, ast.List)):
-                raise ValueError(
-                    f"Invalid Mode-B expression {original!r}: the right-"
-                    f"hand side of ``in`` / ``not in`` must be a tuple/"
-                    f"list literal (e.g. ``status in ('a', 'b')``) or a "
-                    f"time-point string (``created_at in '2025-Q1'``); got "
-                    f"{type(rhs_node).__name__}."
-                )
-            if not rhs_node.elts:
-                raise ValueError(
-                    f"Invalid Mode-B expression {original!r}: empty "
-                    f"tuple is not allowed on the right-hand side of "
-                    f"``in`` / ``not in`` (dialect-dependent SQL); use "
-                    f"a non-empty literal tuple."
-                )
-            elements: List[Literal] = []
-            for elt in rhs_node.elts:
-                converted = _convert_in_rhs_element(
-                    elt, agg_map=agg_map, original=original,
-                )
-                elements.append(converted)
-            return Cmp(
-                op=_CMP_OP_MAP[op_type],
-                left=_convert(node.left, agg_map=agg_map, original=original),
-                right=TupleLit(elements=tuple(elements)),
-            )
-        return Cmp(
-            op=_CMP_OP_MAP[op_type],
-            left=_convert(node.left, agg_map=agg_map, original=original),
-            right=_convert(node.comparators[0], agg_map=agg_map, original=original),
-        )
-
-    if isinstance(node, ast.BoolOp):
-        op_str = "and" if isinstance(node.op, ast.And) else "or"
-        operands = tuple(
-            _convert(v, agg_map=agg_map, original=original) for v in node.values
-        )
-        return BoolOp(op=op_str, operands=operands)
-
-    placeholder = _placeholder_of(node)
-    if placeholder is not None:
-        return placeholder
-
-    if isinstance(node, ast.IfExp):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: the Python conditional "
-            f"'x if cond else y' is not supported. Use SQL "
-            f"'CASE WHEN cond THEN x ELSE y END' or iif(cond, x, y)."
-        )
-
-    raise ValueError(
-        f"Invalid Mode-B expression {original!r}: unsupported AST node "
-        f"{type(node).__name__}."
-    )
-
-
-_PLACEHOLDER_NAME_RE = re.compile(r"[a-zA-Z_]\w*", re.ASCII)
-
-
-def _placeholder_of(node: ast.AST) -> Optional[Placeholder]:
-    """``Placeholder`` for a set literal holding exactly one bare variable name, else ``None``."""
-    if not (isinstance(node, ast.Set) and len(node.elts) == 1 and isinstance(node.elts[0], ast.Name)):
-        return None
-    name = node.elts[0].id
-    if name == _STAR_ARG_TOKEN or _PLACEHOLDER_RE.match(name) or not _PLACEHOLDER_NAME_RE.fullmatch(name):
-        return None
-    return Placeholder(name=name)
-
-
-def placeholder_names(parsed: Any) -> List[str]:
-    """Names of every ``Placeholder`` in a parsed tree, in walk order."""
-    return [n.name for n in _walk_parsed(parsed) if isinstance(n, Placeholder)]
-
-
-def _convert_in_rhs_element(
-    node: ast.AST, *, agg_map: Dict, original: str,
-) -> Literal:
-    """Convert one element of an ``IN`` / ``NOT IN`` literal-tuple RHS.
-
-    The Python parser emits a negative numeric literal as
-    ``UnaryOp(USub, Constant(int|float))`` rather than a bare
-    ``Constant`` with a negative value, so a strict ``isinstance(_,
-    Literal)`` check against ``_convert``'s output would reject
-    ``amount in (-1, -2)``. This helper collapses the sign onto the
-    inner numeric before the literal check (Codex review). Boolean and
-    string literals are unaffected.
-    """
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        inner = node.operand
-        if (
-            isinstance(inner, ast.Constant)
-            and isinstance(inner.value, (int, float))
-            and not isinstance(inner.value, bool)
-        ):
-            signed = -inner.value if isinstance(node.op, ast.USub) else inner.value
-            if isinstance(signed, int):
-                return Literal(value=Decimal(signed))
-            return Literal(value=Decimal(str(signed)))
-    converted = _convert(node, agg_map=agg_map, original=original)
-    if not isinstance(converted, Literal):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: every element on "
-            f"the right-hand side of ``in`` / ``not in`` must be a "
-            f"literal (string, number, or boolean); got "
-            f"{type(converted).__name__}."
-        )
-    return converted
-
-
-def _convert_constant(node: ast.Constant, *, original: str) -> Literal:
-    val = node.value
-    if isinstance(val, bool):
-        return Literal(value=val)
-    if val is None:
-        return Literal(value=None)
-    if isinstance(val, int):
-        return Literal(value=Decimal(val))
-    if isinstance(val, float):
-        return Literal(value=Decimal(str(val)))
-    if isinstance(val, str):
-        return Literal(value=val)
-    raise ValueError(
-        f"Invalid Mode-B expression {original!r}: unsupported literal "
-        f"type {type(val).__name__}."
-    )
-
-
-def _flatten_attribute(
-    node: ast.Attribute, *, original: str,
-) -> List[str]:
-    parts: List[str] = [node.attr]
-    cur: ast.AST = node.value
-    while isinstance(cur, ast.Attribute):
-        parts.append(cur.attr)
-        cur = cur.value
-    if isinstance(cur, ast.Name):
-        parts.append(cur.id)
-    else:
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: unsupported "
-            f"attribute base {type(cur).__name__}."
-        )
-    return list(reversed(parts))
-
-
-def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
-    """Convert a call keyword-argument value.
-
-    List / tuple values (e.g. ``partition_by=[region, channel]`` for the
-    rank family) convert to a tuple of converted elements so the parser
-    accepts the documented multi-column transform-kwarg grammar instead of
-    raising on the bare ``ast.List`` node; scalar values convert normally.
-    """
-    if isinstance(node, (ast.List, ast.Tuple)):
-        return tuple(
-            _convert(e, agg_map=agg_map, original=original) for e in node.elts
-        )
-    return _convert(node, agg_map=agg_map, original=original)
 
 
 # The node kinds an ``AggCall.source`` may take: a column, star, or an aggregation-free
 # scalar expression, predicates included (a bare TupleLit is not a value).
-_AGG_SOURCE_KINDS = (Ref, DottedRef, StarSource, Literal, Placeholder, ScalarCall, Arith, UnaryOp, Cmp, BoolOp)
+_AGG_SOURCE_KINDS = (
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, Cast, Arith, UnaryOp, Cmp, BoolOp,
+)
 
 
 def _contains_agg_or_transform(node: Any) -> bool:
     """Whether a parsed subtree contains any AggCall / TransformCall."""
     if isinstance(node, (AggCall, TransformCall)):
         return True
+    return any(_contains_agg_or_transform(c) for c in _operands(node))
+
+
+def _operands(node: Any) -> Tuple[Any, ...]:
+    """The value operands of a row-level composite (empty for leaves and calls with their own scope)."""
     if isinstance(node, ScalarCall):
-        return any(_contains_agg_or_transform(a) for a in node.args)
+        return node.args
+    if isinstance(node, Cast):
+        return (node.source,)
     if isinstance(node, (Arith, Cmp)):
-        return _contains_agg_or_transform(node.left) or _contains_agg_or_transform(
-            node.right
-        )
+        return (node.left, node.right)
     if isinstance(node, UnaryOp):
-        return _contains_agg_or_transform(node.operand)
+        return (node.operand,)
     if isinstance(node, BoolOp):
-        return any(_contains_agg_or_transform(o) for o in node.operands)
-    return False
+        return node.operands
+    return ()
 
 
 def _source_leaves(node: Any):
     """Composition leaves of an agg source, treating an inner AggCall /
-    TransformCall as opaque (not descended — its own source was already
-    validated when it was converted)."""
-    if isinstance(node, ScalarCall):
-        for a in node.args:
-            yield from _source_leaves(a)
-    elif isinstance(node, (Arith, Cmp)):
-        yield from _source_leaves(node.left)
-        yield from _source_leaves(node.right)
-    elif isinstance(node, UnaryOp):
-        yield from _source_leaves(node.operand)
-    elif isinstance(node, BoolOp):
-        for o in node.operands:
-            yield from _source_leaves(o)
-    else:
+    TransformCall as opaque."""
+    children = _operands(node)
+    if not children:
         yield node
+        return
+    for child in children:
+        yield from _source_leaves(child)
 
 
 def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
-    """Validate a functional aggregation's first argument as its source.
-
-    A source resolving to attached values — nested AggCalls and/or grained
-    transforms, alone or composed through arithmetic / scalar calls — is a
-    (second-order) re-aggregation; a source mixing row-level
-    references with attached values is a row-grain aggregation; both
-    are accepted."""
+    """Validate a functional aggregation's first argument as its source; an attached
+    (re-aggregation) or mixed source is accepted."""
     leaves = list(_source_leaves(source))
     if any(isinstance(leaf, (AggCall, TransformCall)) for leaf in leaves):
         return source
@@ -1330,72 +1056,18 @@ def _reject_bare_star_args(
         )
 
 
-def _reject_repeated_keywords(node: ast.Call, *, call: str, original: str) -> None:
-    seen: set = set()
-    for kw in node.keywords:
-        if kw.arg in seen:
-            raise ValueError(
-                f"Invalid Mode-B expression {original!r}: {call}() got keyword "
-                f"argument {kw.arg!r} more than once."
-            )
-        seen.add(kw.arg)
-
-
-def _call_arguments(
-    node: ast.Call, *, call: str, agg_map: Dict, original: str,
-) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
-    args = tuple(
-        _convert(a, agg_map=agg_map, original=original) for a in node.args
-    )
-    # Reject ``**kwargs`` dictionary unpacking (``kw.arg is None``) rather
-    # than silently dropping it (CR) — a dropped ``**`` would change call
-    # semantics without warning.
-    if any(kw.arg is None for kw in node.keywords):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: dictionary unpacking "
-            f"(**kwargs) is not supported in calls."
-        )
-    _reject_repeated_keywords(node, call=call, original=original)
-    kwargs = tuple(
-        (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
-        for kw in node.keywords
-        if kw.arg is not None  # guarded above; narrows kw.arg to str
-    )
-    return args, kwargs
-
-
-def _convert_call(
-    node: ast.Call, *, agg_map: Dict, original: str,
-) -> ParsedExpr:
-    if isinstance(node.func, ast.Attribute):
-        return _convert_method_call(node, func=node.func, agg_map=agg_map, original=original)
-    if not isinstance(node.func, ast.Name):
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: function calls "
-            f"with non-name callee are not supported."
-        )
-    func_name = node.func.id
-    m = _PLACEHOLDER_RE.match(func_name)
-    args, kwargs = _call_arguments(
-        node, call=agg_map[int(m.group(1))][1] if m else func_name, agg_map=agg_map, original=original,
-    )
-    # Legacy colon-spelling placeholder?
-    if m:
-        source, agg = agg_map[int(m.group(1))]
-        return AggCall(source=source, agg=agg, args=args, kwargs=kwargs)
-    return _dispatch_call(func_name, args=args, kwargs=kwargs, original=original)
-
-
 def _onto_path(node: Any, *, path: Tuple[str, ...]) -> Any:
     """``node`` with every column leaf (and ``*``) read under the join ``path``."""
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name))
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted)
     if isinstance(node, DottedRef):
-        return DottedRef(parts=(*path, *node.parts))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted)
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
         return node.model_copy(update={"args": tuple(_onto_path(a, path=path) for a in node.args)})
+    if isinstance(node, Cast):
+        return node.model_copy(update={"source": _onto_path(node.source, path=path)})
     if isinstance(node, (Arith, Cmp)):
         return node.model_copy(update={"left": _onto_path(node.left, path=path), "right": _onto_path(node.right, path=path)})
     if isinstance(node, UnaryOp):
@@ -1428,11 +1100,9 @@ def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tupl
     return None
 
 
-def _convert_method_call(node: ast.Call, *, func: ast.Attribute, agg_map: Dict, original: str) -> ParsedExpr:
+def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> ParsedExpr:
     """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``."""
-    *path_parts, name = _flatten_attribute(func, original=original)
-    path = tuple(path_parts)
-    args, kwargs = _call_arguments(node, call=name, agg_map=agg_map, original=original)
+    original = _STATE.text
     twin_args = (_onto_path(args[0], path=path), *args[1:]) if args else ()
     reason = _method_call_refusal(name, args=args, kwargs=kwargs)
     if reason is not None:
@@ -1443,26 +1113,33 @@ def _convert_method_call(node: ast.Call, *, func: ast.Attribute, agg_map: Dict, 
     return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)
 
 
-def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin functional aggregation → transform → scalar → date-part alias → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it. first/last carry no grain decision here — they dispatch at bind.
+_SCALAR_MIN_MAX = {"min": "least", "max": "greatest"}
+
+
+def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin functional aggregation → transform → scalar → date-part alias → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it.
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
 ) -> ParsedExpr:
-    # Functional builtin aggregation? Matched via alias/case healing, exactly
-    # like legacy colon names heal at binding; ``agg`` stores the RAW token so both
-    # spellings collapse to the identical AggCall. ``first``/``last`` dispatch at
-    # bind by the operand's type.
-    if normalize_aggregation_name(func_name) in BUILTIN_AGGREGATIONS:
+    # ``agg`` stores the RAW token so colon and functional spellings collapse to one
+    # AggCall; ``first``/``last`` dispatch at bind by the operand's type.
+    canonical_agg = normalize_aggregation_name(func_name)
+    if canonical_agg in BUILTIN_AGGREGATIONS:
         if not args:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: aggregation "
                 f"{func_name!r} requires a value argument, e.g. "
                 f"{func_name}(column)."
             )
+        if canonical_agg in _SCALAR_MIN_MAX and len(args) == 2 and not kwargs:
+            scalar = _SCALAR_MIN_MAX[canonical_agg]
+            raise ValueError(
+                f"Invalid Mode-B expression {original!r}: {func_name}() with two values is the "
+                f"aggregation, not a scalar; use {scalar}{_canonical_call_params(args, ())}."
+            )
         source = _validated_agg_source(
             args[0], func_name=func_name, original=original,
         )
         return AggCall(source=source, agg=func_name, args=args[1:], kwargs=kwargs)
 
-    # Transform?
     if func_name in ALL_TRANSFORMS:
         if not args:
             raise ValueError(
@@ -1471,15 +1148,9 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
                 f"(the value to transform)."
             )
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
-        return TransformCall(
-            op=func_name,
-            input=args[0],
-            args=args[1:],
-            kwargs=kwargs,
-        )
+        return TransformCall(op=func_name, input=args[0], args=args[1:], kwargs=kwargs)
 
-    # Scalar function? Case-insensitive match; normalised to lower case into
-    # ``ScalarCall`` so ``COALESCE`` / ``coalesce`` intern to one key.
+    # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
             raise ValueError(
@@ -1501,9 +1172,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         return ScalarCall(name="date_part", args=(Literal(value=part.value), args[0]))
 
-    # Unknown name with an aggregatable first arg → AggCall candidate, validated
-    # at binding. A custom aggregation over an
-    # attached source is a re-aggregation, validated like any other.
+    # Unknown name with an aggregatable first arg → AggCall candidate, validated at binding.
     if args and isinstance(args[0], _AGG_SOURCE_KINDS) and not _contains_agg_or_transform(args[0]):
         return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs)
     if args and any(isinstance(leaf, AggCall) for leaf in _source_leaves(args[0])):
@@ -1595,7 +1264,7 @@ def _interval_as_date_add(*, op: str, left: Any, right: Any) -> Optional[ScalarC
 
 
 def _walk_parsed(node: Any) -> Iterator[Any]:
-    """Every node of a parsed tree, including call args, kwargs and agg sources."""
+    """Every node of a parsed tree, including call args, kwargs, agg sources and filters."""
     if isinstance(node, tuple):
         for item in node:
             yield from _walk_parsed(item)
@@ -1635,6 +1304,10 @@ def _canonical_kwarg_text(value: Any) -> str:
     return canonical_measure_text(value)
 
 
+def _identifier_text(name: str) -> str:
+    return name if name.isidentifier() else '"' + name.replace('"', '""') + '"'
+
+
 def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
     """Render a ``ParsedExpr`` back to canonical legacy colon-spelling text.
 
@@ -1643,35 +1316,32 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
     verbatim round-trip: grouping parens are dropped and spacing normalised.
     """
     if isinstance(parsed, Ref):
-        return parsed.name
+        return _identifier_text(parsed.name)
     if isinstance(parsed, DottedRef):
-        return ".".join(parsed.parts)
+        return ".".join(p if p == "*" else _identifier_text(p) for p in parsed.parts)
     if isinstance(parsed, StarSource):
         return "*"
     if isinstance(parsed, Literal):
         if isinstance(parsed.value, str):
-            return f"'{parsed.value}'"
+            return "'" + parsed.value.replace("'", "''") + "'"
         return str(parsed.value)
+    if isinstance(parsed, TemporalLiteral):
+        return f"{parsed.kind.upper()} '{parsed.text}'"
     if isinstance(parsed, Placeholder):
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
     if isinstance(parsed, AggCall):
-        source = canonical_measure_text(parsed.source)
-        if isinstance(parsed.source, (Ref, DottedRef, StarSource)):
-            return f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
-        # Expression source (``sum(amount - cost)``): render functionally so the
-        # text can't collide with a distinct parse tree like ``amount - cost:sum``.
-        parts = [source]
-        parts += [canonical_measure_text(a) for a in parsed.args]
-        parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in parsed.kwargs]
-        return f"{parsed.agg}({', '.join(parts)})"
+        return _canonical_agg_text(parsed)
     if isinstance(parsed, TransformCall):
         inner = canonical_measure_text(parsed.input)
         params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
         return f"{parsed.name}({', '.join(canonical_measure_text(a) for a in parsed.args)})"
+    if isinstance(parsed, Cast):
+        fn = "TRY_CAST" if parsed.try_ else "CAST"
+        return f"{fn}({canonical_measure_text(parsed.source)} AS {parsed.type_text})"
     if isinstance(parsed, (Arith, Cmp)):
         left = canonical_measure_text(parsed.left)
         right = canonical_measure_text(parsed.right)
@@ -1684,6 +1354,22 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
             canonical_measure_text(o) for o in parsed.operands
         )
     return str(parsed)
+
+
+def _canonical_agg_text(parsed: AggCall) -> str:
+    source = canonical_measure_text(parsed.source)
+    if isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs)}"
+    else:
+        # Expression source (``sum(amount - cost)``): render functionally so the
+        # text can't collide with a distinct parse tree like ``amount - cost:sum``.
+        parts = [source]
+        parts += [canonical_measure_text(a) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v)}" for k, v in parsed.kwargs]
+        text = f"{parsed.agg}({', '.join(parts)})"
+    if parsed.filter is not None:
+        text += f" FILTER (WHERE {canonical_measure_text(parsed.filter)})"
+    return text
 
 
 def _functional_suffix_text(raw: str, *, agg: str) -> str:
@@ -1728,7 +1414,7 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     if suffix is not None or "(" not in raw:
         return prefix, suffix
     parsed = parse_expr(raw)
-    if not isinstance(parsed, AggCall) or not isinstance(
+    if not isinstance(parsed, AggCall) or parsed.filter is not None or not isinstance(
         parsed.source, (Ref, DottedRef, StarSource)
     ):
         raise ValueError(
@@ -1743,3 +1429,10 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     else:
         prefix = ".".join(source.parts)
     return prefix, _functional_suffix_text(raw, agg=parsed.agg)
+
+
+__all__ = [
+    "AggCall", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
+    "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
+    "canonical_measure_text", "parse_expr", "placeholder_names", "split_entity_agg_ref", "walk_parsed_refs",
+]

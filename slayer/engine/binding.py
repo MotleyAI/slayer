@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import os
+from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
 
@@ -12,7 +13,9 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AggregationArgumentError,
+    AggregationFilterError,
     AggregationNotAllowedError,
+    CastTypeError,
     CircularJoinPathError,
     GranularityCallError,
     IllegalScopeReferenceError,
@@ -20,6 +23,7 @@ from slayer.core.errors import (
     MeasureCycleError,
     MeasureRecursionLimitError,
     PartitionKeyError,
+    TimeLiteralError,
     TransformArgumentError,
     UnknownFunctionError,
     UnknownReferenceError,
@@ -31,7 +35,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     canonical_path,
@@ -52,12 +56,13 @@ from slayer.engine.key_metadata import scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
-from slayer.core.time_points import is_time_point
+from slayer.core.time_points import is_time_point, parse_temporal_value
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
     Arith,
     BoolOp,
+    Cast,
     Cmp,
     DottedRef,
     Literal,
@@ -65,6 +70,7 @@ from slayer.core.syntax import (
     Ref,
     ScalarCall,
     StarSource,
+    TemporalLiteral,
     TransformCall,
     TupleLit,
     UnaryOp,
@@ -72,7 +78,7 @@ from slayer.core.syntax import (
     parse_expr,
     placeholder_names,
 )
-from slayer.sql.sql_expr import has_window_function
+from slayer.sql.sql_expr import build_cast_type, has_window_function
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
@@ -339,17 +345,28 @@ def _bind(
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
-    if isinstance(parsed, Ref):
-        return _resolve_ref(
-            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
+    if isinstance(parsed, TemporalLiteral):
+        return LiteralKey(value=_temporal_literal_value(parsed))
 
-    if isinstance(parsed, DottedRef):
-        return _resolve_dotted(
-            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
+    if isinstance(parsed, (Ref, DottedRef)):
+        try:
+            if isinstance(parsed, Ref):
+                return _resolve_ref(
+                    parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
+                    measure_ctx=measure_ctx,
+                )
+            return _resolve_dotted(
+                parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
+                measure_ctx=measure_ctx,
+            )
+        except UnknownReferenceError as e:
+            raise _with_quote_hint(e) if parsed.quoted else e
+
+    if isinstance(parsed, Cast):
+        return _bind_cast(parsed, source=_bind(
+            parsed.source, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+            measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+        ), bundle=bundle)
 
     if isinstance(parsed, StarSource):
         return StarKey()
@@ -422,6 +439,40 @@ def _bind(
 
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
+    )
+
+
+def _with_quote_hint(error: UnknownReferenceError) -> UnknownReferenceError:
+    """``error`` for a double-quoted name, adding that strings take single quotes."""
+    hint = f"{error.name!r} was written in double quotes, which name a column; strings use single quotes ('…')."
+    return UnknownReferenceError(
+        name=error.name, scope_kind=error.scope_kind, scope_summary=error.scope_summary,
+        suggestion=f"{hint} {error.suggestion}" if error.suggestion else hint,
+    )
+
+
+def _temporal_literal_value(parsed: TemporalLiteral):
+    """A ``DATE '…'`` / ``TIMESTAMP '…'`` literal's value, checked like an ISO literal in a date position."""
+    value = parse_temporal_value(parsed.text)
+    if parsed.kind == "date" and isinstance(value, datetime):
+        value = None
+    if value is None:
+        raise TimeLiteralError(
+            summary=f"{parsed.kind.upper()} '{parsed.text}' is not a valid {parsed.kind} literal.",
+            suggestion="write an ISO time point: DATE 'YYYY-MM-DD' or TIMESTAMP 'YYYY-MM-DD HH:MM[:SS]'.",
+        )
+    if parsed.kind == "timestamp" and not isinstance(value, datetime):
+        value = datetime(value.year, value.month, value.day)
+    return value
+
+
+def _bind_cast(parsed: Cast, *, source: ValueKey, bundle: ResolvedSourceBundle) -> CastKey:
+    try:
+        build_cast_type(parsed.type_text, dialect=bundle.dialect)
+    except ValueError as e:
+        raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
+    return CastKey(
+        source=source, type_text=parsed.type_text, data_type=cast_data_type(parsed.type_text), try_=parsed.try_,
     )
 
 
@@ -1086,6 +1137,11 @@ def _bind_agg_call(
 ) -> AggregateKey | TransformKey | TimeTruncKey:
     """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
+    if parsed.filter is not None:
+        return _bind_filtered_agg(
+            parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
+        )
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
     if granularity is not None:
         return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
@@ -1101,6 +1157,56 @@ def _bind_agg_call(
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
             )
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+
+
+_FILTER_CLAUSE = "FILTER (WHERE …)"
+
+
+def _filter_error(reason: str) -> AggregationFilterError:
+    return AggregationFilterError(
+        summary=f"{_FILTER_CLAUSE} {reason}",
+        location=_FILTER_CLAUSE,
+        suggestion="filter on columns of the aggregated rows, e.g. sum(amount) FILTER (WHERE status = 'paid').",
+    )
+
+
+def _bind_filtered_agg(
+    parsed: AggCall, *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    measure_ctx: Optional[MeasureResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> AggregateKey:
+    """``agg(…) FILTER (WHERE c)``: the aggregation over the rows where ``c`` holds. Every row-level
+    input is masked by ``c``; a star source and a ranked pick carry ``c`` on the key instead."""
+    condition = _bind(parsed.filter, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
+    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(condition)):
+        raise _filter_error("needs a row-level condition; it cannot read an aggregate, a transform or a measure.")
+    key = _bind_agg_call(
+        parsed.model_copy(update={"filter": None}), scope=scope, bundle=bundle, alias_map=alias_map,
+        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+    )
+    if not isinstance(key, AggregateKey) or is_attached_source(key.source):
+        raise _filter_error("applies only to an aggregation over rows.")
+    if isinstance(key.source, StarKey) or key.agg in RANKED_AGGREGATIONS:
+        return key.model_copy(update={"filter": condition})
+    masked = key.model_copy(update={
+        "source": _masked(key.source, condition=condition),
+        "kwargs": tuple((k, _masked(v, condition=condition) if isinstance(v, _ROW_INPUT_KINDS) else v)
+                        for k, v in key.kwargs),
+    })
+    if source_anchor_path(masked.source) != source_anchor_path(key.source):
+        raise _filter_error("must read the aggregated rows' own model or models joined to it one-to-one.")
+    return masked
+
+
+# Row-valued aggregation parameters a FILTER masks (literals and attached values are not rows).
+_ROW_INPUT_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
+
+
+def _masked(value: ValueKey, *, condition: ValueKey) -> ScalarCallKey:
+    return ScalarCallKey(name="iif", args=(condition, value, LiteralKey(value=None)))
 
 
 def _bind_granularity_call(
@@ -1691,6 +1797,12 @@ def _bind_scalar(
                 f"(value, pattern); got {len(parsed.args)}."
             )
         raise ValueError(arity_error)
+    if parsed.name == "round" and len(parsed.args) == 2 and not _is_integer_literal(parsed.args[1]):
+        raise ValueError(
+            "'round' ndigits (2nd argument) must be an integer literal; got "
+            f"{canonical_measure_text(parsed.args[1])!r}."
+        )
+
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
         key = _bind(
             a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
@@ -1704,6 +1816,16 @@ def _bind_scalar(
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])
     return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _is_integer_literal(parsed: ParsedExpr) -> bool:
+    """An integer literal, signed or not (``2``, ``-2``)."""
+    if isinstance(parsed, UnaryOp) and parsed.op == "-":
+        parsed = parsed.operand
+    return (
+        isinstance(parsed, Literal) and isinstance(parsed.value, Decimal)
+        and parsed.value == parsed.value.to_integral_value()
+    )
 
 
 def _check_literal_count(count: ValueKey) -> None:

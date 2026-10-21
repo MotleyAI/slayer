@@ -16,7 +16,11 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    FALSE_WORDS,
+    NUMBER_TEXT_PATTERN,
+    TRUE_WORDS,
     SqlDialect,
+    as_text,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
@@ -38,6 +42,21 @@ _MYSQL_PART_FUNCTIONS = {
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""
+        text = as_text(value)
+        if to.is_type(*exp.DataType.NUMERIC_TYPES):
+            guard = exp.RegexpLike(this=text, expression=exp.Literal.string(NUMBER_TEXT_PATTERN))
+            return exp.Case(ifs=[exp.If(this=guard, true=exp.Cast(this=value.copy(), to=to))])
+        if to.is_type(exp.DataType.Type.BOOLEAN):
+            word = exp.Lower(this=exp.Trim(this=text))
+            return exp.Case(ifs=[
+                exp.If(this=exp.In(this=word, expressions=[exp.Literal.string(w) for w in TRUE_WORDS]), true=exp.true()),
+                exp.If(this=exp.In(this=word.copy(), expressions=[exp.Literal.string(w) for w in FALSE_WORDS]),
+                       true=exp.false()),
+            ])
+        return exp.Cast(this=value, to=to)
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True

@@ -48,6 +48,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     call_callee,
+    computed_dimension_name,
     functional_call_column,
     granularity_call_parts,
 )
@@ -105,7 +106,6 @@ from slayer.core.syntax import (
     TransformCall,
     canonical_measure_text,
     parse_expr,
-    parse_filter_expr,
 )
 from slayer.ir.bound import (
     GranularityConflict,
@@ -202,7 +202,7 @@ def _reject_measure_refs_in_filters(
         if not isinstance(f, str):
             continue
         try:
-            parsed = parse_filter_expr(f)
+            parsed = parse_expr(f)
         except Exception:  # noqa: BLE001 — binder reports parse errors properly
             continue
         check_raw_rows_filter_measure_ref(
@@ -375,7 +375,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if not isinstance(f, str):
                 continue
             bf = bind_filter(
-                parsed=parse_filter_expr(f),
+                parsed=parse_expr(f),
                 scope=scope,
                 bundle=bundle,
                 alias_map=filter_alias_map,
@@ -950,7 +950,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
-        name_is_explicit=name != auto_name_from_expression(d.template),
+        name_is_explicit=name != computed_dimension_name(d.template),
         type=dim_type,
         is_dimension=True,
     )
@@ -1218,7 +1218,7 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
         td = (
             _datasource_time_dimension(item.expression, bundle=bundle)
             if isinstance(item, ComputedDimension)
-            and item.name == auto_name_from_expression(item.template)
+            and item.name == computed_dimension_name(item.template)
             else None
         )
         if td is None:

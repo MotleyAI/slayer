@@ -62,7 +62,6 @@ from slayer.core.syntax import (
     Ref,
     StarSource,
     parse_expr,
-    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
@@ -575,7 +574,7 @@ def _filter_refs_dsl(filter_str: str) -> list[str]:
     """Column/measure references in a DSL (Mode B) filter, in expression order
     (deduplicated); ``[]`` on parse failure."""
     try:
-        parsed = parse_filter_expr(filter_str)
+        parsed = parse_expr(filter_str)
     except Exception:
         return []
     return list(dict.fromkeys(_walk_ref_names(parsed)))

@@ -1871,7 +1871,7 @@ class TestParserAndBinderScalarSetsAgree:
         """Names whose Mode-B call is not the same SQL function: the LIKE and
         CASE rewrite targets, and the dialect-rendered date functions."""
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
-            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
             "current_date", "now",
         }
 

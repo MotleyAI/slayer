@@ -28,7 +28,6 @@ from slayer.core.syntax import (
     DottedRef,
     Ref,
     parse_expr,
-    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.memories.resolver import _all_models_in_datasource
@@ -121,14 +120,14 @@ def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
 def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter via the execution filter parser.
 
-    Uses ``parse_filter_expr`` (the same parser execution binds with), so SQL operator
+    Uses ``parse_expr`` (the same parser execution binds with), so SQL operator
     spellings and aggregations in either spelling (``sum(x)``) are all
     handled uniformly and string literals never surface as references. ``ok`` is False
     when the filter is aggregate-bearing or unparseable — either way it contributes
     nothing to determination.
     """
     try:
-        parsed = parse_filter_expr(render_probe_text(filter_str))
+        parsed = parse_expr(render_probe_text(filter_str))
     except Exception:
         return [], False
     nodes = list(walk_parsed_refs(parsed))

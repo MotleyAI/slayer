@@ -57,6 +57,10 @@ def _q(formula: str) -> SlayerQuery:
     return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
 
 
+def _mode_b_string(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
 async def _dry(formula: str, *, agg: Aggregation, dialect: str = "postgres", validate: bool = False) -> str:
     return await _engine_generate(query=_q(formula), model=_orders(agg), dialect=dialect, validate=validate)
 
@@ -204,7 +208,7 @@ class TestQuotedBindingValue:
     async def test_string_kwarg_stays_inside_the_literal(self, dialect: str) -> None:
         # The kwarg is the dialect's own spelling of a string literal valued a'b\c.
         kwarg = exp.Literal.string(_TRICKY).sql(dialect=dialect)
-        sql = await _dry(f"lbl(amount, n={kwarg!r})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
+        sql = await _dry(f"lbl(amount, n={_mode_b_string(kwarg)})", agg=_agg(_LABEL, name="lbl", n="'x'"), dialect=dialect)
         lit = _then_literal(sql, dialect=dialect)
         assert isinstance(lit, exp.Literal)
         assert lit.is_string
@@ -269,7 +273,7 @@ class TestTypedLiteral:
         kwarg = exp.Literal.string(value).sql(dialect=dialect)
         agg = _agg(formula, name="days", n="2")
         with pytest.raises(SqlTemplateError) as ei:
-            await _dry(f"days(amount, n={kwarg!r})", agg=agg, dialect=dialect)
+            await _dry(f"days(amount, n={_mode_b_string(kwarg)})", agg=agg, dialect=dialect)
         _names_placeholder(err=ei.value, name="n", formula=formula)
 
 

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any, ClassVar
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text
+
+#: The first Postgres major version with ``pg_input_is_valid``.
+_PG_INPUT_IS_VALID_SINCE = (16, 0)
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -37,6 +43,8 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
+    vendor_cast_types: ClassVar[frozenset[exp.DataType.Type]] = frozenset({exp.DataType.Type.MONEY})
+    ilike_native: ClassVar[bool] = True
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -47,6 +55,29 @@ class PostgresDialect(SqlDialect):
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
+
+    def server_profile_sql(self) -> str | None:
+        return "SELECT current_setting('server_version_num')"
+
+    def parse_server_profile(
+        self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+    ) -> ServerProfile:
+        number = base_row[0] if base_row else None
+        try:
+            version_num = int(number) if number is not None else None
+        except (TypeError, ValueError):
+            version_num = None
+        return ServerProfile(version=None if version_num is None else (version_num // 10000, version_num % 10000))
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """Postgres 16+ checks the input with ``pg_input_is_valid``; an older or unknown server gets a plain cast."""
+        version = self.server_profile.version
+        if version is None or version < _PG_INPUT_IS_VALID_SINCE:
+            return exp.Cast(this=value, to=to)
+        check = exp.Anonymous(this="pg_input_is_valid", expressions=[
+            as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
+        ])
+        return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=value.copy(), to=to))])
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

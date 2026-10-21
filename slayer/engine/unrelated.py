@@ -21,7 +21,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.core.syntax import DottedRef, parse_expr, parse_filter_expr
+from slayer.core.syntax import DottedRef, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
@@ -43,7 +43,7 @@ def _dotted_heads(node: Any) -> Iterator[str]:
 
 def _parsed_heads(text: str, *, as_filter: bool) -> Iterator[str]:
     try:
-        parsed = parse_filter_expr(render_probe_text(text)) if as_filter else parse_expr(text)
+        parsed = parse_expr(render_probe_text(text) if as_filter else text)
     except Exception:  # noqa: BLE001 — the binder reports a malformed expression
         return
     yield from _dotted_heads(parsed)
