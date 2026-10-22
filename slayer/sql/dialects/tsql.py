@@ -7,15 +7,17 @@ against the FROM scope, not the SELECT list.
 from __future__ import annotations
 
 import re
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Optional
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
     DottedAliasManglingMixin,
     SqlDialect,
+    operand_copy,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
@@ -96,6 +98,9 @@ def _bit_value(predicate: Expr) -> Expression:
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+    })
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True
@@ -134,6 +139,30 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return super().build_ordered(
             order_col, descending=descending, nulls=nulls,
         )
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,
+    ) -> list[exp.Ordered]:
+        """An explicit NULL placement is a leading ``CASE WHEN <expr> IS NULL`` key over the resolved
+        expression (an alias is not visible inside an ORDER BY expression), then the native term."""
+        if nulls == "default":
+            return [self.build_ordered(order_col, descending=descending)]
+        null_rank = exp.Case(
+            ifs=[exp.If(
+                this=exp.Is(this=operand_copy(resolved if resolved is not None else order_col), expression=exp.Null()),
+                true=exp.Literal.number(0 if nulls == "first" else 1),
+            )],
+            default=exp.Literal.number(1 if nulls == "first" else 0),
+        )
+        return [
+            self.build_ordered(null_rank, descending=False),
+            self.build_ordered(order_col, descending=descending),
+        ]
 
     def build_date_trunc(
         self,

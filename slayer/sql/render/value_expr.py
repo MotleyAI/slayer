@@ -13,8 +13,10 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
+    NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -53,7 +55,9 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     iif_case_chain,
     numeric_parts,
     render_arithmetic,
+    render_cast,
     render_in_predicate,
+    render_null_safe,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
@@ -385,6 +389,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
+        if key.op in NULL_SAFE_COMPARISON_OPS:
+            return render_null_safe(
+                op=key.op, operands=[render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
+            )
         op = key.op.lower()
         operands = numeric_parts(
             key=key, parts=[render_value_key(key=o, ctx=ctx) for o in key.operands],
@@ -422,6 +430,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
         )
         return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+
+    if isinstance(key, CastKey):
+        return render_cast(key=key, value=render_value_key(key=key.source, ctx=ctx), dialect=ctx.dialect)
 
     if isinstance(key, AggregateKey):
         return _render_aggregate(key, ctx)

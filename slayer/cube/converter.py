@@ -19,7 +19,7 @@ from slayer.core.enums import (
     invert_cardinality,
 )
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.formula import parse_formula
+from slayer.core.syntax import measure_dependency_problems
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import render_probe_text
 from slayer.core.refs import IDENTIFIER_RE, functional_agg_text
@@ -57,7 +57,6 @@ _FORMAT_MAP = {
 }
 _DURATION_UNITS = {"day": "d", "month": "m", "week": "w", "year": "y",
                    "hour": "h", "minute": "min", "second": "s"}
-_STAR_COUNT = "count(*)"
 _CUBE_INFRA_FIELDS = ("refresh_key", "calendar", "hierarchies", "access_policy", "sql_alias")
 
 
@@ -842,27 +841,15 @@ class CubeToSlayerConverter:
         return good_measures
 
     def _drop_unparseable_measures(self, cube_name, good_measures, report) -> list[ModelMeasure]:
-        # Fixpoint: dropping a measure can break a calc measure naming it. Only
-        # measures are bare-referenceable; a bare column needs an aggregation.
-        while True:
-            known = {m.name for m in good_measures if m.name}
-            broken = [m for m in good_measures if not self._formula_parses(m.formula, known)]
-            if not broken:
-                return good_measures
-            for m in broken:
+        # Only measures are bare-referenceable; a bare column needs an aggregation.
+        problems = measure_dependency_problems([(m.name, m.formula) for m in good_measures])
+        for m, problem in zip(good_measures, problems):
+            if problem is not None:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
                     cube=cube_name, member=m.name,
-                    message=f"Measure formula does not parse; dropped: {m.formula!r}"))
-            good_measures = [m for m in good_measures if m not in broken]
-
-    def _formula_parses(self, formula: str, known_names: set[str]) -> bool:
-        nm = dict.fromkeys(known_names, _STAR_COUNT)
-        try:
-            parse_formula(formula, named_measures=nm or None)
-            return True
-        except Exception:  # noqa: BLE001
-            return False
+                    message=f"Measure formula does not resolve ({problem}); dropped: {m.formula!r}"))
+        return [m for m, problem in zip(good_measures, problems) if problem is None]
 
     def _dedisambiguate_namespace(self, columns, measures, report, *, cube) -> None:
         # The allocator already guarantees uniqueness; this is a defensive check.

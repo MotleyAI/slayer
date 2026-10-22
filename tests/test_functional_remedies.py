@@ -6,10 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import DerivedColumnFanningError
-from slayer.core.formula import parse_formula
-from slayer.core.models import Column, ModelMeasure
+from slayer.core.enums import DataType
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.dbt.converter import DbtToSlayerConverter
+from slayer.dbt.models import DbtProject
 from slayer.engine.column_dependency import _unproven_arity_message
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from tests._dev1832_fixtures import gen, orders_q
 from tests._engine_helpers import orders_agg_sql
@@ -84,8 +86,15 @@ def test_colon_in_name_reason() -> None:
 
 @pytest.mark.parametrize("formula", ["customers.revenue", "cumsum(customers.revenue)"])
 def test_cross_model_bare_measure_remedy(formula: str) -> None:
-    with pytest.raises(ValueError) as ei:
-        parse_formula(formula)
-    msg = str(ei.value)
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="customer_id", type=DataType.INT)],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        measures=[ModelMeasure(name="m", formula=formula)],
+    )
+    conv = DbtToSlayerConverter(project=DbtProject(semantic_models=[], metrics=[]), data_source="test")
+    conv._prune_model_measures(model)
+    [warning] = conv._unconverted
+    msg = warning.message
     assert "'sum(customers.revenue)'" in msg
     _assert_no_colon_agg(msg)

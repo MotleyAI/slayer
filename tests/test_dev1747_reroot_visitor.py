@@ -21,10 +21,11 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -346,6 +347,9 @@ class TestTotalityAndFailClosed:
             ),
             SqlFragmentKey: SqlFragmentKey(
                 template="{r0} * 2", refs=(ColumnKey(path=("customers",), leaf="spend"),),
+            ),
+            CastKey: CastKey(
+                source=ColumnKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
             ),
         }
         members = set(get_args(ValueKey))

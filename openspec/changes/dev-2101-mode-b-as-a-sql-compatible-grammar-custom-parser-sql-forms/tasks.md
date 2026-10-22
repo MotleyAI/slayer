@@ -5,62 +5,63 @@
 
 ## 2. Failing tests (pr-tests)
 
-- [ ] 2.1 Grammar tests for every `queries/expression-grammar` scenario, plus the ambiguity table: `f(x=1)` kwarg vs `=` in scalar calls, `x::t` vs `x:sum`, `a::int::text`, predicates inside transform arguments, `"x"` identifier, `CASE` only before `WHEN`, `date '…'` vs a column named `date`, `**` cases `2**3**2`, `-2**2`, `(-2)**2`, `2**-2`; verify they fail on the current parser
-- [ ] 2.2 SQL-form-in-every-position matrix: each form of the proposal as measure, dimension, filter and order target, executed on SQLite and DuckDB, emission-checked on every Tier-1 dialect; verify failing
-- [ ] 2.3 `queries/casts` scenarios, including the Postgres 15 / 16 / unknown-version emissions (fake server profile), SQLite `'12abc'`, MySQL emission, and a concrete type a dialect cannot express; verify failing
-- [ ] 2.4 `aggregations/functional-form` FILTER scenarios (count, sum ≡ masked sum, weighted_avg numerator and denominator, `last` newest passing row, `corr` / `covar_*` pairs, custom aggregation, rejected aggregate inside `c`, with `partition_by` and `window`); verify failing
-- [ ] 2.5 `queries/variables` scenarios incl. injection rejections, numeric-string binding, hostile string, template-derived names for measures and computed dimensions with different runtime values, `date_range` bounds (`{start}`, `{end}`, one-sided, missing, non-string); verify failing
-- [ ] 2.6 `queries/date-functions` scenarios (interval literal forms, multi-unit rejection, typed literals, clock keywords and cache bypass); verify failing
-- [ ] 2.7 `queries/positions` NULL-placement scenarios on every Tier-1 dialect (SQL Server and Postgres in their integration suites), incl. hidden targets, bracketed aliases, refinement and stage rewrites; verify failing
-- [ ] 2.8 `models/stored-upgrade` scenarios: tokenizer migration cases (embedded `"` and `'`, backslashes, control escapes, Unicode, adjacent literals, malformed text, `|`), Mode-A untouched, unversioned client query untouched, 0.10.2 corpus still green; verify failing
-- [ ] 2.9 Importer dependency check over `ParsedExpr`: transitive dangling reference and cyclic saved measures for dbt, Cube and OSI; verify failing where behaviour is new, green where it is preserved
-- [ ] 2.10 Regression: `sum(a) ** 2` executes (today `NotImplementedError`); `%` sign per dialect; verify failing
-- [ ] 2.11 Parser benchmark over the longest formulas in the test suite and docs vs the old parser (recorded, not gating); verify it runs
-- [ ] 2.12 Retarget, with the user's approval already given, the tests asserting on deleted helpers to equivalent `parse_expr` / `ParsedExpr` assertions: `tests/test_dev1833_keyword_lexing.py`, `tests/test_dev1450fix_group2_correctness.py`, `tests/test_dev1740_case_rewrite.py`, `tests/test_dev1743_validators.py` (pre-pass helpers `_rewrite_case_when`, `_rewrite_sql_like`, `_preprocess_colons`, `_normalize_sql_filter_operators`), and `tests/test_formula.py`, `tests/test_functional_remedies.py`, `tests/test_dev1576_heals.py`, `tests/test_dev1737_scalar_specs.py`, `tests/test_rank_direction.py` (`parse_formula` / `FieldSpec`); flip tests asserting `"abc"` is a string to the identifier reading; list each changed test in the commit message
-- [ ] 2.13 Codex review of the tests against this change (when `reviewers.codex` is on)
+- [x] 2.1 Grammar tests for every `queries/expression-grammar` scenario, plus the ambiguity table: `f(x=1)` kwarg vs `=` in scalar calls, `x::t` vs `x:sum`, `a::int::text`, predicates inside transform arguments, `"x"` identifier, `CASE` only before `WHEN`, `date '…'` vs a column named `date`, `**` cases `2**3**2`, `-2**2`, `(-2)**2`, `2**-2`; verify they fail on the current parser
+- [x] 2.2 SQL-form-in-every-position matrix: each form of the proposal as measure, dimension, filter and order target, executed on SQLite and DuckDB, emission-checked on every Tier-1 dialect; verify failing
+- [x] 2.3 `queries/casts` scenarios, including the Postgres 15 / 16 / unknown-version emissions (fake server profile), SQLite `'12abc'`, MySQL emission, and a concrete type a dialect cannot express; verify failing
+- [x] 2.4 `aggregations/functional-form` FILTER scenarios (count, sum ≡ masked sum, weighted_avg numerator and denominator, `last` newest passing row, `corr` / `covar_*` pairs, custom aggregation, rejected aggregate inside `c`, with `partition_by` and `window`); verify failing
+- [x] 2.5 `queries/variables` scenarios incl. injection rejections, numeric-string binding, hostile string, template-derived names for measures and computed dimensions with different runtime values, `date_range` bounds (`{start}`, `{end}`, one-sided, missing, non-string); verify failing
+- [x] 2.6 `queries/date-functions` scenarios (interval literal forms, multi-unit rejection, typed literals, clock keywords and cache bypass); verify failing
+- [x] 2.7 `queries/positions` NULL-placement scenarios on every Tier-1 dialect (SQL Server and Postgres in their integration suites), incl. hidden targets, bracketed aliases, refinement and stage rewrites; verify failing
+- [x] 2.8 `models/stored-upgrade` scenarios: tokenizer migration cases (embedded `"` and `'`, backslashes, control escapes, Unicode, adjacent literals, malformed text, `|`), Mode-A untouched, unversioned client query untouched, 0.10.2 corpus still green; verify failing
+- [x] 2.9 Importer dependency check over `ParsedExpr`: transitive dangling reference and cyclic saved measures for dbt and Cube; for OSI, the emitted formula is validated by the new grammar; verify failing where behaviour is new, green where it is preserved
+- [x] 2.10 Regression: `sum(a) ** 2` executes (today `NotImplementedError`); `%` sign per dialect; verify failing
+- [x] 2.11 Parser benchmark over the longest formulas in the test suite and docs vs the old parser (recorded, not gating); verify it runs
+- [x] 2.12 Retarget, with the user's approval already given, the tests asserting on deleted helpers to equivalent `parse_expr` / `ParsedExpr` assertions: `tests/test_dev1833_keyword_lexing.py`, `tests/test_dev1450fix_group2_correctness.py`, `tests/test_dev1740_case_rewrite.py`, `tests/test_dev1743_validators.py` (pre-pass helpers `_rewrite_case_when`, `_rewrite_sql_like`, `_preprocess_colons`, `_normalize_sql_filter_operators`), and `tests/test_formula.py`, `tests/test_functional_remedies.py`, `tests/test_dev1576_heals.py`, `tests/test_dev1737_scalar_specs.py`, `tests/test_rank_direction.py` (`parse_formula` / `FieldSpec`); flip tests asserting `"abc"` is a string to the identifier reading; ruling 2026-10-21: `apply_variables_to_query` keeps returning substituted text, rendered from the bound tree with SQL quoting (`'O''Brien'`, `('a', 'b')`) — `tests/test_variables_planner.py` expectations switch to SQL quoting and the `escape="python"` tests in `tests/test_mode_a_variable_substitution.py` are deleted; list each changed test in the commit message
+- [x] 2.13 Codex review of the tests against this change (when `reviewers.codex` is on)
 
 ## 3. Architecture move
 
-- [ ] 3.1 Move `slayer/engine/syntax.py` → `slayer/core/syntax.py` with `la:deterministic-refactor`; move `ALL_TRANSFORMS` / `TIME_TRANSFORMS` / `TIMELESS_TRANSFORMS` to `slayer/core/enums.py`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
-- [ ] 3.2 Apply the approved harness edits H1–H6 exactly as in the "Approved harness edits" section below, then `la-arch-diagrams` (H7); verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`
+- [x] 3.1 Move `slayer/engine/syntax.py` → `slayer/core/syntax.py` with `la:deterministic-refactor`; move `ALL_TRANSFORMS` / `TIME_TRANSFORMS` / `TIMELESS_TRANSFORMS` to `slayer/core/enums.py`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
+- [x] 3.2 Apply the approved harness edits H1–H6 exactly as in the "Approved harness edits" section below, then `la-arch-diagrams` (H7); verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`
 
 ## 4. Grammar
 
-- [ ] 4.1 Add `pyparsing` to `pyproject.toml` / `poetry.lock`; verify `poetry install -E all`
-- [ ] 4.2 Implement the grammar (design D2) producing the existing `ParsedExpr` nodes plus `Cast` and the `FILTER` predicate; delete `ast.parse`, every pre-pass and `parse_filter_expr`; repoint every caller (`core/query.py`, `engine/bind_inputs.py`, `binding.py`, `population.py`, `model_reads.py`, `schema_drift.py`, `unrelated.py`, `query_engine.py`, `memories/resolver.py`); verify 2.1 / 2.2 parse-level tests and the SQL golden baselines byte-identical
-- [ ] 4.3 Quoted identifiers end to end and the single-quote hint in the unresolved-reference error; verify the expression-grammar identifier scenarios
-- [ ] 4.4 Rejections with hints (`|`, `//`, `TRIM(BOTH…)`, two-argument scalar `min` / `max`, `TIME '…'`, `SIMILAR TO`, `REGEXP` / `RLIKE`, raw `OVER`) and syntax-error positions; verify their scenarios
+- [x] 4.1 Add `pyparsing` to `pyproject.toml` / `poetry.lock`; verify `poetry install -E all`
+- [x] 4.2 Implement the grammar (design D2) producing the existing `ParsedExpr` nodes plus `Cast` and the `FILTER` predicate; delete `ast.parse`, every pre-pass and `parse_filter_expr`; repoint every caller (`core/query.py`, `engine/bind_inputs.py`, `binding.py`, `population.py`, `model_reads.py`, `schema_drift.py`, `unrelated.py`, `query_engine.py`, `memories/resolver.py`); verify 2.1 / 2.2 parse-level tests and the SQL golden baselines byte-identical
+- [x] 4.3 Quoted identifiers end to end and the single-quote hint in the unresolved-reference error; verify the expression-grammar identifier scenarios
+- [x] 4.4 Rejections with hints (`|`, `//`, `TRIM(BOTH…)`, two-argument scalar `min` / `max`, `TIME '…'`, `SIMILAR TO`, `REGEXP` / `RLIKE`, raw `OVER`) and syntax-error positions; verify their scenarios
 
 ## 5. Keys, binding, rendering
 
-- [ ] 5.1 `CastKey` (design D3): traversal protocol, binding, checker typing, render via `exp.Cast` with the author's type and the dialect-expressibility check; verify the CAST scenarios
-- [ ] 5.2 `TRY_CAST` lowering per dialect, SQLite `slayer_try_cast` registration, MySQL guard, Postgres server profile (`server_profile_sql`, `parse_server_profile`) and render-time profile plumbing; verify 2.3
-- [ ] 5.3 `FILTER (WHERE c)` binding (row-level check) and lowering by masking every row-level input incl. the `first` / `last` ranking key; verify 2.4
-- [ ] 5.4 `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE|FALSE`, `ILIKE`, `||`, `POSITION`, `SUBSTRING FROM FOR`, interval literals, typed literals, clock keywords; `**` → `pow`; verify 2.2, 2.6, 2.10
-- [ ] 5.5 `OrderItem.nulls` plumbing (design D7) and the multi-term `build_ordered` with the T-SQL emulation over the resolved expression; verify 2.7
+- [x] 5.1 `CastKey` (design D3): traversal protocol, binding, checker typing, render via `exp.Cast` with the author's type and the dialect-expressibility check; verify the CAST scenarios
+- [x] 5.2 `TRY_CAST` lowering per dialect, SQLite `slayer_try_cast` registration, MySQL guard, Postgres server profile (`server_profile_sql`, `parse_server_profile`) and render-time profile plumbing; verify 2.3
+- [x] 5.3 `FILTER (WHERE c)` binding (row-level check) and lowering by masking every row-level input incl. the `first` / `last` ranking key; verify 2.4
+- [x] 5.4 `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE|FALSE`, `ILIKE`, `||`, `POSITION`, `SUBSTRING FROM FOR`, interval literals, typed literals, clock keywords; `**` → `pow`; verify 2.2, 2.6, 2.10
+- [x] 5.5 `OrderItem.nulls` plumbing (design D7) and the multi-term `build_ordered` with the T-SQL emulation over the resolved expression; verify 2.7
+- [x] 5.6 The binder rejects a `round` `ndigits` that is not an integer literal (`round(x, 2.5)`, `round(x, col)`) with an error naming `round` (ruling 2026-10-21: the check moves from the deleted importer parser); verify the `tests/test_dev1576_heals.py` arity cases
 
 ## 6. Variables
 
-- [ ] 6.1 Offset-preserving placeholder masking, the three grammar slots, binding into the tree at the existing substitution points, names from the written text, `date_range` literal-only substitution; delete the Mode-B `escape="python"` path and `ComputedDimension.substituted`'s text splice; verify 2.5
+- [x] 6.1 Offset-preserving placeholder masking, the three grammar slots, binding into the tree at the existing substitution points, names from the written text, `date_range` literal-only substitution; delete the Mode-B `escape="python"` path and `ComputedDimension.substituted`'s text splice; verify 2.5
 
 ## 7. Migration
 
-- [ ] 7.1 Stored-only steps SlayerModel 15 → 16, SlayerQuery 6 → 7, Memory 4 → 5 (design D6), ordered before the legacy load-path repairs; verify 2.8 and the 0.10.2 corpus
+- [x] 7.1 Stored-only steps SlayerModel 15 → 16, SlayerQuery 6 → 7, Memory 4 → 5 (design D6), ordered before the legacy load-path repairs; verify 2.8 and the 0.10.2 corpus
 
 ## 8. One parser (DEV-1831)
 
-- [ ] 8.1 Port the dbt, Cube and OSI importers to `parse_expr` with the shared namespace-aware dependency walk; delete `parse_formula`, `FieldSpec`, `_rewrite_funcstyle_aggregations`, `_preprocess_agg_refs`, `_expand_named_measures`; verify 2.9 and the importer fixture suites
-- [ ] 8.2 Check the Mode-B text the facade translator and the importers emit against the new grammar (single quotes, no backslash escapes, no `|`); fix emitters; verify the facade and importer suites
+- [x] 8.1 Port the dbt, Cube and OSI importers to `parse_expr` with the shared namespace-aware dependency walk; delete `parse_formula`, `FieldSpec`, `_rewrite_funcstyle_aggregations`, `_preprocess_agg_refs`, `_expand_named_measures`; verify 2.9 and the importer fixture suites
+- [x] 8.2 Check the Mode-B text the facade translator and the importers emit against the new grammar (single quotes, no backslash escapes, no `|`); fix emitters; verify the facade and importer suites
 
 ## 9. Docs and agent surfaces
 
-- [ ] 9.1 `docs/concepts/formulas.md` (Parsing Internals, operators incl. `**` / `%`, FILTER, the CASE section), `references.md` (two-mode table, string and identifier rules, casts and `TRY_CAST`, interval and typed literals), `queries.md` (filters operator table, Variables / "Trusted input", OrderItem `nulls`), `time.md` if touched; `zensical.toml` only if a page is added; verify `grep` finds no "Python AST" / "Python-AST" claims and no double-quoted string examples in Mode-B docs
-- [ ] 9.2 MCP `Field` descriptions in `slayer/core/query.py` / `slayer/mcp/server.py` and `slayer/memories/help_content/*` (strings single-quoted, SQL forms, `nulls`); verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
-- [ ] 9.3 Release-notes draft (untracked, never staged): double-quoted strings, backslash escapes, `|` / `//`, `{var}` literal-only, `parse_formula` removal, `CAST` / `TRY_CAST`, Postgres < 16 `TRY_CAST`
+- [x] 9.1 `docs/concepts/formulas.md` (Parsing Internals, operators incl. `**` / `%`, FILTER, the CASE section), `references.md` (two-mode table, string and identifier rules, casts and `TRY_CAST`, interval and typed literals), `queries.md` (filters operator table, Variables / "Trusted input", OrderItem `nulls`), `time.md` if touched; `zensical.toml` only if a page is added; verify `grep` finds no "Python AST" / "Python-AST" claims and no double-quoted string examples in Mode-B docs
+- [x] 9.2 MCP `Field` descriptions in `slayer/core/query.py` / `slayer/mcp/server.py` and `slayer/memories/help_content/*` (strings single-quoted, SQL forms, `nulls`); verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
+- [x] 9.3 Release-notes draft (untracked, never staged): double-quoted strings, backslash escapes, `|` / `//`, `{var}` literal-only, `parse_formula` removal, `CAST` / `TRY_CAST`, Postgres < 16 `TRY_CAST`
 
 ## 10. Gates
 
-- [ ] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
+- [x] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
 
 ## Approved harness edits (exact text, approved 2026-10-20)
 

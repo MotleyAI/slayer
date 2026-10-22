@@ -6,7 +6,7 @@ python:
 
 # Count of `#legacy` arrows in the model; arch_check fails if the model's count
 # differs. Only ever lower this — every legacy arrow is a door slated to die.
-legacy_arrows: {baseline: 8}
+legacy_arrows: {baseline: 7}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
 x-guards: {baseline: 0}

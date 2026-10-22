@@ -14,7 +14,7 @@ from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.elaborate_env import check_transform_inputs
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1846_fixtures import SlayerQuery, dev1846_models, month_td

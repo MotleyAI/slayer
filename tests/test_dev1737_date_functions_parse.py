@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.keys import SCALAR_FUNCTION_ARITY, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.engine.binding import bind_expr, bind_filter
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Cmp,
     Literal,
@@ -16,7 +16,6 @@ from slayer.engine.syntax import (
     ScalarCall,
     UnaryOp,
     parse_expr,
-    parse_filter_expr,
 )
 from slayer.core.scope import ModelScope
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -98,7 +97,7 @@ class TestUnitLiterals:
     ])
     def test_unknown_unit_rejected_listing_accepted(self, expr: str, listed: str) -> None:
         with pytest.raises(ValueError, match=listed):
-            parse_filter_expr(expr)
+            parse_expr(expr)
 
     @pytest.mark.parametrize("expr", [
         "date_part(status, created_at) = 1",
@@ -110,7 +109,7 @@ class TestUnitLiterals:
     ])
     def test_non_literal_unit_rejected(self, expr: str) -> None:
         with pytest.raises(ValueError, match="string literal"):
-            parse_filter_expr(expr)
+            parse_expr(expr)
 
     def test_bucket_form_is_not_a_date_function(self) -> None:
         assert not isinstance(parse_expr("month(created_at)"), ScalarCall)
@@ -124,22 +123,23 @@ class TestClockCalls:
         assert parse_expr(text) == ScalarCall(name=name, args=())
 
     def test_clock_in_filter(self) -> None:
-        assert parse_filter_expr("created_at <= now()") == Cmp(
+        assert parse_expr("created_at <= now()") == Cmp(
             op="<=", left=Ref(name="created_at"), right=ScalarCall(name="now", args=()))
 
 
-class TestKeywordArgsRejected:
-    @pytest.mark.parametrize("expr", [
-        "date_add(created_at, n=1, unit='day')",
-        "date_part(part='year', ts=created_at)",
-        "date_diff('day', start=created_at, end=shipped_at)",
-        "order_date + interval(n=1, unit='day')",
-        "now(tz='UTC')",
-        "current_date(tz='UTC')",
+class TestEqualsInDateCallsIsComparison:
+    # Scalar calls take no keywords: `name=value` is a comparison, so these fail on what it breaks.
+    @pytest.mark.parametrize(("expr", "match"), [
+        ("date_add(created_at, n=1, unit='day')", "unit of date_add"),
+        ("date_part(part='year', ts=created_at)", "part of date_part"),
+        ("date_diff('day', start=created_at, end=shipped_at)", "Cannot resolve reference 'start'"),
+        ("order_date + interval(n=1, unit='day')", "unit of interval"),
+        ("now(tz='UTC')", "'now' takes 0 arguments"),
+        ("current_date(tz='UTC')", "'current_date' takes 0 arguments"),
     ])
-    def test_keywords(self, expr: str) -> None:
-        with pytest.raises(ValueError, match="keyword"):
-            parse_expr(expr)
+    def test_keyword_spelling_fails(self, expr: str, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            _bind(expr)
 
 
 class TestIntervalRewrite:
@@ -168,12 +168,12 @@ class TestIntervalRewrite:
         assert parse_expr("created_at + interval(1, 'month') - interval(2, 'hour')") == _date_add(inner, _lit(-2), "hour")
 
     def test_chained_filter_binds_like_nested_date_add(self) -> None:
-        assert parse_filter_expr(
+        assert parse_expr(
             "created_at + interval(1, 'month') + interval(2, 'hour') < now()"
-        ) == parse_filter_expr("date_add(date_add(created_at, 1, 'month'), 2, 'hour') < now()")
+        ) == parse_expr("date_add(date_add(created_at, 1, 'month'), 2, 'hour') < now()")
 
     def test_commuted_filter(self) -> None:
-        assert parse_filter_expr("interval(7, 'day') + order_date > current_date()") == parse_filter_expr(
+        assert parse_expr("interval(7, 'day') + order_date > current_date()") == parse_expr(
             "date_add(order_date, 7, 'day') > current_date()")
 
     def test_rewrite_happens_inside_an_aggregation(self) -> None:
@@ -196,7 +196,7 @@ class TestIntervalRewrite:
         scope = ModelScope(source_model=model)
 
         def bound(text: str):
-            return bind_filter(parse_filter_expr(text), scope=scope, bundle=bundle).value_key
+            return bind_filter(parse_expr(text), scope=scope, bundle=bundle).value_key
 
         assert bound("created_at + interval(1, 'month') < now()") == bound("date_add(created_at, 1, 'month') < now()")
 
@@ -219,12 +219,12 @@ class TestStrayIntervalRejected:
     ])
     def test_rejected_pointing_to_date_add(self, expr: str) -> None:
         with pytest.raises(ValueError, match="date_add"):
-            parse_filter_expr(expr)
+            parse_expr(expr)
 
     def test_unknown_interval_unit_rejected(self) -> None:
         with pytest.raises(ValueError, match="week_sunday"):
-            parse_filter_expr("order_date + interval(1, 'fortnight') > order_date")
+            parse_expr("order_date + interval(1, 'fortnight') > order_date")
 
     def test_non_literal_interval_unit_rejected(self) -> None:
         with pytest.raises(ValueError, match="string literal"):
-            parse_filter_expr("order_date + interval(1, status) > order_date")
+            parse_expr("order_date + interval(1, status) > order_date")

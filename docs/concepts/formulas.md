@@ -77,6 +77,10 @@ new derived quantity owned by the query author. Global validation still
 applies: the aggregation name must be known, and numeric-only aggregations
 reject a confidently non-numeric expression (`sum(lower(name))`).
 
+### Filtered aggregation (`FILTER (WHERE …)`)
+
+Any aggregation takes a SQL `FILTER (WHERE c)` clause with a row-level condition `c` and aggregates only the rows passing it, every row-level input included (`count(*) FILTER (WHERE status = 'paid')`, `last(amount) FILTER (WHERE amount > 0)` picks the newest passing row).
+
 ### Windowed aggregations
 
 Every aggregation — built-in or custom — accepts an optional `window` parameter for
@@ -265,7 +269,8 @@ When a measure is renamed via `name`, query filters and ORDER BY entries in the 
 | `-` | `"sum(revenue) - sum(cost)"` | `SUM(revenue) - SUM(cost)` |
 | `*` | `"avg(price) * sum(quantity)"` | `AVG(price) * SUM(quantity)` |
 | `/` | `"sum(revenue) / count(*)"` | `SUM(revenue) / NULLIF(COUNT(*), 0)` |
-| `**` | `"sum(value) ** 2"` | `SUM(value) ** 2` |
+| `**` | `"sum(value) ** 2"` | `POWER(SUM(value), 2)` |
+| `%` | `"sum(quantity) % 12"` | `SUM(quantity) % 12` |
 
 Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`. Division by zero is NULL on every backend.
 
@@ -449,7 +454,7 @@ Multiple partition columns: `partition_by=[region, channel]`. Cross-model dotted
 
 The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product, direction='desc')` is an error naming the remedy.
 
-> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+> **Note:** SLayer's formula grammar rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions
 
@@ -543,13 +548,4 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
 
 ## Parsing Internals
 
-Both field and filter formulas are parsed by `slayer/core/formula.py` using Python's `ast` module.
-
-**Field formulas** are classified into:
-
-- **AggregatedMeasureRef** — an aggregation over a measure (`"sum(revenue)"`, `"count(*)"`)
-- **ArithmeticField** — arithmetic on aggregated measures (`"sum(revenue) / count(*)"`)
-- **TransformField** — function call, possibly nested (`"cumsum(sum(revenue))"`)
-- **MixedArithmeticField** — arithmetic containing function calls. Covers both transform calls (`"cumsum(sum(revenue)) / count(*)"`) and non-transform SQL function calls wrapping aggregated refs, e.g. `"count(*) / nullif(max(revenue), 0)"` or `"coalesce(sum(revenue), 0) + avg(amount)"`. Aggregated refs nested inside non-transform calls are resolved as their own measure aliases; the call passes through to emitted SQL unchanged.
-
-The query engine binds and expands field formulas into ordered planned stages, and the SQL generator translates them into stacked CTEs.
+Every Mode-B field is parsed by one SQL-compatible grammar (`slayer/core/syntax.py`) into an expression tree that the query engine binds, checks and expands into planned stages, and the SQL generator translates into stacked CTEs.

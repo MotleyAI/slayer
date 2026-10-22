@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension
-from slayer.engine.syntax import Cmp, Ref, parse_filter_expr
+from slayer.core.syntax import Cmp, Ref, parse_expr
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import (
@@ -926,7 +926,7 @@ def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect
     assert len(filters) == 1
     assert filters[0] == "status = 'paid'"
     # The Mode B DSL must read ``status`` as a column, not a literal.
-    parsed = parse_filter_expr(filters[0])
+    parsed = parse_expr(filters[0])
     assert isinstance(parsed, Cmp)
     assert parsed.left == Ref(name="status")
 

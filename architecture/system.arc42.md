@@ -28,7 +28,6 @@ flowchart TD
   protocols("BI wire protocols")
   usage_reporting["Usage reporting"]
   surfaces("User-facing surfaces")
-  core -.-> engine
   core -.-> sql
   core -.-> storage
   engine --> core
@@ -91,7 +90,7 @@ All code, old and new, MUST obey these.
    [enforced: arch_check:model-truth]
 2. **`core` imports no other SLayer node.** The remaining crossings are the
    grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
-   `engine.syntax`, `sql.*`, `storage.migrations`), slated to die.
+   `sql.*`, `storage.migrations`), slated to die.
    [enforced: arch_check:model-truth]
 3. **Every top-level `slayer.*` package/module belongs to exactly one node.**
    A new top-level package must be claimed in a node's model metadata in the same change.
@@ -125,8 +124,9 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
-    vs Mode B Python-AST DSL (formulas, query fields, scalar allowlist only) —
-    one canonical scalar allowlist, extended never forked. [review]
+    vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
+    canonical function library, extended never forked. [review] Every Mode B
+    construct means the same on every dialect. [target: DEV-2120]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]

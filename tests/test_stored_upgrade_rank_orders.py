@@ -68,9 +68,9 @@ def shop_ds(tmp_path):
 
 
 def test_current_versions():
-    assert mig.CURRENT_VERSIONS["SlayerModel"] == 15
-    assert mig.CURRENT_VERSIONS["SlayerQuery"] == 6
-    assert mig.CURRENT_VERSIONS["Memory"] == 4
+    assert mig.CURRENT_VERSIONS["SlayerModel"] == 16
+    assert mig.CURRENT_VERSIONS["SlayerQuery"] == 7
+    assert mig.CURRENT_VERSIONS["Memory"] == 5
     for key in (("SlayerModel", 13), ("SlayerQuery", 5), ("Memory", 3)):
         assert key in mig._REGISTRY
         assert key in mig._STORED_ONLY

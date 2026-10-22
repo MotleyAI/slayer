@@ -37,6 +37,7 @@ from sqlglot import exp
 
 from slayer.core.errors import IllegalWindowInFilterError
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.base import cast_target
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.render.parse import rewrite_log_aliases
 from slayer.sql.window_detect import has_window_function as _has_window_function
@@ -139,3 +140,9 @@ def assert_no_window_in_filter(text: str, *, source: str) -> None:
                 "into an earlier multi-stage source_query."
             ),
         )
+
+
+
+def build_cast_type(type_text: str, *, dialect: str) -> exp.DataType:
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
+    return cast_target(type_text, dialect=get_dialect(dialect))

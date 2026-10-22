@@ -20,11 +20,12 @@ from typing import get_args
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -79,6 +80,7 @@ def _samples() -> dict:
         SqlFragmentKey: SqlFragmentKey(
             template="{r0} * 2", refs=(ColumnKey(path=(), leaf="spend"),),
         ),
+        CastKey: CastKey(source=ColumnKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INT),
     }
 
 

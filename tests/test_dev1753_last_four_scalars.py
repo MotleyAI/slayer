@@ -75,7 +75,7 @@ class TestScalarSetsClosed:
     def test_binder_only_names_are_like_iif_and_date_functions(self) -> None:
         # Rewrite targets and dialect-rendered date functions are not SQL pass-throughs.
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
-            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
             "current_date", "now",
         }
 

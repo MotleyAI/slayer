@@ -13,6 +13,8 @@ filters, order, and computed dimensions.
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), plus the model's custom aggregations
 (`inspect` the model to list them).
+`name=value` is a keyword argument in an aggregation or transform but a comparison in a
+scalar function (`iif(status = 'paid', …)`); write `==` for a comparison in a keyword slot.
 
 A sole primary-key column only takes `count`, `count_distinct`,
 `count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
@@ -22,7 +24,7 @@ restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 `sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
 A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
-conditional aggregate uses `iif`: `sum(iif(status == 'paid', amount, 0))`; always give
+conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
 it a `name`.
 
 ## Empty input

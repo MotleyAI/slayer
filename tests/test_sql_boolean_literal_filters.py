@@ -19,23 +19,23 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import BoolOp, Cmp, Literal, Ref, parse_filter_expr
+from slayer.core.syntax import BoolOp, Cmp, Literal, Ref, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 
 class TestParserBooleanLiterals:
     @pytest.mark.parametrize("spelling", ["true", "TRUE", "True"])
     def test_true_any_casing_is_a_literal(self, spelling):
-        result = parse_filter_expr(f"is_active = {spelling}")
+        result = parse_expr(f"is_active = {spelling}")
         assert result == Cmp(op="==", left=Ref(name="is_active"), right=Literal(value=True))
 
     @pytest.mark.parametrize("spelling", ["false", "FALSE", "False"])
     def test_false_any_casing_is_a_literal(self, spelling):
-        result = parse_filter_expr(f"is_active = {spelling}")
+        result = parse_expr(f"is_active = {spelling}")
         assert result == Cmp(op="==", left=Ref(name="is_active"), right=Literal(value=False))
 
     def test_bare_boolean_in_disjunction_is_not_a_ref(self):
-        result = parse_filter_expr("status = 'x' or false")
+        result = parse_expr("status = 'x' or false")
         assert isinstance(result, BoolOp)
         assert Literal(value=False) in result.operands
 

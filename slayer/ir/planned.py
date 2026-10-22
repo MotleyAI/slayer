@@ -20,6 +20,7 @@ from slayer.core.keys import (
     AggregateKey,
     LiteralKey,
     Phase,
+    CastKey,
     ScalarCallKey,
     TransformKey,
     ValueKey,
@@ -773,6 +774,16 @@ def _walk_plan_keys(obj, seen: set) -> Iterator[ValueKey]:
 def plan_value_keys(planned) -> Iterator[ValueKey]:
     """Every root ``ValueKey`` a plan carries, nested producer plans included."""
     yield from _walk_plan_keys(planned, set())
+
+
+def plans_try_cast(planned_list) -> bool:
+    """Whether any plan renders a ``TRY_CAST``."""
+    return any(
+        isinstance(k, CastKey) and k.try_
+        for planned in planned_list
+        for root in plan_value_keys(planned)
+        for k in walk_value_keys(root)
+    )
 
 
 def plans_read_clock(planned_list) -> bool:

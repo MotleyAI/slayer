@@ -16,10 +16,9 @@ from pydantic import BaseModel
 from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
-from slayer.engine import syntax
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import AggCall, parse_expr
+from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1846_fixtures import (
@@ -30,6 +29,7 @@ from tests._dev1846_fixtures import (
     sales_model,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.core import syntax
 
 SAVED = [
     ModelMeasure(formula="revenue:sum", name="rev"),

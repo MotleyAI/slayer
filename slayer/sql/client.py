@@ -48,20 +48,19 @@ def _get_async_engine(connection_string: str):
 def _async_connection_string(connection_string: str, db_type: str | None) -> str | None:
     """The async URL for ``connection_string``, or ``None`` to run sync-in-thread.
 
-    An async-capable driver is kept; a plain URL or the default sync driver moves to the
-    dialect's async driver; any other driver, or a foreign backend, stays sync.
+    An async-capable driver is kept; the default sync driver moves to the dialect's async
+    driver; any other driver, or a foreign backend, stays sync.
     """
     facts = dialect_for_ds_type(db_type).driver_facts(db_type)
     if facts.async_driver is None:
         return None
     url = make_url(connection_string)
-    backend = facts.url_backend
-    if url.get_backend_name() != backend:
+    backend = url.get_backend_name()
+    if backend not in facts.url_backends:
         return None
     if url.get_dialect(_is_async=True).is_async:
         return connection_string
-    driver = url.drivername.partition("+")[2]
-    if driver and driver != facts.sync_driver:
+    if url.drivername.partition("+")[2] != facts.sync_driver:
         return None
     return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
 
@@ -390,7 +389,7 @@ def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> Iterator[list[StatementTimeoutSkippedWarning]]:
     """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
-    if not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = conn.connection.dbapi_connection
@@ -416,7 +415,9 @@ async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
     """Async sibling of ``_statement_timeout``."""
-    if not dialect.timeout_permitted(await _server_profile_async(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(
+        await _server_profile_async(conn, engine=engine, dialect=dialect),
+    ):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = (await conn.get_raw_connection()).dbapi_connection

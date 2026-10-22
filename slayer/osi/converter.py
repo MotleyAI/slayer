@@ -20,7 +20,7 @@ import sqlglot.expressions as exp
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.formula import parse_formula
+from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
@@ -795,7 +795,7 @@ class OsiToSlayerConverter:
             return
 
         try:
-            parse_formula(result.formula)
+            parse_expr(result.formula)
         except Exception as exc:  # noqa: BLE001 — reject un-parseable emission
             self._unconv(
                 f"Metric {metric.name!r}: emitted formula {result.formula!r} is "

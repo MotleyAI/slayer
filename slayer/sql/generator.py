@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -50,7 +50,7 @@ from slayer.core.join_walker import (
     resolved_terminal,
 )
 from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
-from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.column_expansion import (
     is_trivial_base,
@@ -599,7 +599,7 @@ def _conjunction(parts: Sequence[Expression]) -> Optional[Expression]:  # pyrigh
     return out
 
 # Parameter values rendered through a scope; scalars render as literals, markers never.
-_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
+_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey, ScalarCallKey)
 
 # Shift units whose whole-unit offsets map each bucket start onto another, making the outer re-trunc a per-row no-op.
 _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
@@ -669,7 +669,7 @@ _RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank
 # Real ValueKey args (a ScalarCallKey / iif may also carry raw scalar literals).
 _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
-    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, InKey,
+    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, InKey, CastKey,
 )
 
 
@@ -706,6 +706,8 @@ def _walk_cp_predicate(*, op: str, key, connective_operand: bool) -> None:
                 _walk_cp_predicate(op=op, key=a, connective_operand=False)
     elif isinstance(key, InKey):
         _walk_cp_predicate(op=op, key=key.column, connective_operand=False)
+    elif isinstance(key, CastKey):
+        _walk_cp_predicate(op=op, key=key.source, connective_operand=False)
 
 
 def _effective_src_filters(*, lowered_filters, plan) -> list:
@@ -1990,6 +1992,8 @@ class SQLGenerator:
             elif isinstance(key, ScalarCallKey):
                 for a in key.args:
                     _walk(a, fn)
+            elif isinstance(key, CastKey):
+                _walk(key.source, fn)
 
         def _for_each_local_agg(fn) -> None:
             for sid in base_render_order:
@@ -2021,9 +2025,14 @@ class SQLGenerator:
                 return
             scope.resolve(arg)
 
+        def _resolve_filter(key) -> None:
+            if key.filter is not None:
+                scope.resolve(key.filter)
+
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
         _for_each_local_agg(_resolve_first_last_time_arg)
+        _for_each_local_agg(_resolve_filter)
         return resolved
 
     def _throwaway_frame(
@@ -2233,6 +2242,10 @@ class SQLGenerator:
                     dim_expr = computed_dim_expr_by_sid[sid]
                     select_columns.append(dim_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, dim_expr)
+                    _record_alias(sid, full_alias)
+                elif isinstance(key, LiteralKey) and slot.is_dimension:
+                    # A constant needs no GROUP BY entry (a constant one is refused or read as a position).
+                    select_columns.append(_literal(key.value, dialect=self._dialect).as_(full_alias))
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
                     isinstance(key, LiteralKey) and not slot.is_dimension
@@ -2866,13 +2879,19 @@ class SQLGenerator:
                 ),
             ))
 
-        value_ref = ranked_scope.materialize_for(
-            self._ranked_value_expr(
-                key=local_key, root_model=root_model,
-                root_relation=root_relation, bundle=bundle, scope=ranked_scope,
-            ),
-            consumer=cte_scope,
+        value_expr = self._ranked_value_expr(
+            key=local_key, root_model=root_model,
+            root_relation=root_relation, bundle=bundle, scope=ranked_scope,
         )
+        # A FILTER ranks the passing rows first and picks only a passing row's value.
+        passing_first: List[exp.Ordered] = []
+        if local_key.filter is not None:
+            value_expr = self._passing_value(local_key.filter, value=value_expr, scope=ranked_scope)
+            passing_first.append(exp.Ordered(this=exp.Case(
+                ifs=[exp.If(this=value_expr.args["ifs"][0].this.copy(), true=exp.Literal.number(0))],
+                default=exp.Literal.number(1),
+            )))
+        value_ref = ranked_scope.materialize_for(value_expr, consumer=cte_scope)
         ranking_time = self._ranked_scope_expr(
             key=plan.ranking_time_key, root_model=root_model,
             root_relation=root_relation, bundle=bundle, scope=ranked_scope,
@@ -2905,6 +2924,7 @@ class SQLGenerator:
                     descending=plan.agg == "last",
                 ),
             ),
+            leading=passing_first,
         ))
         inner = inner.from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
@@ -3108,6 +3128,11 @@ class SQLGenerator:
         # the input is root-determined, constant per entity); ``count(*)`` keeps no
         # value column — level 2 counts the entity rows.
         is_star = isinstance(agg_slot.key.source, StarKey)
+        if agg_slot.key.filter is not None:
+            raise RuntimeError(
+                f"{key_display(agg_slot.key)}: a key-carried FILTER reached an association producer; binding "
+                f"carries one only on a local star count or a ranked pick.",
+            )
         picked_alias = "_v"
         # Parameters the grain determines are picked once per cell as
         # _p<i> (below) and read by level 2 as _base._p<i>; the level-1 value pick
@@ -3868,8 +3893,7 @@ class SQLGenerator:
                 else grain_alias_column(alias=_full_alias, table="_base")
             )
         order_terms = [
-            resolve_order_term(entry=entry, env=order_env)
-            for entry in lowered.order
+            term for entry in lowered.order for term in resolve_order_term(entry=entry, env=order_env)
         ]
         if order_terms:
             combined_statement.set("order", exp.Order(expressions=order_terms))
@@ -4738,8 +4762,8 @@ class SQLGenerator:
             dialect=self._dialect,
         )
         return [
-            resolve_order_term(entry=entry, env=env)
-            for entry in _lower_positions(planned_query).order
+            term for entry in _lower_positions(planned_query).order
+            for term in resolve_order_term(entry=entry, env=env)
         ]
 
     def _series_shift_cte(
@@ -5525,6 +5549,8 @@ class SQLGenerator:
                     _walk(a)
             elif isinstance(k, InKey):
                 _walk(k.column)
+            elif isinstance(k, CastKey):
+                _walk(k.source)
 
         _walk(key)
         return out
@@ -5665,21 +5691,24 @@ class SQLGenerator:
                     f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
+            star_scope = scope or self._throwaway_frame(
+                model=source_model, relation=source_relation,
+                bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
+            )
             return AggRenderSpec(
                 name="",
                 sql=None,
+                # A key-carried FILTER counts the passing rows.
+                value=None if key.filter is None else self._passing_value(
+                    key.filter, value=exp.Literal.number(1), scope=star_scope,
+                ),
                 aggregation=key.agg,
                 alias=full_alias,
                 model_name=source_relation,
                 type=slot_type,
                 formula=formula,
                 agg_kwargs=self._agg_param_exprs(
-                    key=key, formula=formula, resolved=resolved_agg_kwargs,
-                    scope=scope or self._throwaway_frame(
-                        model=source_model, relation=source_relation,
-                        bundle=bundle or ResolvedSourceBundle(
-                            dialect=self.dialect, source_model=source_model),
-                    ),
+                    key=key, formula=formula, resolved=resolved_agg_kwargs, scope=star_scope,
                 ),
             )
         param_scope = scope or self._throwaway_frame(
@@ -5797,6 +5826,11 @@ class SQLGenerator:
         raise NotImplementedError(
             f"AggregateKey source {type(source).__name__} not supported.",
         )
+
+    def _passing_value(self, condition, *, value: Expression, scope: ScopeFrame) -> exp.Case:
+        """``CASE WHEN <condition> THEN <value> END``: ``value`` on the rows a FILTER keeps."""
+        passing = render_value_key(key=condition, ctx=RenderContext(scope=scope, dialect=self._dialect))
+        return exp.Case(ifs=[exp.If(this=passing, true=value)])
 
     def _semi_join_exists_conditions(
         self, *, planned_query, source_model, source_relation: str, bundle,
@@ -6125,6 +6159,7 @@ class SQLGenerator:
         source_model=None,
         bundle=None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+        select: Optional[exp.Select] = None,
     ) -> List[exp.Ordered]:
         """ORDER BY terms resolved against a base SELECT with no CTE chain."""
         scoped_order = _lower_positions(planned_query).order
@@ -6136,7 +6171,11 @@ class SQLGenerator:
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
         )
-        return [resolve_order_term(entry=entry, env=env) for entry in scoped_order]
+        if select is not None:
+            env.projection = {
+                a.alias: a.this for a in select.expressions if isinstance(a, exp.Alias) and a.alias
+            }
+        return [term for entry in scoped_order for term in resolve_order_term(entry=entry, env=env)]
 
     def _apply_planned_order_limit(
         self,
@@ -6159,6 +6198,7 @@ class SQLGenerator:
                 source_model=source_model,
                 bundle=bundle,
                 aliases_by_slot_id=aliases_by_slot_id,
+                select=select,
             ),
             planned_query=planned_query,
         )
@@ -6249,6 +6289,18 @@ class SQLGenerator:
             )
             if expr is not None:
                 return expr
+
+        # A hidden row-level expression in an ungrouped query renders in place over the host's
+        # rows; its joins were collected with the order slots.
+        if (
+            source_model is not None and bundle is not None and slot.phase == Phase.ROW
+            and isinstance(key, SLOT_COMPOSITE_KINDS)
+        ):
+            frame = self._scope_frame(
+                model=source_model, relation=source_relation, bundle=bundle,
+                allocator=self._gen_allocator or self._new_allocator(),
+            )
+            return render_value_key(key=key, ctx=RenderContext(scope=frame, dialect=self._dialect))
 
         raise NotImplementedError(
             f"ORDER BY references a hidden slot (id={slot.id!r}, key="
@@ -6363,11 +6415,15 @@ def read_models(statement: Expression) -> Set[str]:
     }
 
 
+def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
+    return dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
+
+
 def generate_planned_stages(
     planned_queries,
     *,
     bundle,
-    dialect: str = "postgres",
+    dialect: "str | SqlDialect" = "postgres",
     projection_aliases: "Sequence[str]" = (),
     kept_stages: "Optional[Set[str]]" = None,
     read_set: "Optional[Set[str]]" = None,
@@ -6385,10 +6441,10 @@ def generate_planned_stages(
         read_set.update(read_models(statement))
     spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
     if spine_sizes:
-        get_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
+        _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
     if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
-        get_dialect(dialect).attach_correlated_setting(statement)
+        _as_dialect(dialect).attach_correlated_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.
     return _finish_statement(
@@ -6400,7 +6456,7 @@ def generate_planned_stages(
 
 
 def _build_planned_stages_ast(
-    planned_queries, *, bundle, dialect: str, kept_stages: "Optional[Set[str]]" = None,
+    planned_queries, *, bundle, dialect: "str | SqlDialect", kept_stages: "Optional[Set[str]]" = None,
 ) -> exp.Select:
     """Compose a multi-stage DAG (``plan_stages`` output) as one statement AST."""
     if not planned_queries:
@@ -6467,7 +6523,7 @@ def _build_planned_stages_ast(
                 source_relation=planned.source_relation,
                 inner=body,
                 expected_columns=[c.name for c in planned.stage_schema.columns],
-                dialect=dialect,
+                dialect=_as_dialect(dialect).sqlglot_name,
             ),
             depends_on=_merged_deps(
                 [h.name for h in hoisted],
@@ -6500,14 +6556,14 @@ def _build_planned_stages_ast(
 
 
 def _fit_overlimit_identifiers(
-    tree, *, dialect: str, exempt: AbstractSet[str], stage_columns: AbstractSet[str],
+    tree, *, dialect: "str | SqlDialect", exempt: AbstractSet[str], stage_columns: AbstractSet[str],
 ) -> None:
     """Length-fit over-limit SLayer-minted identifiers in place the way the emission
     pass fits quoted ones: every unquoted one (stage identities, stage column
     references) and the stage column names wherever they occur, so a definition and
     its references agree; user-authored ``exempt`` names pass unless they name a
     stage column."""
-    d = get_dialect(dialect)
+    d = _as_dialect(dialect)
     if d.max_identifier_bytes is None:
         return
     for ident in tree.find_all(exp.Identifier):
