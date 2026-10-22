@@ -13,6 +13,9 @@ from sqlglot import exp
 
 from slayer.core.errors import UnknownReferenceError
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import get_dialect
+from slayer.sql.render.row_expr import render_null_safe
+from slayer.storage.sqlite_conn import open_connection
 from tests._dev2101_fixtures import (
     ALL_IDS,
     DATE_VALUES,
@@ -258,3 +261,20 @@ class TestEmission:
         sql = await emit(q(dimensions=["id"], filters=["region IS NOT DISTINCT FROM NULL"]), dialect=dialect)
         upper = sql.upper()
         assert any(form in upper for form in ("IS NULL", "DISTINCT FROM", "DISTINCTFROM", "<=>", "EQUAL_NULL")), sql
+
+
+_NULL_PAIRS = [(1, 1, False), (1, 2, True), (1, None, True), (None, 1, True), (None, None, False)]
+
+
+@pytest.mark.parametrize("dialect", ["tsql", "oracle", "redshift"])
+@pytest.mark.parametrize(("left", "right", "distinct"), _NULL_PAIRS)
+def test_expanded_distinct_from_is_two_valued(dialect: str, left: Any, right: Any, distinct: bool) -> None:
+    """The expanded null-safe form negates to ``IS DISTINCT FROM`` exactly, NULL against a value included."""
+    predicate = render_null_safe(
+        op="is distinct from", operands=[exp.column("a", table="t"), exp.column("b", table="t")],
+        dialect=get_dialect(dialect),
+    )
+    # SQLite, not DuckDB: DuckDB rewrites the expanded pattern into a native null-safe test.
+    sql = f"SELECT {predicate.sql(dialect='sqlite')} FROM (SELECT ? AS a, ? AS b) AS t"
+    with open_connection(":memory:") as conn:
+        assert conn.execute(sql, [left, right]).fetchone() == (int(distinct),)
