@@ -18,7 +18,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 3. Prerequisite
 
-- [ ] 3.1 Merge DEV-2101 (merged to main, else its branch) into this branch; verify `slayer/core/syntax.py` and `CastKey` exist and the full unit suite is green before any implementation
+- [x] 3.1 Merge DEV-2101 (merged to main, else its branch) into this branch; verify `slayer/core/syntax.py` and `CastKey` exist and the full unit suite is green before any implementation
 
 ## 4. One bucket key
 
