@@ -4,21 +4,23 @@
 
 ## 2. Failing tests (pr-tests)
 
-- [ ] 2.1 Registry-driven matrix `tests/test_dev2120_library_matrix.py`: one case table per library function and Mode-B operator; fails for any `SCALAR_SPECS` entry or operator without cases; executes on SQLite and DuckDB, emits on every Tier-1 dialect; verify it fails on the current code
-- [ ] 2.2 `queries/scalar-functions` scenarios, plus R2 boundaries: `asin` / `acos` at and beyond ±1, `div` by zero and every sign combination, `split_part` index 0 / negative / beyond range / non-literal, `chr` surrogates and > 0x10FFFF, all-NULL and every-NULL-position `greatest` / `least` (3+ args); each with a literal (plan-time error) and a column (NULL) argument; non-ASCII `é`, `€`, U+1F600; `initcap` unknown; `//` hint → `div` runs; verify failing
-- [ ] 2.3 `queries/regex` scenarios, plus trailing-newline probes for `^`, `$`, alternation and `'i'`; bracketed classes; variable patterns with bad constructs; replacement `$`, `&`, `\\`, `\1`–`\9`, group beyond the pattern; SQL Server 2022 / unknown-profile emission; verify failing
-- [ ] 2.4 `queries/json` scenarios, plus missing / JSON null / object / array / wrong type / unconvertible / genuine `0` and `false` for every `RETURNING` type; arrow-chain precedence and the bare `->` hint; aliases; ingestion → render for each native JSON form (Postgres json / jsonb, MySQL, DuckDB, BigQuery JSON, Snowflake VARIANT, ClickHouse JSON) and for a missing `db_type`; verify failing
-- [ ] 2.5 `queries/mixed-type-coercion` scenarios, plus `BETWEEN`, `IS DISTINCT FROM`, `greatest` with mixed args, `sum(text)` remedy names `TRY_CAST`, author `CAST` untouched, Postgres 15 / 16 / unknown emissions; verify failing
-- [ ] 2.6 `queries/string-matching` scenarios on every Tier-1 dialect (escaped `%` / `_`, literal `[`, lone backslash, column-valued pattern, GLOB metacharacters on SQLite, Mode-A LIKE unchanged on SQLite); verify failing
-- [ ] 2.7 `queries/date-functions` `date_trunc` scenarios (row value, dimension, order key, unknown unit, reserved name); verify failing
-- [ ] 2.8 Integration: the matrix case table runs live in each integration suite (Postgres, MySQL, ClickHouse, Trino, SQL Server parameterised 2022 / 2025, Snowflake, BigQuery); verify they run (skipping where the DB is absent)
-- [ ] 2.9 Codex review of the tests against this change
+- [x] 2.1 Registry-driven matrix `tests/test_dev2120_library_matrix.py`: one case table per library function and Mode-B operator; fails for any `SCALAR_SPECS` entry or operator without cases; executes on SQLite and DuckDB, emits on every Tier-1 dialect; verify it fails on the current code
+- [x] 2.2 `queries/scalar-functions` scenarios, plus R2 boundaries: `asin` / `acos` at and beyond ±1, `div` by zero and every sign combination, `split_part` index 0 / negative / beyond range / non-literal, `chr` surrogates and > 0x10FFFF, all-NULL and every-NULL-position `greatest` / `least` (3+ args); each with a literal (plan-time error) and a column (NULL) argument; non-ASCII `é`, `€`, U+1F600; `initcap` unknown; `//` hint → `div` runs; verify failing
+- [x] 2.3 `queries/regex` scenarios, plus trailing-newline probes for `^`, `$`, alternation and `'i'`; bracketed classes; variable patterns with bad constructs; replacement `$`, `&`, `\\`, `\1`–`\9`, group beyond the pattern; SQL Server 2022 / unknown-profile emission; verify failing
+- [x] 2.4 `queries/json` scenarios, plus missing / JSON null / object / array / wrong type / unconvertible / genuine `0` and `false` for every `RETURNING` type; arrow-chain precedence and the bare `->` hint; aliases; ingestion → render for each native JSON form (Postgres json / jsonb, MySQL, DuckDB, BigQuery JSON, Snowflake VARIANT, ClickHouse JSON) and for a missing `db_type`; verify failing
+- [x] 2.5 `queries/mixed-type-coercion` scenarios, plus `BETWEEN`, `IS DISTINCT FROM`, `greatest` with mixed args, `sum(text)` remedy names `TRY_CAST`, author `CAST` untouched, Postgres 15 / 16 / unknown emissions; verify failing
+- [x] 2.6 `queries/string-matching` scenarios on every Tier-1 dialect (escaped `%` / `_`, literal `[`, lone backslash, column-valued pattern, GLOB metacharacters on SQLite, Mode-A LIKE unchanged on SQLite); verify failing
+- [x] 2.7 `queries/date-functions` `date_trunc` scenarios (row value, dimension, order key, unknown unit, reserved name); verify failing
+- [x] 2.8 Integration: the matrix case table runs live in each integration suite (Postgres, MySQL, ClickHouse, Trino, SQL Server parameterised 2022 / 2025, Snowflake, BigQuery); verify they run (skipping where the DB is absent)
+- [x] 2.9 `queries/variables` digit-and-comma brace scenario and the regex name-shaped-brace hint scenario; verify failing
+- [x] 2.10 Codex review of the tests against this change
 
 ## 3. Parser and core syntax
 
 - [ ] 3.1 Regex-pattern, LIKE-pattern and JSON-path parsers in `slayer/core/` (frozen Pydantic ASTs, cached, typed errors naming the construct); verify the parser-level tests in 2.3 / 2.4 / 2.6
 - [ ] 3.2 Grammar (`slayer/core/syntax.py`): `~` / `~*` / `!~` / `!~*` → `regexp_like`; `->` / `->>` at the `||` level → `json_value` (bare `->` hint); `RETURNING` → `TRY_CAST` over `json_value`; JSON aliases; `date_trunc` → granularity call; `strpos` → `instr`; verify the parse tests
 - [ ] 3.3 `SCALAR_SPECS` entries for every new function with arity and result-type rules; `initcap` absent; verify `tests/test_dev1737_scalar_specs.py` and 2.1's registry check
+- [ ] 3.4 Variable substitution: a brace pair inside a string literal holding only digits, commas and spaces stays text; the undefined-variable error from a regex pattern argument adds the `{{` / `}}` hint; verify 2.9
 
 ## 4. Binding and checker
 

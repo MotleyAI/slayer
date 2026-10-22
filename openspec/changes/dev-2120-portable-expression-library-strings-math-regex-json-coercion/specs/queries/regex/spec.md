@@ -50,7 +50,7 @@ The only flag SHALL be the literal `'i'` (case-insensitive); without it matching
 
 ### Requirement: Patterns are literals or variables
 
-A pattern SHALL be a string literal or a `{var}` placeholder whose value is the pattern text. Any other pattern expression (a column, a concatenation) SHALL be rejected at plan time.
+A pattern SHALL be a string literal or a `{var}` placeholder whose value is the pattern text. Any other pattern expression (a column, a concatenation) SHALL be rejected at plan time. A repetition count in a pattern literal is written as is (`queries/variables`). An undefined-variable error raised from a pattern argument SHALL also point at `{{` / `}}` for literal braces.
 
 #### Scenario: Column-valued pattern
 
@@ -61,6 +61,11 @@ A pattern SHALL be a string literal or a `{var}` placeholder whose value is the 
 
 - **WHEN** a filter is `regexp_like(name, {p})` with variable `p` = `'^a.c$'`
 - **THEN** it keeps the rows matching `^a.c$`
+
+#### Scenario: Name-shaped braces in a pattern
+
+- **WHEN** a filter is `regexp_like(word, '\p{L}')` and no variable `L` is supplied
+- **THEN** it fails with the undefined-variable error naming `L` and pointing at `{{` / `}}`
 
 ### Requirement: The portable pattern subset
 

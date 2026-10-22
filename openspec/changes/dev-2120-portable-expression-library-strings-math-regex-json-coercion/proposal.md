@@ -13,6 +13,7 @@ Mode B passes most scalars to sqlglot and documents where the databases disagree
 - JSON: `json_value(x, path [RETURNING type])`, `->` / `->>` chains, the `json_extract` / `json_extract_scalar` / `json_extract_path_text` / `jsonb_extract_path_text` aliases; ingestion keeps `db_type` for JSON-family columns.
 - **BREAKING** TEXT against a number compares and computes numerically (`TRY_CAST(text AS DOUBLE)`), on every dialect.
 - **BREAKING** One LIKE pattern language: `%` and `_` the only wildcards, `\` escapes `%`, `_` and `\`, `[` always literal (DuckDB, Trino, SQLite and SQL Server read these differently today). SQLite Mode-B `LIKE` becomes case-sensitive; Mode-A SQL is untouched.
+- Braces inside a Mode-B string literal holding only digits, commas and spaces (`'[0-9]{3}'`, `'{1, 2, 3}'`) are literal text, so regex quantifiers need no escaping.
 - Comparison matrix: C9 SLayer verdict → yes, with `C9-slayer-*` probes.
 - Not added: `initcap` (no single-expression form on MySQL, SQL Server, DuckDB), `random()`, format-string parsers, JSON builders and table functions.
 
@@ -27,6 +28,7 @@ Mode B passes most scalars to sqlglot and documents where the databases disagree
 
 ### Modified Capabilities
 - `queries/date-functions`: `date_trunc(unit, x)` is the granularity call.
+- `queries/variables`: digit-and-comma braces inside a string literal are literal text.
 
 ## Impact
 

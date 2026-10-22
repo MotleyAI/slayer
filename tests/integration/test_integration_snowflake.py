@@ -34,6 +34,15 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
+)
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -848,3 +857,46 @@ def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
         dialect="snowflake", words=keyword_universe(SNOWFLAKE_KEYWORDS), table="regions", column="id",
         fails=sa_statement_fails(sf_engine), workers=8,
     ) == []
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in dev2120_table_statements(LIB, dialect="snowflake"):
+            cur.execute(stmt)
+        cur.execute("CREATE TABLE docs (id NUMBER(38,0), payload VARIANT)")
+        rows = ", ".join(f"({rid}, {server_literal(doc, kind='TEXT', dialect='snowflake')})" for rid, doc in DOCS_ROWS)
+        cur.execute(f"INSERT INTO docs SELECT column1, PARSE_JSON(column2) FROM VALUES {rows}")
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(sf_datasource))
+        base = lib_model(data_source="sf_test")
+        run_sync(storage.save_model(base.model_copy(update={
+            "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
+        for model in ingest_datasource(datasource=sf_datasource, include_tables=["docs"]):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        try:
+            cur.execute("DROP TABLE IF EXISTS lib")
+            cur.execute("DROP TABLE IF EXISTS docs")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def test_dev2120_library(sf_dev2120_storage) -> None:
+    run_sync(check_library(SlayerQueryEngine(storage=sf_dev2120_storage)))
+
+
+def test_dev2120_variant_column(sf_dev2120_storage) -> None:
+    run_sync(check_native_json(SlayerQueryEngine(storage=sf_dev2120_storage)))

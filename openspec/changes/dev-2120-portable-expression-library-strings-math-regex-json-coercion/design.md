@@ -64,6 +64,12 @@ Ingestion keeps `db_type` for JSON-family types (Postgres `json` / `jsonb`, MySQ
 
 Unit: matrix on SQLite and DuckDB plus emission on every dialect. Integration (live, same case table): Postgres (local pytest-postgresql, 16+; emission for 15 and unknown), MySQL 8.0, ClickHouse, Trino via testcontainers; SQL Server parameterised over 2022 (version error) and 2025 (regex); Snowflake and BigQuery in their secret-gated CI suites. C9 flips only after a PR run in which the Snowflake and BigQuery suites executed (not skipped).
 
+### D12. Digit-and-comma braces in string literals
+
+A brace pair inside a Mode-B string literal whose contents are only digits, commas and spaces (`{3}`, `{2,}`, `{1,2}`, `{1, 2, 3}`, `{}`) is literal text, so regex quantifiers work as written; it is an invalid-variable-name error today, so nothing that runs changes meaning. Name-shaped pairs stay placeholders, other pairs keep the invalid-name error, `{{` / `}}` keep escaping, and bare braces outside a string literal are unchanged. An undefined-variable error from a regex pattern argument adds the `{{` / `}}` hint.
+
+Alternatives: doubling quantifier braces (`'[0-9]{{3}}'`) — rejected: standard regex fails as written; every non-name pair literal — rejected: a mistyped placeholder (`'{start-date}'`) would silently become text; exempting pattern positions from substitution — rejected: substitution precedes parsing and would forbid placeholders in patterns.
+
 ## Risks / Trade-offs
 
 - [Golden SQL churn: every Mode-B `LIKE` gains `ESCAPE '\'`; SQLite `LIKE` becomes `GLOB`] → regenerate baselines; release note.
