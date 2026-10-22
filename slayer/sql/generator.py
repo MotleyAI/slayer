@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, TEXT_RESULT_SCALARS, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -656,13 +656,6 @@ def _is_host_grain(key) -> bool:
 # --- Transform-input shape classification, shared by the series-regime
 # time_shift selector and the consecutive_periods emitter. ---
 
-# SCALAR_PASSTHROUGH members whose result is a string (no defined truthiness);
-# length / instr return numbers and are intentionally excluded.
-_STRING_VALUED_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim",
-    "replace", "substr", "substring", "concat",
-})
-
 #: Argument-less rank-family window functions (``ntile`` carries its bucket count).
 _RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank": exp.PercentRank}
 
@@ -679,7 +672,7 @@ def _validate_consecutive_periods_input(*, op: str, inner) -> None:
     (a boolean anywhere a number is needed is its integer)."""
     if (
         isinstance(inner, ScalarCallKey)
-        and inner.name.lower() in _STRING_VALUED_SCALARS
+        and inner.name.lower() in TEXT_RESULT_SCALARS
     ):
         raise ValueError(
             f"{op!r} cannot use a string-valued predicate ({inner.name}(...)): a "

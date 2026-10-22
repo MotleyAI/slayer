@@ -64,8 +64,9 @@ class TestScenarios:
 
     @pytest.mark.parametrize("filt", ["qty > 'abc'", "qty IN (1, 'abc')", "qty BETWEEN 'abc' AND 3", "qty + 'abc' > 1"])
     async def test_non_numeric_literal_rejected(self, engine: SlayerQueryEngine, filt: str) -> None:
+        query = lib_query(filters=[filt])
         with pytest.raises(SlayerError, match="'abc'"):
-            await engine.execute(lib_query(filters=[filt]))
+            await engine.execute(query)
 
     async def test_exact_large_integers(self, engine: SlayerQueryEngine) -> None:
         exact = lib_ids(await engine.execute(lib_query(
@@ -78,12 +79,14 @@ class TestScenarios:
 class TestLimitedToMixedOperands:
     @pytest.mark.parametrize("formula", ["sum(num_txt)", "avg(num_txt)"])
     async def test_numeric_aggregation_over_text_names_try_cast(self, engine: SlayerQueryEngine, formula: str) -> None:
+        query = _measure(formula)
         with pytest.raises(SlayerError, match="TRY_CAST"):
-            await engine.execute(_measure(formula))
+            await engine.execute(query)
 
     async def test_numeric_function_over_text_names_try_cast(self, engine: SlayerQueryEngine) -> None:
+        query = lib_query("abs(num_txt)")
         with pytest.raises(SlayerError, match="TRY_CAST"):
-            await engine.execute(lib_query("abs(num_txt)"))
+            await engine.execute(query)
 
     async def test_text_against_text_is_untouched(self) -> None:
         sql = await emit_lib(lib_query(filters=["num_txt = '1'"]), dialect="duckdb")
@@ -113,7 +116,8 @@ class TestEmission:
     async def test_numeric_string_literal_becomes_a_number(self) -> None:
         sql = await emit_lib(lib_query(filters=["qty > '1'"]), dialect="duckdb")
         literals = list(_where(sql, dialect="duckdb").find_all(exp.Literal))
-        assert literals and not any(lit.is_string for lit in literals), sql
+        assert literals, sql
+        assert not any(lit.is_string for lit in literals), sql
 
     async def test_postgres_16_gets_the_null_on_error_form(self, monkeypatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))

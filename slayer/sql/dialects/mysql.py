@@ -11,20 +11,36 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     FALSE_WORDS,
     NUMBER_TEXT_PATTERN,
     TRUE_WORDS,
+    ExtremumFn,
     SqlDialect,
+    TextFn,
+    anon,
+    any_null,
     as_text,
+    case,
+    lit,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.patterns import ICU, RegexFlavour
+
+
+def _match_type(case_insensitive: bool) -> Expression:
+    """ICU match type: always explicit, so a case-insensitive collation never decides."""
+    return lit("i" if case_insensitive else "c")
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -42,6 +58,53 @@ _MYSQL_PART_FUNCTIONS = {
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
+    regex_flavour: ClassVar[RegexFlavour] = ICU
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "chr":
+            utf32 = exp.Chr(expressions=[args[0].copy()], charset=exp.var("utf32"))
+            text = exp.Cast(this=utf32, to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+            return self._code_point_guard(args[0], text)
+        if fn == "ascii":
+            return exp.Unicode(this=args[0].copy())
+        return super().build_text_call(fn, args)
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``SUBSTRING_INDEX`` twice; ``''`` past the last field."""
+        inner = anon("SUBSTRING_INDEX", value, delimiter, lit(index))
+        field = anon("SUBSTRING_INDEX", inner, delimiter, lit(-1 if index > 0 else 1))
+        beyond = exp.GT(this=lit(abs(index)), expression=self.field_count(value, delimiter))
+        return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
+
+    def cube_root(self, value: Expression) -> Expression:
+        root = exp.Pow(this=exp.Abs(this=value.copy()), expression=exp.Div(this=lit(1), expression=exp.Literal.number("3.0")))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=root)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``GREATEST`` / ``LEAST`` propagate NULL here."""
+        return self.coalesced_extremum(fn, args, spelling="upper")
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_LIKE", value, self.regex_text(pattern), _match_type(case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """The first match, then (for a group) that match re-read whole by the pattern."""
+        match = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _match_type(False))
+        if group == 0:
+            return match
+        return anon("REGEXP_REPLACE", match, self.regex_text(pattern, anchored=True), lit(f"${group}"), lit(1),
+                    lit(0), _match_type(False))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
+                    lit(0), _match_type(case_insensitive))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        return case((anon("JSON_VALID", value), anon("JSON_VALUE", value, lit(path.text))))
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""

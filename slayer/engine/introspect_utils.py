@@ -273,6 +273,14 @@ def is_exact_numeric_db_type(db_type: Optional[str]) -> bool:
     return "DECIMAL" in token or "NUMERIC" in token
 
 
+_JSON_DB_TYPES = frozenset({"JSON", "JSONB", "VARIANT", "OBJECT"})
+
+
+def is_json_db_type(db_type: Optional[str]) -> bool:
+    """Whether ``db_type`` names a JSON-family type (JSON / JSONB, Snowflake VARIANT / OBJECT)."""
+    return bool(db_type) and db_type.split("(")[0].upper().strip() in _JSON_DB_TYPES
+
+
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
@@ -327,7 +335,7 @@ def _get_columns_fallback(
         # type mapping and db_type capture see the inner type.
         unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
         sa_type, is_float = _info_schema_type(unwrapped)
-        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) else None
+        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) else None
         result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,

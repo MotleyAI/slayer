@@ -19,7 +19,7 @@ from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS
 from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -452,11 +452,11 @@ class Aggregation(BaseModel):
         # form (``round(x)`` must stay the scalar call), so every legal
         # aggregation stays reachable as ``agg(col)``. Case-insensitive to
         # match the parser's scalar dispatch.
-        if self.name.lower() in SCALAR_FUNCTIONS:
+        if self.name.lower() in RESERVED_SCALAR_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' conflicts with a scalar "
                 f"function. Scalar-allowlist names are reserved: "
-                f"{', '.join(sorted(SCALAR_FUNCTIONS))}"
+                f"{', '.join(sorted(RESERVED_SCALAR_NAMES))}"
             )
         if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
             raise ValueError(
@@ -1087,7 +1087,7 @@ class DatasourceConfig(BaseModel):
 
 def _reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
-    out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out: dict[str, str] = dict.fromkeys(RESERVED_SCALAR_NAMES, "Mode-B function")
     out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))

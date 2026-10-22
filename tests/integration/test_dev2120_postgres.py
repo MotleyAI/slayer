@@ -67,8 +67,9 @@ async def test_native_json_columns(pg, model: str) -> None:
 
 @pytest.mark.integration
 async def test_author_cast_keeps_postgres_error(pg) -> None:
+    query = lib_query(filters=["CAST(num_txt AS INT) > 100"])
     with pytest.raises(Exception, match="(?i)invalid input syntax"):  # noqa: B017 — Postgres's own error
-        await pg[0].execute(lib_query(filters=["CAST(num_txt AS INT) > 100"]))
+        await pg[0].execute(query)
 
 
 @pytest.mark.integration

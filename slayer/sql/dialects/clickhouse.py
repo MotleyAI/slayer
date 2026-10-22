@@ -16,7 +16,41 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text, iso_text
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql.dialects.base import (
+    ExtremumFn,
+    ServerProfile,
+    SqlDialect,
+    TextFn,
+    anon,
+    as_text,
+    case,
+    iso_text,
+    lit,
+    pad_fill,
+)
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
+
+#: Byte-based string functions and their character (UTF-8) counterparts.
+_UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
+_JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
+
+
+def _utf8(node: Expression) -> Expression:
+    """Character semantics for the byte-based string functions."""
+    for cls, name in _UTF8_FUNCTIONS.items():
+        if type(node) is cls:
+            args = [node.this, *(node.args[k] for k in ("start", "length") if node.args.get(k) is not None)]
+            return exp.Anonymous(this=name, expressions=args)
+    if isinstance(node, exp.StrPosition):
+        return exp.Anonymous(this="positionUTF8", expressions=[node.this, node.args["substr"]])
+    return node
+
+
+def _byte(value: Expression, position: int) -> Expression:
+    return exp.Anonymous(this="ascii", expressions=[exp.Anonymous(this="substring", expressions=[
+        value.copy(), exp.Literal.number(position), exp.Literal.number(1)])])
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4)
@@ -107,6 +141,98 @@ _CH_ADD_FUNCTIONS = {
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
     ilike_native: ClassVar[bool] = True
+    regex_flavour: ClassVar[RegexFlavour] = RE2
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
+    like_escape_clause: ClassVar[bool] = False
+
+    def rewrite_target_ast(self, tree: Expression) -> Expression:
+        """Character, not byte, semantics for substring / lower / upper / position."""
+        return tree.transform(_utf8)
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn in ("left", "right"):
+            return anon(f"{fn}UTF8", *args)
+        if fn in ("lpad", "rpad"):
+            node = anon("leftPadUTF8" if fn == "lpad" else "rightPadUTF8", args[0], args[1], pad_fill(args))
+            return self._non_positive_empty(args[1], node, source=args[0])
+        if fn == "reverse":
+            return anon("reverseUTF8", args[0])
+        if fn == "concat_ws":
+            item = exp.to_identifier("_v")
+            present = exp.Lambda(this=anon("isNotNull", exp.column(item.copy())), expressions=[item])
+            values = exp.Array(expressions=[a.copy() for a in args[1:]])
+            return case((anon("isNull", args[0]), exp.Null()),
+                        default=anon("arrayStringConcat", anon("arrayFilter", present, values), args[0]))
+        return super().build_text_call(fn, args)
+
+    def code_point_char(self, n: Expression) -> Expression:
+        """The UTF-8 bytes of code point ``n``."""
+        def part(shift: int, mask_base: int) -> Expression:
+            shifted = n.copy() if shift == 0 else anon("intDiv", n, lit(1 << shift))
+            return exp.Add(this=lit(mask_base), expression=anon("modulo", shifted, lit(64)) if mask_base == 128
+                           else shifted)
+        two = anon("char", part(6, 192), part(0, 128))
+        three = anon("char", part(12, 224), part(6, 128), part(0, 128))
+        four = anon("char", part(18, 240), part(12, 128), part(6, 128), part(0, 128))
+        return case((exp.LT(this=n.copy(), expression=lit(128)), anon("char", n)),
+                    (exp.LT(this=n.copy(), expression=lit(2048)), two),
+                    (exp.LT(this=n.copy(), expression=lit(65536)), three), default=four)
+
+    def first_code_point(self, s: Expression) -> Expression:
+        """Decoded from the first character's UTF-8 bytes; ``''`` is 0."""
+        b1 = _byte(s, 1)
+
+        def tail(position: int) -> Expression:
+            return exp.Paren(this=exp.Sub(this=_byte(s, position), expression=lit(128)))
+
+        def scaled(value: Expression, factor: int) -> Expression:
+            return exp.Mul(this=value, expression=lit(factor))
+        two = exp.Add(this=scaled(exp.Paren(this=exp.Sub(this=b1.copy(), expression=lit(192))), 64), expression=tail(2))
+        three = exp.Add(this=exp.Add(this=scaled(exp.Paren(this=exp.Sub(this=b1.copy(), expression=lit(224))), 4096),
+                                     expression=scaled(tail(2), 64)), expression=tail(3))
+        four = exp.Add(this=exp.Add(this=exp.Add(
+            this=scaled(exp.Paren(this=exp.Sub(this=b1.copy(), expression=lit(240))), 262144),
+            expression=scaled(tail(2), 4096)), expression=scaled(tail(3), 64)), expression=tail(4))
+        return case((exp.LT(this=b1.copy(), expression=lit(128)), b1.copy()),
+                    (exp.LT(this=b1.copy(), expression=lit(224)), two),
+                    (exp.LT(this=b1.copy(), expression=lit(240)), three), default=four)
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``splitByString`` indexes from either end; past the end is the empty default."""
+        return anon("arrayElement", anon("splitByString", delimiter, value), lit(index))
+
+    def text_repeat(self, value: Expression, count: Expression) -> Expression:
+        return anon("repeat", value, count)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``greatest`` / ``least`` propagate NULL before 24.12."""
+        return self.coalesced_extremum(fn, args, spelling="lower")
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("match", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """``regexpExtract`` returns ``''`` without a match: a match is tested first."""
+        text = self.regex_text(pattern)
+        return case((anon("match", value, text), anon("regexpExtract", value, text.copy(), lit(group))))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("replaceRegexpAll", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        document = anon("toJSONString", value) if native else value.copy()
+        keys = [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
+        kind = anon("JSONType", document, *keys)
+        return case(
+            (exp.EQ(this=kind, expression=lit("String")), anon("JSONExtractString", document, *keys)),
+            (exp.In(this=kind.copy(), expressions=[lit(t) for t in _JSON_SCALAR_TYPES]),
+             anon("JSONExtractRaw", document, *keys)),
+        )
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""

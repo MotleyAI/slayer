@@ -31,8 +31,9 @@ async def _value(engine: SlayerQueryEngine, expr: str, *, row: int = 1):
 
 
 async def _rejected(engine: SlayerQueryEngine, expr: str, *needles: str) -> str:
+    query = lib_query(expr)
     with pytest.raises(SlayerError) as info:
-        await engine.execute(lib_query(expr))
+        await engine.execute(query)
     msg = str(info.value)
     for needle in needles:
         assert needle.lower() in msg.lower(), msg
@@ -115,8 +116,9 @@ class TestLiteralOutOfDomain:
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_rejected_before_emission(self, dialect: str) -> None:
+        query = lib_query("asin(2)")
         with pytest.raises(SlayerError, match="asin"):
-            await emit_lib(lib_query("asin(2)"), dialect=dialect)
+            await emit_lib(query, dialect=dialect)
 
 
 class TestSplitPartIndex:
@@ -145,8 +147,9 @@ class TestVersionGating:
     @pytest.mark.parametrize("function", ["greatest", "least"])
     async def test_old_sql_server_fails_closed(self, monkeypatch, function: str) -> None:
         patch_profile(monkeypatch, version=(15, 0))
+        query = lib_query(f"{function}(a, b)")
         with pytest.raises(SlayerError) as info:
-            await emit_lib(lib_query(f"{function}(a, b)"), dialect="tsql")
+            await emit_lib(query, dialect="tsql")
         msg = str(info.value)
         assert function in msg.lower(), msg
         assert "2022" in msg, msg
@@ -186,13 +189,15 @@ class TestExcludedFunctions:
         "json_object('a', word)", "json_array(word)", "json_each(payload)",
     ])
     async def test_unknown_function(self, engine: SlayerQueryEngine, expr: str) -> None:
+        query = lib_query(expr)
         with pytest.raises(UnknownFunctionError):
-            await engine.execute(lib_query(expr))
+            await engine.execute(query)
 
 
 class TestFloorDivisionHint:
     async def test_hint_names_a_working_function(self, engine: SlayerQueryEngine) -> None:
+        query = lib_query("i // m")
         with pytest.raises(ValueError, match=r"div\(a, b\)"):
-            await engine.execute(lib_query("i // m"))
+            await engine.execute(query)
         values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
         assert int(values[1]) == 3

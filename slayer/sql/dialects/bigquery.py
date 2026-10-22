@@ -16,14 +16,25 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     DottedAliasManglingMixin,
+    ExtremumFn,
+    MathFn,
     SqlDialect,
     TemporalComparisonOp,
+    TextFn,
     _digest,
+    anon,
+    any_null,
+    case,
     iso_text,
+    lit,
+    operand_copy,
 )
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 
 if TYPE_CHECKING:
@@ -106,6 +117,59 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
+    regex_flavour: ClassVar[RegexFlavour] = RE2
+    like_escape_clause: ClassVar[bool] = False
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "concat_ws":
+            return anon("ARRAY_TO_STRING", exp.Array(expressions=[a.copy() for a in args[1:]]), args[0])
+        if fn == "ascii":
+            return anon("UNICODE", args[0])
+        return super().build_text_call(fn, args)
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``SPLIT`` indexed by ``SAFE_ORDINAL`` (reversed for a negative index); ``''`` past the end."""
+        fields = anon("SPLIT", value, delimiter)
+        if index < 0:
+            fields = anon("ARRAY_REVERSE", fields)
+        picked = exp.Bracket(this=fields, expressions=[lit(abs(index))], safe=True, offset=1)
+        return case((any_null(value, delimiter), exp.Null()), default=exp.Coalesce(this=picked, expressions=[lit("")]))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "pi":
+            return anon("ACOS", lit(-1))
+        return super().build_math_call(fn, args)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``MOD`` takes no FLOAT64: ``a - b * TRUNC(a / b)``."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        quotient = self.truncate(exp.Div(this=operand_copy(left), expression=exp.Nullif(this=operand_copy(right),
+                                                                                    expression=lit(0))))
+        return exp.Paren(this=exp.Sub(this=operand_copy(left), expression=exp.Mul(this=operand_copy(right),
+                                                                                 expression=quotient)))
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``GREATEST`` / ``LEAST`` return NULL when any argument is NULL."""
+        return self.coalesced_extremum(fn, args, spelling="upper")
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_CONTAINS", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """``REGEXP_EXTRACT`` takes at most one capturing group: every other one becomes non-capturing."""
+        return anon("REGEXP_EXTRACT", value, self.regex_text(pattern, capture=group))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        return anon("JSON_VALUE", value, lit(path.text))
 
     def build_date_trunc(
         self,

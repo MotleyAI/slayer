@@ -80,12 +80,15 @@ class TestPositions:
 
 class TestUnknownUnit:
     async def test_dimension_entry(self, engine: SlayerQueryEngine) -> None:
+        query = _q(dimensions=["date_trunc('fortnight', ts)"])
         with pytest.raises(UnknownGranularityError):
-            await engine.execute(_q(dimensions=["date_trunc('fortnight', ts)"]))
+            await engine.execute(query)
 
     async def test_expression_raises_the_granularity_calls_error(self, engine: SlayerQueryEngine) -> None:
+        query = lib_query("date_trunc('fortnight', ts)")
         with pytest.raises(Exception) as trunc:  # noqa: B017 — compared with the granularity call's own error below
-            await engine.execute(lib_query("date_trunc('fortnight', ts)"))
+            await engine.execute(query)
+        query = lib_query("fortnight(ts)")
         with pytest.raises(Exception) as gran:  # noqa: B017
-            await engine.execute(lib_query("fortnight(ts)"))
+            await engine.execute(query)
         assert isinstance(trunc.value, (UnknownGranularityError, type(gran.value))), trunc.value

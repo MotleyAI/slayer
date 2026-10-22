@@ -24,7 +24,7 @@ from pydantic import (
 
 from slayer.core.direction import normalize_direction
 from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
@@ -904,7 +904,7 @@ def _may_name_datasource_granularity(entry: str) -> bool:
         return False
     name = callee.lower()
     return not (
-        name in GRANULARITY_NAMES or name in SCALAR_FUNCTIONS or name in ALL_TRANSFORMS
+        name in GRANULARITY_NAMES or name in RESERVED_SCALAR_NAMES or name in ALL_TRANSFORMS
         or normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS
     )
 
@@ -1254,8 +1254,9 @@ class SlayerQuery(BaseModel):
         description=(
             "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
             "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
-            "between, like / ilike, is null / is not null, and / or / not; strings are "
-            "single-quoted ('paid'); build them from the column's sampled values.\n"
+            "between, like / ilike, is null / is not null, and / or / not, regex x ~ '^A[0-9]{3}', "
+            "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
+            "column's sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
             "sum(amount) > 100; top N per group: "
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"

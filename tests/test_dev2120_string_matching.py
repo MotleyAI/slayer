@@ -103,11 +103,13 @@ class TestEmission:
 
     async def test_sqlite_like_is_glob(self) -> None:
         sql = await emit_lib(lib_query(filters=["code LIKE 'a%'"]), dialect="sqlite")
-        assert "GLOB" in sql.upper() and "SLAYER_LIKE_GLOB(" in sql.upper(), sql
+        assert "GLOB" in sql.upper(), sql
+        assert "SLAYER_LIKE_GLOB(" in sql.upper(), sql
 
     async def test_sqlite_ilike_is_native_like(self) -> None:
         sql = await emit_lib(lib_query(filters=["code ILIKE 'a%'"]), dialect="sqlite")
-        assert " LIKE " in sql.upper() and "GLOB" not in sql.upper(), sql
+        assert " LIKE " in sql.upper(), sql
+        assert "GLOB" not in sql.upper(), sql
 
     async def test_sqlite_mode_a_like_not_rewritten(self) -> None:
         sql = await emit_lib(lib_query({"expression": "is_ada", "name": "v"}), dialect="sqlite",
@@ -120,7 +122,8 @@ class TestEmission:
 
     async def test_sql_server_brackets_a_column_pattern(self) -> None:
         sql = await emit_lib(lib_query(filters=["code LIKE prefix || '%'"]), dialect="tsql")
-        assert "REPLACE(" in sql.upper() and "[[]" in sql, sql
+        assert "REPLACE(" in sql.upper(), sql
+        assert "[[]" in sql, sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_every_pattern_form_emits(self, dialect: str) -> None:

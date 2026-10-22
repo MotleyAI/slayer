@@ -49,8 +49,9 @@ async def engine(request):
 
 
 async def _rejected(engine: SlayerQueryEngine, expr: str, *, any_of: tuple[str, ...] = (), **kw: Any) -> str:
+    query = lib_query(expr, **kw)
     with pytest.raises(SlayerError) as info:
-        await engine.execute(lib_query(expr, **kw))
+        await engine.execute(query)
     msg = str(info.value)
     if any_of:
         assert any(n.lower() in msg.lower() for n in any_of), msg
@@ -98,8 +99,9 @@ class TestSpellings:
         "json_extract_scalar(payload)", "json_value(payload)", "json_value(payload, '$.a' RETURNING JSON)",
     ])
     async def test_malformed_call_rejected(self, engine: SlayerQueryEngine, text: str) -> None:
+        query = lib_query(text)
         with pytest.raises(ValueError):
-            await engine.execute(lib_query(text))
+            await engine.execute(query)
 
 
 class TestReturningIsTryCast:
@@ -153,8 +155,9 @@ class TestTyping:
         assert float(resp.data[0]["lib.v"]) == 5
 
     async def test_text_result_keeps_the_numeric_aggregation_error(self, engine: SlayerQueryEngine) -> None:
+        query = _measure_query("sum(json_value(payload, '$.qty'))")
         with pytest.raises(SlayerError, match="TRY_CAST"):
-            await engine.execute(_measure_query("sum(json_value(payload, '$.qty'))"))
+            await engine.execute(query)
 
     @pytest.mark.parametrize("expr", ["json_value(qty, '$.a')", "json_value(ts, '$.a')", "qty ->> 'a'"])
     async def test_non_text_input_rejected(self, engine: SlayerQueryEngine, expr: str) -> None:
@@ -198,8 +201,9 @@ class TestInputForms:
                            models=[_json_model(db_type=db_type, type_=type_)])
 
     async def test_opaque_non_json_column_rejected(self) -> None:
+        models = [_json_model(db_type="bytea", type_=DataType.UNKNOWN)]
         with pytest.raises(SlayerError):
-            await emit_lib(JSON_VALUE_Q, dialect="postgres", models=[_json_model(db_type="bytea", type_=DataType.UNKNOWN)])
+            await emit_lib(JSON_VALUE_Q, dialect="postgres", models=models)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_returning_types_emit(self, dialect: str) -> None:

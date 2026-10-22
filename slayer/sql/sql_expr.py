@@ -146,3 +146,9 @@ def assert_no_window_in_filter(text: str, *, source: str) -> None:
 def build_cast_type(type_text: str, *, dialect: str) -> exp.DataType:
     """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
     return cast_target(type_text, dialect=get_dialect(dialect))
+
+
+def native_json_type(db_type: str, *, dialect: str) -> Optional[str]:
+    """``db_type``'s leading word when it is one of ``dialect``'s JSON types (``JSONB``, ``VARIANT``, …)."""
+    word = db_type.split("(")[0].strip().upper()
+    return word if word in get_dialect(dialect).json_db_types else None

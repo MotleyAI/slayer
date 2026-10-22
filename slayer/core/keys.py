@@ -59,39 +59,68 @@ REGROUP_LEAF_PREFIX = "__regroup__"
 
 class ScalarSpec(BaseModel, frozen=True):
     """One allowlisted Mode-B scalar: accepted argument counts (``max_args=None``
-    is variadic) and whether its call is literally the same SQL function."""
+    is variadic), whether its call is literally the same SQL function, its fixed
+    result type (``None``: one of its value arguments' types) and whether it reads
+    every argument as a number."""
 
     min_args: int
     max_args: Optional[int] = None
     sql_passthrough: bool = True
+    result: Optional[DataType] = None
+    numeric: bool = False
 
 
-def _spec(low: int, high: Optional[int], *, sql: bool = True) -> ScalarSpec:
-    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql)
+def _spec(
+    low: int, high: Optional[int], *, sql: bool = True, result: Optional[DataType] = None, numeric: bool = False,
+) -> ScalarSpec:
+    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric)
+
+
+_TEXT, _BOOL, _INT, _DOUBLE = DataType.TEXT, DataType.BOOLEAN, DataType.INT, DataType.DOUBLE
+
+
+def _library(low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False) -> ScalarSpec:
+    """A library function: the same-named SQL function, lowered per dialect to its one meaning."""
+    return _spec(low, high, result=result, numeric=numeric)
 
 
 # The one canonical Mode-B scalar allowlist (C12); every other scalar set derives
 # from it. Arity is enforced because sqlglot silently mis-handles wrong-arity calls.
 SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "nullif": _spec(2, 2), "coalesce": _spec(1, None), "ifnull": _spec(2, 2),
-    "ln": _spec(1, 1), "log10": _spec(1, 1), "log2": _spec(1, 1), "log": _spec(1, 2),
-    "exp": _spec(1, 1), "sqrt": _spec(1, 1), "pow": _spec(2, 2), "power": _spec(2, 2),
-    "abs": _spec(1, 1), "floor": _spec(1, 1), "ceil": _spec(1, 1), "round": _spec(1, 2),
-    "ceiling": _spec(1, 1), "sign": _spec(1, 1),
-    "trunc": _spec(1, 1),  # 2-arg form silently drops digits on SQLite
-    "mod": _spec(2, 2),
-    # Scalar min/max; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
-    "greatest": _spec(2, None), "least": _spec(2, None),
-    "lower": _spec(1, 1), "upper": _spec(1, 1), "trim": _spec(1, 1), "length": _spec(1, 1),
+    "ln": _spec(1, 1, numeric=True), "log10": _spec(1, 1, numeric=True), "log2": _spec(1, 1, numeric=True),
+    "log": _spec(1, 2, numeric=True), "exp": _spec(1, 1, numeric=True), "sqrt": _spec(1, 1, numeric=True),
+    "pow": _spec(2, 2, numeric=True), "power": _spec(2, 2, numeric=True),
+    "abs": _spec(1, 1, numeric=True), "floor": _spec(1, 1, numeric=True), "ceil": _spec(1, 1, numeric=True),
+    "round": _spec(1, 2, numeric=True), "ceiling": _spec(1, 1, numeric=True), "sign": _spec(1, 1, numeric=True),
+    "trunc": _spec(1, 1, numeric=True),  # 2-arg form silently drops digits on SQLite
+    "mod": _spec(2, 2, numeric=True),
+    # Scalar min/max, NULLs ignored; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
+    "greatest": _library(2, None), "least": _library(2, None),
+    "lower": _spec(1, 1, result=_TEXT), "upper": _spec(1, 1, result=_TEXT), "trim": _spec(1, 1, result=_TEXT),
+    "length": _spec(1, 1, result=_INT),
     # Trims take the string only; 2-arg strip-set form deferred (DEV-1793).
-    "ltrim": _spec(1, 1), "rtrim": _spec(1, 1),
-    "replace": _spec(3, 3), "substr": _spec(2, 3), "substring": _spec(2, 3), "instr": _spec(2, 2),
-    "concat": _spec(1, None),
-    "like": _spec(2, 2, sql=False),  # emits the LIKE operator
-    "ilike": _spec(2, 2, sql=False),  # case-insensitive LIKE on every dialect
+    "ltrim": _spec(1, 1, result=_TEXT), "rtrim": _spec(1, 1, result=_TEXT),
+    "replace": _spec(3, 3, result=_TEXT), "substr": _spec(2, 3, result=_TEXT),
+    "substring": _spec(2, 3, result=_TEXT), "instr": _spec(2, 2, result=_INT),
+    "concat": _spec(1, None, result=_TEXT),
+    "left": _library(2, 2, result=_TEXT), "right": _library(2, 2, result=_TEXT),
+    "starts_with": _library(2, 2, result=_BOOL), "ends_with": _library(2, 2, result=_BOOL),
+    "contains": _library(2, 2, result=_BOOL),
+    "lpad": _library(2, 3, result=_TEXT), "rpad": _library(2, 3, result=_TEXT),
+    "reverse": _library(1, 1, result=_TEXT), "repeat": _library(2, 2, result=_TEXT),
+    "split_part": _library(3, 3, result=_TEXT), "concat_ws": _library(2, None, result=_TEXT),
+    "chr": _library(1, 1, result=_TEXT), "ascii": _library(1, 1, result=_INT),
+    "div": _library(2, 2, numeric=True), "pi": _library(0, 0, result=_DOUBLE),
+    **{name: _library(1, 1, result=_DOUBLE, numeric=True) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+    "atan2": _library(2, 2, result=_DOUBLE, numeric=True), "cbrt": _library(1, 1, result=_DOUBLE, numeric=True),
+    "regexp_like": _library(2, 3, result=_BOOL), "regexp_extract": _library(2, 3, result=_TEXT),
+    "regexp_replace": _library(3, 4, result=_TEXT), "json_value": _library(2, 2, result=_TEXT),
+    "like": _spec(2, 2, sql=False, result=_BOOL),  # emits the LIKE operator
+    "ilike": _spec(2, 2, sql=False, result=_BOOL),  # case-insensitive LIKE on every dialect
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
-    "date_part": _spec(2, 2, sql=False),
-    "date_diff": _spec(3, 3, sql=False),
+    "date_part": _spec(2, 2, sql=False, result=_INT),
+    "date_diff": _spec(3, 3, sql=False, result=_INT),
     "date_add": _spec(3, 3, sql=False),
     "interval": _spec(2, 2, sql=False),  # parse-time spelling of date_add
     "current_date": _spec(0, 0, sql=False),
@@ -99,6 +128,16 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
 })
 
 SCALAR_FUNCTIONS: frozenset[str] = frozenset(SCALAR_SPECS)
+# Names the parser rewrites into a library call or the granularity call; reserved like the functions.
+SCALAR_SPELLINGS: frozenset[str] = frozenset({
+    "strpos", "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
+    "jsonb_extract_path_text",
+})
+RESERVED_SCALAR_NAMES: frozenset[str] = SCALAR_FUNCTIONS | SCALAR_SPELLINGS
+TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.TEXT)
+BOOLEAN_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.BOOLEAN)
+# Scalars that read every argument as a number.
+NUMERIC_ARG_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.numeric)
 SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     name: (spec.min_args, spec.max_args) for name, spec in SCALAR_SPECS.items()
 }
@@ -1351,7 +1390,7 @@ def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
 
 
 def _scalar_boolean_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
-    if key.name in ("like", "ilike"):
+    if key.name in BOOLEAN_RESULT_SCALARS:
         return True
     if key.name not in _BOOLEAN_BRANCH_SCALARS:
         return False
@@ -1361,11 +1400,6 @@ def _scalar_boolean_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> 
     return bool(branches) and all(boolean_valued(a, column_type=column_type) for a in branches)
 
 
-# Scalars that read every argument as a number.
-_NUMERIC_SCALARS = frozenset({
-    "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power", "abs", "floor", "ceil", "ceiling",
-    "round", "sign", "trunc", "mod",
-})
 # Integer-preserving operators and scalars, for typing an expression built from booleans.
 _INT_OPS = frozenset({"+", "-", "*", "%"})
 _INT_SCALARS = frozenset({"abs", "sign", "round", "floor", "ceil", "ceiling", "trunc", "mod"})
@@ -1387,7 +1421,9 @@ def _is_int_literal(arg: object) -> bool:
 
 
 # Scalars whose result is always a number.
-_NUMBER_RESULT_SCALARS = _NUMERIC_SCALARS | {"length", "instr", "date_part", "date_diff"}
+_NUMBER_RESULT_SCALARS = NUMERIC_ARG_SCALARS | frozenset(
+    n for n, s in SCALAR_SPECS.items() if s.result in _NUMERIC_TYPES
+)
 # Transforms whose result is always a number.
 _NUMBER_RESULT_TRANSFORMS = frozenset({*RANK_FAMILY_TRANSFORMS, "consecutive_periods"})
 
@@ -1422,6 +1458,36 @@ def _scalar_numeric_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> 
     return any(numbers) and all(n or boolean_valued(a, column_type=column_type) for a, n in zip(branches, numbers))
 
 
+_INTEGER_RESULT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
+
+
+def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly an integer (booleans read as 0 / 1 count)."""
+    if _is_int_literal(key) or boolean_valued(key, column_type=column_type):
+        return True
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.INT
+    if isinstance(key, CastKey):
+        return key.data_type is DataType.INT
+    if isinstance(key, ArithmeticKey):
+        return key.op in _INT_OPS and all(integer_valued(o, column_type=column_type) for o in key.operands)
+    if isinstance(key, AggregateKey):
+        agg = key.agg.lower()
+        return agg in _INTEGER_RESULT_AGGS or (
+            agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, column_type=column_type)
+        )
+    if isinstance(key, ScalarCallKey):
+        spec = SCALAR_SPECS.get(key.name)
+        if spec is not None and spec.result is DataType.INT:
+            return True
+        if key.name in _INT_SCALARS or key.name in _VALUE_ARG_SCALARS:
+            values = [a for a in key.args if not _is_null_arg(a)]
+            if key.name in ("round",) and len(key.args) > 1:
+                return False
+            return bool(values) and all(integer_valued(a, column_type=column_type) for a in values)
+    return False
+
+
 def _boolean_positions(
     children: Sequence[object], positions: Iterable[int], *, column_type: ColumnTypeFn,
 ) -> FrozenSet[int]:
@@ -1440,7 +1506,7 @@ def _arithmetic_numeric_booleans(key: ArithmeticKey, *, column_type: ColumnTypeF
 
 
 def _scalar_numeric_booleans(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
-    if key.name in _NUMERIC_SCALARS:
+    if key.name in NUMERIC_ARG_SCALARS:
         return _boolean_positions(key.args, range(len(key.args)), column_type=column_type)
     if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, column_type=column_type):
         positions = _BOOLEAN_BRANCH_SCALARS[key.name]

@@ -32,8 +32,9 @@ async def engine(request):
 
 
 async def _rejected(engine: SlayerQueryEngine, *needles: str, any_of: tuple[str, ...] = (), **kw: Any) -> str:
+    query = lib_query(**kw)
     with pytest.raises(SlayerError) as info:
-        await engine.execute(lib_query(**kw))
+        await engine.execute(query)
     msg = str(info.value)
     for needle in needles:
         assert needle.lower() in msg.lower(), msg
@@ -202,15 +203,17 @@ class TestSqlServerVersion:
     @pytest.mark.parametrize("expr", ["regexp_like(code, '^a')", "code ~ '^a'"])
     async def test_sql_server_2022_fails_closed(self, monkeypatch, expr: str) -> None:
         patch_profile(monkeypatch, version=(16, 0))
+        query = lib_query(filters=[expr])
         with pytest.raises(SlayerError) as info:
-            await emit_lib(lib_query(filters=[expr]), dialect="tsql")
+            await emit_lib(query, dialect="tsql")
         assert "2025" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize("expr", ["regexp_extract(code, 'a')", "regexp_replace(code, 'a', 'b')"])
     async def test_every_regex_function_is_gated(self, monkeypatch, expr: str) -> None:
         patch_profile(monkeypatch, version=(16, 0))
+        query = lib_query(expr)
         with pytest.raises(SlayerError, match="2025"):
-            await emit_lib(lib_query(expr), dialect="tsql")
+            await emit_lib(query, dialect="tsql")
 
     async def test_sql_server_2025_lowers_via_instr(self, monkeypatch) -> None:
         patch_profile(monkeypatch, version=(17, 0))
@@ -244,6 +247,8 @@ class TestBracesInStringLiterals:
         assert lib_values(resp) == {7: f"{text}a1"}
 
     async def test_name_shaped_braces_in_a_pattern_hint_escaping(self, engine: SlayerQueryEngine) -> None:
+        query = lib_query(filters=["regexp_like(word, '\\p{L}')"])
         with pytest.raises(ValueError, match="Undefined variable 'L'") as info:
-            await engine.execute(lib_query(filters=["regexp_like(word, '\\p{L}')"]))
-        assert "{{" in str(info.value) and "}}" in str(info.value), str(info.value)
+            await engine.execute(query)
+        assert "{{" in str(info.value), str(info.value)
+        assert "}}" in str(info.value), str(info.value)

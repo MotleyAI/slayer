@@ -13,7 +13,10 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TextFn, anon, case, either, lit
+from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 
 if TYPE_CHECKING:
@@ -96,6 +99,24 @@ def _extract_connection_name(connection_string: str) -> str:
     return name
 
 
+def _parameters(case_insensitive: bool) -> Expression:
+    """Match parameters: case as asked, ``.`` across newlines."""
+    return lit("is" if case_insensitive else "cs")
+
+
+def _snowflake_path(path: JsonPath) -> str:
+    """``GET_PATH`` syntax: no ``$``; a key that is not a plain identifier in double quotes."""
+    out = []
+    for i, step in enumerate(path.steps):
+        if isinstance(step, int):
+            out.append(f"[{step}]")
+        else:
+            plain = _SAFE_SNOWFLAKE_IDENT.match(step) is not None and "$" not in step
+            key = step if plain else f'"{step}"'
+            out.append(key if i == 0 else f".{key}")
+    return "".join(out)
+
+
 class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
 
@@ -116,6 +137,45 @@ class SnowflakeDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
+    regex_flavour: ClassVar[RegexFlavour] = POSIX
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "concat_ws":
+            return anon("ARRAY_TO_STRING", anon("ARRAY_CONSTRUCT_COMPACT", *args[1:]), args[0])
+        return super().build_text_call(fn, args)
+
+    def first_code_point(self, s: Expression) -> Expression:
+        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("UNICODE", s))
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        return anon(f"{fn.upper()}_IGNORE_NULLS", *args)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_LIKE`` matches the whole string here; ``REGEXP_INSTR`` finds a partial match."""
+        position = anon("REGEXP_INSTR", value, self.regex_text(pattern), lit(1), lit(1), lit(0),
+                        _parameters(case_insensitive))
+        return exp.GT(this=position, expression=lit(0))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        if group == 0:
+            return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _parameters(False))
+        return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("cse"), lit(group))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
+                    lit(0), _parameters(case_insensitive))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        """``GET_PATH`` on the VARIANT (text parsed with ``TRY_PARSE_JSON``); objects, arrays and null are NULL."""
+        document = value.copy() if native else anon("TRY_PARSE_JSON", anon("TO_VARCHAR", value))
+        found = anon("GET_PATH", document, lit(_snowflake_path(path)))
+        not_scalar = either(anon("IS_OBJECT", found), anon("IS_ARRAY", found.copy()), anon("IS_NULL_VALUE", found.copy()))
+        return case((not_scalar, exp.Null()), default=anon("TO_VARCHAR", found.copy()))
 
     def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
         """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""
