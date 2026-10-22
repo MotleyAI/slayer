@@ -453,6 +453,8 @@ Or use the saved result as a model in another query:
 
 A consumed query-backed model is spliced into the consuming query as stages whose names stay private to it, and one that references itself, directly or through other query-backed models, is rejected.
 
+Joins declared on a saved query-backed model, keyed on its output columns, stay usable wherever the model is consumed; the backing source model's joins are not inherited.
+
 ### Variables in model SQL
 
 `{variable}` substitution is not limited to query-level filters — the same mechanism injects caller-supplied values into a model's **raw-SQL (Mode A) surfaces**. This is the primitive for parameterizing hand-written model SQL (for example, representing a Cube `FILTER_PARAMS` cube as an `sql`-mode model whose filter bounds arrive as variables).

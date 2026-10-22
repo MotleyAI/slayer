@@ -199,7 +199,6 @@ def _customer_totals(*, key: str = "customer_id") -> SlayerModel:
 
 
 class TestQueryBackedJoinKeys:
-    @pytest.mark.xfail(strict=True, reason="DEV-1918: joins on a query-backed model are not traversable")
     async def test_join_on_backing_output_column_executes(self, all_renamed):
         await all_renamed.save_model(_customer_totals())
         resp = await all_renamed.execute(_query(
