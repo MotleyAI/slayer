@@ -1,6 +1,6 @@
 """Dependency-free column-introspection helpers.
 
-Extracted from ``slayer/engine/ingestion.py`` (DEV-1578) so the
+Extracted from ``slayer/engine/ingestion.py`` so the
 forced-filter column-presence probe in ``slayer/engine/query_engine.py``
 can reuse ``_safe_get_columns`` without importing ``ingestion`` (which
 imports ``query_engine`` — a cycle). ``ingestion`` and ``schema_drift``
@@ -35,7 +35,7 @@ _FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
 )
 
 # Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback).
-# DEV-1361: integer family → INT, floating family → DOUBLE.
+# Integer family → INT, floating family → DOUBLE.
 _INFO_SCHEMA_TYPE_MAP = {
     # Integer family
     "INTEGER": DataType.INT,
@@ -70,8 +70,8 @@ def _clean_comment(value: Optional[str]) -> Optional[str]:
 
 # Per-dialect column-comment queries for the fallback path. INFORMATION_SCHEMA
 # has no standard comment column, so each dialect needs its own source
-# (DEV-1809). Each entry is ``(template, schema_clause, default_clause,
-# catalog_clause)``; ``catalog_clause`` is appended (DEV-1758) only when the
+# Each entry is ``(template, schema_clause, default_clause,
+# catalog_clause)``; ``catalog_clause`` is appended only when the
 # ref carries a catalog, so a same-named table in an attached DuckDB catalog
 # can't cross-assign its comments. SQL Server / BigQuery are omitted: their
 # Inspector paths already surface comments, and their fallback equivalents are
@@ -210,7 +210,7 @@ def _info_schema_columns_query(
 ) -> tuple[str, Dict]:
     """Build the parameterized INFORMATION_SCHEMA.columns query for one table.
 
-    The ``table_catalog`` predicate is added (DEV-1758) only when ``catalog``
+    The ``table_catalog`` predicate is added only when ``catalog``
     is supplied — a same-named table in an attached DuckDB catalog must not
     union its columns into this one.
     """
@@ -284,7 +284,7 @@ def is_json_db_type(db_type: Optional[str]) -> bool:
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
-    NUMERIC/DECIMAL resolve float-vs-integer by scale (DEV-1361). Substring
+    NUMERIC/DECIMAL resolve float-vs-integer by scale. Substring
     branches are ordered widest-match-last: ``FLOATING POINT`` and ``INTERVAL``
     both contain ``INT`` but must not read as INT.
     """

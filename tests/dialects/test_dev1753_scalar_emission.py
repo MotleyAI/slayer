@@ -23,8 +23,10 @@ EXPECTED: dict[tuple[str, int], dict[str, str]] = {
     ("ltrim", 1): _same("LTRIM(a)"),
     ("rtrim", 1): _same("RTRIM(a)"),
     # T-SQL SUBSTRING requires a length; DATALENGTH(a) reaches the end, trailing spaces included.
-    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, DATALENGTH(a))"},
-    ("substring", 3): {**_same("SUBSTRING(a, b, c)"), "postgres": "SUBSTRING(a FROM b FOR c)"},
+    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, DATALENGTH(a))",
+                       "clickhouse": "substringUTF8(a, b)"},
+    ("substring", 3): {**_same("SUBSTRING(a, b, c)"), "postgres": "SUBSTRING(a FROM b FOR c)",
+                       "clickhouse": "substringUTF8(a, b, c)"},
 }
 
 CASES = [(name, argc, d) for (name, argc) in EXPECTED for d in TIER1]

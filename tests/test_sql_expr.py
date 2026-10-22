@@ -1,4 +1,4 @@
-"""Stage 7a.4 (DEV-1450) — Mode-A sqlglot wrapper tests.
+"""Stage 7a.4 — Mode-A sqlglot wrapper tests.
 
 The public surface in ``slayer.sql.sql_expr``:
 
@@ -100,18 +100,18 @@ class TestSqliteJsonExtractPreservation:
 
 
 # Golden canonical output for ``log(<base>, revenue)`` under the single-source
-# DEV-1784 log-alias policy. The rewrite to a native single-arg LOG10/LOG2 only
+# log-alias policy. The rewrite to a native single-arg LOG10/LOG2 only
 # fires where sqlglot parses the base as a literal in the ``this`` position AND
 # the dialect supports the native alias (SqlDialect.should_use_native_log);
 # elsewhere the generic 2-arg form is preserved — Presto/ClickHouse reorder to
 # ``LOG(revenue, <base>)``, T-SQL/BigQuery/Oracle keep ``LOG(<base>, revenue)``,
-# and Snowflake/Redshift have LOG10 but no native LOG2. Pinned so a policy or
+# and Postgres/Snowflake/Redshift have LOG10 but no native LOG2. Pinned so a policy or
 # sqlglot change cannot silently drift any dialect's rendering.
 _LOG_GOLDEN = {
     ('sqlite', 10): 'LOG10(revenue)',
     ('sqlite', 2): 'LOG2(revenue)',
     ('postgres', 10): 'LOG10(revenue)',
-    ('postgres', 2): 'LOG2(revenue)',
+    ('postgres', 2): 'LOG(2, revenue)',
     ('duckdb', 10): 'LOG10(revenue)',
     ('duckdb', 2): 'LOG2(revenue)',
     ('mysql', 10): 'LOG10(revenue)',
@@ -146,9 +146,10 @@ class TestLogAliasPreservation:
         # Not rewritten to the 2-arg form.
         assert "log(10," not in canonical.lower().replace(" ", "")
 
-    def test_log2_preserved_on_postgres(self):
+    def test_log2_is_based_log_on_postgres(self):
+        # Postgres has no log2: the based form is the one it runs.
         canonical = canonicalize_sql("log2(revenue) > 1", dialect="postgres")
-        assert "log2" in canonical.lower()
+        assert "log(2," in canonical.lower().replace(" ", "")
 
     def test_explicit_2arg_log_left_alone(self):
         # `log(3, x)` is not a `log10`/`log2` alias — leave canonical.
@@ -159,7 +160,7 @@ class TestLogAliasPreservation:
     @pytest.mark.parametrize(("dialect", "base"), sorted(_LOG_GOLDEN))
     def test_log_alias_canonical_per_dialect(self, dialect, base):
         """Pin ``log(<base>, revenue)``'s canonical form for every dialect under
-        the single-source log-alias policy (DEV-1784), so a policy or sqlglot
+        the single-source log-alias policy, so a policy or sqlglot
         change that alters any dialect's rendering is caught."""
         canonical = canonicalize_sql(f"log({base}, revenue)", dialect=dialect)
         assert canonical == _LOG_GOLDEN[(dialect, base)]
@@ -172,7 +173,7 @@ class TestLogAliasPreservation:
     def test_unregistered_sqlglot_dialect_does_not_raise(self):
         # canonicalize_sql is total over any sqlglot-parseable dialect: a name
         # outside SLayer's registry ("hive") skips the log-alias policy rather
-        # than raising, leaving the generic 2-arg form (DEV-1784 — Codex).
+        # than raising, leaving the generic 2-arg form.
         canonical = canonicalize_sql("log(10, revenue)", dialect="hive")
         assert "log(10," in canonical.lower().replace(" ", "")
 

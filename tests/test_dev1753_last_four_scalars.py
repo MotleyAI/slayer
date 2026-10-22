@@ -1,15 +1,13 @@
-"""DEV-1753: admit the last four parser-only scalars — greatest, least, trunc, mod.
+"""Admit the last four parser-only scalars — greatest, least, trunc, mod.
 
 Closes the parser/binder allowlist divergence pinned by
 ``tests/test_dev1744_value_expr.py::TestParserAndBinderScalarSetsAgree``. After
 this change ``SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == set()``.
 
-Ratified decisions (DEV-1753 decision trail, git history):
-* ``greatest`` / ``least`` — the NULL divergence is RATIFIED, not normalised:
-  SQLite emits scalar ``MAX(a,b)`` / ``MIN(a,b)`` (propagates NULL), every
-  GREATEST-native backend ignores NULLs (Snowflake via ``..._IGNORE_NULLS``).
-  Witnessed live on SQLite (propagate, here) and DuckDB (ignore, in
-  ``tests/integration/test_integration_duckdb.py``).
+Ratified decisions (decision trail, git history):
+* ``greatest`` / ``least`` — ignore NULL arguments on every backend: a
+  NULL-propagating form (SQLite scalar ``MAX`` / ``MIN``, MySQL, ClickHouse,
+  BigQuery) takes one ``COALESCE`` per argument, Snowflake ``..._IGNORE_NULLS``.
 * ``trunc`` — 1-arg only; the 2-arg form silently drops the digits on SQLite.
 * ``mod`` — routed through the ``%`` composer so complex operands are
   parenthesised correctly; a raw ``exp.Mod`` mis-groups ``mod(a+b, c)``.
@@ -119,30 +117,30 @@ class TestArityBoundaries:
 
 
 _GREATEST_EXPECTED = {
-    "sqlite": "MAX(a, b)",
+    "sqlite": "MAX(COALESCE(a, b), COALESCE(b, a))",
     "postgres": "GREATEST(a, b)",
     "duckdb": "GREATEST(a, b)",
-    "mysql": "GREATEST(a, b)",
-    "clickhouse": "GREATEST(a, b)",
+    "mysql": "GREATEST(COALESCE(a, b), COALESCE(b, a))",
+    "clickhouse": "greatest(COALESCE(a, b), COALESCE(b, a))",
     "tsql": "GREATEST(a, b)",
     "snowflake": "GREATEST_IGNORE_NULLS(a, b)",
-    "bigquery": "GREATEST(a, b)",
+    "bigquery": "GREATEST(COALESCE(a, b), COALESCE(b, a))",
 }
 _LEAST_EXPECTED = {
-    "sqlite": "MIN(a, b)",
+    "sqlite": "MIN(COALESCE(a, b), COALESCE(b, a))",
     "postgres": "LEAST(a, b)",
     "duckdb": "LEAST(a, b)",
-    "mysql": "LEAST(a, b)",
-    "clickhouse": "LEAST(a, b)",
+    "mysql": "LEAST(COALESCE(a, b), COALESCE(b, a))",
+    "clickhouse": "least(COALESCE(a, b), COALESCE(b, a))",
     "tsql": "LEAST(a, b)",
     "snowflake": "LEAST_IGNORE_NULLS(a, b)",
-    "bigquery": "LEAST(a, b)",
+    "bigquery": "LEAST(COALESCE(a, b), COALESCE(b, a))",
 }
 _TRUNC_EXPECTED = {
     "sqlite": "TRUNC(x)",
     "postgres": "TRUNC(x)",
     "duckdb": "TRUNC(x)",
-    # MySQL has no single-arg TRUNCATE; SLayer adds the ``, 0`` (DEV-1753).
+    # MySQL has no single-arg TRUNCATE; SLayer adds the ``, 0``.
     "mysql": "TRUNCATE(x, 0)",
     "clickhouse": "trunc(x)",
     "tsql": "ROUND(x, 0, 1)",
@@ -182,7 +180,7 @@ class TestPerDialectEmission:
 
 
 # ===========================================================================
-# C. mod precedence / round-trip (the DEV-1744 `%` re-verification).
+# C. mod precedence / round-trip (the `%` re-verification).
 # ===========================================================================
 
 
@@ -338,10 +336,9 @@ class TestEndToEndBinding:
 
 
 class TestGreatestLeastNullSemanticsSqlite:
-    """The ratified divergence, witnessed live on SQLite (the default store):
-    scalar ``MAX(a,b)`` / ``MIN(a,b)`` PROPAGATE NULL. Grouped by ``id`` so each
-    aggregate is over one row, isolating the scalar's NULL behavior. The
-    NULL-ignoring side is witnessed on DuckDB in the integration suite."""
+    """Witnessed live on SQLite (the default store): NULL arguments are ignored, NULL only
+    when every argument is NULL. Grouped by ``id`` so each aggregate is over one row,
+    isolating the scalar's NULL behavior."""
 
     async def _values(self, engine, formula):
         resp = await engine.execute(
@@ -353,10 +350,10 @@ class TestGreatestLeastNullSemanticsSqlite:
         )
         return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
 
-    async def test_greatest_propagates_null(self, engine) -> None:
+    async def test_greatest_ignores_null(self, engine) -> None:
         got = await self._values(engine, "greatest(amount:max, disc:max)")
-        assert got == {1: None, 2: 20.0, 3: None, 4: None}
+        assert got == {1: 10.0, 2: 20.0, 3: 30.0, 4: None}
 
-    async def test_least_propagates_null(self, engine) -> None:
+    async def test_least_ignores_null(self, engine) -> None:
         got = await self._values(engine, "least(amount:max, disc:max)")
-        assert got == {1: None, 2: 5.0, 3: None, 4: None}
+        assert got == {1: 10.0, 2: 5.0, 3: 30.0, 4: None}

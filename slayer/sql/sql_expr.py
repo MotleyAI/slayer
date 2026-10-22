@@ -1,4 +1,4 @@
-"""Stage 7a.4 (DEV-1450) — Mode-A sqlglot wrapper.
+"""Stage 7a.4 — Mode-A sqlglot wrapper.
 
 Canonicalises Mode-A SQL to a sqlglot-normalised string and detects window
 functions uniformly.
@@ -93,7 +93,7 @@ def canonicalize_sql(text: str, *, dialect: Optional[str] = None) -> str:
     if dialect == "sqlite":
         parsed = rewrite_sqlite_json_extract(parsed)
 
-    # DEV-1784: single log-alias policy — the same rewrite the parser and
+    # Single log-alias policy — the same rewrite the parser and
     # generator apply, keyed on ``SqlDialect.should_use_native_log`` rather than
     # a local allowlist. ``dialect=None``, or a name sqlglot parses but SLayer's
     # registry does not carry, skips the rewrite (matching the old allowlist's
