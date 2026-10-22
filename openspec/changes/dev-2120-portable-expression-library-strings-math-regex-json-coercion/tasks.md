@@ -44,7 +44,7 @@
 
 ## 7. Architecture
 
-- [ ] 7.1 Apply the approved edit: `architecture/system.arc42.md` principle 10, tag after "Every Mode B construct means the same on every dialect." `[target: DEV-2120]` → `[enforced: test:tests/test_dev2120_library_matrix.py]`; verify `la-arch-check`
+- [x] 7.1 Apply the approved edit: `architecture/system.arc42.md` principle 10, tag after "Every Mode B construct means the same on every dialect." `[target: DEV-2120]` → `[enforced: test:tests/test_dev2120_library_matrix.py]`; verify `la-arch-check`
 
 ## 8. Docs, agent surfaces, comparison
 
