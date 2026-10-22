@@ -477,7 +477,8 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
-    usage_reporting_env.capture.behaviour.delay = 3.0
+    usage_reporting_env.capture.hold()
+    usage_reporting_env.monkeypatch.setattr(sender, "HTTP_TIMEOUT", 120.0)  # outlasts the hold
     quiet_config()
     _spool_one()
     make_due()
@@ -486,6 +487,7 @@ def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting
     disabled = run_slayer(["usage-reporting", "disable"], env=usage_reporting_env.subprocess_env())
     assert disabled.returncode == 0, disabled.stderr
     assert not usage_reporting_env.capture.requests
+    usage_reporting_env.capture.release()
     assert usage_reporting_env.capture.wait_for(count=1, timeout=15)
     usage_reporting.shutdown()
     end_process()
