@@ -407,25 +407,11 @@ def render_row_expression(
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=dialect)
     if isinstance(key, ArithmeticKey):
-        comparison = temporal_comparison(key)
-        if comparison is not None:
-            op, operand, value = comparison
-            return render_temporal_comparison(op=op, operand=_part(operand), value=value, dialect=dialect)
-        if key.op in NULL_SAFE_COMPARISON_OPS:
-            return render_null_safe(op=key.op, operands=[_part(o) for o in key.operands], dialect=dialect)
-        return render_arithmetic(
-            op=key.op.lower(),
-            operands=numeric_parts(key=key, parts=[_part(o) for o in key.operands], column_type=column_type),
-        )
+        return _row_arithmetic(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, TimeTruncKey):
         return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
-        if key.name == "iif":
-            return iif_case_chain(key=key, part=_part, column_type=column_type)
-        args = numeric_parts(key=key, parts=[_part(a) for a in key.args], column_type=column_type)
-        if key.name in DATE_FUNCTIONS:
-            return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-        return render_scalar_call(name=key.name, args=args, dialect=dialect)
+        return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, InKey):
         (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
         return render_in_predicate(key=key, column=column, dialect=dialect)
@@ -434,3 +420,29 @@ def render_row_expression(
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
+
+
+def _row_arithmetic(
+    *, key: ArithmeticKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+) -> Expression:
+    comparison = temporal_comparison(key)
+    if comparison is not None:
+        op, operand, value = comparison
+        return render_temporal_comparison(op=op, operand=part(operand), value=value, dialect=dialect)
+    if key.op in NULL_SAFE_COMPARISON_OPS:
+        return render_null_safe(op=key.op, operands=[part(o) for o in key.operands], dialect=dialect)
+    return render_arithmetic(
+        op=key.op.lower(),
+        operands=numeric_parts(key=key, parts=[part(o) for o in key.operands], column_type=column_type),
+    )
+
+
+def _row_scalar_call(
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+) -> Expression:
+    if key.name == "iif":
+        return iif_case_chain(key=key, part=part, column_type=column_type)
+    args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
+    if key.name in DATE_FUNCTIONS:
+        return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
+    return render_scalar_call(name=key.name, args=args, dialect=dialect)

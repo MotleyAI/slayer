@@ -63,6 +63,9 @@ class TestRefsAndLiterals:
     def test_decimal_literal(self):
         assert parse_expr("0.5") == Literal(value=Decimal("0.5"))
 
+    def test_decimal_literal_keeps_every_digit(self):
+        assert parse_expr("0.12345678901234567890") == Literal(value=Decimal("0.12345678901234567890"))
+
     def test_string_literal_single_quote(self):
         assert parse_expr("'hello'") == Literal(value="hello")
 

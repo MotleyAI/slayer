@@ -37,7 +37,7 @@ class RedshiftDialect(SqlDialect):
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
         """Redshift (Postgres 8.0.2 fork) has no ``IS NOT DISTINCT
-        FROM`` — emit the expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
+        FROM`` — emit the expanded two-valued form."""
         return self._expanded_null_safe_eq(left, right)
 
 
@@ -88,6 +88,5 @@ class OracleDialect(SqlDialect):
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,
     ) -> exp.Expression:
-        """Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded
-        ``a = b OR (a IS NULL AND b IS NULL)``."""
+        """Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded two-valued form."""
         return self._expanded_null_safe_eq(left, right)

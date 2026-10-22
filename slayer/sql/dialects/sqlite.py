@@ -6,6 +6,7 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
@@ -357,7 +358,40 @@ def _slayer_date_add(ts, n, unit):
     return moved.isoformat(sep=" ")
 
 
-_NUMBER_TEXT_RE = re.compile(r"\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*")
+_NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+_INT64_BOUND = 2 ** 63
+
+
+def _try_number(text: str, kind: DataType):
+    stripped = text.strip()
+    if not _NUMBER_TEXT_RE.fullmatch(stripped):
+        return None
+    if kind is DataType.DOUBLE:
+        number = float(stripped)
+        return number if math.isfinite(number) else None
+    exact = Decimal(stripped)
+    return int(exact) if -_INT64_BOUND <= exact < _INT64_BOUND else None
+
+
+def _try_boolean(text: str):
+    word = text.strip().lower()
+    if word in TRUE_WORDS:
+        return 1
+    if word in FALSE_WORDS:
+        return 0
+    return None
+
+
+def _try_temporal(text: str, kind: DataType):
+    moment = parse_temporal_value(text.strip())
+    if moment is None:
+        return None
+    if kind is DataType.DATE:
+        return (moment.date() if isinstance(moment, datetime) else moment).isoformat()
+    stamp = moment if isinstance(moment, datetime) else datetime(moment.year, moment.month, moment.day)
+    return stamp.isoformat(sep=" ")
 
 
 def _slayer_try_cast(text, target):
@@ -366,21 +400,11 @@ def _slayer_try_cast(text, target):
         return None
     kind = cast_data_type(target)
     if kind in (DataType.INT, DataType.DOUBLE):
-        if not _NUMBER_TEXT_RE.fullmatch(text):
-            return None
-        number = float(text)
-        return int(number) if kind is DataType.INT else number
+        return _try_number(text, kind)
     if kind is DataType.BOOLEAN:
-        word = text.strip().lower()
-        return 1 if word in TRUE_WORDS else 0 if word in FALSE_WORDS else None
+        return _try_boolean(text)
     if kind in (DataType.DATE, DataType.TIMESTAMP):
-        moment = parse_temporal_value(text.strip())
-        if moment is None:
-            return None
-        if kind is DataType.DATE:
-            return (moment.date() if isinstance(moment, datetime) else moment).isoformat()
-        stamp = moment if isinstance(moment, datetime) else datetime(moment.year, moment.month, moment.day)
-        return stamp.isoformat(sep=" ")
+        return _try_temporal(text, kind)
     return text
 
 

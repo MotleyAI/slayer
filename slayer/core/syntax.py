@@ -11,11 +11,12 @@ of a construct collapses to one node: CASE → ``iif``, ``EXTRACT`` → ``date_p
 from __future__ import annotations
 
 import difflib
+import math
 import re
 import threading
 import unicodedata
 from decimal import Decimal
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union, cast
 
 import pyparsing as pp
@@ -172,7 +173,7 @@ ParsedExpr = Union[
 _RESERVED_EXPR_PREFIX = "__slayer_"
 # Masked ``{name}`` placeholders: the braces become private-use sentinels, so offsets hold.
 _PH_OPEN, _PH_CLOSE = "", ""
-_VAR_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_VAR_NAME = r"(?a:[A-Za-z_]\w*)"
 _CODE_PLACEHOLDER_RE = re.compile(r"\{\{|\}\}|\{(" + _VAR_NAME + r")\}")
 _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
@@ -195,6 +196,19 @@ class _Region(BaseModel):
     end: int
 
 
+def _quoted_end(text: str, i: int) -> int:
+    """End offset of the quoted span opening at ``i`` (a doubled quote escapes; unterminated runs to the end)."""
+    quote, j, n = text[i], i + 1, len(text)
+    while j < n:
+        if text[j] != quote:
+            j += 1
+        elif j + 1 < n and text[j + 1] == quote:
+            j += 2
+        else:
+            return j + 1
+    return n
+
+
 def _regions(text: str) -> List[_Region]:
     """Split ``text`` into code, ``'…'`` string and ``"…"`` identifier spans (doubled quotes escape)."""
     out: List[_Region] = []
@@ -207,20 +221,26 @@ def _regions(text: str) -> List[_Region]:
             continue
         if i > start:
             out.append(_Region(kind="code", start=start, end=i))
-        j = i + 1
-        while j < n:
-            if text[j] == quote:
-                if j + 1 < n and text[j + 1] == quote:
-                    j += 2
-                    continue
-                break
-            j += 1
-        end = min(j + 1, n)
+        end = _quoted_end(text, i)
         out.append(_Region(kind="string" if quote == "'" else "ident", start=i, end=end))
         i = start = end
     if start < n:
         out.append(_Region(kind="code", start=start, end=n))
     return out
+
+
+def _mask_code(chunk: str) -> str:
+    if "{?" in chunk or "?}" in chunk:
+        raise _Problem(_OPTIONAL_BLOCKS)
+    chunk = _CODE_PLACEHOLDER_RE.sub(
+        lambda m: f"{_PH_OPEN}{m.group(1)}{_PH_CLOSE}" if m.group(1) else m.group(0), chunk,
+    )
+    if "{" in chunk or "}" in chunk:
+        raise _Problem(
+            "unsupported AST node Set: a brace expression is not a variable placeholder; "
+            "write a variable as {name}."
+        )
+    return chunk
 
 
 def _mask_placeholders(text: str) -> str:
@@ -230,17 +250,8 @@ def _mask_placeholders(text: str) -> str:
     parts: List[str] = []
     for region in _regions(text):
         chunk = text[region.start:region.end]
-        if region.kind == "code" and ("{?" in chunk or "?}" in chunk):
-            raise _Problem(_OPTIONAL_BLOCKS)
         if region.kind == "code":
-            chunk = _CODE_PLACEHOLDER_RE.sub(
-                lambda m: f"{_PH_OPEN}{m.group(1)}{_PH_CLOSE}" if m.group(1) else m.group(0), chunk,
-            )
-            if "{" in chunk or "}" in chunk:
-                raise _Problem(
-                    "unsupported AST node Set: a brace expression is not a variable placeholder; "
-                    "write a variable as {name}."
-                )
+            chunk = _mask_code(chunk)
         elif region.kind == "ident" and re.search(r"\{" + _VAR_NAME + r"\}", chunk):
             raise _Problem(f"{_LITERAL_VALUES}, never an identifier.")
         parts.append(chunk)
@@ -363,7 +374,7 @@ _PLACEHOLDER = _t(pp.Regex(_PH_OPEN + "(" + _VAR_NAME + ")" + _PH_CLOSE).set_nam
 
 def _number(toks: List[Any]) -> Literal:
     text = toks[0]
-    return Literal(value=Decimal(int(text)) if text.isdigit() else Decimal(str(float(text))))
+    return Literal(value=Decimal(text))
 
 
 def _string(toks: List[Any]) -> Literal:
@@ -803,13 +814,17 @@ def _suffix(element: pp.ParserElement, build) -> pp.ParserElement:
     return _on(element, lambda toks: _Suffix(lambda left: build(left, toks)))
 
 
+def _is_op(negate: bool) -> str:
+    return "is not" if negate else "is"
+
+
 def _negated(node: Any, negate: bool) -> Any:
     return UnaryOp(op="not", operand=node) if negate else node
 
 
 def _truth_test(left: Any, toks: List[Any]) -> Any:
     negate, word = toks[0], toks[1].lower()
-    known = Cmp(op="is not", left=left, right=Literal(value=None))
+    known = Cmp(op=_is_op(True), left=left, right=Literal(value=None))
     test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
     return _negated(test, negate)
 
@@ -847,10 +862,10 @@ _CMP_SUFFIX = (
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
-              lambda left, t: Cmp(op="is not" if t[0] else "is", left=left, right=Literal(value=None)))
+              lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=Literal(value=None)))
     | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
     | _suffix(_IS + _NOT_FLAG + _concat_level,
-              lambda left, t: Cmp(op="is not" if t[0] else "is", left=left, right=t[1]))
+              lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST,
               lambda left, t: Cmp(op="not in" if t[0] else "in", left=left, right=t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
@@ -946,8 +961,8 @@ def placeholder_names(parsed: Any) -> List[str]:
     return [n.name for n in _walk_parsed(parsed) if isinstance(n, Placeholder)]
 
 
-_ANY_BRACE_RE = re.compile(r"\{\{|\}\}|\{(" + _VAR_NAME + r")\}|\{([^}]*)\}")
-_NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+_ANY_BRACE_RE = re.compile(r"\{\{|\}\}|\{([^}]*)\}")
+_NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
@@ -979,7 +994,7 @@ def _spliced(
         if region.kind in kinds:
             in_string = region.kind == "string"
             chunk = _ANY_BRACE_RE.sub(
-                lambda m: _bound_text(m, text=text, region_start=region.start, in_string=in_string, variables=variables),
+                partial(_bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables),
                 chunk,
             )
         elif code_braces:
@@ -994,9 +1009,9 @@ def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str
     if match.group(0) in ("{{", "}}"):
         return
     name = match.group(1)
-    if name is None:
+    if not re.fullmatch(_VAR_NAME, name):
         raise ValueError(
-            f"Invalid variable name '{match.group(2)}' in filter: {text!r}. "
+            f"Invalid variable name '{name}' in filter: {text!r}. "
             f"Variable names must contain only letters, digits, and underscores."
         )
     if name not in variables:
@@ -1032,8 +1047,8 @@ def _opens_in_list(text: str, *, start: int, end: int) -> bool:
     before = text[:start].rstrip()
     if before.endswith("(") and text[end:].lstrip().startswith(")"):
         before = before[:-1].rstrip()
-    word = re.search(r"([A-Za-z]+)$", before)
-    return word is not None and word.group(1).lower() == "in"
+    tail = before[-3:]
+    return tail[-2:].lower() == "in" and not (len(tail) == 3 and tail[0].isascii() and tail[0].isalpha())
 
 
 def _value_text(name: str, value: Any) -> str:
@@ -1047,7 +1062,7 @@ def _value_text(name: str, value: Any) -> str:
 
 
 def _number_text(name: str, value: int | float) -> str:
-    if isinstance(value, float) and value != value or value in (float("inf"), float("-inf")):
+    if isinstance(value, float) and not math.isfinite(value):
         raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
     return str(value)
 
@@ -1096,7 +1111,7 @@ def measure_dependency_problems(
     for i, (_name, formula) in enumerate(formulas):
         try:
             refs, problem = _measure_refs(parse_expr(formula), names=names, aggregations=aggregations)
-        except (ValueError, UnknownFunctionError, IllegalWindowInFilterError, GranularityCallError) as e:
+        except ValueError as e:
             refs, problem = set(), str(e)
         own[i], deps[i] = problem, refs
     index = {name: i for i, (name, _) in enumerate(formulas) if name}
@@ -1137,7 +1152,7 @@ def _measure_refs(node: Any, *, names: set, aggregations: frozenset[str]) -> Tup
     if isinstance(node, AggCall):
         known = normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS or node.agg in aggregations
         return set(), None if known else f"unknown aggregation {node.agg!r}"
-    children = (node.input,) if isinstance(node, TransformCall) else _operands(node)
+    children = [node.input] if isinstance(node, TransformCall) else _operands(node)
     refs: set = set()
     for child in children:
         found, problem = _measure_refs(child, names=names, aggregations=aggregations)
@@ -1205,19 +1220,19 @@ def _contains_agg_or_transform(node: Any) -> bool:
     return any(_contains_agg_or_transform(c) for c in _operands(node))
 
 
-def _operands(node: Any) -> Tuple[Any, ...]:
+def _operands(node: Any) -> List[Any]:
     """The value operands of a row-level composite (empty for leaves and calls with their own scope)."""
     if isinstance(node, ScalarCall):
-        return node.args
+        return list(node.args)
     if isinstance(node, Cast):
-        return (node.source,)
+        return [node.source]
     if isinstance(node, (Arith, Cmp)):
-        return (node.left, node.right)
+        return [node.left, node.right]
     if isinstance(node, UnaryOp):
-        return (node.operand,)
+        return [node.operand]
     if isinstance(node, BoolOp):
-        return node.operands
-    return ()
+        return list(node.operands)
+    return []
 
 
 def _source_leaves(node: Any):

@@ -1346,15 +1346,19 @@ def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
-        if key.name in ("like", "ilike"):
-            return True
-        if key.name not in _BOOLEAN_BRANCH_SCALARS:
-            return False
-        positions = _BOOLEAN_BRANCH_SCALARS[key.name]
-        returned = key.args if positions is None else [key.args[i] for i in positions if i < len(key.args)]
-        branches = [a for a in returned if not _is_null_arg(a)]
-        return bool(branches) and all(boolean_valued(a, column_type=column_type) for a in branches)
+        return _scalar_boolean_valued(key, column_type=column_type)
     return False
+
+
+def _scalar_boolean_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+    if key.name in ("like", "ilike"):
+        return True
+    if key.name not in _BOOLEAN_BRANCH_SCALARS:
+        return False
+    positions = _BOOLEAN_BRANCH_SCALARS[key.name]
+    returned = key.args if positions is None else [key.args[i] for i in positions if i < len(key.args)]
+    branches = [a for a in returned if not _is_null_arg(a)]
+    return bool(branches) and all(boolean_valued(a, column_type=column_type) for a in branches)
 
 
 # Scalars that read every argument as a number.
@@ -1406,12 +1410,16 @@ def numeric_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, CastKey):
         return key.data_type in _NUMERIC_TYPES
     if isinstance(key, ScalarCallKey):
-        if key.name in _NUMBER_RESULT_SCALARS:
-            return True
-        branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
-        numbers = [numeric_valued(a, column_type=column_type) for a in branches]
-        return any(numbers) and all(n or boolean_valued(a, column_type=column_type) for a, n in zip(branches, numbers))
+        return _scalar_numeric_valued(key, column_type=column_type)
     return False
+
+
+def _scalar_numeric_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+    if key.name in _NUMBER_RESULT_SCALARS:
+        return True
+    branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
+    numbers = [numeric_valued(a, column_type=column_type) for a in branches]
+    return any(numbers) and all(n or boolean_valued(a, column_type=column_type) for a, n in zip(branches, numbers))
 
 
 def _boolean_positions(

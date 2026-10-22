@@ -75,7 +75,7 @@ def _substituted_order(o: OrderItem, variables: Dict[str, Any]) -> OrderItem:
     return o if text == o.raw_formula else o.model_copy(update={"raw_formula": text})
 
 
-_BOUND_VARIABLE_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_BOUND_VARIABLE_RE = re.compile(r"\{([A-Za-z_]\w*)\}", re.ASCII)
 
 
 def _date_range_bound(text: str, variables: Dict[str, Any]) -> str:
