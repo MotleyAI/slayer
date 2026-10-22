@@ -55,7 +55,7 @@ class TestPositions:
         gran = await engine.execute(_q(dimensions=["month(ts)"]))
         assert trunc.columns == gran.columns
         assert trunc.sql == gran.sql
-        assert trunc.data == gran.data
+        assert sorted(map(repr, trunc.data)) == sorted(map(repr, gran.data))  # DuckDB GROUP BY order is arbitrary
 
     async def test_order_key(self, engine: SlayerQueryEngine) -> None:
         order = [{"column": "date_trunc('month', ts)", "direction": "desc"}]
