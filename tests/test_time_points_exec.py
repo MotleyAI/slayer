@@ -381,7 +381,6 @@ class TestGranularityCalls:
     @pytest.mark.parametrize("filt", [
         "month() >= '2024-01-01'",
         "month(ts, d) >= '2024-01-01'",
-        "month(upper(code)) >= '2024-01-01'",
         "month(*) >= '2024-01-01'",
         "month(ts, granularity=2) >= '2024-01-01'",
     ])
@@ -392,6 +391,10 @@ class TestGranularityCalls:
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
         assert "(col" in msg, msg
+
+    async def test_non_temporal_expression_operand_rejected(self, engine) -> None:
+        with pytest.raises(DateOperandTypeError, match=r"upper\(code\)"):
+            await ids(engine, "month(upper(code)) >= '2024-01-01'")
 
 
 class TestDateFunctionGrammar:

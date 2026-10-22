@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import QueryTypeError
+from slayer.core.errors import QueryTypeError, TimeDimensionColumnError
 from slayer.core.query import SlayerQuery
 
 from tests._dev2015_fixtures import BACKENDS, BUILT_IN_GRANULARITIES, GRANULARITY_NAMES, cg_engine, m
@@ -55,7 +55,7 @@ class TestUnknownCalleeAtBinding:
         if "dimensions" in fields:
             assert "partition_by" in msg
 
-    @pytest.mark.parametrize("entry", ["fiscal_year()", "fiscal_year(order_date, amount)", "fiscal_year(upper(id))"])
+    @pytest.mark.parametrize("entry", ["fiscal_year()", "fiscal_year(order_date, amount)"])
     async def test_wrong_shape_datasource_callee(self, engine, entry) -> None:
         query = _q(dimensions=[entry])
         with pytest.raises(QueryTypeError) as exc:
@@ -63,6 +63,10 @@ class TestUnknownCalleeAtBinding:
         msg = str(exc.value)
         assert "fiscal_year" in msg
         assert "(col" in msg or "gran(" in msg
+
+    async def test_non_temporal_argument_is_a_time_dimension_type_error(self, engine) -> None:
+        with pytest.raises(TimeDimensionColumnError, match="TEXT"):
+            await engine.execute(_q(dimensions=["fiscal_year(upper(id))"]), dry_run=True)
 
     def test_bare_column_string_still_rejected_at_construction(self) -> None:
         with pytest.raises(ValueError) as exc:

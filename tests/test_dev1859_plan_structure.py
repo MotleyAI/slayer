@@ -214,14 +214,11 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
                        for a in planned.regroup_attach_plans)
 
 
-class TestFirstOverMixedKeepsExpressionError:
-    async def test_first_over_mixed_source_expression_error(self):
-        """Scenario: Ranked aggregation over a mixed source keeps the
-        expression error — never a mixing error, never wrong values."""
+class TestFirstOverMixedSource:
+    async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(
-                formula=f"first(quantity * {INNER_UP_PRODUCT})",
+                formula=f"first(quantity * {INNER_UP_PRODUCT}, id)",
                 name="f")])
-        with pytest.raises(ValueError, match="not supported over an expression"):
-            await gen(q)
+        assert "ROW_NUMBER" in (await gen(q)).upper()

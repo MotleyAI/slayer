@@ -5,7 +5,6 @@ partition keys; queries/computed-dimensions › Used as a transform partition)."
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from typing import Callable, Dict, Optional, Tuple
 
@@ -173,24 +172,23 @@ class TestBindingSymmetry:
         assert isinstance(rank, TransformKey)
         assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
-    @pytest.mark.parametrize(argnames="formula,message", argvalues=[
-        ("rank(sum(amount), partition_by=sum(amount), direction='desc')",
-         "'sum(amount)' is an expression.\n  at transform 'rank' partition_by"),
-        ("sum(amount, partition_by=sum(amount))",
-         "'sum(amount)' is an expression.\n  at aggregation partition_by"),
+    @pytest.mark.parametrize(argnames="formula", argvalues=[
+        "rank(sum(amount), partition_by=sum(amount), direction='desc')",
+        "sum(amount, partition_by=sum(amount))",
     ])
-    def test_non_column_element_names_construct(self, formula, message):
+    def test_aggregate_element_names_the_computed_dimension_remedy(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
-        with pytest.raises(ValueError, match=re.escape(message)):
+        with pytest.raises(PartitionKeyError, match=r"(?s)'sum\(amount\)'.*computed dimension"):
             _bind(formula=formula, alias_map=amap)
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
         "sum(amount, partition_by=upper(region))",
         "rank(sum(amount), partition_by=[city, upper(region)], direction='desc')",
     ])
-    def test_expression_element_is_a_typed_partition_key_error(self, formula):
-        with pytest.raises(PartitionKeyError, match=re.escape("'upper(region)' is an expression")):
-            _bind(formula=formula)
+    def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
+        amap = _alias(name="ureg", expr="upper(region)")
+        assert _bind(formula=formula, alias_map=amap).partition_keys == _bind(
+            formula=formula.replace("upper(region)", "ureg"), alias_map=amap).partition_keys
 
 
 # --------------------------------------------------------------------------- #
