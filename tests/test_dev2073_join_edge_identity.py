@@ -6,7 +6,9 @@ import json
 
 import pytest
 
-from slayer.core.join_edges import JoinEdgeRef, edge_reference, relationship_signature, resolve_join_ref
+from slayer.core.enums import JoinCardinality, JoinType
+from slayer.core.join_edges import JoinEdgeRef, edge_reference, relationship_signature, resolve_join_ref, same_edge
+from slayer.core.models import ModelJoin
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev2073_fixtures import (
@@ -86,6 +88,24 @@ class TestRelationshipSignature:
         billing = relationship_signature(model_name="orders", join=join_to(BILLING_PAIRS))
         shipping = relationship_signature(model_name="orders", join=join_to(SHIPPING_PAIRS))
         assert billing != shipping
+
+
+class TestSameEdge:
+    def test_ignores_metadata_and_pair_order(self) -> None:
+        stored = ModelJoin(target_model="t", join_pairs=[["a", "x"], ["b", "y"]], description="stored", meta={"k": 1})
+        repeat = ModelJoin(target_model="t", join_pairs=[["b", "y"], ["a", "x"]])
+        assert same_edge(stored, repeat)
+
+    @pytest.mark.parametrize("change", [
+        {"name": "other"},
+        {"join_type": JoinType.INNER},
+        {"cardinality": JoinCardinality.MANY_TO_ONE},
+        {"join_pairs": [["a", "y"]]},
+        {"target_model": "u"},
+    ])
+    def test_any_semantic_field_differing_is_another_edge(self, change: dict) -> None:
+        stored = ModelJoin(target_model="t", join_pairs=[["a", "x"]])
+        assert not same_edge(stored, stored.model_copy(update=change))
 
 
 class TestEngineRemovalByExactReference:
