@@ -27,7 +27,16 @@ def sql_quote_strings(text: str) -> str:
     line_starts = [0]
     for line in text.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
+    edits = _edits(tokens, line_starts=line_starts)
+    if edits is None:
+        return text
+    for start, end, replacement in sorted(edits, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
 
+
+def _edits(tokens: list[tokenize.TokenInfo], *, line_starts: list[int]) -> list[tuple[int, int, str]] | None:
+    """The ``(start, end, replacement)`` rewrites; ``None`` when a bytes literal makes the text non-Mode-B."""
     def offset(pos: tuple[int, int]) -> int:
         return line_starts[pos[0] - 1] + pos[1]
 
@@ -36,23 +45,28 @@ def sql_quote_strings(text: str) -> str:
     while i < len(tokens):
         tok = tokens[i]
         if tok.type == tokenize.STRING:
-            j = i
-            value = ""
-            while j < len(tokens) and tokens[j].type == tokenize.STRING:
-                decoded = ast.literal_eval(tokens[j].string)
-                if not isinstance(decoded, str):
-                    return text
-                value += decoded
-                j += 1
+            j, value = _string_run(tokens, i)
+            if value is None:
+                return None
             edits.append((offset(tok.start), offset(tokens[j - 1].end), "'" + value.replace("'", "''") + "'"))
             i = j
             continue
         if tok.type == tokenize.OP and tok.string == "|" and not _pipe_pair(tokens, i):
             edits.append((offset(tok.start), offset(tok.end), "||"))
         i += 1
-    for start, end, replacement in sorted(edits, reverse=True):
-        text = text[:start] + replacement + text[end:]
-    return text
+    return edits
+
+
+def _string_run(tokens: list[tokenize.TokenInfo], i: int) -> tuple[int, str | None]:
+    """End index of the adjacent string literals from ``i`` and their joined value (``None`` if one is bytes)."""
+    j, value = i, ""
+    while j < len(tokens) and tokens[j].type == tokenize.STRING:
+        decoded = ast.literal_eval(tokens[j].string)
+        if not isinstance(decoded, str):
+            return j, None
+        value += decoded
+        j += 1
+    return j, value
 
 
 def _pipe_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
