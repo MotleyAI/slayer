@@ -110,10 +110,10 @@ def check_domain(fn: str, position: int, value: object, *, text: str) -> None:
     elif fn == "div" and position == 1 and value == 0:
         reason = "a zero divisor"
     elif fn == "chr" and (
-        value != value.to_integral_value() or value < 0 or value > MAX_CODE_POINT
+        value != value.to_integral_value() or value < 1 or value > MAX_CODE_POINT
         or SURROGATES[0] <= value <= SURROGATES[1]
     ):
-        reason = "not a Unicode scalar value (0 to 0x10FFFF, surrogates excluded)"
+        reason = "not a character code point (1 to 0x10FFFF, surrogates excluded)"
     else:
         return
     raise _error(

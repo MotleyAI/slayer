@@ -102,6 +102,7 @@ class TestLiteralOutOfDomain:
         ("acos(-1.5)", "acos", "-1.5"),
         ("div(i, 0)", "div", "0"),
         ("div(7, 0)", "div", "0"),
+        ("chr(0)", "chr", "0"),
         ("chr(55296)", "chr", "55296"),
         ("chr(57343)", "chr", "57343"),
         ("chr(1114112)", "chr", "1114112"),
