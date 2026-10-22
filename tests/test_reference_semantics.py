@@ -271,40 +271,37 @@ class TestSqlModeRejection:
             )
 
     def test_model_filter_rejects_aggregation_colon(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["revenue:sum > 100"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                columns=columns,
             )
 
     def test_model_filter_rejects_transform_call(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["cumsum(revenue:sum) > 0"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                columns=columns,
             )
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
             SlayerModel(
                 name="m",
                 sql_table="t",
                 data_source="test",
                 filters=["row_number() over (order by mass desc) <= 3"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
+                columns=columns,
             )
 
     def test_column_filter_rejects_raw_over(self) -> None:

@@ -531,7 +531,7 @@ _TEXT_UDFS: dict = {
 def register_sqlite_udfs(dbapi_connection) -> None:
     """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
     for name, (narg, fn) in _TEXT_UDFS.items():
-        dbapi_connection.create_function(name, narg, fn)
+        dbapi_connection.create_function(name, narg, fn, deterministic=True)
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
     dbapi_connection.create_function("log2", 1, _log2)
