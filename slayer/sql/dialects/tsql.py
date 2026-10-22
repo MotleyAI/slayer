@@ -240,7 +240,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
     ) -> Expression:
         self._require_regex("regexp_extract")
-        return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("c"), lit(group))
+        extracted = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("c"), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,

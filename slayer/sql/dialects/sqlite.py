@@ -440,7 +440,7 @@ def _regexp_extract(value, pattern, group):
     if value is None or pattern is None or group is None:
         return None
     match = _compiled(pattern, "").search(str(value))
-    return None if match is None else match.group(int(group))
+    return None if match is None else match.group(int(group)) or ""
 
 
 def _regexp_replace(value, pattern, replacement, flags):

@@ -9,7 +9,7 @@ Defines Mode-B regular expressions: the matching, extraction and replacement fun
 Mode B SHALL provide:
 
 - `regexp_like(x, p[, 'i'])` — BOOLEAN, true when `p` matches anywhere in `x`.
-- `regexp_extract(x, p[, group])` — TEXT: the first match, or that capture group of the first match; NULL when nothing matches or the group did not participate. `group` SHALL be an integer literal from 0 (the whole match) to the pattern's group count.
+- `regexp_extract(x, p[, group])` — TEXT: the first match, or that capture group of the first match; NULL when nothing matches; `''` when the pattern matches but the group did not take part (as in a replacement), on every dialect. `group` SHALL be an integer literal from 0 (the whole match) to the pattern's group count.
 - `regexp_replace(x, p, replacement[, 'i'])` — TEXT with every non-overlapping match replaced.
 
 The only flag SHALL be the literal `'i'` (case-insensitive); without it matching SHALL be case-sensitive on every dialect, whatever the column's collation. A NULL `x` SHALL yield NULL.
@@ -28,6 +28,11 @@ The only flag SHALL be the literal `'i'` (case-insensitive); without it matching
 
 - **WHEN** a dimension is `regexp_extract(email, '@(.+)$', 1)` over rows holding `'a@x.org'` and `'nobody'`
 - **THEN** they yield `'x.org'` and NULL on every Tier-1 dialect
+
+#### Scenario: Group that did not take part
+
+- **WHEN** a dimension is `regexp_extract(code, '(x)?b', 1)` over rows holding `'ab'` and `'zz'`
+- **THEN** they yield `''` and NULL on every Tier-1 dialect
 
 #### Scenario: Group beyond the pattern
 

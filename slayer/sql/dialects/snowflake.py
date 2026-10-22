@@ -162,7 +162,8 @@ class SnowflakeDialect(SqlDialect):
     ) -> Expression:
         if group == 0:
             return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _parameters(False))
-        return anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("cse"), lit(group))
+        extracted = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("cse"), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,

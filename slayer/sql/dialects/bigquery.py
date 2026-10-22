@@ -160,7 +160,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
     ) -> Expression:
         """``REGEXP_EXTRACT`` takes at most one capturing group: every other one becomes non-capturing."""
-        return anon("REGEXP_EXTRACT", value, self.regex_text(pattern, capture=group))
+        extracted = anon("REGEXP_EXTRACT", value, self.regex_text(pattern, capture=group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,

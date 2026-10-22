@@ -47,10 +47,10 @@ class DuckdbDialect(SqlDialect):
     def build_regexp_extract(
         self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
     ) -> Expression:
-        """The first of ``regexp_extract_all``, whose non-participating groups are NULL (``regexp_extract``'s ``''``)."""
+        """The first of ``regexp_extract_all`` (NULL on no match, unlike ``regexp_extract``'s ``''``)."""
         matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                        lit(group))
-        return anon("LIST_EXTRACT", matches, lit(1))
+        return self.skipped_group_empty(value, pattern, group, anon("LIST_EXTRACT", matches, lit(1)))
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,

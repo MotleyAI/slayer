@@ -163,7 +163,8 @@ class TrinoDialect(PrestoFamilyDialect):
     def build_regexp_extract(
         self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
     ) -> Expression:
-        return anon("REGEXP_EXTRACT", value, self.regex_text(pattern), lit(group))
+        extracted = anon("REGEXP_EXTRACT", value, self.regex_text(pattern), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,

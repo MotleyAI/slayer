@@ -655,10 +655,21 @@ class SqlDialect(BaseModel):
     def build_regexp_extract(
         self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
     ) -> Expression:
-        """The first match (``group`` 0) or its ``group``; NULL on no match or a group that did not take part."""
+        """The first match (``group`` 0) or its ``group``; NULL on no match, ``''`` for a group that did not
+        take part."""
         match = anon("REGEXP_MATCH", value, self.regex_text(pattern, wrap=True),
                      *([lit("i")] if case_insensitive else []))
-        return exp.Bracket(this=exp.Paren(this=match), expressions=[lit(group)])
+        picked = exp.Bracket(this=exp.Paren(this=match), expressions=[lit(group)])
+        return self.skipped_group_empty(value, pattern, group, picked)
+
+    def skipped_group_empty(
+        self, value: Expression, pattern: RegexPattern, group: int, extracted: Expression,
+    ) -> Expression:
+        """``extracted`` with a skipped group's NULL read as ``''`` (NULL stays for no match)."""
+        if group == 0:
+            return extracted
+        matched = self.build_regexp_like(value, pattern, False)
+        return case((matched, exp.Coalesce(this=extracted, expressions=[lit("")])))
 
     def build_regexp_replace(
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
