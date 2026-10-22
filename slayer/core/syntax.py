@@ -416,8 +416,6 @@ def _reject_placeholder_kwarg(_s: str, _loc: int, _toks: pp.ParseResults) -> Non
 # ---------------------------------------------------------------------------
 
 
-pp.ParserElement.enable_packrat()
-
 expr = pp.Forward()
 expr.set_name("expression")
 _concat_level = pp.Forward()
@@ -700,8 +698,11 @@ _CLOCK = _on((_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)), 
 
 _PAREN = LPAR + expr + RPAR
 _PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
-_ATOM = (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL
-         | _INTERVAL | _CLOCK | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
+_KEYWORD_LED = pp.FollowedBy(pp.Regex(
+    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|time|interval|current_date|current_timestamp)"
+    r"(?![A-Za-z0-9_])"
+)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK)
+_ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
          | _CALL | _COLON_AGG | _REF)
 
 _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
@@ -734,63 +735,53 @@ def _primary_node(toks: List[Any]) -> Any:
 
 
 _on(_PRIMARY, _primary_node)
-_CAST_LEVEL = _on((_PRIMARY + pp.ZeroOrMore(DCOLON + _need(_TYPE_SPEC, "'::' needs a type."))), lambda toks: _fold_casts(list(toks)))
 
 
-def _fold_casts(items: List[Any]) -> Any:
+def _fold_casts(toks: pp.ParseResults) -> Any:
+    items = list(toks[0])
     node = items[0]
     for type_text in items[1:]:
         node = Cast(source=node, type_text=type_text)
     return node
 
 
-# -- operator ladder -----------------------------------------------------------
-
-_MINUS, _PLUS = _sym("-", "'-'"), _sym(r"\+", "'+'")
-_power = pp.Forward()
-_power_rhs = pp.Forward()
-_power_rhs <<= ((_MINUS | _PLUS) + _power_rhs) | _power
-_power <<= _CAST_LEVEL + pp.Optional(pp.Suppress(_sym(r"\*\*", "'**'")) + _power_rhs)
+def _signed(toks: pp.ParseResults) -> Any:
+    sign, node = toks[0]
+    return UnaryOp(op="-", operand=node) if sign == "-" else node
 
 
-def _signed(items: List[Any]) -> Any:
-    node = items[-1]
-    for sign in reversed(items[:-1]):
-        if sign == "-":
-            node = UnaryOp(op="-", operand=node)
-    return node
+def _pow(toks: pp.ParseResults) -> Any:
+    left, right = toks[0]
+    return ScalarCall(name="pow", args=(left, right))
 
 
-_on(_power_rhs, lambda toks: _signed(list(toks)))
-_on(_power, lambda toks: ScalarCall(name="pow", args=(toks[0], toks[1])) if len(toks) == 2 else toks[0])
-_UNARY = _on((pp.ZeroOrMore(_MINUS | _PLUS) + _power), lambda toks: _signed(list(toks)))
-
-_FLOORDIV = _sym("//", "'//'") + _fail("'//' is not an operator; use div(a, b) or floor(a / b).")
-_MUL_LEVEL = _UNARY + pp.ZeroOrMore((_FLOORDIV | _sym(r"\*(?!\*)|/(?!/)|%", "'*', '/' or '%'")) + _UNARY)
-_ADD_LEVEL = _MUL_LEVEL + pp.ZeroOrMore(_sym("[+-]", "'+' or '-'") + _MUL_LEVEL)
-
-
-def _fold_arith(items: List[Any]) -> Any:
+def _fold_arith(toks: pp.ParseResults) -> Any:
+    items = list(toks[0])
     node = items[0]
     for op, right in zip(items[1::2], items[2::2]):
         node = _interval_as_date_add(op=op, left=node, right=right) or Arith(op=op, left=node, right=right)
     return node
 
 
-_on(_MUL_LEVEL, lambda toks: _fold_arith(list(toks)))
-_on(_ADD_LEVEL, lambda toks: _fold_arith(list(toks)))
-_PIPE = _sym(r"\|(?!\|)", "'|'") + _fail("'|' is not an operator; use || to concatenate strings.")
-_concat_level <<= _ADD_LEVEL + pp.ZeroOrMore(pp.Suppress(_PIPE | _sym(r"\|\|", "'||'")) + _ADD_LEVEL)
-
-
-def _fold_concat(items: List[Any]) -> Any:
+def _fold_concat(toks: pp.ParseResults) -> Any:
+    items = list(toks[0])
     node = items[0]
     for right in items[1:]:
         node = ScalarCall(name="concat", args=(node, right))
     return node
 
 
-_on(_concat_level, lambda toks: _fold_concat(list(toks)))
+_FLOORDIV = _sym("//", "'//'") + _fail("'//' is not an operator; use div(a, b) or floor(a / b).")
+_PIPE = _sym(r"\|(?!\|)", "'|'") + _fail("'|' is not an operator; use || to concatenate strings.")
+# Parentheses are atoms (_PAREN), so infix_notation's own grouping is disabled.
+_concat_level <<= pp.infix_notation(_PRIMARY, [
+    (DCOLON + _need(_TYPE_SPEC, "'::' needs a type."), 1, pp.OpAssoc.LEFT, _fold_casts),
+    (pp.Suppress(_sym(r"\*\*", "'**'")), 2, pp.OpAssoc.RIGHT, _pow),
+    (_sym("[+-]", "'-' or '+'"), 1, pp.OpAssoc.RIGHT, _signed),
+    (_FLOORDIV | _sym(r"\*(?!\*)|/(?!/)|%", "'*', '/' or '%'"), 2, pp.OpAssoc.LEFT, _fold_arith),
+    (_sym("[+-]", "'+' or '-'"), 2, pp.OpAssoc.LEFT, _fold_arith),
+    (pp.Suppress(_PIPE | _sym(r"\|\|", "'||'")), 2, pp.OpAssoc.LEFT, _fold_concat),
+], lpar=pp.NoMatch(), rpar=pp.NoMatch())  # pyright: ignore[reportArgumentType] — unannotated; documented to accept a ParserElement
 
 # -- comparison level ----------------------------------------------------------
 
@@ -873,8 +864,8 @@ _CMP_SUFFIX = (
 )
 
 
-def _comparison_node(toks: List[Any]) -> Any:
-    left, suffixes = toks[0], list(toks[1:])
+def _comparison_node(toks: pp.ParseResults) -> Any:
+    left, *suffixes = toks[0]
     if len(suffixes) > 1:
         raise _Problem(
             "chained comparisons are not supported. Each comparison must be a single comparison; split "
@@ -883,25 +874,26 @@ def _comparison_node(toks: List[Any]) -> Any:
     return suffixes[0].build(left) if suffixes else left
 
 
-_COMPARISON = _on(_concat_level + pp.ZeroOrMore(_CMP_SUFFIX), _comparison_node)
-_NOT_LEVEL = _on((pp.ZeroOrMore(_kw("not")) + _COMPARISON), lambda toks: _negate_n(len(toks) - 1, toks[-1]))
 
 
-def _negate_n(count: int, node: Any) -> Any:
-    for _ in range(count):
-        node = UnaryOp(op="not", operand=node)
-    return node
+def _not(toks: pp.ParseResults) -> Any:
+    return UnaryOp(op="not", operand=toks[0][1])
 
 
-def _bool_level(operand: pp.ParserElement, word: str) -> pp.ParserElement:
-    level = operand + pp.ZeroOrMore(pp.Suppress(_kw(word)) + operand)
-    return _on(level, lambda toks: BoolOp(op=word, operands=tuple(toks)) if len(toks) > 1 else toks[0])
+def _bool(word: str):
+    return lambda toks: BoolOp(op=word, operands=tuple(toks[0]))
 
 
+_PREDICATE = pp.infix_notation(_concat_level, [
+    (_CMP_SUFFIX, 1, pp.OpAssoc.LEFT, _comparison_node),
+    (_kw("not"), 1, pp.OpAssoc.RIGHT, _not),
+    (pp.Suppress(_kw("and")), 2, pp.OpAssoc.LEFT, _bool("and")),
+    (pp.Suppress(_kw("or")), 2, pp.OpAssoc.LEFT, _bool("or")),
+], lpar=pp.NoMatch(), rpar=pp.NoMatch())  # pyright: ignore[reportArgumentType] — unannotated; documented to accept a ParserElement
 _TERNARY = _kw("if") + _fail(
     "the Python conditional 'x if cond else y' is not supported; use CASE WHEN cond THEN x ELSE y END or iif(cond, x, y).",
 )
-expr <<= _bool_level(_bool_level(_NOT_LEVEL, "and"), "or") + pp.Optional(_TERNARY)
+expr <<= _PREDICATE + pp.Optional(_TERNARY)
 _EXPRESSION = (expr + pp.StringEnd().set_fail_action(_record_failure)).parse_with_tabs()
 
 

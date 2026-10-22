@@ -27,7 +27,7 @@
 ## 4. Grammar
 
 - [x] 4.1 Add `pyparsing` to `pyproject.toml` / `poetry.lock`; verify `poetry install -E all`
-- [ ] 4.2 Implement the grammar (design D2) producing the existing `ParsedExpr` nodes plus `Cast` and the `FILTER` predicate; delete `ast.parse`, every pre-pass and `parse_filter_expr`; repoint every caller (`core/query.py`, `engine/bind_inputs.py`, `binding.py`, `population.py`, `model_reads.py`, `schema_drift.py`, `unrelated.py`, `query_engine.py`, `memories/resolver.py`); verify 2.1 / 2.2 parse-level tests and the SQL golden baselines byte-identical
+- [x] 4.2 Implement the grammar (design D2) producing the existing `ParsedExpr` nodes plus `Cast` and the `FILTER` predicate; delete `ast.parse`, every pre-pass and `parse_filter_expr`; repoint every caller (`core/query.py`, `engine/bind_inputs.py`, `binding.py`, `population.py`, `model_reads.py`, `schema_drift.py`, `unrelated.py`, `query_engine.py`, `memories/resolver.py`); verify 2.1 / 2.2 parse-level tests and the SQL golden baselines byte-identical
 - [x] 4.3 Quoted identifiers end to end and the single-quote hint in the unresolved-reference error; verify the expression-grammar identifier scenarios
 - [x] 4.4 Rejections with hints (`|`, `//`, `TRIM(BOTH…)`, two-argument scalar `min` / `max`, `TIME '…'`, `SIMILAR TO`, `REGEXP` / `RLIKE`, raw `OVER`) and syntax-error positions; verify their scenarios
 
@@ -35,9 +35,9 @@
 
 - [x] 5.1 `CastKey` (design D3): traversal protocol, binding, checker typing, render via `exp.Cast` with the author's type and the dialect-expressibility check; verify the CAST scenarios
 - [x] 5.2 `TRY_CAST` lowering per dialect, SQLite `slayer_try_cast` registration, MySQL guard, Postgres server profile (`server_profile_sql`, `parse_server_profile`) and render-time profile plumbing; verify 2.3
-- [ ] 5.3 `FILTER (WHERE c)` binding (row-level check) and lowering by masking every row-level input incl. the `first` / `last` ranking key; verify 2.4
-- [ ] 5.4 `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE|FALSE`, `ILIKE`, `||`, `POSITION`, `SUBSTRING FROM FOR`, interval literals, typed literals, clock keywords; `**` → `pow`; verify 2.2, 2.6, 2.10
-- [ ] 5.5 `OrderItem.nulls` plumbing (design D7) and the multi-term `build_ordered` with the T-SQL emulation over the resolved expression; verify 2.7
+- [x] 5.3 `FILTER (WHERE c)` binding (row-level check) and lowering by masking every row-level input incl. the `first` / `last` ranking key; verify 2.4
+- [x] 5.4 `BETWEEN`, `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE|FALSE`, `ILIKE`, `||`, `POSITION`, `SUBSTRING FROM FOR`, interval literals, typed literals, clock keywords; `**` → `pow`; verify 2.2, 2.6, 2.10
+- [x] 5.5 `OrderItem.nulls` plumbing (design D7) and the multi-term `build_ordered` with the T-SQL emulation over the resolved expression; verify 2.7
 - [x] 5.6 The binder rejects a `round` `ndigits` that is not an integer literal (`round(x, 2.5)`, `round(x, col)`) with an error naming `round` (ruling 2026-10-21: the check moves from the deleted importer parser); verify the `tests/test_dev1576_heals.py` arity cases
 
 ## 6. Variables
@@ -50,7 +50,7 @@
 
 ## 8. One parser (DEV-1831)
 
-- [ ] 8.1 Port the dbt, Cube and OSI importers to `parse_expr` with the shared namespace-aware dependency walk; delete `parse_formula`, `FieldSpec`, `_rewrite_funcstyle_aggregations`, `_preprocess_agg_refs`, `_expand_named_measures`; verify 2.9 and the importer fixture suites
+- [x] 8.1 Port the dbt, Cube and OSI importers to `parse_expr` with the shared namespace-aware dependency walk; delete `parse_formula`, `FieldSpec`, `_rewrite_funcstyle_aggregations`, `_preprocess_agg_refs`, `_expand_named_measures`; verify 2.9 and the importer fixture suites
 - [x] 8.2 Check the Mode-B text the facade translator and the importers emit against the new grammar (single quotes, no backslash escapes, no `|`); fix emitters; verify the facade and importer suites
 
 ## 9. Docs and agent surfaces
@@ -61,7 +61,7 @@
 
 ## 10. Gates
 
-- [ ] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
+- [x] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
 
 ## Approved harness edits (exact text, approved 2026-10-20)
 
