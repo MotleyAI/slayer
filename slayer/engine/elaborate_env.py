@@ -15,7 +15,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
@@ -42,7 +42,6 @@ from slayer.core.errors import (
     UnrelatedDatasetError,
     UnsafeJoinInputError,
 )
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
@@ -65,6 +64,7 @@ from slayer.core.keys import (
     Grain,
     InKey,
     LiteralKey,
+    CastKey,
     ScalarCallKey,
     TimePointCmpKey,
     TimeTruncKey,
@@ -135,7 +135,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
     return blockers, attached
 
 
-def _measure_blockers(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
+def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
     """Row-level refs outside aggregate subtrees not available at query grain.
     A subtree equal to a query dimension's bound key IS the grouped value —
     available at query grain wholesale."""
@@ -187,7 +187,7 @@ def type_position_conjunct(
     if not field_blockers:
         return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
     if has_measure_position:
-        measure_blockers = _measure_blockers(cj, dim_keys)
+        measure_blockers = row_refs_off_grain(cj, dim_keys)
         if not measure_blockers:
             return ConjunctTyping(MaskTyping.MEASURE, 1)
         raise PositionTypingError(
@@ -221,7 +221,7 @@ def check_measures_at_query_grain(prebound: PreboundQuery) -> None:
         if dm.is_dimension:
             continue
         root = dm.bound.value_key
-        blockers = _measure_blockers(root, dim_keys)
+        blockers = row_refs_off_grain(root, dim_keys)
         if not blockers:
             continue
         names = ", ".join(_key_display(k) for k in blockers)
@@ -1024,6 +1024,8 @@ def _operand_display(k: object) -> str:
         return f"'{k}'"
     if isinstance(k, ScalarCallKey):
         return f"{k.name}({', '.join(_operand_display(a) for a in k.args)})"
+    if isinstance(k, CastKey):
+        return f"{'TRY_CAST' if k.try_ else 'CAST'}({_operand_display(k.source)} AS {k.type_text})"
     if isinstance(k, ArithmeticKey):
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
@@ -1037,7 +1039,7 @@ _LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
     bool: DataType.BOOLEAN, str: DataType.TEXT,
 })
 _SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
-    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN,
+    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN, "ilike": DataType.BOOLEAN,
 })
 
 
@@ -1050,6 +1052,8 @@ def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[Data
         return DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
         return _SCALAR_RESULT_TYPES.get(key.name)
+    if isinstance(key, CastKey) and key.data_type is not DataType.UNKNOWN:
+        return key.data_type
     return None
 
 
@@ -1246,9 +1250,9 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey))],
+                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
@@ -1258,9 +1262,11 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey),
+                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
+    if isinstance(key, CastKey):
+        return [key.source]
     if isinstance(key, TimePointCmpKey):
         return [key.operand]
     if isinstance(key, InKey):

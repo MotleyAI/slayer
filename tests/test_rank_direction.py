@@ -4,15 +4,16 @@ direction spelled as its bare value)."""
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from slayer.core import errors as core_errors
-from slayer.core.formula import parse_formula
 from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import Literal, TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
@@ -318,11 +319,9 @@ class TestDirectionErrors:
         formula = f"{op}(sum(amount), foo=1)"
         with pytest.raises(core_errors.TransformArgumentError) as binder:
             _bind(formula)
-        with pytest.raises(ValueError) as importer:
-            parse_formula(formula)
-        for msg in (str(binder.value), str(importer.value)):
-            assert "foo" in msg, msg
-            assert ("direction" in msg) is advertised, msg
+        msg = str(binder.value)
+        assert "foo" in msg, msg
+        assert ("direction" in msg) is advertised, msg
 
     def test_unknown_keyword_outside_rank_family_lists_no_rank_keywords(self):
         with pytest.raises(core_errors.TransformArgumentError) as ei:
@@ -341,24 +340,23 @@ class TestImporterParity:
         "ntile(sum(amount), n=4, direction='asc')",
         "percent_rank(sum(amount), direction='desc')",
     ])
-    def test_same_error_as_the_binder(self, formula):
-        with pytest.raises(core_errors.TransformArgumentError) as importer:
-            parse_formula(formula)
-        with pytest.raises(core_errors.TransformArgumentError) as binder:
+    def test_parse_is_pure_syntax_and_the_binder_judges(self, formula):
+        assert isinstance(parse_expr(formula), TransformCall)
+        with pytest.raises(core_errors.TransformArgumentError):
             _bind(formula)
-        assert str(importer.value) == str(binder.value)
 
     @pytest.mark.parametrize(("formula", "want"), [
         ("rank(sum(amount), direction='Ascending')", "asc"),
         ("dense_rank(sum(amount), partition_by=region, direction='DESC')", "desc"),
     ])
     def test_accepts_and_normalises(self, formula, want):
-        field = parse_formula(formula)
-        assert field.kwargs["direction"] == want  # type: ignore[union-attr]
+        assert dict(_bind(formula).kwargs)["direction"] == want  # type: ignore[union-attr]
 
     def test_ntile_keeps_no_direction(self):
-        field = parse_formula("ntile(sum(amount), n=4)")
-        assert "direction" not in field.kwargs  # type: ignore[union-attr]
+        parsed = parse_expr("ntile(sum(amount), n=4)")
+        assert isinstance(parsed, TransformCall)
+        assert "direction" not in dict(parsed.kwargs)
+        assert dict(parsed.kwargs)["n"] == Literal(value=Decimal(4))
 
 
 # --------------------------------------------------------------------------- #

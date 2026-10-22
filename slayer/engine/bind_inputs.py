@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date, datetime
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name, TIME_TRANSFORMS
 from slayer.core.errors import (
     AmbiguousJoinPathError,
     AmbiguousReferenceError,
@@ -17,7 +17,6 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.formula import TIME_TRANSFORMS
 from slayer.core.time_spine import is_spine, is_spine_query, names_spine
 from slayer.core.join_walker import resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
@@ -49,6 +48,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     call_callee,
+    computed_dimension_name,
     functional_call_column,
     granularity_call_parts,
 )
@@ -98,7 +98,7 @@ from slayer.engine.key_metadata import (
     scope_column_type,
     stage_measure_type,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,
@@ -106,7 +106,6 @@ from slayer.engine.syntax import (
     TransformCall,
     canonical_measure_text,
     parse_expr,
-    parse_filter_expr,
 )
 from slayer.ir.bound import (
     GranularityConflict,
@@ -203,7 +202,7 @@ def _reject_measure_refs_in_filters(
         if not isinstance(f, str):
             continue
         try:
-            parsed = parse_filter_expr(f)
+            parsed = parse_expr(f)
         except Exception:  # noqa: BLE001 — binder reports parse errors properly
             continue
         check_raw_rows_filter_measure_ref(
@@ -286,6 +285,7 @@ def _map_bound_keys(
                 routed_dotted=spec.bound.routed_dotted,
             ),
             direction=spec.direction,
+            nulls=spec.nulls,
         )
         for spec in order_specs
     ]
@@ -376,7 +376,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if not isinstance(f, str):
                 continue
             bf = bind_filter(
-                parsed=parse_filter_expr(f),
+                parsed=parse_expr(f),
                 scope=scope,
                 bundle=bundle,
                 alias_map=filter_alias_map,
@@ -431,6 +431,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         granularity=_td_granularity(matching_td, bundle=bundle),
                     ).bound,
                     direction=o.direction,
+                    nulls=o.nulls or "default",
                 ))
                 continue
             # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
@@ -440,9 +441,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         parsed=parse_expr(o.raw_formula),
                         scope=scope,
                         bundle=bundle,
+                        alias_map=filter_alias_map,
                         dimension_alias_map=dim_alias_map,
                     ),
                     direction=o.direction,
+                    nulls=o.nulls or "default",
                 ))
                 continue
             # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
@@ -452,6 +455,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 _part_bound = bind_expr(
                     parsed=parse_expr(o.raw_formula),
                     scope=scope, bundle=bundle,
+                    alias_map=filter_alias_map,
                     dimension_alias_map=dim_alias_map,
                 )
                 if any(
@@ -461,7 +465,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     for k in walk_value_keys(_part_bound.value_key)
                 ):
                     order_specs.append(OrderSpec(
-                        bound=_part_bound, direction=o.direction,
+                        bound=_part_bound, direction=o.direction, nulls=o.nulls or "default",
                     ))
                     continue
             # A FOREIGN-qualified order ref must not resolve to a same-named local column via the bare-leaf shortcut.
@@ -485,6 +489,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     parsed=parse_expr(o.raw_formula),
                     scope=scope,
                     bundle=bundle,
+                    alias_map=filter_alias_map,
                     dimension_alias_map=dim_alias_map,
                 )
             else:
@@ -494,7 +499,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     scope=scope,
                     bundle=bundle,
                 )
-            order_specs.append(OrderSpec(bound=bo, direction=o.direction))
+            order_specs.append(OrderSpec(bound=bo, direction=o.direction, nulls=o.nulls or "default"))
 
     column_type = scope_column_type(scope=scope, bundle=bundle)
     check_date_operands(
@@ -951,7 +956,7 @@ def _declared_computed_dimension(
         bound=bound,
         declared_name=name,
         public_name=name,
-        name_is_explicit=name != auto_name_from_expression(d.template),
+        name_is_explicit=name != computed_dimension_name(d.template),
         type=dim_type,
         is_dimension=True,
     )
@@ -1219,7 +1224,7 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
         td = (
             _datasource_time_dimension(item.expression, bundle=bundle)
             if isinstance(item, ComputedDimension)
-            and item.name == auto_name_from_expression(item.template)
+            and item.name == computed_dimension_name(item.template)
             else None
         )
         if td is None:

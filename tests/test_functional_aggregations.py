@@ -27,7 +27,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     DottedRef,

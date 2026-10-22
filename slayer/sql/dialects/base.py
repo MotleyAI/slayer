@@ -10,9 +10,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, g
 from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
+from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
@@ -100,6 +104,39 @@ TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
 COMPARISON_NODES: dict[str, Any] = {
     "=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
 }
+
+
+#: The validity grammar where a database cannot check a cast itself: a signed decimal with an optional
+#: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
+NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
+TRUE_WORDS = ("true", "t", "yes", "1")
+FALSE_WORDS = ("false", "f", "no", "0")
+
+
+def as_text(value: Expression) -> Expression:
+    """``CAST(value AS TEXT)`` — the input a validity check reads."""
+    return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
+
+
+def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
+    sqlglot_name = dialect.sqlglot_name
+    built: Optional[exp.DataType] = None
+    for reader in (sqlglot_name, "postgres"):
+        try:
+            built = exp.DataType.build(type_text, dialect=reader)
+            break
+        except (SqlglotError, ValueError):
+            continue
+    if built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built):
+        raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
+    return built
+
+
+#: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
+VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+})
 
 
 def temporal_type_of(value: date) -> DataType:
@@ -192,6 +229,10 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
+def _scheme_driver(url_scheme: str | None) -> str | None:
+    return (url_scheme or "").partition("+")[2] or None
+
+
 def _digest(secret: str | None) -> str:
     """Non-reversible 16-hex id for secret material in cache keys."""
     if not secret:
@@ -215,7 +256,7 @@ class DriverFacts(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     url_scheme: str | None = None
-    sync_driver: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
     async_driver: str | None = None
     install_extra: str | None = None
 
@@ -223,6 +264,31 @@ class DriverFacts(BaseModel):
     def url_backend(self) -> str:
         """The SQLAlchemy backend name of ``url_scheme``."""
         return (self.url_scheme or "").partition("+")[0]
+
+    @property
+    def url_backends(self) -> frozenset[str]:
+        """Every SQLAlchemy backend this type serves; none without a scheme."""
+        if self.url_scheme is None:
+            return frozenset()
+        return frozenset({self.url_backend}) | self.url_backend_aliases
+
+    @property
+    def sync_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
+
+    def pin_default_driver(self, url: str) -> str:
+        """``url`` with the default driver named when it names none on a served backend; else unchanged."""
+        if self.sync_driver is None:
+            return url
+        try:
+            parsed = make_url(url)
+        except (ArgumentError, ValueError):
+            return url
+        backend = parsed.get_backend_name()
+        if "+" in parsed.drivername or backend not in self.url_backends:
+            return url
+        return parsed.set(drivername=f"{backend}+{self.sync_driver}").render_as_string(hide_password=False)
 
 
 class SqlDialect(BaseModel):
@@ -256,15 +322,28 @@ class SqlDialect(BaseModel):
     # Correlated subqueries need a server setting this user may be unable to set.
     correlated_subqueries_gated: bool = False
 
+    # Whether setting the statement timeout depends on the server profile (probed only then).
+    timeout_reads_profile: bool = False
+
+    # The server's profile, when SQL generation needs it (Postgres TRY_CAST); unknown otherwise.
+    server_profile: ServerProfile = ServerProfile()
+    # Whether rendering a TRY_CAST reads ``server_profile``.
+    try_cast_reads_profile: bool = False
+
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
-    # URL scheme (``None`` = datasource type), sync/async DBAPI drivers, and their pip extra;
-    # read through ``driver_facts``.
+    # URL scheme (``None`` = datasource type; its ``+driver`` is the default driver), extra URL
+    # backends served, async DBAPI driver, and their pip extra; read through ``driver_facts``.
     url_scheme: str | None = None
-    sync_driver: str | None = None
+    url_backend_aliases: frozenset[str] = frozenset()
     async_driver: str | None = None
     install_extra: str | None = None
+
+    @property
+    def sync_driver(self) -> str | None:
+        """The default driver: ``url_scheme``'s ``+driver`` part."""
+        return _scheme_driver(self.url_scheme)
 
     def driver_facts(self, ds_type: str | None) -> DriverFacts:
         """``ds_type``'s driver facts: this dialect's when it serves ``ds_type``, else only ``ds_type`` as scheme."""
@@ -272,7 +351,7 @@ class SqlDialect(BaseModel):
             return DriverFacts(url_scheme=ds_type)
         return DriverFacts(
             url_scheme=self.url_scheme or ds_type,
-            sync_driver=self.sync_driver,
+            url_backend_aliases=self.url_backend_aliases,
             async_driver=self.async_driver,
             install_extra=self.install_extra,
         )
@@ -292,6 +371,25 @@ class SqlDialect(BaseModel):
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """The CAST target for a value of type ``dt`` (``None`` skips the cast)."""
         return dt
+
+    # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """Whether this dialect can express a CAST to ``data_type``."""
+        return data_type.this not in VENDOR_ONLY_CAST_TYPES or data_type.this in self.vendor_cast_types
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
+        return exp.TryCast(this=as_text(value), to=to)
+
+    # A native case-insensitive ``ILIKE``; elsewhere it is ``LOWER(x) LIKE LOWER(p)``.
+    ilike_native: ClassVar[bool] = False
+
+    def build_ilike(self, value: Expression, pattern: Expression) -> Expression:
+        if self.ilike_native:
+            return exp.ILike(this=value, expression=pattern)
+        return exp.Like(this=exp.Lower(this=value), expression=exp.Lower(this=pattern))
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
@@ -313,6 +411,18 @@ class SqlDialect(BaseModel):
         elif nulls == "last":
             kwargs["nulls_first"] = False
         return exp.Ordered(**kwargs)
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,  # NOSONAR(S1172) — read by the T-SQL emulation
+    ) -> list[exp.Ordered]:
+        """The ``ORDER BY`` terms of one entry; ``resolved`` is the expression ``order_col`` names, when it is
+        an alias of the SELECT being ordered."""
+        return [self.build_ordered(order_col, descending=descending, nulls=nulls)]
 
     def native_nulls_first(self, *, descending: bool) -> bool:
         """Where NULLs natively sort for ``descending``, read from sqlglot's emitter."""

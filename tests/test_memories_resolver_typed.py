@@ -16,7 +16,7 @@ This is a focused unit test of the token yielder; the end-to-end
 
 from __future__ import annotations
 
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.memories.resolver import _formula_entity_tokens
 
 

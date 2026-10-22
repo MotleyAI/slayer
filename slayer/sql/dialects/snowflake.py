@@ -100,6 +100,7 @@ class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
 
     sqlglot_name: str = "snowflake"
+    ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""

@@ -21,6 +21,7 @@ from slayer.core.keys import (
     ColumnTypeFn,
     ColumnSqlKey,
     LiteralKey,
+    CastKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -180,6 +181,8 @@ def measure_key_type(
     *, model: SlayerModel, key: ValueKey, bundle=None,
 ) -> Optional[DataType]:
     """``type`` for a measure slot, from its bound key alone."""
+    if isinstance(key, CastKey):
+        return key.data_type
     date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
     if date_type is not None:
         return date_type
@@ -249,6 +252,8 @@ def dimension_key_metadata(
     pre-existing: joined refs surface format / description through
     ``response_meta``, which resolves them against the owning model.
     """
+    if isinstance(key, CastKey):
+        return key.data_type, None, None
     if not isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:

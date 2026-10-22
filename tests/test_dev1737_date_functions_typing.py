@@ -25,7 +25,7 @@ from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import dimension_key_metadata, measure_key_type
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import customers_model, orders_model

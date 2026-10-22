@@ -25,6 +25,7 @@ from slayer.core.keys import (
     Phase,
     REGROUP_LEAF_PREFIX,
     SLOT_COMPOSITE_KINDS,
+    CastKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -529,6 +530,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return f"_arith_{key.op}"
     if isinstance(key, ScalarCallKey):
         return f"_scalar_{key.name}"
+    if isinstance(key, CastKey):
+        return f"_cast_{_canonical_name(key.source)}"
     if isinstance(key, LiteralKey):
         return f"_lit_{key.value}"
     if isinstance(key, StarKey):

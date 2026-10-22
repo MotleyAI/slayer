@@ -15,7 +15,7 @@ from sqlglot import exp
 
 from slayer.core.keys import AggregateKey, ColumnKey, walk_value_keys
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import AggCall, parse_expr
+from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (

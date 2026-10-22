@@ -12,7 +12,10 @@ Tier 1 modules.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.trino import PrestoFamilyDialect
@@ -20,6 +23,8 @@ from slayer.sql.dialects.trino import PrestoFamilyDialect
 
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
+    ilike_native: ClassVar[bool] = True
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
@@ -44,6 +49,7 @@ class PrestoDialect(PrestoFamilyDialect):
 
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
+    ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""
@@ -55,6 +61,7 @@ class DatabricksDialect(SqlDialect):
 
 class SparkDialect(SqlDialect):
     sqlglot_name: str = "spark"
+    ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"spark"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""

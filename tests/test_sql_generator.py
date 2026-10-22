@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlglot
 import sqlglot.errors
-from pydantic import ValidationError as PydanticValidationError
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
@@ -6175,12 +6174,10 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """DEV-1733 INVERTED this contract."""
-        item = OrderItem(column="revenue:sum - cost:sum", direction="desc")
-        assert item.column.name == "_expr_pending"
-        assert item.raw_formula == "revenue:sum - cost:sum"
-
-        with pytest.raises(PydanticValidationError):
-            OrderItem(column="revenue - cost", direction="desc")
+        for text in ("revenue:sum - cost:sum", "revenue - cost"):
+            item = OrderItem.model_validate({"column": text, "direction": "desc"})
+            assert item.column.name == "_expr_pending"
+            assert item.raw_formula == text
 
 
 class TestMultiHopCrossModelMeasure:

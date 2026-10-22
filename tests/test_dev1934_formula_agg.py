@@ -306,7 +306,7 @@ async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
     """``price:percentile`` with ``p`` passed as a query-time string and/or a model default."""
     aggs = (Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)]),) \
         if default is not None else ()
-    arg = "" if p is None else "(p='" + p.replace("'", "\\'") + "')"
+    arg = "" if p is None else "(p='" + p.replace("'", "''") + "')"
     return await _sql(f"price:percentile{arg}", aggs=aggs)
 
 

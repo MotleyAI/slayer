@@ -39,13 +39,13 @@ from slayer.core.errors import DateOperandTypeError
 from slayer.core.keys import InKey, LiteralKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     Cmp,
     DottedRef,
     Literal,
     Ref,
     TupleLit,
-    parse_filter_expr,
+    parse_expr,
 )
 import asyncio
 from slayer.core.models import DatasourceConfig
@@ -65,7 +65,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 class TestParserShape:
     def test_in_with_two_string_literals(self):
-        result = parse_filter_expr("status in ('a', 'b')")
+        result = parse_expr("status in ('a', 'b')")
         assert result == Cmp(
             op="in",
             left=Ref(name="status"),
@@ -76,7 +76,7 @@ class TestParserShape:
         )
 
     def test_not_in_with_two_string_literals(self):
-        result = parse_filter_expr("status not in ('a', 'b')")
+        result = parse_expr("status not in ('a', 'b')")
         assert result == Cmp(
             op="not in",
             left=Ref(name="status"),
@@ -87,7 +87,7 @@ class TestParserShape:
         )
 
     def test_in_with_numeric_literals(self):
-        result = parse_filter_expr("amount in (10, 20, 30)")
+        result = parse_expr("amount in (10, 20, 30)")
         assert result == Cmp(
             op="in",
             left=Ref(name="amount"),
@@ -103,7 +103,7 @@ class TestParserShape:
         # so a literal-only RHS guard that strictly checks ``isinstance
         # Literal`` would reject this. Codex review: collapse the sign
         # onto the inner numeric.
-        result = parse_filter_expr("amount in (-1, -2.5, +3)")
+        result = parse_expr("amount in (-1, -2.5, +3)")
         assert result == Cmp(
             op="in",
             left=Ref(name="amount"),
@@ -115,7 +115,7 @@ class TestParserShape:
         )
 
     def test_in_with_dotted_left(self):
-        result = parse_filter_expr("stores.name in ('Brooklyn', 'Philadelphia')")
+        result = parse_expr("stores.name in ('Brooklyn', 'Philadelphia')")
         assert result == Cmp(
             op="in",
             left=DottedRef(parts=("stores", "name")),
@@ -128,7 +128,7 @@ class TestParserShape:
     def test_in_accepts_python_list_syntax(self):
         # ``[…]`` and ``(…)`` should be interchangeable on the RHS —
         # both produce a Tuple node.
-        result = parse_filter_expr("status in ['a', 'b']")
+        result = parse_expr("status in ['a', 'b']")
         assert result == Cmp(
             op="in",
             left=Ref(name="status"),
@@ -147,12 +147,12 @@ class TestParserShape:
 class TestParserGuards:
     def test_empty_rhs_tuple_rejected(self):
         with pytest.raises(ValueError, match="empty"):
-            parse_filter_expr("status in ()")
+            parse_expr("status in ()")
 
     def test_scalar_rhs_is_a_time_point_membership(self):
         # ``col in 'a'`` is a single-string time-point membership: it parses, and the
         # checker rejects it against a non-temporal column with the typed error.
-        assert parse_filter_expr("status in 'a'") == Cmp(
+        assert parse_expr("status in 'a'") == Cmp(
             op="in", left=Ref(name="status"), right=Literal(value="a"),
         )
         engine, _ = _make_engine_with_orders()
@@ -166,7 +166,7 @@ class TestParserGuards:
         # ``status in (other_col, 'b')`` — the RHS may not reference a
         # column (no schema-aware binding for dynamic RHS; literals only).
         with pytest.raises(ValueError, match="literal"):
-            parse_filter_expr("status in (other_col, 'b')")
+            parse_expr("status in (other_col, 'b')")
 
     def test_direct_in_key_empty_values_rejected(self):
         # Defense in depth (Codex review): even if a caller bypasses
@@ -229,7 +229,7 @@ class TestBinder:
     def test_in_filter_binds_to_in_key(self):
 
         model = _make_orders_with_status()
-        parsed = parse_filter_expr("status in ('completed', 'pending')")
+        parsed = parse_expr("status in ('completed', 'pending')")
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
         scope = ModelScope(source_model=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
@@ -246,7 +246,7 @@ class TestBinder:
     def test_not_in_filter_binds_negated(self):
 
         model = _make_orders_with_status()
-        parsed = parse_filter_expr("status not in ('cancelled',)")
+        parsed = parse_expr("status not in ('cancelled',)")
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
         scope = ModelScope(source_model=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)

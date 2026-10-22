@@ -15,24 +15,9 @@ from pydantic import (
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import (
-    BUILTIN_AGGREGATION_FORMULAS,
-    BUILTIN_AGGREGATIONS,
-    DEFAULT_AGGREGATIONS_BY_TYPE,
-    GRANULARITY_NAMES,
-    DataType,
-    JoinCardinality,
-    JoinType,
-    ObjectKind,
-    PRIMARY_KEY_AGGREGATIONS,
-    RANKED_AGGREGATIONS,
-    RESERVED_DATE_SYNTAX_NAMES,
-    _coerce_legacy_datatype,
-    builtin_empty_value,
-)
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, DataType, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import SCALAR_FUNCTIONS
 from slayer.core.refs import IDENTIFIER_RE
@@ -1030,6 +1015,12 @@ class DatasourceConfig(BaseModel):
         ).render_as_string(hide_password=False)
 
     def get_connection_string(self) -> str:
+        """The connection URL; one naming no driver gets the type's default driver."""
+        return dialect_for_ds_type(self.type).driver_facts(self.type).pin_default_driver(
+            self._unpinned_connection_string()
+        )
+
+    def _unpinned_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
         # Dialect-specific hook (e.g. Snowflake); others return None and fall through.

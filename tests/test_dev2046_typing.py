@@ -23,7 +23,7 @@ from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import aggregated_type, measure_key_type, stage_measure_type
 from slayer.engine.response_meta import _infer_aggregated_format
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.facade.catalog import build_local_view
 from slayer.ir.source_bundle import ResolvedSourceBundle
 

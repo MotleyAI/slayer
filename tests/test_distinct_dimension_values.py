@@ -442,9 +442,7 @@ class TestCompileRejects:
             await _engine_generate(query=q, model=model)
 
     async def test_filter_post_variable_substitution(self) -> None:
-        """Case 16d: ``{var}`` substitution reveals an aggregation. The check
-        MUST fire after substitution, not before — the construction-time
-        check is structural only."""
+        """Case 16d: a variable cannot inject an aggregation — values bind as literals."""
         model = _orders_model()
         q = SlayerQuery(
             source_model="orders",
@@ -453,7 +451,7 @@ class TestCompileRejects:
             variables={"agg_filter": "amount:sum > 100"},
             distinct_dimension_values=False,
         )
-        with pytest.raises(DistinctDimensionValuesError):
+        with pytest.raises(ValueError, match="variables supply literal values"):
             await _engine_generate(query=q, model=model)
 
 

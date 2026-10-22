@@ -31,7 +31,7 @@ from slayer.engine.schema_drift import (
     _filter_refs_dsl,
     _measure_formula_refs,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
@@ -312,7 +312,7 @@ class TestMeasureFormulaRefs:
 
 class TestFilterRefsDslParity:
     """DEV-1833 parity suite pinned while migrating ``_filter_refs_dsl`` onto
-    ``parse_filter_expr`` (verified green on the legacy implementation first).
+    ``parse_expr`` (verified green on the legacy implementation first).
     Set equality only: reference order is expression order."""
 
     def test_colon_agg(self) -> None:
@@ -360,7 +360,7 @@ class TestFilterRefsDslParity:
 
 
 class TestFilterRefsDslMigrationGains:
-    """Refs only the migrated ``parse_filter_expr`` implementation surfaces
+    """Refs only the migrated ``parse_expr`` implementation surfaces
     (DEV-1833); red until the migration lands."""
 
     def test_funcstyle_custom_agg(self) -> None:

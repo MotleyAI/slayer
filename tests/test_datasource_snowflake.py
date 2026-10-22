@@ -1,4 +1,4 @@
-"""Tests for Snowflake-related fields on DatasourceConfig (DEV-1551).
+"""Tests for Snowflake-related fields on DatasourceConfig.
 
 The URL-building tests live in ``tests/dialects/test_snowflake.py`` — that's
 the strategy class. Here we cover:
@@ -11,6 +11,8 @@ the strategy class. Here we cover:
   ``snowflake-connector-python`` and ``snowflake-sqlalchemy``.
 """
 
+import pathlib
+import tomllib
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -76,7 +78,7 @@ class TestDatasourceDelegatesToDialect:
             role="should_be_ignored",
         )
         cs = ds.get_connection_string()
-        assert cs.startswith("postgresql://")
+        assert cs.startswith("postgresql+psycopg2://")
         assert "should_be_ignored" not in cs
 
 
@@ -120,8 +122,6 @@ class TestSnowflakePackagingExtras:
     """Pin the new pip extra at the packaging-metadata level."""
 
     def _load_pyproject(self) -> dict:
-        import pathlib
-        import tomllib
         pyproject = pathlib.Path(__file__).parent.parent / "pyproject.toml"
         with open(pyproject, "rb") as f:
             return tomllib.load(f)

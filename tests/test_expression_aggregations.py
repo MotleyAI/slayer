@@ -27,7 +27,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Ref, canonical_measure_text, parse_expr
+from slayer.core.syntax import AggCall, Ref, canonical_measure_text, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _norm

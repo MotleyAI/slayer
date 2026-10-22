@@ -5,9 +5,16 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.engine.url import make_url
 
+from slayer.core.models import DatasourceConfig
 from slayer.sql.client import _async_connection_string
 
 _URL_TAIL = "u:p%40ss@h:5432/d?sslmode=require"
+
+
+def _async_url(db_type: str, connection_string: str) -> str | None:
+    """The async URL a datasource with ``connection_string`` connects with."""
+    ds = DatasourceConfig(name="d", type=db_type, connection_string=connection_string)
+    return _async_connection_string(connection_string=ds.get_connection_string(), db_type=db_type)
 
 
 @pytest.mark.parametrize(
@@ -35,12 +42,13 @@ def test_async_capable_driver_kept_unchanged(db_type, connection_string) -> None
         ("mysql", f"mysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
         ("mysql", f"mysql+pymysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
         ("mariadb", f"mysql+pymysql://{_URL_TAIL}", f"mysql+aiomysql://{_URL_TAIL}"),
+        ("mariadb", "mariadb://u@h/d", "mariadb+aiomysql://u@h/d"),
+        ("mariadb", "mariadb+pymysql://u@h/d", "mariadb+aiomysql://u@h/d"),
+        ("mysql", "mariadb://u@h/d", "mariadb+aiomysql://u@h/d"),
     ],
 )
 def test_plain_or_default_sync_url_moves_to_async_driver(db_type, connection_string, expected) -> None:
-    assert _async_connection_string(
-        connection_string=connection_string, db_type=db_type,
-    ) == expected
+    assert _async_url(db_type, connection_string) == expected
 
 
 def test_swap_preserves_every_other_url_part() -> None:
@@ -58,10 +66,11 @@ def test_swap_preserves_every_other_url_part() -> None:
         ("postgres", f"redshift+redshift_connector://{_URL_TAIL}"),
         ("snowflake", "snowflake://u:p@acct/db"),
         ("foo", f"postgresql://{_URL_TAIL}"),
+        ("postgres", f"mysql://{_URL_TAIL}"),
     ],
 )
 def test_no_async_url(db_type, connection_string) -> None:
-    assert _async_connection_string(connection_string=connection_string, db_type=db_type) is None
+    assert _async_url(db_type, connection_string) is None
 
 
 @pytest.mark.parametrize(

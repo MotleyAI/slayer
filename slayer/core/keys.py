@@ -88,6 +88,7 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "replace": _spec(3, 3), "substr": _spec(2, 3), "substring": _spec(2, 3), "instr": _spec(2, 2),
     "concat": _spec(1, None),
     "like": _spec(2, 2, sql=False),  # emits the LIKE operator
+    "ilike": _spec(2, 2, sql=False),  # case-insensitive LIKE on every dialect
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
     "date_part": _spec(2, 2, sql=False),
     "date_diff": _spec(3, 3, sql=False),
@@ -402,7 +403,7 @@ class LiteralKey(_LeafKey, frozen=True):
 AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
-    "InKey", "TimePointCmpKey",
+    "InKey", "TimePointCmpKey", "CastKey",
 ]
 # Positional and kwarg arg values share one union: `last(created_at)` binds an
 # identifier column, `weighted_avg(weight=qty)` a column,
@@ -411,6 +412,8 @@ AggregateSource = Union[
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
+    # A FILTER-masked row parameter.
+    "ScalarCallKey",
     Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
@@ -447,6 +450,8 @@ class AggregateKey(_FrozenKey, frozen=True):
     locus: Literal["target", "host"] = "target"
     # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
     partition_keys: Optional["Grain"] = None
+    # A ranked (first / last) aggregate's ``FILTER (WHERE …)``; other families mask their inputs at binding.
+    filter: Optional["ValueKey"] = None
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -465,6 +470,8 @@ class AggregateKey(_FrozenKey, frozen=True):
         ]
         if self.partition_keys is not None:
             embedded.extend(self.partition_keys)
+        if self.filter is not None:
+            embedded.append(self.filter)
         return tuple(embedded)
 
     def map_children(
@@ -479,6 +486,7 @@ class AggregateKey(_FrozenKey, frozen=True):
                 None if self.partition_keys is None
                 else Grain.of(m(p) for p in self.partition_keys)
             ),
+            "filter": None if self.filter is None else m(self.filter),
         }
         return self.model_copy(update=update) if m.changed else self
 
@@ -491,6 +499,7 @@ class AggregateKey(_FrozenKey, frozen=True):
             _typed_kwargs(self.kwargs),
             self.locus,
             self.partition_keys,
+            self.filter,
         ))
 
     def __eq__(self, other: object) -> bool:
@@ -503,6 +512,7 @@ class AggregateKey(_FrozenKey, frozen=True):
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
             and self.locus == other.locus
             and self.partition_keys == other.partition_keys
+            and self.filter == other.filter
         )
 
 
@@ -677,6 +687,50 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
+# A cast target's SLayer type, by the type's leading word.
+_CAST_TYPE_WORDS: Mapping[str, DataType] = MappingProxyType({
+    **{w: DataType.INT for w in ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT", "HUGEINT",
+                                 "INT2", "INT4", "INT8", "INT64", "LONG")},
+    **{w: DataType.DOUBLE for w in ("FLOAT", "FLOAT4", "FLOAT8", "FLOAT64", "DOUBLE", "REAL", "DECIMAL",
+                                    "NUMERIC", "NUMBER", "BIGNUMERIC", "DEC")},
+    **{w: DataType.TEXT for w in ("TEXT", "VARCHAR", "CHAR", "CHARACTER", "NVARCHAR", "NCHAR", "STRING",
+                                  "CLOB", "NTEXT", "BPCHAR")},
+    **{w: DataType.BOOLEAN for w in ("BOOLEAN", "BOOL")},
+    "DATE": DataType.DATE,
+    **{w: DataType.TIMESTAMP for w in ("TIMESTAMP", "DATETIME", "DATETIME2", "TIMESTAMPTZ", "SMALLDATETIME")},
+})
+
+
+def cast_data_type(type_text: str) -> DataType:
+    """SLayer's type for a cast to ``type_text`` (UNKNOWN for any unmapped type)."""
+    word = type_text.split("(")[0].split()[0].upper() if type_text.strip() else ""
+    return _CAST_TYPE_WORDS.get(word, DataType.UNKNOWN)
+
+
+class CastKey(_FrozenKey, frozen=True):
+    """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the database's
+    own cast of the author's type; ``data_type`` is SLayer's type for the target."""
+
+    source: "ValueKey"
+    type_text: str
+    data_type: DataType
+    try_: bool = False
+
+    @property
+    def phase(self) -> Phase:
+        return self.source.phase
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.source,)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "CastKey":
+        m = _ChildMapper(fn)
+        source = m(self.source)
+        return self.model_copy(update={"source": source}) if m.changed else self
+
+
 TimePointOp = Literal["=", "!=", "<", "<=", ">", ">=", "in", "not in"]
 MIRRORED_TIME_POINT_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 
@@ -765,6 +819,7 @@ ValueKey = Union[
     TimePointCmpKey,
     InKey,
     SqlFragmentKey,
+    CastKey,
 ]
 
 
@@ -871,6 +926,7 @@ ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
 TimePointCmpKey.model_rebuild()
 InKey.model_rebuild()
+CastKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
@@ -879,6 +935,8 @@ Grain.EMPTY = Grain(keys=frozenset())
 
 
 VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
+# Key fields spelled only when set, so a key without one keeps its historical spelling.
+OPTIONAL_KEY_FIELDS = frozenset({"filter"})
 
 
 class KindPolicy(BaseModel):
@@ -908,6 +966,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TimePointCmpKey: KindPolicy(),
     InKey: KindPolicy(slot_composite=True, materialised_order=True),
     SqlFragmentKey: KindPolicy(),
+    CastKey: KindPolicy(slot_composite=True, materialised_order=True),
 }
 SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
@@ -1238,6 +1297,8 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
         return temporal_type(key.source, column_type=column_type) if from_source else None
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, column_type=column_type)
+    if isinstance(key, CastKey):
+        return key.data_type if key.data_type in TEMPORAL_TYPES else None
     return None
 
 
@@ -1282,8 +1343,10 @@ def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
         return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, column_type=column_type)
     if isinstance(key, TransformKey):
         return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, column_type=column_type)
+    if isinstance(key, CastKey):
+        return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
-        if key.name == "like":
+        if key.name in ("like", "ilike"):
             return True
         if key.name not in _BOOLEAN_BRANCH_SCALARS:
             return False
@@ -1340,6 +1403,8 @@ def numeric_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
         return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, column_type=column_type)
     if isinstance(key, TransformKey):
         return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, column_type=column_type)
+    if isinstance(key, CastKey):
+        return key.data_type in _NUMERIC_TYPES
     if isinstance(key, ScalarCallKey):
         if key.name in _NUMBER_RESULT_SCALARS:
             return True
@@ -1418,6 +1483,8 @@ def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Opt
         return DataType.INT
     if isinstance(source, (ColumnKey, ColumnSqlKey)):
         return column_type(source)
+    if isinstance(source, CastKey) and source.data_type is not DataType.UNKNOWN:
+        return source.data_type
     return None
 
 
@@ -1493,8 +1560,10 @@ def is_local_combined_regroup_ref(
     )
 
 
+# Null-safe comparisons: never UNKNOWN.
+NULL_SAFE_COMPARISON_OPS = frozenset({"is distinct from", "is not distinct from"})
 PREDICATE_COMPARISON_OPS = frozenset(
-    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not"}
+    {"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is", "is not", *NULL_SAFE_COMPARISON_OPS}
 )
 BOOL_CONNECTIVE_OPS = frozenset({"and", "or", "not"})
 

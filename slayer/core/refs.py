@@ -11,8 +11,10 @@ from typing import Any, Callable
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
+    OPTIONAL_KEY_FIELDS,
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -65,7 +67,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
 # is a same-model scalar EXPRESSION rather than a column / star.
-EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey)
+EXPRESSION_SOURCE_KINDS = (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey, CastKey)
 
 
 # The pinned legacy key spelling: the historical Pydantic
@@ -94,6 +96,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("partition_keys", lambda k: (
             None if k.partition_keys is None else k.partition_keys.keys
         )),
+        ("filter", attrgetter("filter")),
     )),
     TransformKey: ("TransformKey", (
         ("op", attrgetter("op")), ("input", attrgetter("input")),
@@ -119,6 +122,10 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     )),
     SqlFragmentKey: ("SqlFragmentKey", (
         ("template", attrgetter("template")), ("refs", attrgetter("refs")),
+    )),
+    CastKey: ("CastKey", (
+        ("source", attrgetter("source")), ("type_text", attrgetter("type_text")),
+        ("try_", attrgetter("try_")),
     )),
 }
 
@@ -146,6 +153,7 @@ def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
     spelled_cls, fields = _LEGACY_KEY_SPELLINGS[type(key)]
     return spelled_cls, [
         (name, _legacy_value_spelling(get(key))) for name, get in fields
+        if not (name in OPTIONAL_KEY_FIELDS and get(key) is None)
     ]
 
 
@@ -231,7 +239,8 @@ def _aggregate_display(key: AggregateKey) -> str:
     args.extend(f"{k}={_arg_display(v)}" for k, v in key.kwargs)
     if key.partition_keys is not None:
         args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
-    return _call_display(key.agg, args)
+    text = _call_display(key.agg, args)
+    return text if key.filter is None else f"{text} FILTER (WHERE {key_display(key.filter)})"
 
 
 def _transform_display(key: TransformKey) -> str:
@@ -285,6 +294,8 @@ def key_display(key: ValueKey) -> str:
         return _arithmetic_display(key)
     if isinstance(key, ScalarCallKey):
         return _call_display(key.name, [_arg_display(a) for a in key.args])
+    if isinstance(key, CastKey):
+        return f"{'TRY_CAST' if key.try_ else 'CAST'}({key_display(key.source)} AS {key.type_text})"
     if isinstance(key, TimePointCmpKey):
         return _time_point_cmp_display(key)
     if isinstance(key, InKey):
@@ -345,6 +356,9 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
+    if isinstance(value, ScalarCallKey):
+        # A FILTER-masked row parameter.
+        return auto_name_from_expression(key_display(value))
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",

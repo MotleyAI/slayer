@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -92,6 +92,7 @@ class OrderSpec(BaseModel):
 
     bound: BoundExpr
     direction: str = "asc"
+    nulls: Literal["default", "first", "last"] = "default"
 
 
 class GranularityConflict(BaseModel):

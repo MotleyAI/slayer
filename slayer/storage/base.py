@@ -42,6 +42,7 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.legacy_backends import adapt_legacy_hooks
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_model_dict,
@@ -415,6 +416,10 @@ class StorageBackend(ABC):
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        adapt_legacy_hooks(cls=cls, base=StorageBackend)
 
     # ---- model CRUD (composite key) ----------------------------------------
 
@@ -816,8 +821,14 @@ class StorageBackend(ABC):
     async def _repair_query_filters(
         self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
     ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column."""
-        filters = query.get("filters") if isinstance(query, dict) else None
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column;
+        the stored query is migrated first, so its filters read under the current grammar."""
+        if not isinstance(query, dict):
+            return
+        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
+        query.clear()
+        query.update(migrated)
+        filters = query.get("filters")
         if not isinstance(filters, list):
             return
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
@@ -986,7 +997,7 @@ class StorageBackend(ABC):
         """Backend-specific durable write; filename-backed backends should call ``check_datasource_id_collision`` first."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
-        """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved model's ``data_source`` (public so backends call it from ``save_datasource``)."""
+        """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved model's ``data_source`` (public so backends call it from ``_save_datasource_impl``)."""
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
         collide = _find_case_colliding_id(candidate=name, existing=existing)

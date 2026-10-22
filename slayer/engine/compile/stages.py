@@ -30,9 +30,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
 from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
-from slayer.core.refs import key_display
+from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     column_default_key,
@@ -79,6 +79,7 @@ from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_n
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
     ConsumerPosition,
+    row_refs_off_grain,
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
@@ -183,6 +184,23 @@ def _row_key_path(key: ValueKey) -> tuple:
     return tuple(getattr(key, "path", ()))
 
 
+def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[AggregateSource, tuple]]:
+    """(source, join path) of the MIN/MAX wrap a grouped ORDER BY row value needs, else ``None``."""
+    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
+        return (key.column if isinstance(key, TimeTruncKey) else key), _row_key_path(key)
+    if not isinstance(key, EXPRESSION_SOURCE_KINDS) or any(
+        isinstance(k, (AggregateKey, TransformKey))
+        or (isinstance(k, ColumnKey) and k.leaf.startswith(REGROUP_LEAF_PREFIX))
+        for k in walk_value_keys(key)
+    ):
+        return None
+    off_grain = row_refs_off_grain(key, dim_keys)
+    if not off_grain:
+        return None
+    return key, next((p for p in map(_row_key_path, off_grain) if p), ())
+
+
 # Duration-windowed measures (``window='90d'``).
 
 
@@ -249,7 +267,10 @@ def _windowed_slot_id_set(
 def _stable_text(obj: Any) -> str:
     """A process-independent spelling of a key (sets sorted, never hash order)."""
     if isinstance(obj, BaseModel):
-        fields = ",".join(_stable_text(getattr(obj, f)) for f in type(obj).model_fields)
+        fields = ",".join(
+            _stable_text(getattr(obj, f)) for f in type(obj).model_fields
+            if not (f in OPTIONAL_KEY_FIELDS and getattr(obj, f) is None)
+        )
         return f"{type(obj).__name__}({fields})"
     if isinstance(obj, (set, frozenset)):
         return "{" + ",".join(sorted(_stable_text(x) for x in obj)) + "}"
@@ -1652,6 +1673,8 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
         return _is_value(
             a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
         )
+    if op in NULL_SAFE_COMPARISON_OPS:
+        return _D
     if op in PREDICATE_COMPARISON_OPS:
         return _unknown_if_null(cj.operands, h=h, srcs=srcs)
     return _D
@@ -3481,6 +3504,7 @@ def _rewrite_regrouped_prebound(
                     value_key=substitute_value_keys(sp.bound.value_key, mapping),
                 ),
                 direction=sp.direction,
+                nulls=sp.nulls,
             )
             for sp in prebound.order_specs
         ],
@@ -3996,6 +4020,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     host_model_for_wraps = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+    grain_dim_keys = frozenset(dm.bound.value_key for dm in declared_measures[:n_dims + n_tds])
     for spec in order_specs:
         okey = spec.bound.value_key
         osid = projection.registry.find_by_key(okey)
@@ -4006,12 +4031,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         if isinstance(okey, ColumnKey) and okey.leaf.startswith(REGROUP_LEAF_PREFIX):
             # A combined regroup placeholder resolves via its producer, not a hidden MIN/MAX.
             continue
-        if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            if grain is None:
-                continue  # raw-rows query -> split emission, no wrap needed
-            path = _row_key_path(okey)
-            # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
-            src = okey.column if isinstance(okey, TimeTruncKey) else okey
+        if grain is None:
+            continue  # raw-rows query -> split emission, no wrap needed
+        wrap = _order_wrap_source(okey, dim_keys=grain_dim_keys)
+        if wrap is not None:
+            src, path = wrap
             # ASC orders each group by its MIN, DESC by its MAX.
             wrap_key = AggregateKey(
                 source=src,
@@ -4186,6 +4210,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
             slot_id=sid,
             direction=direction,
             phase=order_slot.key.phase,
+            nulls=spec.nulls,
         ))
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)

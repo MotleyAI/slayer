@@ -22,7 +22,7 @@ show" is the rows.
 
 ## Filter literals
 
-Build every `==` / `in` / `like` condition on a text column from that column's
+Build every `=` / `in` / `like` condition on a text column from that column's
 sampled values (inspect it with `compact=false`), never a guessed spelling; samples are a top-N snapshot,
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.
