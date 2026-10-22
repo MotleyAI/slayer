@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.granularity import CustomGranularity
+from slayer.core.join_edges import same_edge
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -25,6 +26,7 @@ from slayer.core.scope import ModelScope, StageDisplay, StageSchema
 __all__ = [
     "resolve_scope",
     "ResolvedSourceBundle",
+    "added_joins",
     "apply_extension_overlay",
     "as_extension_over_nonsibling",
     "follow_sibling_chain",
@@ -72,6 +74,11 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    def saved_joins(self, name: str) -> List[ModelJoin]:
+        """The declared joins of stored query-backed model ``name``; none for any other stage."""
+        saved = self.query_backed.get(name)
+        return list(saved.joins) if saved is not None else []
+
     def factor_free(self, model: SlayerModel) -> SlayerModel:
         """``model`` as stored: a population without its product hops."""
         if model.unrelated_datasets:
@@ -106,6 +113,11 @@ class ResolvedSourceBundle(BaseModel):
         return out
 
 
+def added_joins(*, base: SlayerModel, joins: Optional[List[ModelJoin]]) -> List[ModelJoin]:
+    """Extension ``joins`` new to ``base``: one repeating a stored join is that edge."""
+    return [j for j in joins or [] if not any(same_edge(j, s) for s in base.joins)]
+
+
 def apply_extension_overlay(
     base: SlayerModel, ext: ModelExtension
 ) -> SlayerModel:
@@ -119,7 +131,7 @@ def apply_extension_overlay(
         update={
             "columns": list(base.columns) + list(ext.columns or []),
             "measures": overlay_measures,
-            "joins": list(base.joins) + list(ext.joins or []),
+            "joins": list(base.joins) + added_joins(base=base, joins=ext.joins),
         }
     )
     # model_copy runs no validators; re-run the namespace and join-key checks
@@ -196,8 +208,7 @@ def model_from_stage_schema(
     composite = len(grain) > 1
     column_sql = column_sql or {}
     model = SlayerModel(
-        # Validate saved joins at their real identity; minted flat stages need the temporary name.
-        name=name if joins else "_stage",
+        name="_stage",
         data_source=data_source,
         sql_table="_stage" if sql is None else None,
         sql=sql,
@@ -215,12 +226,15 @@ def model_from_stage_schema(
             ).with_respellings(c.respellings)
             for c in schema.columns
         ],
-        joins=joins or [],
     )
+    joins = joins or []
+    # Joins attach after the rename (validators skip model_copy), so check their keys here.
+    _check_join_keys(model_name=name, columns=model.columns, joins=joins)
     # A minted stage identity carries the reserved prefix the name validator rejects.
     return model.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
+        "joins": joins,
     }).with_spelling(schema.display_name if schema.display_name != name else None)
 
 
@@ -241,8 +255,7 @@ def stage_bundle_with_siblings(
     """
     synths = [
         model_from_stage_schema(
-            name=n, schema=s, data_source=data_source,
-            joins=(bundle.query_backed[n].joins if n in bundle.query_backed else []),
+            name=n, schema=s, data_source=data_source, joins=bundle.saved_joins(n),
         )
         for n, s in sibling_schemas.items()
     ]
