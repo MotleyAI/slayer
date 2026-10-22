@@ -1,14 +1,15 @@
 """DEV-1576 — parse-level coverage for the three SlayerQuery heals.
 
-1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``
-   + colon-syntax healing in ``parse_formula``; the typed pipeline heals at
-   binding — see ``tests/test_aggregation_gating.py``).
-2. ``round()`` / ``abs()`` as top-level formula functions (parse into a
-   ``MixedArithmeticField`` passthrough; arity validation).
+1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``;
+   colon-syntax healing happens at binding).
+2. ``round()`` / ``abs()`` as top-level formula functions (scalar calls over
+   aggregations; arity validated at binding).
 
 The §3 error-message split and end-to-end execution live in
 ``tests/test_aggregation_gating.py`` and the integration suites respectively.
 """
+
+from decimal import Decimal
 
 import pytest
 
@@ -17,11 +18,37 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     normalize_aggregation_name,
 )
-from slayer.core.formula import (
-    AggregatedMeasureRef,
-    MixedArithmeticField,
-    parse_formula,
-)
+from slayer.core.enums import DataType
+from slayer.core.errors import UnknownFunctionError
+from slayer.core.keys import AggregateKey, ValueKey
+from slayer.core.models import Aggregation, Column, SlayerModel
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.core.syntax import AggCall, Literal, Ref, ScalarCall, TransformCall, parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
+
+
+def _bind(text: str, *, custom: tuple[str, ...] = ()) -> ValueKey:
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="t",
+        columns=[Column(name=n, type=DataType.DOUBLE) for n in ("revenue", "cost", "other", "x")],
+        aggregations=[Aggregation(name=n, formula="COUNT(DISTINCT {value})") for n in custom],
+    )
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
+    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle,
+                     allow_measures=True).value_key
+
+
+def _nodes(node):
+    yield node
+    for value in getattr(node, "__dict__", {}).values():
+        for item in value if isinstance(value, tuple) else (value,):
+            if hasattr(item, "__dict__"):
+                yield from _nodes(item)
+            elif isinstance(item, tuple):
+                for sub in item:
+                    if hasattr(sub, "__dict__"):
+                        yield from _nodes(sub)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +115,7 @@ class TestNormalizeAggregationName:
 
 
 # ---------------------------------------------------------------------------
-# §1 — colon-syntax healing through parse_formula
+# §1 — colon-syntax healing at binding
 # ---------------------------------------------------------------------------
 
 
@@ -106,35 +133,30 @@ class TestColonSyntaxAliasHealing:
         ],
     )
     def test_formula_colon_alias_heals(self, raw_agg: str, expected: str) -> None:
-        result = parse_formula(f"revenue:{raw_agg}")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.aggregation_name == expected
-        assert result.measure_name == "revenue"
+        key = _bind(f"revenue:{raw_agg}")
+        assert isinstance(key, AggregateKey)
+        assert key.agg == expected
+        assert getattr(key.source, "leaf", None) == "revenue"
 
     def test_star_count_alias_unaffected(self) -> None:
-        result = parse_formula("*:count")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.aggregation_name == "count"
+        key = _bind("*:count")
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "count"
 
     def test_unknown_agg_in_formula_left_for_enrichment(self) -> None:
-        # parse_formula does not validate the vocabulary — an unknown agg
-        # parses through (heal leaves it unchanged); enrichment raises later.
-        result = parse_formula("revenue:bogus")
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.aggregation_name == "bogus"
+        # The parser does not validate the vocabulary — an unknown agg parses through.
+        assert parse_expr("revenue:bogus") == AggCall(source=Ref(name="revenue"), agg="bogus")
 
     def test_custom_agg_named_like_alias_not_healed(self) -> None:
-        # A model custom aggregation named like an alias key takes precedence —
-        # an exact custom-name match is NOT rewritten to the builtin.
-        result = parse_formula("revenue:countd", extra_agg_names=frozenset({"countd"}))
-        assert isinstance(result, AggregatedMeasureRef)
-        assert result.aggregation_name == "countd"
+        # An exact custom-name match takes precedence over the alias.
+        key = _bind("revenue:countd", custom=("countd",))
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "countd"
 
     def test_alias_still_heals_when_custom_name_differs(self) -> None:
-        result = parse_formula(
-            "revenue:countd", extra_agg_names=frozenset({"some_other_agg"})
-        )
-        assert result.aggregation_name == "count_distinct"
+        key = _bind("revenue:countd", custom=("some_other_agg",))
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "count_distinct"
 
 
 # ---------------------------------------------------------------------------
@@ -142,56 +164,44 @@ class TestColonSyntaxAliasHealing:
 # ---------------------------------------------------------------------------
 
 
-def _agg_names(field: MixedArithmeticField) -> set[str]:
-    return {ref.aggregation_name for ref in field.agg_refs.values()}
+def _agg_names(parsed) -> set[str]:
+    return {n.agg for n in _nodes(parsed) if isinstance(n, AggCall)}
+
+
+def _scalar(parsed, name: str) -> ScalarCall:
+    assert isinstance(parsed, ScalarCall), parsed
+    assert parsed.name.lower() == name, parsed
+    return parsed
 
 
 class TestScalarFunctionsParse:
     def test_round_two_args(self) -> None:
-        result = parse_formula("round(revenue:sum, 2)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "round" in result.sql.lower()
-        assert "2" in result.sql
+        result = _scalar(parse_expr("round(revenue:sum, 2)"), "round")
+        assert result.args[1] == Literal(value=Decimal(2))
         assert _agg_names(result) == {"sum"}
-        assert result.sub_transforms == []
+        assert not any(isinstance(n, TransformCall) for n in _nodes(result))
 
     def test_round_one_arg(self) -> None:
-        result = parse_formula("round(revenue:sum)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "round" in result.sql.lower()
-        assert _agg_names(result) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("round(revenue:sum)"), "round")) == {"sum"}
 
     def test_abs_one_arg(self) -> None:
-        result = parse_formula("abs(revenue:sum)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "abs" in result.sql.lower()
-        assert _agg_names(result) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("abs(revenue:sum)"), "abs")) == {"sum"}
 
     def test_abs_over_arithmetic(self) -> None:
-        result = parse_formula("abs(revenue:sum - cost:sum)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "abs" in result.sql.lower()
-        assert _agg_names(result) == {"sum"}
+        assert _agg_names(_scalar(parse_expr("abs(revenue:sum - cost:sum)"), "abs")) == {"sum"}
 
     def test_round_over_arithmetic(self) -> None:
-        result = parse_formula("round(revenue:sum / *:count, 2)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "round" in result.sql.lower()
-        assert _agg_names(result) == {"sum", "count"}
+        assert _agg_names(_scalar(parse_expr("round(revenue:sum / *:count, 2)"), "round")) == {"sum", "count"}
 
     def test_round_negative_ndigits(self) -> None:
-        # round(x, -2) is valid SQL (round to hundreds); negative integer
-        # literals must be accepted.
-        result = parse_formula("round(revenue:sum, -2)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "round" in result.sql.lower()
+        # round(x, -2) is valid SQL (round to hundreds); negative integer literals are accepted.
+        _scalar(parse_expr("round(revenue:sum, -2)"), "round")
+        _bind("round(revenue:sum, -2)")
 
     def test_round_wraps_nested_transform(self) -> None:
-        # A transform nested inside round is still extracted as a sub-transform.
-        result = parse_formula("round(cumsum(revenue:sum), 2)")
-        assert isinstance(result, MixedArithmeticField)
-        assert result.sub_transforms, "nested cumsum should become a sub-transform"
-        assert result.sub_transforms[0][1].transform == "cumsum"
+        result = _scalar(parse_expr("round(cumsum(revenue:sum), 2)"), "round")
+        transforms = [n for n in _nodes(result) if isinstance(n, TransformCall)]
+        assert [t.op for t in transforms] == ["cumsum"]
 
     @pytest.mark.parametrize(
         "raw",
@@ -203,71 +213,45 @@ class TestScalarFunctionsParse:
         ],
     )
     def test_scalar_functions_case_insensitive(self, raw: str) -> None:
-        result = parse_formula(raw)
-        assert isinstance(result, MixedArithmeticField)
-        assert _agg_names(result) == {"sum"}
+        assert parse_expr(raw) == parse_expr(raw.split("(", 1)[0].lower() + "(" + raw.split("(", 1)[1])
+        assert _agg_names(parse_expr(raw)) == {"sum"}
 
 
 class TestScalarFunctionArity:
-    def test_round_no_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="round"):
-            parse_formula("round()")
-
-    def test_round_three_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="round"):
-            parse_formula("round(revenue:sum, 2, 3)")
-
-    def test_round_non_integer_ndigits_raises(self) -> None:
-        with pytest.raises(ValueError, match="round"):
-            parse_formula("round(revenue:sum, 2.5)")
-
-    def test_round_non_literal_ndigits_raises(self) -> None:
-        # ndigits must be a literal, not another measure / expression.
-        with pytest.raises(ValueError, match="round"):
-            parse_formula("round(revenue:sum, x)")
-
-    def test_round_kwarg_raises(self) -> None:
-        with pytest.raises(ValueError, match="round"):
-            parse_formula("round(revenue:sum, ndigits=2)")
-
-    def test_abs_two_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="abs"):
-            parse_formula("abs(revenue:sum, cost:sum)")
-
-    def test_abs_no_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="abs"):
-            parse_formula("abs()")
-
-    def test_abs_kwarg_raises(self) -> None:
-        with pytest.raises(ValueError, match="abs"):
-            parse_formula("abs(revenue:sum, foo=1)")
+    @pytest.mark.parametrize(("formula", "fn"), [
+        ("round()", "round"),
+        ("round(revenue:sum, 2, 3)", "round"),
+        ("round(revenue:sum, ndigits=2)", "round"),
+        ("abs(revenue:sum, cost:sum)", "abs"),
+        ("abs()", "abs"),
+        ("abs(revenue:sum, foo=1)", "abs"),
+        ("round(revenue:sum, 2.5)", "round"),
+        ("round(revenue:sum, x)", "round"),
+    ])
+    def test_arity_rejected(self, formula: str, fn: str) -> None:
+        with pytest.raises(ValueError, match=fn):
+            _bind(formula)
 
 
 class TestScalarPassthroughPolicy:
     """Mode B has one canonical scalar-function allowlist (SCALAR_PASSTHROUGH)
-    applied uniformly at top-level and inside arithmetic. Replaces the old
-    narrow {round, abs} gate from DEV-1576."""
+    applied uniformly at top-level and inside arithmetic."""
 
     @pytest.mark.parametrize("fn", ["ceil", "floor", "sqrt", "ln", "nullif", "coalesce"])
     def test_common_scalars_accepted_at_top_level(self, fn: str) -> None:
-        # All of these landed in the unified SCALAR_PASSTHROUGH set.
-        result = parse_formula(f"{fn}(revenue:sum)")
-        assert result is not None
+        _scalar(parse_expr(f"{fn}(revenue:sum)"), fn)
 
     def test_inside_arithmetic_passthrough_still_works(self) -> None:
-        result = parse_formula("*:count / nullif(revenue:max, 0)")
-        assert isinstance(result, MixedArithmeticField)
-        assert "nullif" in result.sql.lower()
+        parsed = parse_expr("*:count / nullif(revenue:max, 0)")
+        assert any(isinstance(n, ScalarCall) and n.name == "nullif" for n in _nodes(parsed))
+        _bind("*:count / nullif(revenue:max, 0)")
 
     def test_unknown_call_inside_arithmetic_now_rejected(self) -> None:
-        # The unification closed the accidental side door: unknown calls
-        # inside arithmetic used to silently pass through.
-        with pytest.raises(ValueError, match="Unknown function"):
-            parse_formula("revenue:sum + bogus_fn(other:sum)")
+        with pytest.raises(UnknownFunctionError, match="Unknown function"):
+            _bind("revenue:sum + bogus_fn(other:sum)")
 
     @pytest.mark.parametrize("raw", ["countd(revenue)", "countDistinct(revenue)"])
-    def test_funcstyle_aggregation_alias_out_of_scope(self, raw: str) -> None:
-        # §1 heals colon syntax only. Function-style alias calls are NOT
-        # rewritten — they fall through to the parser as unknown calls.
-        with pytest.raises(ValueError, match="Unknown function"):
-            parse_formula(raw)
+    def test_funcstyle_aggregation_alias_heals(self, raw: str) -> None:
+        key = _bind(raw)
+        assert isinstance(key, AggregateKey)
+        assert key.agg == "count_distinct"

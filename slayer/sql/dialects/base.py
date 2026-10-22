@@ -13,8 +13,10 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
+from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
@@ -102,6 +104,39 @@ TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
 COMPARISON_NODES: dict[str, Any] = {
     "=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
 }
+
+
+#: The validity grammar where a database cannot check a cast itself: a signed decimal with an optional
+#: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
+NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
+TRUE_WORDS = ("true", "t", "yes", "1")
+FALSE_WORDS = ("false", "f", "no", "0")
+
+
+def as_text(value: Expression) -> Expression:
+    """``CAST(value AS TEXT)`` — the input a validity check reads."""
+    return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
+
+
+def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
+    sqlglot_name = dialect.sqlglot_name
+    built: Optional[exp.DataType] = None
+    for reader in (sqlglot_name, "postgres"):
+        try:
+            built = exp.DataType.build(type_text, dialect=reader)
+            break
+        except (SqlglotError, ValueError):
+            continue
+    if built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built):
+        raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
+    return built
+
+
+#: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
+VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+})
 
 
 def temporal_type_of(value: date) -> DataType:
@@ -287,6 +322,14 @@ class SqlDialect(BaseModel):
     # Correlated subqueries need a server setting this user may be unable to set.
     correlated_subqueries_gated: bool = False
 
+    # Whether setting the statement timeout depends on the server profile (probed only then).
+    timeout_reads_profile: bool = False
+
+    # The server's profile, when SQL generation needs it (Postgres TRY_CAST); unknown otherwise.
+    server_profile: ServerProfile = ServerProfile()
+    # Whether rendering a TRY_CAST reads ``server_profile``.
+    try_cast_reads_profile: bool = False
+
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
 
@@ -329,6 +372,25 @@ class SqlDialect(BaseModel):
         """The CAST target for a value of type ``dt`` (``None`` skips the cast)."""
         return dt
 
+    # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """Whether this dialect can express a CAST to ``data_type``."""
+        return data_type.this not in VENDOR_ONLY_CAST_TYPES or data_type.this in self.vendor_cast_types
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
+        return exp.TryCast(this=as_text(value), to=to)
+
+    # A native case-insensitive ``ILIKE``; elsewhere it is ``LOWER(x) LIKE LOWER(p)``.
+    ilike_native: ClassVar[bool] = False
+
+    def build_ilike(self, value: Expression, pattern: Expression) -> Expression:
+        if self.ilike_native:
+            return exp.ILike(this=value, expression=pattern)
+        return exp.Like(this=exp.Lower(this=value), expression=exp.Lower(this=pattern))
+
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
     ) -> Expression:
@@ -349,6 +411,18 @@ class SqlDialect(BaseModel):
         elif nulls == "last":
             kwargs["nulls_first"] = False
         return exp.Ordered(**kwargs)
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,  # NOSONAR(S1172) — read by the T-SQL emulation
+    ) -> list[exp.Ordered]:
+        """The ``ORDER BY`` terms of one entry; ``resolved`` is the expression ``order_col`` names, when it is
+        an alias of the SELECT being ordered."""
+        return [self.build_ordered(order_col, descending=descending, nulls=nulls)]
 
     def native_nulls_first(self, *, descending: bool) -> bool:
         """Where NULLs natively sort for ``descending``, read from sqlglot's emitter."""
@@ -372,13 +446,17 @@ class SqlDialect(BaseModel):
     def _expanded_null_safe_eq(
         left: Expression, right: Expression,
     ) -> Expression:
-        """``left = right OR (left IS NULL AND right IS NULL)``."""
-        eq = exp.EQ(this=left.copy(), expression=right.copy())
-        both_null = exp.And(
-            this=exp.Is(this=left.copy(), expression=exp.Null()),
-            expression=exp.Is(this=right.copy(), expression=exp.Null()),
+        """Two-valued ``(l = r AND l IS NOT NULL AND r IS NOT NULL) OR (l IS NULL AND r IS NULL)``, safe to negate."""
+        def is_null(side: Expression) -> Expression:
+            return exp.Is(this=side.copy(), expression=exp.Null())
+
+        both_known = exp.and_(
+            exp.EQ(this=left.copy(), expression=right.copy()),
+            exp.Not(this=is_null(left)),
+            exp.Not(this=is_null(right)),
         )
-        return exp.paren(exp.Or(this=eq, expression=exp.paren(both_null)))
+        both_null = exp.And(this=is_null(left), expression=is_null(right))
+        return exp.paren(exp.Or(this=exp.paren(both_known), expression=exp.paren(both_null)))
 
     def build_date_trunc(
         self,

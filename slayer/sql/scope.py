@@ -33,6 +33,7 @@ from slayer.core.join_walker import model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -71,7 +72,7 @@ _Grammar = Literal["predicate", "expression"]
 # A ref that can enter a scope: structural column refs, derived columns, bound
 # parameter expressions, free Mode-A / predicate text, and row-level expression
 # composites — an aggregate's same-model expression source anchors through the same door.
-Ref = Union[ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, str]
+Ref = Union[ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey, str]
 
 
 class _OrderedPathSet:
@@ -457,7 +458,7 @@ class ScopeFrame(BaseModel):
             # its joins) here, substituted into the parsed template.
             template = sql_template(text=ref.template, dialect=self.dialect.sqlglot_name)
             return template.render({f"r{i}": self._anchor(r) for i, r in enumerate(ref.refs)})
-        if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey)):
+        if isinstance(ref, (ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey)):
             # An aggregate's row-level expression source — column
             # leaves anchor recursively through this scope, so join
             # registration and derived expansion apply per leaf.

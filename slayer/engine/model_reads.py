@@ -13,7 +13,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, render_probe_text
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
-from slayer.engine.syntax import DottedRef, Ref, parse_expr, parse_filter_expr
+from slayer.core.syntax import DottedRef, Ref, parse_expr
 from slayer.ir.source_bundle import apply_extension_overlay, follow_sibling_chain, source_name_if_sibling
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 
@@ -98,15 +98,15 @@ def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:
         if kind == "ref":
             out.append(tuple(text.split(".")))
         elif kind == "formula":
-            out.extend(_expr_parts(text, parse=parse_expr))
+            out.extend(_expr_parts(text))
         else:
-            out.extend(_expr_parts(render_probe_text(text), parse=parse_filter_expr))
+            out.extend(_expr_parts(render_probe_text(text)))
     return out
 
 
-def _expr_parts(text: str, *, parse) -> list[tuple[str, ...]]:
+def _expr_parts(text: str) -> list[tuple[str, ...]]:
     try:
-        parsed = parse(text)
+        parsed = parse_expr(text)
     except Exception:  # noqa: BLE001 — unparseable text reads nothing; the binder reports it
         return []
     return list(_node_parts(parsed))
@@ -192,7 +192,7 @@ class _Reads:
         measure = host.get_measure(name)
         if measure is None or not measure.formula or not self._first_visit(host, f"measure:{name}"):
             return
-        for parts in _expr_parts(measure.formula, parse=parse_expr):
+        for parts in _expr_parts(measure.formula):
             self.ref(parts, host=host)
 
     def _first_visit(self, host: SlayerModel, key: str) -> bool:

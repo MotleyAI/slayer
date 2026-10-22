@@ -55,14 +55,13 @@ from slayer.core.join_search import reachable
 from slayer.core.join_walker import OrientedJoin, resolve_hop, walk
 from slayer.sql.column_expansion import resolve_ref_target
 from slayer.engine.dimension_routing import short_form_route_or_none
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,
     Ref,
     StarSource,
     parse_expr,
-    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
@@ -576,7 +575,7 @@ def _filter_refs_dsl(filter_str: str) -> list[str]:
     """Column/measure references in a DSL (Mode B) filter, in expression order
     (deduplicated); ``[]`` on parse failure."""
     try:
-        parsed = parse_filter_expr(filter_str)
+        parsed = parse_expr(filter_str)
     except Exception:
         return []
     return list(dict.fromkeys(_walk_ref_names(parsed)))

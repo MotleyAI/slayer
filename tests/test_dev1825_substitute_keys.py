@@ -13,10 +13,11 @@ from typing import get_args
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -118,6 +119,7 @@ class TestTotality:
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
             InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
+            CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

@@ -98,7 +98,7 @@ from slayer.core.recommend import (
     ItemPath,
     RootModelRecommendation,
 )
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,
@@ -116,6 +116,7 @@ from slayer.ir.planned import (
     is_spliced,
     plan_has_semi_join_filters,
     plans_read_clock,
+    plans_try_cast,
 )
 from slayer.engine.schema_drift import (
     AppliedEntry,
@@ -749,6 +750,20 @@ class SlayerQueryEngine:
             ),
         )
 
+    async def _render_dialect(
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+    ) -> "str | SqlDialect":
+        """``dialect``, carrying the server profile when rendering a ``TRY_CAST`` reads it; an unreadable
+        profile renders as an unknown server."""
+        sql_dialect = get_dialect(dialect)
+        if not sql_dialect.try_cast_reads_profile or not plans_try_cast(planned_list):
+            return dialect
+        try:
+            profile = await self._client_for(datasource).server_profile()
+        except Exception:  # noqa: BLE001 — an unknown server gets the plain cast
+            profile = ServerProfile()
+        return sql_dialect.model_copy(update={"server_profile": profile})
+
     async def _require_correlated_subqueries(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
     ) -> None:
@@ -1171,6 +1186,7 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
+        render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
         kept: Set[str] = set()
         sql: Optional[str] = None
         statement: Optional[Any] = None
@@ -1178,12 +1194,12 @@ class SlayerQueryEngine:
         with collect_stale_spellings() as render_stale_spellings:
             if as_statement:
                 statement = _build_planned_stages_ast(
-                    planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
+                    planned_list, bundle=bundle, dialect=render_dialect, kept_stages=kept,
                 )
                 reads |= read_models(statement)
             else:
                 sql = generate_planned_stages(
-                    planned_queries=planned_list, bundle=bundle, dialect=dialect,
+                    planned_queries=planned_list, bundle=bundle, dialect=render_dialect,
                     # Plan-derived canonical projection keys drive the write-side length
                     # fit; the read side decodes against the same set.
                     projection_aliases=projection_result_keys(root_planned=planned_list[-1]),

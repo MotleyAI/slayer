@@ -195,7 +195,7 @@ class TestRankingKeyPrecedence:
             dimensions=["status"],
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
         ))
-        assert _ranked_kernel_of(planned).ranking_time_key.leaf == "shipped_at"
+        assert getattr(_ranked_kernel_of(planned).ranking_time_key, "leaf") == "shipped_at"
 
     def test_a_temporal_dimension_outranks_the_model_default(self) -> None:
         planned = _plan48(_q48(

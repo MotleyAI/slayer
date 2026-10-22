@@ -26,7 +26,9 @@ from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    NULL_SAFE_COMPARISON_OPS,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -41,7 +43,7 @@ from slayer.core.keys import (
     temporal_type,
     unit_word,
 )
-from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, temporal_type_of
+from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, cast_target, operand_copy, temporal_type_of
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 
 _BINARY_OPS: Dict[str, Any] = {
@@ -79,7 +81,7 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.And: 2,
     exp.Not: 3,
     exp.EQ: 4, exp.NEQ: 4, exp.LT: 4, exp.LTE: 4, exp.GT: 4, exp.GTE: 4,
-    exp.Is: 4, exp.In: 4, exp.Like: 4, exp.Between: 4,
+    exp.Is: 4, exp.In: 4, exp.Like: 4, exp.ILike: 4, exp.Between: 4,
     exp.Add: 5, exp.Sub: 5,
     exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
     exp.Neg: 7,
@@ -241,6 +243,19 @@ def temporal_comparison(key: ArithmeticKey) -> Optional[Tuple[TemporalComparison
     return None
 
 
+def render_null_safe(*, op: str, operands: List[Expression], dialect: SqlDialect) -> Expression:
+    """``a IS [NOT] DISTINCT FROM b`` through the dialect's null-safe equality."""
+    left, right = (operand_copy(o) for o in operands)
+    same = dialect.build_null_safe_eq(left, right)
+    return same if op == "is not distinct from" else exp.Not(this=exp.Paren(this=same))
+
+
+def render_cast(*, key: CastKey, value: Expression, dialect: SqlDialect) -> Expression:
+    """The database's own cast of the author's type; ``TRY_CAST`` through the dialect's lowering."""
+    to = cast_target(key.type_text, dialect=dialect)
+    return dialect.build_try_cast(value, to) if key.try_ else exp.Cast(this=value, to=to)
+
+
 def render_temporal_comparison(
     *, op: TemporalComparisonOp, operand: Expression, value: date, dialect: SqlDialect,
 ) -> Expression:
@@ -261,6 +276,8 @@ def render_scalar_call(
         raise RuntimeError(f"Date function {name!r} renders only from its key (render_date_call).")
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
+    if name == "ilike":
+        return dialect.build_ilike(args[0], args[1])
     if name == "mod":
         # ``%`` is an operator, not a Func; the ``%`` composer parenthesises both sides correctly.
         return render_arithmetic(op="%", operands=args)
@@ -390,26 +407,42 @@ def render_row_expression(
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=dialect)
     if isinstance(key, ArithmeticKey):
-        comparison = temporal_comparison(key)
-        if comparison is not None:
-            op, operand, value = comparison
-            return render_temporal_comparison(op=op, operand=_part(operand), value=value, dialect=dialect)
-        return render_arithmetic(
-            op=key.op.lower(),
-            operands=numeric_parts(key=key, parts=[_part(o) for o in key.operands], column_type=column_type),
-        )
+        return _row_arithmetic(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, TimeTruncKey):
         return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
-        if key.name == "iif":
-            return iif_case_chain(key=key, part=_part, column_type=column_type)
-        args = numeric_parts(key=key, parts=[_part(a) for a in key.args], column_type=column_type)
-        if key.name in DATE_FUNCTIONS:
-            return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-        return render_scalar_call(name=key.name, args=args, dialect=dialect)
+        return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, InKey):
         (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
         return render_in_predicate(key=key, column=column, dialect=dialect)
+    if isinstance(key, CastKey):
+        return render_cast(key=key, value=_part(key.source), dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
+
+
+def _row_arithmetic(
+    *, key: ArithmeticKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+) -> Expression:
+    comparison = temporal_comparison(key)
+    if comparison is not None:
+        op, operand, value = comparison
+        return render_temporal_comparison(op=op, operand=part(operand), value=value, dialect=dialect)
+    if key.op in NULL_SAFE_COMPARISON_OPS:
+        return render_null_safe(op=key.op, operands=[part(o) for o in key.operands], dialect=dialect)
+    return render_arithmetic(
+        op=key.op.lower(),
+        operands=numeric_parts(key=key, parts=[part(o) for o in key.operands], column_type=column_type),
+    )
+
+
+def _row_scalar_call(
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+) -> Expression:
+    if key.name == "iif":
+        return iif_case_chain(key=key, part=part, column_type=column_type)
+    args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
+    if key.name in DATE_FUNCTIONS:
+        return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
+    return render_scalar_call(name=key.name, args=args, dialect=dialect)

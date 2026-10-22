@@ -6,14 +6,27 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from typing import Optional
+from typing import ClassVar, Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
+from slayer.core.keys import cast_data_type
+from slayer.core.time_points import parse_temporal_value
+from slayer.sql.dialects.base import (
+    COMPARISON_NODES,
+    FALSE_WORDS,
+    TRUE_WORDS,
+    VENDOR_ONLY_CAST_TYPES,
+    SqlDialect,
+    TemporalComparisonOp,
+    as_text,
+    iso_text,
+)
 
 
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
@@ -345,6 +358,56 @@ def _slayer_date_add(ts, n, unit):
     return moved.isoformat(sep=" ")
 
 
+_NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+_INT64_BOUND = 2 ** 63
+
+
+def _try_number(text: str, kind: DataType):
+    stripped = text.strip()
+    if not _NUMBER_TEXT_RE.fullmatch(stripped):
+        return None
+    if kind is DataType.DOUBLE:
+        number = float(stripped)
+        return number if math.isfinite(number) else None
+    exact = Decimal(stripped)
+    return int(exact) if -_INT64_BOUND <= exact < _INT64_BOUND else None
+
+
+def _try_boolean(text: str):
+    word = text.strip().lower()
+    if word in TRUE_WORDS:
+        return 1
+    if word in FALSE_WORDS:
+        return 0
+    return None
+
+
+def _try_temporal(text: str, kind: DataType):
+    moment = parse_temporal_value(text.strip())
+    if moment is None:
+        return None
+    if kind is DataType.DATE:
+        return (moment.date() if isinstance(moment, datetime) else moment).isoformat()
+    stamp = moment if isinstance(moment, datetime) else datetime(moment.year, moment.month, moment.day)
+    return stamp.isoformat(sep=" ")
+
+
+def _slayer_try_cast(text, target):
+    """``TRY_CAST(text AS target)``: the converted value, or NULL where the cast cannot convert ``text``."""
+    if text is None:
+        return None
+    kind = cast_data_type(target)
+    if kind in (DataType.INT, DataType.DOUBLE):
+        return _try_number(text, kind)
+    if kind is DataType.BOOLEAN:
+        return _try_boolean(text)
+    if kind in (DataType.DATE, DataType.TIMESTAMP):
+        return _try_temporal(text, kind)
+    return text
+
+
 def register_sqlite_udfs(dbapi_connection) -> None:
     """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
     dbapi_connection.create_function("ln", 1, _ln)
@@ -357,6 +420,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("pow", 2, _pow)
     dbapi_connection.create_function("power", 2, _pow)
     dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
+    dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
 
     dbapi_connection.create_aggregate("median", 1, _MedianAgg)
     dbapi_connection.create_aggregate("percentile_cont", 2, _PercentileContAgg)
@@ -376,6 +440,8 @@ def register_sqlite_udfs(dbapi_connection) -> None:
 
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
+    # Any type name is a column affinity on SQLite.
+    vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""
@@ -391,6 +457,11 @@ class SqliteDialect(SqlDialect):
         if dt in (DataType.DATE, DataType.TIMESTAMP):
             return None
         return dt
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return exp.Anonymous(this="slayer_try_cast", expressions=[
+            as_text(value), exp.Literal.string(to.sql(dialect="postgres")),
+        ])
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

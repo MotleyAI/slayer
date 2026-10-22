@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -83,6 +83,7 @@ SAMPLES = {
     TimePointCmpKey: TP,
     InKey: IK,
     SqlFragmentKey: SqlFragmentKey(template="{r0} * {r1}", refs=(CITY, JOINED)),
+    CastKey: CastKey(source=JOINED, type_text="INT", data_type=DataType.INT),
 }
 LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey)
 
@@ -291,12 +292,12 @@ class TestKindPolicyRegistry:
 
     def test_slot_composite_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slot_composite} == {
-            ArithmeticKey, ScalarCallKey, InKey,
+            ArithmeticKey, ScalarCallKey, InKey, CastKey,
         }
 
     def test_materialised_order_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.materialised_order} == {
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey,
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey, CastKey,
         }
 
     def test_kind_policy_is_frozen(self) -> None:

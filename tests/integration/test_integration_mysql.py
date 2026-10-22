@@ -56,6 +56,14 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
+from tests._dev2101_fixtures import (
+    check_filtered_aggregations,
+    check_null_ordering,
+    check_server_forms,
+    check_try_cast,
+    dev2101_models,
+    seed_server as dev2101_seed_server,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1581,3 +1589,41 @@ def test_every_mysql_alias_failure_is_quoted(mysql_container) -> None:
     finally:
         conn.close()
         _drop_module_db(mysql_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Mode-B SQL grammar (spec: queries/expression-grammar, queries/casts, queries/positions)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _mysql_dev2101_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                dev2101_seed_server(cur, dialect="mysql")
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2101")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in dev2101_models(data_source="testmysql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLModeBGrammar:
+    async def test_sql_forms(self, _mysql_dev2101_storage) -> None:
+        await check_server_forms(SlayerQueryEngine(storage=_mysql_dev2101_storage))
+
+    async def test_null_ordering(self, _mysql_dev2101_storage) -> None:
+        await check_null_ordering(SlayerQueryEngine(storage=_mysql_dev2101_storage))
+
+    async def test_try_cast(self, _mysql_dev2101_storage) -> None:
+        await check_try_cast(SlayerQueryEngine(storage=_mysql_dev2101_storage))
+
+    async def test_filtered_aggregations(self, _mysql_dev2101_storage) -> None:
+        await check_filtered_aggregations(SlayerQueryEngine(storage=_mysql_dev2101_storage))

@@ -1,4 +1,4 @@
-version: 15
+version: 16
 name: orders
 sql_table: orders
 source_kind: table

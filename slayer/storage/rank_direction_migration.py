@@ -5,6 +5,7 @@ Stored-only steps: a fresh payload's bare call stays bare and fails with the mis
 
 import io
 import tokenize
+from collections.abc import Callable
 from typing import Any
 
 from slayer.storage.migrations import register_migration, stamp_stored
@@ -69,13 +70,12 @@ def _scan_call(*, tokens: list[tokenize.TokenInfo], open_index: int) -> tuple[in
     return None, has_direction
 
 
-def _rewrite_str(value: Any) -> Any:
-    return add_desc_direction(value) if isinstance(value, str) else value
+TextRewrite = Callable[[str], str]
 
 
-def _rewrite_key(item: Any, key: str) -> Any:
-    if isinstance(item, dict) and key in item:
-        return {**item, key: _rewrite_str(item[key])}
+def _rewrite_key(item: Any, key: str, fn: TextRewrite) -> Any:
+    if isinstance(item, dict) and isinstance(item.get(key), str):
+        return {**item, key: fn(item[key])}
     return item
 
 
@@ -85,55 +85,71 @@ def _rewrite_items(value: Any, rewrite) -> Any:
     return rewrite(value)
 
 
-def _rewrite_measure(item: Any) -> Any:
-    return _rewrite_str(item) if isinstance(item, str) else _rewrite_key(item, "formula")
+def _rewrite_text(value: Any, fn: TextRewrite) -> Any:
+    return fn(value) if isinstance(value, str) else value
 
 
-def _rewrite_dimension(item: Any) -> Any:
-    return _rewrite_str(item) if isinstance(item, str) else _rewrite_key(item, "expression")
+def _rewrite_measure(item: Any, fn: TextRewrite) -> Any:
+    return fn(item) if isinstance(item, str) else _rewrite_key(item, "formula", fn)
 
 
-def _rewrite_time_dimension(item: Any) -> Any:
+def _rewrite_dimension(item: Any, fn: TextRewrite) -> Any:
+    return fn(item) if isinstance(item, str) else _rewrite_key(item, "expression", fn)
+
+
+def _rewrite_time_dimension(item: Any, fn: TextRewrite) -> Any:
     if isinstance(item, str):
-        return _rewrite_str(item)
-    return _rewrite_key(_rewrite_key(item, "dimension"), "column")
+        return fn(item)
+    return _rewrite_key(_rewrite_key(item, "dimension", fn), "column", fn)
 
 
-def _rewrite_order(item: Any) -> Any:
+def _rewrite_order(item: Any, fn: TextRewrite) -> Any:
     if not isinstance(item, dict):
-        return _rewrite_str(item)
+        return _rewrite_text(item, fn)
     if "column" in item or "direction" in item:
         # An expression sort key persists as a placeholder column plus its ``raw_formula``.
-        return _rewrite_key(_rewrite_key(item, "column"), "raw_formula")
-    return {_rewrite_str(k): v for k, v in item.items()}
+        return _rewrite_key(_rewrite_key(item, "column", fn), "raw_formula", fn)
+    return {_rewrite_text(k, fn): v for k, v in item.items()}
 
 
-def rewrite_model_ranks(data: dict) -> dict:
-    """Fill ``direction='desc'`` into measure formulas; mark nested stored queries as stored."""
+def rewrite_model_texts(data: dict, fn: TextRewrite) -> dict:
+    """Apply ``fn`` to every measure formula; mark nested stored queries as stored."""
     if isinstance(data.get("measures"), list):
-        data["measures"] = [_rewrite_key(m, "formula") for m in data["measures"]]
+        data["measures"] = [_rewrite_key(m, "formula", fn) for m in data["measures"]]
     if isinstance(data.get("source_queries"), list):
         data["source_queries"] = [stamp_stored(q) for q in data["source_queries"]]
     return data
 
 
-def rewrite_query_ranks(data: dict) -> dict:
-    """Fill ``direction='desc'`` into every Mode-B field; mark an inline model as stored."""
+def rewrite_query_texts(data: dict, fn: TextRewrite) -> dict:
+    """Apply ``fn`` to every Mode-B field; mark an inline model as stored."""
     for field, rewrite in (
-        ("measures", _rewrite_measure), ("filters", _rewrite_str), ("dimensions", _rewrite_dimension),
+        ("measures", _rewrite_measure), ("filters", _rewrite_text), ("dimensions", _rewrite_dimension),
         ("time_dimensions", _rewrite_time_dimension), ("order", _rewrite_order),
-        ("main_time_dimension", _rewrite_str),
+        ("main_time_dimension", _rewrite_text),
     ):
         if data.get(field) is not None:
-            data[field] = _rewrite_items(data[field], rewrite)
+            data[field] = _rewrite_items(data[field], lambda item, rewrite=rewrite: rewrite(item, fn))
     source = data.get("source_model")
     if isinstance(source, dict):
         if "source_name" in source:
             if isinstance(source.get("measures"), list):
-                data["source_model"] = {**source, "measures": [_rewrite_key(m, "formula") for m in source["measures"]]}
+                data["source_model"] = {
+                    **source, "measures": [_rewrite_key(m, "formula", fn) for m in source["measures"]],
+                }
         else:
             data["source_model"] = stamp_stored(source)
     return data
+
+
+def rewrite_model_ranks(data: dict) -> dict:
+    """Fill ``direction='desc'`` into measure formulas; mark nested stored queries as stored."""
+    return rewrite_model_texts(data, add_desc_direction)
+
+
+def rewrite_query_ranks(data: dict) -> dict:
+    """Fill ``direction='desc'`` into every Mode-B field; mark an inline model as stored."""
+    return rewrite_query_texts(data, add_desc_direction)
 
 
 def stamp_memory_query(data: dict) -> dict:

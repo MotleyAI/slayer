@@ -51,7 +51,7 @@ from slayer.engine.binding import bind_expr
 from slayer.engine.compile.projection import _iter_slot_deps
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 
 
 # ---------------------------------------------------------------------------

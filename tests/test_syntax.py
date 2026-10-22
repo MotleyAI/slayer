@@ -1,6 +1,6 @@
 """Stage 7a.3 (DEV-1450) — Mode-B Python-AST parser tests.
 
-The parser at ``slayer.engine.syntax.parse_expr`` consumes a Mode-B
+The parser at ``slayer.core.syntax.parse_expr`` consumes a Mode-B
 expression string (the SLayer DSL) and emits a typed ``ParsedExpr`` AST
 the binder (stage 7a.5) compiles to ``BoundExpr``. Coverage:
 
@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     BoolOp,
@@ -35,7 +35,6 @@ from slayer.engine.syntax import (
     TransformCall,
     UnaryOp,
     parse_expr,
-    parse_filter_expr,
 )
 
 
@@ -64,11 +63,14 @@ class TestRefsAndLiterals:
     def test_decimal_literal(self):
         assert parse_expr("0.5") == Literal(value=Decimal("0.5"))
 
+    def test_decimal_literal_keeps_every_digit(self):
+        assert parse_expr("0.12345678901234567890") == Literal(value=Decimal("0.12345678901234567890"))
+
     def test_string_literal_single_quote(self):
         assert parse_expr("'hello'") == Literal(value="hello")
 
-    def test_string_literal_double_quote(self):
-        assert parse_expr('"hello"') == Literal(value="hello")
+    def test_double_quotes_are_an_identifier(self):
+        assert parse_expr('"hello"') == Ref(name="hello")
 
     def test_bool_true(self):
         assert parse_expr("True") == Literal(value=True)
@@ -292,7 +294,7 @@ class TestScalarFunctions:
             assert result.name == "coalesce"
 
     def test_uppercase_scalar_in_filter(self):
-        result = parse_filter_expr("ROUND(revenue, 2) > 5")
+        result = parse_expr("ROUND(revenue, 2) > 5")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, ScalarCall)
         assert result.left.name == "round"
@@ -552,11 +554,10 @@ class TestRejection:
         with pytest.raises(ValueError):
             parse_expr("revenue:sum:avg")
 
-    def test_scalar_function_with_kwarg_rejected(self):
-        # Scalar functions in SCALAR_FUNCTIONS take only positional args.
-        # `lower(name=...)` is invalid.
-        with pytest.raises((ValueError, UnknownFunctionError)):
-            parse_expr("lower(name='x')")
+    def test_equals_inside_scalar_call_is_comparison(self):
+        assert parse_expr("lower(name='x')") == ScalarCall(
+            name="lower", args=(Cmp(op="==", left=Ref(name="name"), right=Literal(value="x")),),
+        )
 
     def test_colon_inside_string_literal_preserved(self):
         # `status == 'revenue:sum'` — the string literal is data, not
@@ -622,23 +623,23 @@ class TestCombinations:
 
 
 # ---------------------------------------------------------------------------
-# Filter-operator normalization (parse_filter_expr)
+# Filter-operator normalization (parse_expr)
 # ---------------------------------------------------------------------------
 
 
 class TestFilterOperatorNormalization:
-    """``parse_filter_expr`` accepts SQL operator spellings (``=`` for
+    """``parse_expr`` accepts SQL operator spellings (``=`` for
     equality, ``AND`` / ``IS`` / ``NULL`` ...) on top of the Python DSL."""
 
     def test_sql_equality_normalised(self):
-        result = parse_filter_expr("status = 'paid'")
+        result = parse_expr("status = 'paid'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
         assert result.right == Literal(value="paid")
 
     def test_transform_no_kwargs_in_filter(self):
         # The no-kwargs top-N form is unaffected by the operator rewrite.
-        result = parse_filter_expr("dense_rank(revenue:sum, direction='desc') <= 5")
+        result = parse_expr("dense_rank(revenue:sum, direction='desc') <= 5")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "dense_rank"
@@ -648,7 +649,7 @@ class TestFilterOperatorNormalization:
         # normalizer rewrites ``||`` → ``|``, then ``_convert`` desugars the
         # BitOr to concat). ``|`` binds tighter than ``==`` just as ``||``
         # binds tighter than ``=`` in SQL.
-        result = parse_filter_expr("status || status = 'foo'")
+        result = parse_expr("status || status = 'foo'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
         assert isinstance(result.left, ScalarCall)
@@ -660,13 +661,13 @@ class TestFilterOperatorNormalization:
         # DEV-1704: a SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
         # translation) normalises to the ``like(col, pattern)`` scalar the DSL
         # already emits as SQL LIKE.
-        result = parse_filter_expr("name LIKE 'do%'")
+        result = parse_expr("name LIKE 'do%'")
         assert isinstance(result, ScalarCall)
         assert result.name == "like"
         assert result.args == (Ref(name="name"), Literal(value="do%"))
 
     def test_sql_not_like_operator_normalised(self):
-        result = parse_filter_expr("name NOT LIKE 'x%'")
+        result = parse_expr("name NOT LIKE 'x%'")
         assert isinstance(result, UnaryOp)
         assert result.op == "not"
         assert isinstance(result.operand, ScalarCall)
@@ -676,7 +677,7 @@ class TestFilterOperatorNormalization:
     def test_sql_like_dotted_and_comma_pattern(self):
         # Dotted LHS (joined column) + a pattern that contains a comma (the
         # categorical-comma metabase repro) must both round-trip.
-        result = parse_filter_expr("customers.name LIKE '%,%'")
+        result = parse_expr("customers.name LIKE '%,%'")
         assert isinstance(result, ScalarCall)
         assert result.name == "like"
         assert result.args == (
@@ -686,7 +687,7 @@ class TestFilterOperatorNormalization:
     def test_like_word_inside_string_literal_not_rewritten(self):
         # The ``like`` inside a string literal is NOT a LIKE operator: the value
         # stays a literal, the LHS a column reference.
-        result = parse_filter_expr("name == 'a like b'")
+        result = parse_expr("name == 'a like b'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
         assert result.left == Ref(name="name")
@@ -696,7 +697,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492: ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must
         # survive the SQL operator-normalization (the previous '=' -> '=='
         # rewrite mangled kwargs inside call parens).
-        result = parse_filter_expr("ntile(revenue:sum, n=4) <= 1")
+        result = parse_expr("ntile(revenue:sum, n=4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
@@ -706,7 +707,7 @@ class TestFilterOperatorNormalization:
     def test_rank_partition_by_kwarg_preserved_in_filter(self):
         # Both kwargs survive the operator rewrite; binder turns partition_by into a
         # column ref (covered by SQL-gen tests).
-        result = parse_filter_expr("rank(revenue:sum, partition_by=region, direction='desc') <= 1")
+        result = parse_expr("rank(revenue:sum, partition_by=region, direction='desc') <= 1")
         assert isinstance(result, Cmp)
         assert result.op == "<="
         assert isinstance(result.left, TransformCall)
@@ -720,7 +721,7 @@ class TestFilterOperatorNormalization:
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
         # DEV-1492: list-form partition_by kwarg survives. _convert_kwarg_value
         # converts the list to a tuple of Refs.
-        result = parse_filter_expr(
+        result = parse_expr(
             "rank(revenue:sum, partition_by=[region, channel], direction='desc') <= 1"
         )
         assert isinstance(result, Cmp)
@@ -742,7 +743,7 @@ class TestFilterOperatorNormalization:
     def test_filter_transform_preserves_aggregation_positional_arg(self):
         # change(revenue:last(ordered_at)) > 0 — the first/last ranking-time
         # positional arg must survive on the inner AggCall.
-        result = parse_filter_expr("change(revenue:last(ordered_at)) > 0")
+        result = parse_expr("change(revenue:last(ordered_at)) > 0")
         assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
@@ -755,7 +756,7 @@ class TestFilterOperatorNormalization:
     def test_filter_transform_preserves_aggregation_kwarg(self):
         # change(price:weighted_avg(weight=quantity)) > 0 — the aggregation's
         # own kwarg must survive, distinct from the transform's kwargs.
-        result = parse_filter_expr(
+        result = parse_expr(
             "change(price:weighted_avg(weight=quantity)) > 0"
         )
         assert isinstance(result, Cmp)
@@ -769,10 +770,10 @@ class TestFilterOperatorNormalization:
     def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
         # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
         # and keyword args on the same aggregation, both preserved.
-        result = parse_filter_expr(
+        result = parse_expr(
             "change(price:weighted_avg(col1, weight=quantity)) > 0"
         )
-        inner = result.left
+        inner = getattr(result, "left")
         assert isinstance(inner, TransformCall)
         agg = inner.input
         assert isinstance(agg, AggCall)
@@ -782,7 +783,7 @@ class TestFilterOperatorNormalization:
     def test_filter_ntile_preserves_both_n_and_partition_by(self):
         # DEV-1353 regression shape: dropping partition_by would rank globally
         # instead of within the partition; dropping n would fail to re-parse.
-        result = parse_filter_expr(
+        result = parse_expr(
             "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
         )
         assert isinstance(result, Cmp)
@@ -798,7 +799,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492 regression guard: a `=` inside a *grouping* paren (not a
         # call) must still be rewritten to `==`. The kwarg-preservation rule
         # keys off CALL-paren classification, not bare paren depth.
-        result = parse_filter_expr("(status = 'x' or amount = 5)")
+        result = parse_expr("(status = 'x' or amount = 5)")
         assert isinstance(result, BoolOp)
         assert result.op == "or"
         assert len(result.operands) == 2
@@ -816,7 +817,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492: a transform kwarg `=` inside a call and a SQL equality
         # `=` at top level must be classified independently in the same
         # expression. Proves the scanner is selective, not global.
-        result = parse_filter_expr(
+        result = parse_expr(
             "ntile(revenue:sum, n=4) <= 1 and status = 'paid'"
         )
         assert isinstance(result, BoolOp)
@@ -837,7 +838,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492 literal-awareness: the `=` inside the string literal
         # `'a=b'` must not be touched by the scanner; only the outer SQL
         # equality is rewritten.
-        result = parse_filter_expr("status = 'a=b'")
+        result = parse_expr("status = 'a=b'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
         assert result.left == Ref(name="status")
@@ -850,7 +851,7 @@ class TestFilterOperatorNormalization:
         # kwargs per architecture). Without the narrowing, the kwarg-
         # preservation rule would re-read `status='paid'` as a kwarg and
         # the binder would reject it.
-        result = parse_filter_expr("coalesce(status = 'paid', False)")
+        result = parse_expr("coalesce(status = 'paid', False)")
         assert isinstance(result, ScalarCall)
         assert result.name == "coalesce"
         assert len(result.args) == 2
@@ -866,7 +867,7 @@ class TestFilterOperatorNormalization:
         # is the same failure mode as transform kwargs — the colon-agg
         # callee `percentile` is not a SCALAR_FUNCTION, so the scanner
         # preserves `p=0.5` as a kwarg on the AggCall.
-        result = parse_filter_expr("revenue:percentile(p=0.5) > 100")
+        result = parse_expr("revenue:percentile(p=0.5) > 100")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
@@ -882,7 +883,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492 (Codex review): the scanner skips whitespace when
         # checking the `IDENT = value` shape, so a spaced kwarg still
         # parses as a kwarg, not a positional comparison.
-        result = parse_filter_expr("ntile(revenue:sum, n = 4) <= 1")
+        result = parse_expr("ntile(revenue:sum, n = 4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
@@ -895,7 +896,7 @@ class TestFilterOperatorNormalization:
         # CALL). The `=` inside is therefore a SQL comparison and gets
         # rewritten to `==`. Python's `not(x)` is UnaryOp(Not, x), not a
         # function call.
-        result = parse_filter_expr("not(status = 'paid')")
+        result = parse_expr("not(status = 'paid')")
         assert isinstance(result, UnaryOp)
         assert result.op == "not"
         assert isinstance(result.operand, Cmp)
@@ -909,7 +910,7 @@ class TestFilterOperatorNormalization:
         # which must be preserved; inner scalar `coalesce(status = 'paid',
         # 0)` has a `=` which must be rewritten (SCALAR_FUNCTIONS
         # narrowing). Exercises the per-frame (kind, callee) stack.
-        result = parse_filter_expr(
+        result = parse_expr(
             "rank(coalesce(status = 'paid', 0), partition_by=region, direction='desc') <= 1"
         )
         assert isinstance(result, Cmp)
@@ -937,7 +938,7 @@ class TestFilterOperatorNormalization:
         # and `=` must not perturb the scanner's paren-kind stack or
         # previous-token tracking. Both the kwarg `n=4` and the top-level
         # `status = '),='` must be classified correctly.
-        result = parse_filter_expr(
+        result = parse_expr(
             "ntile(revenue:sum, n=4) <= 1 and status = '),='"
         )
         assert isinstance(result, BoolOp)
@@ -962,7 +963,7 @@ class TestFilterOperatorNormalization:
         # a `:`. Built-in `first`/`last` take the order column positionally
         # today, but custom aggregations overriding these names can declare
         # any kwarg shape; this pins the architectural rule.
-        result = parse_filter_expr("revenue:first(order=created_at) > 0")
+        result = parse_expr("revenue:first(order=created_at) > 0")
         assert isinstance(result, Cmp)
         assert result.op == ">"
         assert isinstance(result.left, AggCall)
@@ -980,7 +981,7 @@ class TestFilterOperatorNormalization:
         # accept kwargs AFTER the value (i.e. after the first `,`). The colon-
         # agg form (`revenue:sum > 0`) already worked because the `:` token
         # breaks the LPAREN/IDENT pattern; the bare-ref form is the gap.
-        result = parse_filter_expr("consecutive_periods(status = 'paid') >= 2")
+        result = parse_expr("consecutive_periods(status = 'paid') >= 2")
         assert isinstance(result, Cmp)
         assert result.op == ">="
         assert isinstance(result.left, TransformCall)
@@ -998,7 +999,7 @@ class TestFilterOperatorNormalization:
         # DEV-1492 (Codex review): the SCALAR_FUNCTIONS narrowing must
         # apply to every scalar in the allowlist, not just `coalesce`.
         # `ifnull` (also a null-handling scalar) gets the same treatment.
-        result = parse_filter_expr("ifnull(status = 'paid', False)")
+        result = parse_expr("ifnull(status = 'paid', False)")
         assert isinstance(result, ScalarCall)
         assert result.name == "ifnull"
         assert len(result.args) == 2

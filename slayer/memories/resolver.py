@@ -43,7 +43,7 @@ from slayer.core.join_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery
 from slayer.engine.model_reads import FieldKind, query_field_texts
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     ParsedExpr,

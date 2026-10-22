@@ -10,13 +10,13 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import ServerProfile, SqlDialect, iso_text
+from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text, iso_text
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4)
@@ -106,6 +106,7 @@ _CH_ADD_FUNCTIONS = {
 
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
+    ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
@@ -114,6 +115,7 @@ class ClickhouseDialect(SqlDialect):
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
     correlated_subqueries_gated: bool = True
+    timeout_reads_profile: bool = True
     global_in_subqueries: bool = True
     url_scheme: str | None = "clickhouse+http"
     install_extra: str | None = "clickhouse"
@@ -131,6 +133,12 @@ class ClickhouseDialect(SqlDialect):
             settings.pop(_TIMEOUT_SETTING, None)
         else:
             settings[_TIMEOUT_SETTING] = prior
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        spelled = to.sql(dialect=self.sqlglot_name)
+        if spelled.startswith("Nullable(") and spelled.endswith(")"):
+            spelled = spelled[len("Nullable("):-1]
+        return exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), exp.Literal.string(spelled)])
 
     def server_profile_sql(self) -> str | None:
         return "SELECT version(), getSetting('readonly')"

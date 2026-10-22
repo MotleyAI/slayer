@@ -407,6 +407,14 @@ class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
 
 
+class CastTypeError(QueryTypeError):
+    """A CAST target type the query's dialect cannot express."""
+
+
+class AggregationFilterError(QueryTypeError):
+    """A ``FILTER (WHERE …)`` condition that is not a row-level predicate of its aggregation."""
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 
