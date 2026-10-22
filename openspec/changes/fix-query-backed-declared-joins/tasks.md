@@ -9,6 +9,7 @@
 - [x] 2.1 Preserve declared joins through saved-relation placeholder, root/extension and sibling/target materialization.
 - [x] 2.2 Verify logical-key traversal, aggregate attribution, extension compatibility, ordinary-stage isolation and cycle behavior.
 - [x] 2.3 Clarify saved-relation joins in the user models guide.
+- [x] 2.4 Treat an extension join repeating a stored join as that edge for every model kind, in the runtime overlay and the schema-drift stage graph.
 
 ## 3. Validate and review
 

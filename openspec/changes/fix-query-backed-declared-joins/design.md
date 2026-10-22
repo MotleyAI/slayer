@@ -8,7 +8,7 @@ The public save path validates and persists joins after populating a query-backe
 2. Reuse `model_from_stage_schema` to carry optional declared joins for saved final relation names in source, extension and sibling/target paths. Keep StageSchema unchanged. Validate joins against the saved relation's real identity so a legal target named `_stage` is not mistaken for a self-join.
 3. Select ModelScope for a materialized saved relation by its identity in the query-backed model map, including relations with incoming reverse edges and no outgoing joins. Ordinary/private query stages retain flat StageSchema binding.
 4. Keep demand-based splicing. Merely declaring or reaching an unread query-backed model must not plan it or manufacture a cycle.
-5. Reuse the existing logical join-key and extension semantics. Test distinct/named extension joins. Preserve the existing workaround that repeats an identical stored join on a saved-relation extension by applying that exact edge once; avoid global join de-duplication or graph redesign.
+5. Reuse the existing logical join-key and extension semantics. Test distinct/named extension joins. An extension join equal to one of its base model's stored joins in all but metadata and pair order is that stored edge, applied once, for every model kind; the runtime overlay and the schema-drift stage graph share this one rule. A join differing in target, name, join type, cardinality or pairs stays a separate edge.
 
 ## Validation
 

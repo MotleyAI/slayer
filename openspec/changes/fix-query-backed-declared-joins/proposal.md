@@ -8,12 +8,14 @@ A saved query-backed model's declared joins disappear when its final stage becom
 - Bind saved relations as model scopes, keeping ordinary query-stage outputs flat.
 - Add executable SQLite/DuckDB tests for filtered totals, traversal and aggregate attribution.
 - Preserve existing demand splicing, private stage scopes, cycle errors and extension behavior.
+- Treat an extension join repeating a stored join of its base as that edge, for every model kind.
 
 ## Capabilities
 
 ### Modified Capabilities
 
 - `queries/query-backed-inline`: consuming a saved relation retains its own declared relationships.
+- `models/join-traversal`: an extension join repeating a stored edge is that edge.
 
 ## Impact
 
