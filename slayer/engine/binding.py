@@ -7,7 +7,7 @@ import difflib
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
+from typing import Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -35,7 +35,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     canonical_path,
@@ -1022,16 +1022,21 @@ def _bind_partition_keys(
             pks.append(dim_alias_map[elem.name])
             continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
-        # A time bucket must be a query time dimension; the checker judges that.
-        if not isinstance(bound, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        # Whether a key is a query dimension is the checker's; an aggregate-bearing one must already be one.
+        if _carries_attached_value(bound) and bound not in (dim_alias_map or {}).values():
             raise PartitionKeyError(
-                summary=f"partition_by takes column references; '{key_display(bound)}' is an expression.",
+                summary=f"The partition_by key '{key_display(bound)}' carries an aggregate or transform.",
                 location=f"{label} partition_by",
-                suggestion="Partition by a column: put a time bucket in time_dimensions, or compute "
-                "the expression as a column in an inner stage or an inline ModelExtension.",
+                suggestion="Declare it as a computed dimension of the query and name it in partition_by=.",
             )
         pks.append(bound)
     return Grain.of(pks)
+
+
+def _carries_attached_value(key: ValueKey) -> bool:
+    return isinstance(key, SqlFragmentKey) or any(
+        isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(key)
+    )
 
 
 def _bind_expression_agg_source(
@@ -1339,16 +1344,9 @@ def _bind_agg(
     args, kwargs = _fold_positional_agg_args(
         agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
-    # Expression sources: order-sensitive first/last need a plain
-    # column (the ranked kernel can't rank an expression), and numeric-only
-    # aggregations are rejected when the expression is confidently non-numeric
-    # (per-column gates don't apply).
+    # Numeric-only aggregations over an expression source are rejected when it is
+    # confidently non-numeric (per-column gates don't apply).
     if isinstance(source, EXPRESSION_SOURCE_KINDS):
-        if effective_agg in ("first", "last"):
-            raise ValueError(
-                f"Aggregation {effective_agg!r} is not supported over an "
-                f"expression; use a plain column."
-            )
         _reject_non_numeric_expression_agg(
             source=source, agg=effective_agg, scope=scope, bundle=bundle,
         )
@@ -1444,13 +1442,14 @@ def _fold_positional_agg_args(
             )
         if len(args) != 1:
             raise ValueError(
-                f"Aggregation {agg!r} ranks by at most one column; got "
+                f"Aggregation {agg!r} ranks by at most one column or row-level expression; got "
                 f"{len(args)} positional value(s)."
             )
-        if not isinstance(args[0], (ColumnKey, ColumnSqlKey)):
+        if not _is_row_level_ranking_key(args[0]):
             raise ValueError(
-                f"Aggregation {agg!r} ranks by a column; got "
-                f"{type(args[0]).__name__} as its ranking key."
+                f"Aggregation {agg!r} ranks by a column or a row-level expression of columns; got "
+                f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
+                f"as its ranking key."
             )
         return args, kwargs
     if len(args) > len(names):
@@ -1468,6 +1467,13 @@ def _fold_positional_agg_args(
             )
         folded.append((name, value))
     return (), tuple(folded)
+
+
+def _is_row_level_ranking_key(key: object) -> bool:
+    """A ranking key reads at least one column and no aggregate, transform or attached value."""
+    return isinstance(key, VALUE_KEY_TYPES) and not _carries_attached_value(cast(ValueKey, key)) and any(
+        isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(cast(ValueKey, key))
+    )
 
 
 def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBundle) -> UnknownFunctionError:
@@ -1560,10 +1566,10 @@ def _bind_agg_arg(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
-    """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter), a grained
-    transform → ``TransformKey`` at its result grain, literals → inline
-    scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    """Bind one aggregation arg: a nested aggregate → ``AggregateKey`` (aggregate-valued
+    parameter), a grained transform → ``TransformKey`` at its result grain, literals → inline
+    scalar via ``normalize_scalar`` (stored inline, not as LiteralKey), anything else as a
+    Mode-B expression (a column being the one-leaf case).
     ``dim_alias_map`` rides into a nested aggregate / transform so its
     ``partition_by=`` can name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
@@ -1578,13 +1584,7 @@ def _bind_agg_arg(
         return _bind_transform(
             parsed=parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
         )
-    if isinstance(parsed, (Ref, DottedRef)):
-        return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
-    raise ValueError(
-        f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference, a scalar, a partitioned aggregate, "
-        f"or a grained transform."
-    )
+    return _bind(parsed, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
 
 
 _NOT_SCALAR = object()  # sentinel returned by _fold_to_scalar when the input isn't a literal-resolvable scalar

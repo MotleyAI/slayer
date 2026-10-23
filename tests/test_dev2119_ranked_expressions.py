@@ -113,7 +113,8 @@ class TestExpressionRankingKey:
         })
         with pytest.raises(UnsafeJoinInputError) as ei:
             await sqlite_engine.execute(query)
-        assert "created_at" in str(ei.value) and "orders" in str(ei.value)
+        assert "created_at" in str(ei.value)
+        assert "orders" in str(ei.value)
 
     async def test_fanning_leaf_target_rooted_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
@@ -123,7 +124,8 @@ class TestExpressionRankingKey:
         })
         with pytest.raises(UnsafeJoinInputError) as ei:
             await sqlite_engine.execute(query)
-        assert "created_at" in str(ei.value) and "orders" in str(ei.value)
+        assert "created_at" in str(ei.value)
+        assert "orders" in str(ei.value)
 
     async def test_distinct_ranking_keys_stay_separate_producers(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["region"], measures=[m(f"last(amount, {EFF})"), m("last(amount, created_at)", "c")])
@@ -145,8 +147,9 @@ class TestExpressionRankingKey:
         "last(amount, 1 + 1)",
     ])
     async def test_non_row_level_ranking_key_rejected(self, sqlite_engine: SlayerQueryEngine, formula: str) -> None:
+        query = q(measures=[m(formula)])
         with pytest.raises(ValueError, match="ranks by a column"):
-            await sqlite_engine.execute(q(measures=[m(formula)]))
+            await sqlite_engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #

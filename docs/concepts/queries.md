@@ -174,6 +174,8 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
 
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension).
+
 ```json
 {
   "dimension": "created_at",

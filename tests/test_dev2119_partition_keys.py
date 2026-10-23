@@ -34,9 +34,9 @@ class TestComputedDimensionPosition:
         assert _dims(named, "region", "ucity") == UPPER_CITY
 
     async def test_expression_key_not_a_query_dimension_fails(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=["region"], measures=[m("sum(amount, partition_by=upper(city))")])
         with pytest.raises(PartitionKeyError) as ei:
-            await engine.execute(q(dimensions=["region"], measures=[m("sum(amount, partition_by=upper(city))")]),
-                                 dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(ei.value)
         assert "upper(city)" in msg
         assert "computed dimension" in msg.lower()
@@ -69,17 +69,19 @@ class TestTimeDimensionSource:
         }, resp.sql
 
     async def test_source_at_several_granularities_is_ambiguous(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=["region"], time_dimensions=[td(EFF), td(EFF, "year")],
+                  measures=[m(f"sum(amount, partition_by={EFF})")])
         with pytest.raises(PartitionKeyError, match="ambiguous"):
-            await engine.execute(q(dimensions=["region"], time_dimensions=[td(EFF), td(EFF, "year")],
-                                   measures=[m(f"sum(amount, partition_by={EFF})")]), dry_run=True)
+            await engine.execute(query, dry_run=True)
 
 
 class TestAttributability:
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_joined_leaf_over_unproven_hop(self, engine: SlayerQueryEngine, mode: str) -> None:
+        query = q(dimensions=["region"], to_many_handling=mode,
+                  measures=[m("sum(amount, partition_by=upper(regions.manager))")])
         with pytest.raises(PartitionKeyError) as ei:
-            await engine.execute(q(dimensions=["region"], to_many_handling=mode,
-                                   measures=[m("sum(amount, partition_by=upper(regions.manager))")]), dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(ei.value)
         assert "regions.manager" in msg
         assert "unproven" in msg
@@ -89,9 +91,9 @@ class TestAttributability:
 
 class TestAggregateBearingKey:
     async def test_inline_key_rejected_with_computed_dimension_remedy(self, engine: SlayerQueryEngine) -> None:
+        query = q(dimensions=["region"], measures=[m(f"sum(amount, partition_by={BAND})")])
         with pytest.raises(PartitionKeyError) as ei:
-            await engine.execute(q(dimensions=["region"], measures=[m(f"sum(amount, partition_by={BAND})")]),
-                                 dry_run=True)
+            await engine.execute(query, dry_run=True)
         msg = str(ei.value)
         assert "sum(amount" in msg
         assert "computed dimension" in msg.lower()

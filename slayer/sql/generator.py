@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -599,7 +599,11 @@ def _conjunction(parts: Sequence[Expression]) -> Optional[Expression]:  # pyrigh
     return out
 
 # Parameter values rendered through a scope; scalars render as literals, markers never.
-_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey, ScalarCallKey)
+def _is_row_param(value: object) -> bool:
+    """A row-valued aggregation parameter: a row-level key carrying no aggregate or transform."""
+    return isinstance(value, VALUE_KEY_TYPES) and not any(
+        isinstance(k, (AggregateKey, TransformKey, StarKey)) for k in walk_value_keys(cast(ValueKey, value))
+    )
 
 # Shift units whose whole-unit offsets map each bucket start onto another, making the outer re-trunc a per-row no-op.
 _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
@@ -2100,7 +2104,7 @@ class SQLGenerator:
         resolved = {
             kname: ResolvedAggKwarg(value=scope.resolve(kval))
             for kname, kval in getattr(key, "kwargs", ())
-            if isinstance(kval, _ROW_PARAM_KINDS)
+            if _is_row_param(kval)
         }
         return resolved or None
 
@@ -2756,10 +2760,11 @@ class SQLGenerator:
                 )
             _register(expr, key.path)
             return expr if cast_derived else _strip_declared_cast(expr)
+        if isinstance(key, (*SLOT_COMPOSITE_KINDS, LiteralKey)):
+            return render_value_key(key=key, ctx=RenderContext(scope=scope, dialect=self._dialect))
         raise NotImplementedError(
             f"Ranked CTE cannot anchor a {type(key).__name__} — the grain and "
-            f"the ranking column are columns, truncated time columns, or "
-            f"derived columns.",
+            f"the ranking key are row-level values.",
         )
 
     def _ranked_value_expr(
@@ -2774,9 +2779,8 @@ class SQLGenerator:
                 f"'*' — use 'count(*)' for COUNT(*)."
             )
         if not isinstance(source, (ColumnKey, ColumnSqlKey)):
-            raise NotImplementedError(
-                f"AggregateKey source {type(source).__name__} not supported.",
-            )
+            # An expression (a mixed one's attached values row-attached in ``scope``).
+            return render_value_key(key=source, ctx=RenderContext(scope=scope, dialect=self._dialect))
         leaf = (
             source.leaf if isinstance(source, ColumnKey) else source.column_name
         )
@@ -5649,7 +5653,7 @@ class SQLGenerator:
                         f"Aggregation {key.agg!r} parameter {name!r} is unbound text "
                         f"{value!r}; a parameter binds at query binding, never as SQL text."
                     )
-            elif isinstance(value, _ROW_PARAM_KINDS):
+            elif _is_row_param(value):
                 out[name] = ResolvedAggKwarg(value=scope.resolve(value))
             elif isinstance(value, VALUE_KEY_TYPES):
                 raise RuntimeError(

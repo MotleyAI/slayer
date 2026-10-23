@@ -1284,8 +1284,9 @@ class SlayerQuery(BaseModel):
         json_schema_extra=_advertise_string_time_dimensions,
         description=(
             "Time-bucketed group-bys — one result row per bucket. Each entry is a "
-            "TimeDimension dict or the functional string gran(col), e.g. "
-            "\"month(created_at)\". Buckets without rows are absent. To return every bucket, "
+            "TimeDimension dict or the functional string gran(expr), e.g. "
+            "\"month(created_at)\"; the dimension may be any DATE/TIMESTAMP expression, with an "
+            "optional name. Buckets without rows are absent. To return every bucket, "
             "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
             "measure models by dotted path: "
             '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} '
@@ -1296,7 +1297,7 @@ class SlayerQuery(BaseModel):
     main_time_dimension: str | None = Field(
         default=None,
         description=(
-            "Name of the time dimension that time-ordered transforms (change, lag, ...) "
+            "Name (or column) of the time dimension that time-ordered transforms (change, lag, ...) "
             "key off; overrides auto-detection when the query has multiple time dimensions."
         ),
     )

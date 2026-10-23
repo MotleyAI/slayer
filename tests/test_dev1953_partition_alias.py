@@ -187,8 +187,11 @@ class TestBindingSymmetry:
     ])
     def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
-        assert _bind(formula=formula, alias_map=amap).partition_keys == _bind(
-            formula=formula.replace("upper(region)", "ureg"), alias_map=amap).partition_keys
+        expression = _bind(formula=formula, alias_map=amap)
+        named = _bind(formula=formula.replace("upper(region)", "ureg"), alias_map=amap)
+        assert isinstance(expression, (AggregateKey, TransformKey))
+        assert isinstance(named, (AggregateKey, TransformKey))
+        assert expression.partition_keys == named.partition_keys
 
 
 # --------------------------------------------------------------------------- #

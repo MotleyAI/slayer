@@ -96,7 +96,8 @@ class TestExpressionTyping:
             "time_dimensions": [td("coalesce(orders.shipped_at, signup_ts)")],
         })
         msg = str(await _plan_fails(engine, query, UnsafeJoinInputError))
-        assert "shipped_at" in msg and "orders" in msg
+        assert "shipped_at" in msg
+        assert "orders" in msg
 
     async def test_non_temporal_expression_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(status)")]), TimeDimensionColumnError))
@@ -214,7 +215,8 @@ class TestStageBuckets:
 
     async def test_finer_rebucket_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, [self._inner(), self._outer("day")], TimeDimensionColumnError))
-        assert "month" in msg and "day" in msg
+        assert "month" in msg
+        assert "day" in msg
 
 
 class TestPerLeafRebucketing:
@@ -226,7 +228,9 @@ class TestPerLeafRebucketing:
 
     async def test_cast_of_a_month_bucketed_column_at_day_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, self._monthly(CAST_DAY, "day"), TimeDimensionColumnError))
-        assert "created_at" in msg and "month" in msg and "day" in msg
+        assert "created_at" in msg
+        assert "month" in msg
+        assert "day" in msg
 
     @pytest.mark.parametrize("granularity, width, expected", [
         ("month", 7, {"2024-12": 60.0, "2025-01": 30.0, "2025-02": 70.0, "2025-03": 50.0}),
@@ -240,7 +244,8 @@ class TestPerLeafRebucketing:
     async def test_bucketed_leaf_beside_an_unbucketed_one_binds_the_rule(self, engine) -> None:
         query = self._monthly("coalesce(created_at, refunded_at)", "day")
         msg = str(await _plan_fails(engine, query, TimeDimensionColumnError))
-        assert "created_at" in msg and "month" in msg
+        assert "created_at" in msg
+        assert "month" in msg
 
 
 class TestNamesAndKeys:

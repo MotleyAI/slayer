@@ -93,7 +93,8 @@ class TestFunctionalForms:
         assert [(t.dimension, t.granularity) for t in _tds(query)] == [
             ("created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
         ]
-        assert query.dimensions is not None and [d.name for d in query.dimensions] == ["region"]
+        assert query.dimensions is not None
+        assert [d.name for d in query.dimensions] == ["region"]
 
     def test_non_temporal_argument_is_not_a_shape_error(self) -> None:
         query = _q(dimensions=["month(upper(status))"])
@@ -106,7 +107,8 @@ class TestFunctionalForms:
             _q(**{field: [entry]})
         msg = str(ei.value)
         assert "gran(" in msg
-        assert "month" in msg and "quarter" in msg
+        assert "month" in msg
+        assert "quarter" in msg
 
 
 class TestNames:

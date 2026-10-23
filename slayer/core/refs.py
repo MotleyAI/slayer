@@ -356,8 +356,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
-    if isinstance(value, ScalarCallKey):
-        # A FILTER-masked row parameter.
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey)):
+        # A row-level expression parameter (a FILTER-masked one included).
         return auto_name_from_expression(key_display(value))
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "

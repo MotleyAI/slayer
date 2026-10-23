@@ -28,7 +28,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 ## 5. Time dimensions
 
 - [x] 5.1 `TimeDimension.dimension` as text, legacy object / `column` alias coercion, `gran(expr)` functional forms, `name`, dedupe / strip / merge / variables / facade rebuilders, name uniqueness; verify 2.1 construction scenarios
-- [ ] 5.2 Binding of expression time dimensions (home, row-level check), checker typing with the source → type map, `date_range`, `whole_periods_only`, frame bounds, `window=` / transforms, result keys and names, `main_time_dimension` and `partition_by=` by name; verify 2.1 and 2.2
+- [x] 5.2 Binding of expression time dimensions (home, row-level check), checker typing with the source → type map, `date_range`, `whole_periods_only`, frame bounds, `window=` / transforms, result keys and names, `main_time_dimension` and `partition_by=` by name; verify 2.1 and 2.2
 - [x] 5.3 Every `full_name` / `name` / `model` consumer (`unrelated.py`, `model_reads.py`, `schema_drift.py`, `population.py`, `time_spine.py`) on parsed references; verify their suites
 - [x] 5.4 Stage boundary: expression time dimensions emit a typed, bucketed `StageColumn` without single-column provenance; verify the two-stage scenarios
 - [x] 5.5 Per-leaf re-bucketing; verify its scenarios
@@ -36,15 +36,15 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 6. Partition keys, ranking, parameters
 
-- [ ] 6.1 `_bind_partition_keys` over row-level expressions, computed-dimension / bucket equivalence, source → bucket mapping with the ambiguity rule, aggregate-bearing key error with the computed-dimension remedy; verify 2.4
+- [x] 6.1 `_bind_partition_keys` over row-level expressions, computed-dimension / bucket equivalence, source → bucket mapping with the ambiguity rule, aggregate-bearing key error with the computed-dimension remedy; verify 2.4
 - [ ] 6.2 `explicit_ranking_key` (renamed from `explicit_ranking_time_arg`) over any row-level argument with both Axiom 2.4 safety paths; `_fold_positional_agg_args` ranking-key rule; default ranking key precedence; verify 2.5 ranking scenarios
-- [ ] 6.3 `first` / `last` over expression and mixed sources: lift the `_bind_agg` refusal; `_ranked_value_expr` / `_ranked_scope_expr` through the row-expression renderer with joined paths and row-attach substitution; verify 2.5 and 2.6
-- [ ] 6.4 `_bind_agg_arg` over row-level expressions with parameter typing by the home grain; verify 2.5 parameter scenarios
-- [ ] 6.5 Rewrite the remedies pointing at an inline `ModelExtension` column (`binding.py` partition-key error, `help_content/02_workflow.md`); verify `grep` finds no such remedy
+- [x] 6.3 `first` / `last` over expression and mixed sources: lift the `_bind_agg` refusal; `_ranked_value_expr` / `_ranked_scope_expr` through the row-expression renderer with joined paths and row-attach substitution; verify 2.5 and 2.6
+- [x] 6.4 `_bind_agg_arg` over row-level expressions with parameter typing by the home grain; verify 2.5 parameter scenarios
+- [x] 6.5 Rewrite the remedies pointing at an inline `ModelExtension` column (`binding.py` partition-key error, `help_content/02_workflow.md`); verify `grep` finds no such remedy
 
 ## 7. Migration
 
-- [ ] 7.1 Stored-only step (SlayerQuery, SlayerModel, Memory; versions after DEV-2101's) rewriting object-form time dimensions to text; verify 2.7 and the 0.10.2 corpus
+- [x] 7.1 Stored-only step (SlayerQuery, SlayerModel, Memory; versions after DEV-2101's) rewriting object-form time dimensions to text; verify 2.7 and the 0.10.2 corpus
 
 ## 8. Architecture
 
@@ -52,9 +52,9 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 9. Docs and agent surfaces
 
-- [ ] 9.1 `docs/concepts/queries.md` (TimeDimension text form and `name`, partition keys), `formulas.md` (`partition_by=`, `first` / `last` value and ranking key, expression parameters, default ranking key), `time.md` (spine and expressions); verify no doc shows the object form of a time dimension
-- [ ] 9.2 MCP `Field` descriptions (`TimeDimension`, `main_time_dimension`) and `slayer/memories/help_content/*`; verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
-- [ ] 9.3 Release-notes draft (untracked, never staged): the text dump of `TimeDimension.dimension`, Python attribute access, the default-ranking-key result change, the lifted refusals
+- [x] 9.1 `docs/concepts/queries.md` (TimeDimension text form and `name`, partition keys), `formulas.md` (`partition_by=`, `first` / `last` value and ranking key, expression parameters, default ranking key), `time.md` (spine and expressions); verify no doc shows the object form of a time dimension
+- [x] 9.2 MCP `Field` descriptions (`TimeDimension`, `main_time_dimension`) and `slayer/memories/help_content/*`; verify `tests/test_mcp_surface_budget.py` and the documented-idioms tests
+- [x] 9.3 Release-notes draft (untracked, never staged): the text dump of `TimeDimension.dimension`, Python attribute access, the default-ranking-key result change, the lifted refusals
 
 ## 10. Gates
 

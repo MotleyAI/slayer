@@ -404,15 +404,14 @@ AggregateSource = Union[
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
     "InKey", "TimePointCmpKey", "CastKey",
 ]
-# Positional and kwarg arg values share one union: `last(created_at)` binds an
-# identifier column, `weighted_avg(weight=qty)` a column,
+# Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
+# ranking column, `weighted_avg(weight=qty * 2)` a row-level expression,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
 # `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
-    # A FILTER-masked row parameter.
-    "ScalarCallKey",
+    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey",
     Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue

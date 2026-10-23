@@ -134,7 +134,7 @@ from slayer.ir.planned import (
     ValueSlot,
 )
 from slayer.engine.ranked_planner import (
-    explicit_ranking_time_arg,
+    explicit_ranking_key,
     ordered_row_keys,
     resolve_ranking_time_key,
 )
@@ -754,19 +754,21 @@ def _ranking_key_crossing(
     """The ``(leaf, hop)`` a ranked aggregate's ordering key crosses unsafely from
     ``root_model``, judged by its dependency closure (engine P10); ``None`` when every
     path is provably to-one. An unanalysable definition fails closed through
-    ``check_input_dependencies_analyzable`` naming the column (Axiom 2.8)."""
-    leaf = column_leaf(key) if isinstance(key, (ColumnKey, ColumnSqlKey)) else str(key)
-    closure = key_closure(
-        key=key, anchor_model=root_model, anchor_relation=root_model.name, bundle=bundle,
-    )
-    if closure is None:
-        check_input_dependencies_analyzable(alias=alias, column=leaf)
-        closure = ()
-    for path in closure:
-        if not safe_reachable(
-            root=root_model, path=path, models_by_name=bundle.models_by_name,
-        ):
-            return leaf, path[-1]
+    ``check_input_dependencies_analyzable`` naming the column (Axiom 2.8). An expression
+    key is judged per leaf, naming the crossing one."""
+    for leaf_key in source_row_leaves(key) or [key]:
+        leaf = column_leaf(leaf_key) if isinstance(leaf_key, (ColumnKey, ColumnSqlKey)) else key_display(leaf_key)
+        closure = key_closure(
+            key=leaf_key, anchor_model=root_model, anchor_relation=root_model.name, bundle=bundle,
+        )
+        if closure is None:
+            check_input_dependencies_analyzable(alias=alias, column=leaf)
+            closure = ()
+        for path in closure:
+            if not safe_reachable(
+                root=root_model, path=path, models_by_name=bundle.models_by_name,
+            ):
+                return leaf, path[-1]
     return None
 
 
@@ -787,7 +789,7 @@ def _assert_local_producer_inputs_safe(
     # Role: crossed ranking argument, explicitly named (a first/last ranking arg),
     # judged by its closure so a derived argument names itself (D1).
     ranked_crossings: List[Tuple[str, str]] = []
-    ranking_arg = explicit_ranking_time_arg(agg)
+    ranking_arg = explicit_ranking_key(agg)
     if ranking_arg is not None:
         crossing = _ranking_key_crossing(
             key=ranking_arg, root_model=host_model, bundle=bundle, alias=alias,

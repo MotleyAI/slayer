@@ -179,9 +179,9 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Add it to time_dimensions, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
-         message="The partition_by column '…' is not a query dimension."
+         message="The partition_by … '…' is not a query dimension."
          + AT + "…"
-         + SUGGEST + "Add it to dimensions/time_dimensions, or choose one of: ….",
+         + SUGGEST + "Add it to dimensions/time_dimensions…, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_transform_partition_keys_in_operand_grain", exc="PartitionKeyError",
          message="The partition_by column '…' is not a member of the transform's operand grain (…); a rank-family transform partitions its operand's cells."

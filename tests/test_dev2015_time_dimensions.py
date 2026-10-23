@@ -65,8 +65,9 @@ class TestUnknownCalleeAtBinding:
         assert "(col" in msg or "gran(" in msg
 
     async def test_non_temporal_argument_is_a_time_dimension_type_error(self, engine) -> None:
+        query = _q(dimensions=["fiscal_year(upper(id))"])
         with pytest.raises(TimeDimensionColumnError, match="TEXT"):
-            await engine.execute(_q(dimensions=["fiscal_year(upper(id))"]), dry_run=True)
+            await engine.execute(query, dry_run=True)
 
     def test_bare_column_string_still_rejected_at_construction(self) -> None:
         with pytest.raises(ValueError) as exc:

@@ -1435,12 +1435,13 @@ def check_partition_key_resolves(
         )
     if maps_to_bucket or lenient:
         return
+    is_column = isinstance(pk, (ColumnKey, ColumnSqlKey))
     raise PartitionKeyError(
-        summary=f"The partition_by column '{dotted_key_display(pk)}' is not a "
+        summary=f"The partition_by {'column' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
         f"query dimension.",
         location=label,
-        suggestion=f"Add it to dimensions/time_dimensions, or choose one of: "
-        f"{', '.join(available_dims) or '(none)'}.",
+        suggestion=f"Add it to dimensions/time_dimensions{'' if is_column else ' (as a computed dimension)'}, "
+        f"or choose one of: {', '.join(available_dims) or '(none)'}.",
     )
 
 

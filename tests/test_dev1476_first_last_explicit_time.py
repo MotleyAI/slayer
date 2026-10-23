@@ -22,7 +22,7 @@ from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
-    explicit_ranking_time_arg,
+    explicit_ranking_key,
     resolve_ranking_time_key,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -749,7 +749,7 @@ class TestGateUsesSharedArgSelection:
         )
 
     def test_scalar_first_positional_is_not_an_explicit_time_arg(self) -> None:
-        assert explicit_ranking_time_arg(self._scalar_first_arg_key()) is None
+        assert explicit_ranking_key(self._scalar_first_arg_key()) is None
 
     def test_scalar_first_arg_gate_requires_default_time(self) -> None:
         # no default_time_dimension, and two temporal columns: no sole-column default
