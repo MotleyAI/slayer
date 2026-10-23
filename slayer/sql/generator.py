@@ -74,7 +74,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import is_stat_agg1, is_stat_agg2
+from slayer.sql.dialects.base import bare_comparands, is_stat_agg1, is_stat_agg2
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     AliasAllocator,
@@ -188,6 +188,11 @@ class AggRenderSpec(BaseModel):
 
     #: An expression source's rendered value, never re-parsed from text.
     value: Optional[Expression] = None
+
+
+def _key_equality(left: Expression, right: Expression) -> exp.EQ:
+    left, right = bare_comparands(left, right)
+    return exp.EQ(this=left, expression=right)
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
@@ -4410,6 +4415,13 @@ class SQLGenerator:
                 prev_model = next_model
         return base_from, joins
 
+    def _join_key(self, *, model, column: str, alias: str) -> Expression:
+        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
+        key = exp.Column(this=self._to_ident(column), table=exp.to_identifier(alias))
+        # Join pairs name physical columns.
+        declared = next((c for c in getattr(model, "columns", ()) if c.is_base and c.physical_name == column), None)
+        return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(getattr(declared, "db_type", None)))
+
     def _hop_join(
         self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
@@ -4417,16 +4429,9 @@ class SQLGenerator:
         if is_unrelated_edge(edge):
             raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
         join_on_parts = [
-            # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
-            exp.EQ(
-                this=exp.Column(
-                    this=self._to_ident(src_col),
-                    table=exp.to_identifier(current_alias),
-                ),
-                expression=exp.Column(
-                    this=self._to_ident(tgt_col),
-                    table=exp.to_identifier(next_alias),
-                ),
+            _key_equality(
+                self._join_key(model=prev_model, column=src_col, alias=current_alias),
+                self._join_key(model=next_model, column=tgt_col, alias=next_alias),
             )
             for src_col, tgt_col in physical_join_pairs(
                 edge=edge, source=prev_model, target=next_model,
@@ -4474,10 +4479,8 @@ class SQLGenerator:
                 f"Column {leaf!r} not found on joined model "
                 f"{current_model.name!r}.",
             )
-        return exp.Column(
-            this=exp.to_identifier(leaf),
-            table=exp.to_identifier(current_alias),
-        )
+        column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
+        return self._dialect.read_column(column, zoned=self._dialect.is_zoned_db_type(col_def.db_type))
 
     def _rank_family_window(
         self, *, fn: Expression, measure: Expression, partition_by: Iterable[Expression], descending: bool,
@@ -5358,10 +5361,8 @@ class SQLGenerator:
                 f"Column {leaf!r} not found on model "
                 f"{source_model.name!r}",
             )
-        return self._resolve_sql(
-            sql=col.sql, name=col.name, model_name=source_relation,
-            type=col.type,
-        )
+        resolved = self._resolve_sql(sql=col.sql, name=col.name, model_name=source_relation, type=col.type)
+        return self._dialect.read_column(resolved, zoned=self._dialect.is_zoned_db_type(col.db_type))
 
     def _raw_time_col_expr_for_planned(
         self, *, time_column, source_model, source_relation: str, bundle,
@@ -5399,6 +5400,7 @@ class SQLGenerator:
                     owner_path=tuple(time_column.path),
                     cast=False,
                 )
+                owner = joined_model
             else:
                 expanded_sql = self._expand_derived_column_sql(
                     source_model=source_model,
@@ -5407,7 +5409,11 @@ class SQLGenerator:
                     bundle=bundle,
                     cast=False,
                 )
-            return self._parse(expanded_sql)
+                owner = source_model
+            declared = owner.get_column(time_column.column_name)
+            return self._dialect.read_column(
+                self._parse(expanded_sql), zoned=self._dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
+            )
         raise NotImplementedError(
             f"Unsupported TimeTruncKey column type: {type(time_column).__name__}",
         )
@@ -5766,9 +5772,15 @@ class SQLGenerator:
                 # The declared-type CAST is baked into sql_text (on the value), so
                 # the aggregate must not re-cast the whole expression.
                 column_type = None
+                zoned_value = None
             else:
                 sql_text = col.sql if col.sql else col.name
                 column_type = col.type
+                # A zoned physical column reads as the dialect's naive type inside the aggregate too.
+                zoned_value = self._dialect.read_column(
+                    self._resolve_sql(sql=sql_text, name=col.name, model_name=source_relation, type=column_type),
+                    zoned=True,
+                ) if self._dialect.is_zoned_db_type(col.db_type) else None
             formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
@@ -5779,6 +5791,7 @@ class SQLGenerator:
                 type=slot_type,
                 column_type=column_type,
                 input_type=input_type,
+                value=zoned_value,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),

@@ -44,7 +44,14 @@ from slayer.core.keys import (
     temporal_type,
     unit_word,
 )
-from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, cast_target, operand_copy, temporal_type_of
+from slayer.sql.dialects.base import (
+    SqlDialect,
+    TemporalComparisonOp,
+    bare_comparands,
+    cast_target,
+    operand_copy,
+    temporal_type_of,
+)
 from slayer.sql.render.library import json_operands, render_library_call
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 
@@ -216,6 +223,8 @@ def render_arithmetic(
     node_cls = _BINARY_OPS.get(op)
     if node_cls is None:
         raise NotImplementedError(f"Unsupported arithmetic operator {op!r}.")
+    if op in _TEMPORAL_COMPARISON_OPS:
+        operands = list(bare_comparands(operands[0], operands[1]))
     return _fold_binary(node_cls=node_cls, operands=operands)
 
 
@@ -247,7 +256,7 @@ def temporal_comparison(key: ArithmeticKey) -> Optional[Tuple[TemporalComparison
 
 def render_null_safe(*, op: str, operands: List[Expression], dialect: SqlDialect) -> Expression:
     """``a IS [NOT] DISTINCT FROM b`` through the dialect's null-safe equality."""
-    left, right = (operand_copy(o) for o in operands)
+    left, right = bare_comparands(*(operand_copy(o) for o in operands))
     same = dialect.build_null_safe_eq(left, right)
     return same if op == "is not distinct from" else exp.Not(this=exp.Paren(this=same))
 
@@ -271,7 +280,8 @@ def render_cast(
 def render_temporal_comparison(
     *, op: TemporalComparisonOp, operand: Expression, value: date, dialect: SqlDialect,
 ) -> Expression:
-    """A comparison against a temporal literal, through the dialect's one hook."""
+    """A comparison against a temporal literal, through the dialect's one hook (ISO text, so a zoned column stays bare)."""
+    operand, _ = bare_comparands(operand, exp.Literal.string(""))
     grouped = _paren_if_lower_prec(operand, parent_prec=_COMPARISON_PREC, is_right=False)
     return dialect.build_temporal_comparison(op=op, operand=grouped, value=value)
 

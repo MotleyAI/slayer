@@ -63,7 +63,7 @@ The library SHALL provide, with Postgres meanings:
 - `repeat(s, n)` — `s` repeated `n` times; empty for `n ≤ 0`.
 - `split_part(s, delimiter, n)` — the `n`-th field; `n` SHALL be a non-zero integer literal, negative counting from the end; a field beyond the last yields `''`.
 - `concat_ws(separator, a, …)` — the non-NULL arguments joined by the separator.
-- `chr(n)` — the character with Unicode code point `n`; `ascii(s)` — the code point of the first character of `s`.
+- `chr(n)` — the character with a Unicode code point from `1` through `0x10FFFF`, excluding surrogates; `ascii(s)` — the code point of the first character of `s`.
 
 Lengths, positions and counts SHALL be in characters, not bytes.
 

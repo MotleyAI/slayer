@@ -39,6 +39,7 @@
 - [x] 5.7 Server-profile predicate generalised (D5); SQL Server `server_profile_sql` / `parse_server_profile`; version errors for regex and `greatest` / `least`; verify 2.2 / 2.3 version scenarios
 - [x] 5.8 BigQuery TIMESTAMP is DATETIME; zoned `TIMESTAMP` columns keep `db_type` and compare through a cast of the other side (D13)
 - [x] 5.9 `starts_with` / `ends_with` / `contains` / `strpos` compare binary on MySQL (`BINARY`) and SQL Server (`COLLATE Latin1_General_100_BIN2`); verify emissions
+- [x] 5.10 A zoned BigQuery column reads as DATETIME outside direct comparison operands (D13); BOOLEAN in `||` / `concat` / `concat_ws` rejected at plan time; `concat_ws` converts numbers to TEXT
 
 ## 6. Ingestion
 

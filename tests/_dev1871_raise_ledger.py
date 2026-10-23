@@ -143,6 +143,10 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="…() reads numbers, but `…` is TEXT."
          + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="_text_concat_args", exc="ScalarOperandTypeError",
+         message="Text concatenation has no portable spelling for the BOOLEAN `…`."
+         + SUGGEST + "Spell it explicitly: CASE WHEN … THEN 'true' ELSE 'false' END.",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
     _row(module=_EE, function="_raise_not_a_time_point", exc="TimeLiteralError",
          message="'…' is not a time point."
          + AT + "comparison with `…`"

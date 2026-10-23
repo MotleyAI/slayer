@@ -8,10 +8,13 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine import ingestion
 from slayer.engine.introspect_utils import _get_columns_fallback
+from tests._dev1840_fixtures import dev1840_models, signup_month_td
+from tests._dev1919_fixtures import WINDOWED_PARAM
+from tests._dev2015_fixtures import JAN_MAR, TWO_FACTS, spine_models, spine_td
 from tests._dev2120_fixtures import emit_lib, lib_model, lib_query
 from tests._engine_helpers import _engine_generate
 
@@ -75,18 +78,102 @@ class TestZonedColumn:
     async def test_column_against_itself_is_untouched(self) -> None:
         assert "WHERE LIB.TS = LIB.TS" in await _sql("ts = ts", filtered=True, zoned=True)
 
-    @pytest.mark.parametrize(("zoned", "where"), [
-        (True, "WHERE S1.TS < CAST(CURRENT_DATETIME() AS TIMESTAMP)"), (False, "WHERE S1.TS < CURRENT_DATETIME()"),
-    ])
-    async def test_zoned_type_survives_a_stage(self, zoned: bool, where: str) -> None:
+    async def test_a_stage_reads_the_zoned_column_naive(self) -> None:
         s1 = SlayerQuery.model_validate({"name": "s1", "source_model": "lib", "dimensions": ["id", "ts"]})
         root = SlayerQuery.model_validate({"source_model": "s1", "dimensions": ["id"], "filters": ["ts < now()"]})
-        sql = await _engine_generate(query=[s1, root], model=_zoned_lib() if zoned else lib_model(), dialect="bigquery")
-        assert where in " ".join(sql.upper().split()), sql
+        sql = " ".join((await _engine_generate(query=[s1, root], model=_zoned_lib(), dialect="bigquery")).upper().split())
+        assert "CAST(LIB.TS AS DATETIME) AS `LIB___TS`" in sql, sql
+        assert "WHERE S1.TS < CURRENT_DATETIME()" in sql, sql
 
     async def test_other_dialects_ignore_the_db_type(self) -> None:
         zoned = await _sql("ts < now()", dialect="postgres", filtered=True, zoned=True)
         assert zoned == await _sql("ts < now()", dialect="postgres", filtered=True)
+
+
+class TestZonedColumnReadsNaive:
+    @pytest.mark.parametrize(("expr", "fragment"), [
+        ("ts", "CAST(LIB.TS AS DATETIME) AS `LIB___V`"),
+        ("coalesce(ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
+        ("date_trunc('month', ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
+    ])
+    async def test_value_positions(self, expr: str, fragment: str) -> None:
+        assert fragment in await _sql(expr, zoned=True)
+
+    async def test_time_dimension_bucket_and_date_range(self) -> None:
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "*:count"}], "time_dimensions": [
+            {"dimension": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}]})
+        sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
+        assert "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)" in sql, sql
+        assert "LIB.TS >= '2024-01-01 00:00:00'" in sql, sql
+
+    @pytest.mark.parametrize(("formula", "fragment"), [
+        ("max(ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
+    ])
+    async def test_aggregate_input_reads_naive(self, formula: str, fragment: str) -> None:
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": formula, "name": "agg_v"}]})
+        sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
+        assert fragment in sql, sql
+
+    async def test_derived_aggregate_source_reads_naive_once(self) -> None:
+        base = _zoned_lib()
+        model = base.model_copy(update={"columns": [*base.columns, Column(
+            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", type=DataType.TIMESTAMP, db_type="TIMESTAMP")]})
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "max(ts_shifted)",
+                                                                                 "name": "agg_v"}]})
+        sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
+        assert "AS DATETIME) AS DATETIME)" not in sql, sql
+
+    async def test_derived_time_column_reads_naive(self) -> None:
+        base = _zoned_lib()
+        model = base.model_copy(update={"columns": [*base.columns, Column(
+            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", type=DataType.TIMESTAMP, db_type="TIMESTAMP")]})
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "*:count"}],
+                                            "time_dimensions": [{"dimension": "ts_shifted", "granularity": "month"}]})
+        sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
+        assert "DATE_TRUNC(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME), MONTH)" in sql, sql
+
+    @pytest.mark.parametrize(("target_db_type", "on"), [
+        (None, "ON CAST(a.at_raw AS DATETIME) = b.bt"), ("TIMESTAMP", "ON a.at_raw = b.bt"),
+    ])
+    async def test_join_keys_meet_in_one_type(self, target_db_type: str | None, on: str) -> None:
+        # The zoned key's logical name differs from its physical one.
+        a = SlayerModel(name="a", sql_table="a", data_source="test", joins=[
+            ModelJoin(target_model="b", join_pairs=[["at", "bt"]])], columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="at", sql="at_raw", type=DataType.TIMESTAMP, db_type="TIMESTAMP"),
+            Column(name="ts_shifted", sql="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)", type=DataType.TIMESTAMP)])
+        b = SlayerModel(name="b", sql_table="b", data_source="test", columns=[
+            Column(name="bt", type=DataType.TIMESTAMP, db_type=target_db_type, primary_key=True),
+            Column(name="label", type=DataType.TEXT)])
+        query = SlayerQuery.model_validate({"source_model": "a", "dimensions": ["b.label"]})
+        sql = await _engine_generate(query=query, model=a, extra_models=[b], dialect="bigquery")
+        assert on in " ".join(sql.split()), sql
+
+    async def test_window_time_reads_naive(self) -> None:
+        models = _zoned(dev1840_models(), {("customers", "signup_at")})
+        query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": signup_month_td(),
+                                            "measures": [{"formula": WINDOWED_PARAM, "name": "w"}]})
+        sql = await _engine_generate(query=query, model=models[0], extra_models=models[1:], dialect="bigquery",
+                                     validate=False)
+        assert "CAST(customers.signup_at AS DATETIME) AS _w_time" in " ".join(sql.split()), sql
+
+    async def test_spine_fact_bucket_reads_naive(self) -> None:
+        models = spine_models()
+        models = _zoned(models, {(m.name, c.name) for m in models for c in m.columns
+                                 if m.name in ("orders", "returns") and c.type in (DataType.DATE, DataType.TIMESTAMP)})
+        query = SlayerQuery.model_validate({"source_model": "customers", "measures": TWO_FACTS,
+                                            "dimensions": ["customers.region"],
+                                            "time_dimensions": [spine_td(date_range=JAN_MAR)]})
+        sql = " ".join((await _engine_generate(query=query, model=models[0], extra_models=models[1:],
+                                               dialect="bigquery", validate=False)).split())
+        assert "DATE_TRUNC(CAST(orders.order_date AS DATETIME), MONTH)" in sql, sql
+        assert "orders.order_date >= '2025-01-01 00:00:00'" in sql, sql
+
+
+def _zoned(models: list[SlayerModel], columns: set[tuple[str, str]]) -> list[SlayerModel]:
+    return [m.model_copy(update={"columns": [
+        c.model_copy(update={"db_type": "TIMESTAMP", "type": DataType.TIMESTAMP}) if (m.name, c.name) in columns else c
+        for c in m.columns]}) for m in models]
 
 
 class TestIngestionRecordsZonedType:

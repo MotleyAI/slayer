@@ -188,6 +188,25 @@ TRUE_WORDS = ("true", "t", "yes", "1")
 FALSE_WORDS = ("false", "f", "no", "0")
 
 
+#: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
+ZONED_READ = "slayer_zoned_read"
+
+
+def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:
+    """A zoned column read stays bare where the other side is already in the zoned type (a ``TIMESTAMP``
+    cast, ISO text, another zoned column), so the comparison keeps partition pruning."""
+    def zoned(node: Expression) -> bool:
+        return isinstance(node, exp.Cast) and bool(node.meta.get(ZONED_READ))
+
+    def in_zoned_type(node: Expression) -> bool:
+        return zoned(node) or (isinstance(node, exp.Literal) and node.is_string) or (
+            isinstance(node, exp.Cast) and node.to.this is exp.DataType.Type.TIMESTAMPTZ)
+
+    new_left = left.this if zoned(left) and in_zoned_type(right) else left
+    new_right = right.this if zoned(right) and in_zoned_type(left) else right
+    return new_left, new_right
+
+
 def as_text(value: Expression) -> Expression:
     """``CAST(value AS TEXT)`` — the input a validity check reads."""
     return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
@@ -454,6 +473,14 @@ class SqlDialect(BaseModel):
 
     #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
+
+    def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
+        """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
+        return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """A column as SLayer reads it; default: as stored."""
+        return column
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
