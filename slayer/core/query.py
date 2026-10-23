@@ -1443,25 +1443,27 @@ class SlayerQuery(BaseModel):
 
     def _check_unique_dimension_names(self) -> None:
         """Time-dimension names, an unnamed expression's included, are unique across dimensions and
-        time dimensions; an auto-name repeats only for its own expression, which granularity
-        suffixes or binding tell apart."""
+        time dimensions; a name repeats only for its own expression — an auto-name at any granularity
+        (suffixes tell them apart), an explicit one at the same granularity — which binding dedupes or
+        rejects."""
         taken: set[str] = set()
         for dim in self.dimensions or ():
             if (name := dim.name if isinstance(dim, ComputedDimension) else dim.full_name) is not None:
                 taken.add(name)
-        auto: dict[str, str] = {}
+        identities: dict[str, tuple] = {}
         for td in self.time_dimensions or ():
+            if td.name is None and td.column_ref is not None:
+                continue
+            text = _canonical_expression_text(td.template)
             if td.name is not None:
-                if td.name in taken or td.name in auto:
-                    raise ValueError(f"Dimension name {td.name!r} is used twice; names must be unique.")
-                taken.add(td.name)
-            elif td.column_ref is None:
-                name, text = computed_dimension_name(td.template), _canonical_expression_text(td.template)
-                if name in taken or auto.setdefault(name, text) != text:
-                    raise ValueError(
-                        f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
-                        f"distinct `name`."
-                    )
+                name, identity = td.name, ("named", text, str(td.granularity))
+            else:
+                name, identity = computed_dimension_name(td.template), ("auto", text)
+            if name in taken or identities.setdefault(name, identity) != identity:
+                raise ValueError(
+                    f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
+                    f"distinct `name`."
+                )
 
     def _validate_distinct_dimension_values(self) -> None:
         """Cheap, model-free rejection for ``distinct_dimension_values=False``: non-empty

@@ -242,7 +242,7 @@ A dimension entry whose callee is a built-in granularity but whose shape is not 
 
 ### Requirement: Result keys disambiguate same-column time dimensions
 
-When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (same dimension text, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension text and granularity but differing in date range, name or label SHALL be rejected at construction. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time text check for spellings that only prove equivalent once resolved.
+When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (same dimension text, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension text and granularity but differing in date range, name or label SHALL be rejected at construction. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time text check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
 
 #### Scenario: two granularities of one column
 
@@ -273,6 +273,11 @@ When two or more projected unnamed time dimensions share the same bound source �
 
 - WHEN two projected time dimensions name one source via different spellings (e.g. `coalesce(shipped_at, created_at)` and `COALESCE(shipped_at,created_at)`) that resolve to the same bucket but differ in date range or label
 - THEN the query fails with an error naming the conflict
+
+#### Scenario: equivalent spellings with agreeing metadata dedupe at binding
+
+- WHEN two projected time dimensions name one source via different spellings (e.g. `coalesce(shipped_at, created_at)` and `COALESCE(shipped_at,created_at)`) at one granularity, agreeing in date range, name and label
+- THEN the query behaves as if it were listed once, by executed values on SQLite and DuckDB
 
 ### Requirement: main_time_dimension over same-column buckets fails closed
 

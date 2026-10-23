@@ -295,6 +295,14 @@ class TestNamesAndKeys:
         msg = str(await _plan_fails(engine, query, GranularityCallError))
         assert "Conflicting" in msg
 
+    @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"name": "effective_at"}])
+    async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine, extra: dict) -> None:
+        once = await engine.execute(_count(time_dimensions=[td(EFF, **extra)]))
+        twice = await engine.execute(_count(time_dimensions=[td(EFF, **extra),
+                                                             td("COALESCE(shipped_at,created_at)", **extra)]))
+        assert twice.columns == once.columns
+        assert sorted(map(str, twice.data)) == sorted(map(str, once.data))
+
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["month(created_at)"], time_dimensions=[td(EFF, name="effective_at")],

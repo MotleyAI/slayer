@@ -149,6 +149,17 @@ class TestNames:
         with pytest.raises(ValueError, match="used twice"):
             _q(**entries)
 
+    def test_one_explicit_name_at_two_granularities_collides(self) -> None:
+        with pytest.raises(ValueError, match="used twice"):
+            _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"},
+                                {"dimension": EFF, "granularity": "year", "name": "m"}])
+
+    def test_one_explicit_name_on_two_spellings_is_left_to_binding(self) -> None:
+        query = _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"},
+                                    {"dimension": "COALESCE(shipped_at,created_at)", "granularity": "month",
+                                     "name": "m"}])
+        assert len(_tds(query)) == 2
+
     @pytest.mark.parametrize("dimension", [EFF, "created_at"])
     def test_one_source_at_two_granularities_is_not_a_collision(self, dimension: str) -> None:
         query = _q(time_dimensions=[{"dimension": dimension, "granularity": "month"},

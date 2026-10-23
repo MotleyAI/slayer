@@ -315,6 +315,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_column_granularities(bundle=bundle)
     query = _resolve_granularity_calls(query, bundle=bundle)
+    query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
     if query.distinct_dimension_values is False:
@@ -1240,6 +1241,26 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
     return query.model_copy(update={
         "dimensions": kept or None, "time_dimensions": [*(query.time_dimensions or []), *moved],
     })
+
+
+def _dedupe_equivalent_time_dimensions(
+    query: SlayerQuery, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> SlayerQuery:
+    """Spellings of one time dimension (one bucket, name, date range and label) project once."""
+    tds = query.time_dimensions or []
+    if len(tds) < 2:
+        return query
+    seen: set = set()
+    kept: List[TimeDimension] = []
+    for i, td in enumerate(tds):
+        with stale_spelling_position(f"time_dimensions[{i}]"):
+            granularity = _td_granularity(td, bundle=bundle)
+            bucket = bind_time_dimension(td=td, scope=scope, bundle=bundle, granularity=granularity).bound.value_key
+        identity = (bucket, td.effective_name, tuple(td.date_range or ()), td.label)
+        if identity not in seen:
+            seen.add(identity)
+            kept.append(td)
+    return query if len(kept) == len(tds) else query.model_copy(update={"time_dimensions": kept})
 
 
 def _datasource_time_dimension(entry: str, *, template: str, bundle: ResolvedSourceBundle) -> Optional[TimeDimension]:
