@@ -1090,7 +1090,8 @@ def _strip_column_ref(ref, model_name: str):
 
 
 def _model_prefix_pattern(model_name: str) -> re.Pattern:
-    return re.compile(r"\b" + re.escape(model_name) + r"\.")
+    """A leading ``<model>.`` qualifier, never an inner hop of a longer path."""
+    return re.compile(r"(?<![\w.])" + re.escape(model_name) + r"\.")
 
 
 def _strip_time_dimensions(tds: list[TimeDimension] | None, model_name: str) -> list[TimeDimension] | None:

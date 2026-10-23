@@ -1882,6 +1882,18 @@ class TestStripSourceModelPrefix:
         stripped = q.strip_source_model_prefix()
         assert stripped.measures[0].formula == "customers.score:avg"
 
+    def test_formula_inner_hop_not_stripped(self) -> None:
+        """A revisiting customers.orders hop stays, so binding refuses it instead of reading customers."""
+        q = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(customers.orders.id)"]})
+        stripped = q.strip_source_model_prefix()
+        assert stripped.measures is not None
+        assert stripped.measures[0].formula == "count(customers.orders.id)"
+
+    def test_filter_inner_hop_not_stripped(self) -> None:
+        q = SlayerQuery(source_model="orders", filters=["customers.orders.status = 'paid'"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters == ["customers.orders.status = 'paid'"]
+
     def test_formula_name_and_label_preserved(self) -> None:
         """Field name and label are preserved after formula stripping."""
         q = SlayerQuery(

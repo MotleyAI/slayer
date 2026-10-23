@@ -58,4 +58,4 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 10. Gates
 
-- [ ] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
+- [x] 10.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
