@@ -2788,10 +2788,10 @@ class SQLGenerator:
                 column_name=col.name, bundle=bundle,
             ))
         else:
-            expr = self._resolve_sql(
+            expr = self._dialect.read_column(self._resolve_sql(
                 sql=col.sql if col.sql else col.name, name=col.name,
                 model_name=root_relation, type=col.type,
-            )
+            ), zoned=self._dialect.is_zoned_db_type(col.db_type))
         for p in self._joined_paths_in_sql(
             sql_expr=expr, source_relation=root_relation,
             source_model=root_model, bundle=bundle,

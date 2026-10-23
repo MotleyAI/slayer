@@ -61,7 +61,8 @@ The library SHALL provide, with Postgres meanings:
 - `lpad(s, n[, fill])` / `rpad(s, n[, fill])` — pad to `n` characters with `fill` (default one space), truncating `s` when it is longer than `n`.
 - `reverse(s)` — the characters of `s` in reverse order.
 - `repeat(s, n)` — `s` repeated `n` times; empty for `n ≤ 0`.
-- `split_part(s, delimiter, n)` — the `n`-th field; `n` SHALL be a non-zero integer literal, negative counting from the end; a field beyond the last yields `''`.
+- `split_part(s, delimiter, n)` — the `n`-th field, the delimiter matched case- and accent-sensitively whatever the column's collation; `n` SHALL be a non-zero integer literal, negative counting from the end; a field beyond the last yields `''`.
+- `replace(s, from, to)` — every `from` in `s` replaced by `to`, matched case- and accent-sensitively whatever the column's collation.
 - `concat_ws(separator, a, …)` — the non-NULL arguments joined by the separator.
 - `chr(n)` — the character with a Unicode code point from `1` through `0x10FFFF`, excluding surrogates; `ascii(s)` — the code point of the first character of `s`.
 

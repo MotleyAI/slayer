@@ -217,6 +217,11 @@ class TestTextMatchingIgnoresCollation:
         sql = (await emit_lib(lib_query(expr), dialect=dialect)).upper()
         assert sql.count(marker) >= 2, sql
 
+    @pytest.mark.parametrize("expr", ["replace(word, 'a', 'x')", "split_part(word, 'a', 2)", "split_part(word, 'a', -1)"])
+    async def test_tsql_replace_and_split_part_compare_binary(self, expr: str) -> None:
+        sql = (await emit_lib(lib_query(expr), dialect="tsql")).upper()
+        assert sql.count("COLLATE LATIN1_GENERAL_100_BIN2") >= 2, sql
+
     async def test_tsql_collates_a_compound_operand_whole(self) -> None:
         sql = await emit_lib(lib_query("contains(word || 'x', 'ad')"), dialect="tsql")
         assert "( lib.word + 'x' ) COLLATE" in " ".join(sql.split()), sql

@@ -121,7 +121,15 @@ class TestZonedColumnReadsNaive:
         query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": "max(ts_shifted)",
                                                                                  "name": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
-        assert "AS DATETIME) AS DATETIME)" not in sql, sql
+        assert "MAX(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME))" in sql, sql
+        assert "AS DATETIME) AS DATETIME))" not in sql, sql
+
+    @pytest.mark.parametrize("agg", ["first", "last"])
+    async def test_ranked_pick_reads_naive(self, agg: str) -> None:
+        query = SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": f"{agg}(ts)", "name": "agg_v"}],
+                                            "time_dimensions": [{"dimension": "ts", "granularity": "month"}]})
+        sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
+        assert "CAST(LIB.TS AS DATETIME) AS _VAL_1" in sql, sql
 
     async def test_derived_time_column_reads_naive(self) -> None:
         base = _zoned_lib()

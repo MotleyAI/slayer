@@ -88,7 +88,7 @@ def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
 
 TextFn = Literal[
     "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
-    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr",
+    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
 ]
 TrimFn = Literal["trim", "ltrim", "rtrim"]
 MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
@@ -559,6 +559,8 @@ class SqlDialect(BaseModel):
             return exp.GT(this=self.text_position(s, args[1]), expression=lit(0))
         if fn in ("strpos", "instr"):
             return self.text_position(s, args[1])
+        if fn == "replace":
+            return self.rewrite_target_ast(func("REPLACE", *args))
         if fn in ("lpad", "rpad"):
             return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
         if fn == "reverse":
