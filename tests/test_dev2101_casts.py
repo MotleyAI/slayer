@@ -127,6 +127,19 @@ class TestSqliteTryCastBooleans:
         assert (None if value is None else bool(value)) == expected
 
 
+class TestSqliteTryCastRange:
+    @pytest.mark.parametrize(("text", "target", "expected"), [
+        ("1e309", "DOUBLE", None), ("1e309", "INT", None), ("99999999999999999999", "INT", None),
+        ("9223372036854775807", "INT", 9223372036854775807), ("-9223372036854775808", "INT", -9223372036854775808),
+        ("9007199254740993e0", "INT", 9007199254740993), ("1e999999999", "INT", None),
+    ])
+    async def test_range_and_precision(
+        self, sqlite_engine: SlayerQueryEngine, text: str, target: str, expected: int | None,
+    ) -> None:
+        resp = await sqlite_engine.execute(q(measures=[m(f"max(TRY_CAST('{text}' AS {target}))")]))
+        assert single(resp) == expected
+
+
 class TestCastEmission:
     async def test_postgres_keeps_the_parameterised_type(self) -> None:
         sql = await emit(q(measures=[m("sum(CAST(amount AS DECIMAL(10,2)))")]), dialect="postgres")

@@ -446,13 +446,17 @@ class SqlDialect(BaseModel):
     def _expanded_null_safe_eq(
         left: Expression, right: Expression,
     ) -> Expression:
-        """``left = right OR (left IS NULL AND right IS NULL)``."""
-        eq = exp.EQ(this=left.copy(), expression=right.copy())
-        both_null = exp.And(
-            this=exp.Is(this=left.copy(), expression=exp.Null()),
-            expression=exp.Is(this=right.copy(), expression=exp.Null()),
+        """Two-valued ``(l = r AND l IS NOT NULL AND r IS NOT NULL) OR (l IS NULL AND r IS NULL)``, safe to negate."""
+        def is_null(side: Expression) -> Expression:
+            return exp.Is(this=side.copy(), expression=exp.Null())
+
+        both_known = exp.and_(
+            exp.EQ(this=left.copy(), expression=right.copy()),
+            exp.Not(this=is_null(left)),
+            exp.Not(this=is_null(right)),
         )
-        return exp.paren(exp.Or(this=eq, expression=exp.paren(both_null)))
+        both_null = exp.And(this=is_null(left), expression=is_null(right))
+        return exp.paren(exp.Or(this=exp.paren(both_known), expression=exp.paren(both_null)))
 
     def build_date_trunc(
         self,

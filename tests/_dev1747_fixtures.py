@@ -408,15 +408,28 @@ def relation_names(node: exp.Expression) -> Set[str]:
     return names
 
 
+def _is_null_test(node: exp.Expr) -> bool:
+    inner = node.unnest()
+    return isinstance(inner, exp.Is) and isinstance(inner.expression, exp.Null)
+
+
+def _conjuncts(node: exp.Expr) -> list:
+    inner = node.unnest()
+    if isinstance(inner, exp.And):
+        return _conjuncts(inner.this) + _conjuncts(inner.expression)
+    return [inner]
+
+
 def is_null_safe_eq(predicate: exp.Expression) -> bool:
     """True when ``predicate`` compares two values NULL-safely.
 
     Accepts all three spellings ``SqlDialect.build_null_safe_eq`` emits —
     sqlglot's ``NullSafeEQ`` (``IS NOT DISTINCT FROM`` / MySQL ``<=>``), SQLite's
     bare ``IS`` between two non-NULL operands, and the expanded
-    ``(a = b OR (a IS NULL AND b IS NULL))`` — and nothing else. A substring test
-    for ``" IS "`` would also match ``IS NULL`` in an unrelated WHERE clause,
-    which is how a plain ``=`` join-back could pass a null-safety assertion.
+    ``((a = b AND NOT a IS NULL AND NOT b IS NULL) OR (a IS NULL AND b IS NULL))``
+    — and nothing else. A substring test for ``" IS "`` would also match
+    ``IS NULL`` in an unrelated WHERE clause, which is how a plain ``=`` join-back
+    could pass a null-safety assertion.
     """
     node = predicate.unnest()
     if isinstance(node, exp.NullSafeEQ):
@@ -424,18 +437,16 @@ def is_null_safe_eq(predicate: exp.Expression) -> bool:
     if isinstance(node, exp.Is):
         return not isinstance(node.expression, exp.Null)
     if isinstance(node, exp.Or):
-        arms = [node.this.unnest(), node.expression.unnest()]
-        has_eq = any(isinstance(arm, exp.EQ) for arm in arms)
-        has_both_null = any(
-            isinstance(arm, exp.And)
-            and all(
-                isinstance(side.unnest(), exp.Is)
-                and isinstance(side.unnest().expression, exp.Null)
-                for side in (arm.this, arm.expression)
-            )
-            for arm in arms
+        known, both_null = _conjuncts(node.this), _conjuncts(node.expression)
+        if len(known) != 3 or not isinstance(known[0], exp.EQ) or len(both_null) != 2:
+            return False
+        operands = [known[0].this, known[0].expression]
+        guards = [g.this.unnest() for g in known[1:] if isinstance(g, exp.Not) and _is_null_test(g.this)]
+        nulls = [side for side in both_null if _is_null_test(side)]
+        return (
+            [g.this for g in guards] == operands
+            and [n.this for n in nulls] == operands
         )
-        return has_eq and has_both_null
     return False
 
 

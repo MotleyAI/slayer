@@ -84,7 +84,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("column_name", attrgetter("column_name")),
     )),
     TimeTruncKey: ("TimeTruncKey", (
-        ("column", attrgetter("column")),
+        ("column", attrgetter("source")),
         ("granularity", lambda k: str(k.granularity)),
     )),
     StarKey: ("StarKey", (("path", attrgetter("path")),)),
@@ -274,18 +274,25 @@ def _fragment_display(key: SqlFragmentKey) -> str:
     return text
 
 
-def key_display(key: ValueKey) -> str:
-    """User-facing formula text of any key kind."""
+def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, ColumnKey):
         return ".".join((*key.path, key.leaf))
     if isinstance(key, ColumnSqlKey):
         return ".".join((*key.path, key.column_name))
-    if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.source)})"
     if isinstance(key, StarKey):
         return ".".join((*key.path, "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
+    return None
+
+
+def key_display(key: ValueKey) -> str:
+    """User-facing formula text of any key kind."""
+    leaf = _leaf_display(key)
+    if leaf is not None:
+        return leaf
+    if isinstance(key, TimeTruncKey):
+        return f"{key.granularity}({key_display(key.source)})"
     if isinstance(key, AggregateKey):
         return _aggregate_display(key)
     if isinstance(key, TransformKey):
@@ -342,14 +349,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _decimal_to_plain_str(Decimal(str(value)))
     if isinstance(value, str):
         return value
-    if isinstance(value, ColumnKey):
-        if value.path:
-            return ".".join(value.path) + "." + value.leaf
-        return value.leaf
-    if isinstance(value, ColumnSqlKey):
-        if value.path:
-            return ".".join(value.path) + "." + value.column_name
-        return value.column_name
+    if isinstance(value, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*value.path, value.leaf if isinstance(value, ColumnKey) else value.column_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):

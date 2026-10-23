@@ -436,7 +436,7 @@ class TestSharedGrainJoinBackBuilder:
         self, dialect: str, expected: str,
     ) -> None:
         """One builder, every dialect's own null-safe spelling — including the
-        expanded ``a = b OR (a IS NULL AND b IS NULL)`` fallback on T-SQL."""
+        expanded two-valued fallback on T-SQL."""
         strategy = get_dialect(dialect)
         left = grain_alias_column(alias="orders.status", table="_base")
         right = grain_alias_column(alias="orders.status", table="_cm_x")
@@ -548,7 +548,7 @@ class TestDialectEmission:
 
     async def test_tsql_uses_the_expanded_fallback(self) -> None:
         """T-SQL has no native null-safe operator: the expanded
-        ``a = b OR (a IS NULL AND b IS NULL)`` must appear."""
+        two-valued ``=`` / ``IS NULL`` disjunction must appear."""
         sql = await _gen(_cm_shared_grain_query(), dialect="tsql")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="tsql"))
         assert " OR " in on, (
