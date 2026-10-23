@@ -316,14 +316,13 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
 
 
 class TimeTruncKey(_FrozenKey, frozen=True):
-    """Row-level reference to a time-truncated column, keyed by (column, granularity).
+    """A row-level value truncated to a granularity, keyed by (source, granularity).
 
-    ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
-    (derived). ``granularity`` is resolved: built-in, or a datasource definition.
-    Different granularities on the same column are distinct slots.
+    ``source`` is any row-level key, a column being the one-leaf case.
+    ``granularity`` is resolved: built-in, or a datasource definition.
     """
 
-    source: ColumnKey | ColumnSqlKey
+    source: "ValueKey"
     granularity: Granularity
 
     @property
@@ -1713,7 +1712,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
             out.append(k)
             return
         for c in k.children():
@@ -1731,13 +1730,6 @@ def parameter_row_leaves(value) -> List[ValueKey]:
     return source_row_leaves(cast(ValueKey, value))
 
 
-def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
-    """Join path of a row-level leaf key regardless of kind."""
-    if isinstance(k, TimeTruncKey):
-        return column_path(k.source)
-    return getattr(k, "path", ())
-
-
 def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     """Join paths of the row-level column/star leaves of an aggregation source.
 
@@ -1749,8 +1741,8 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
-            out.append(_leaf_join_path(k))
+        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
+            out.append(k.path)
             return
         for c in k.children():
             _walk(c)

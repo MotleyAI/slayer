@@ -73,6 +73,7 @@ from slayer.core.keys import (
     regroup_root_grain,
     temporal_type,
     type_date_values,
+    column_leaf,
     value_arg_positions,
     source_anchor_path,
     transform_operand_grain,
@@ -165,10 +166,10 @@ def _key_display(k: ValueKey) -> str:
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        col = k.source if isinstance(k, TimeTruncKey) else k
-        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
-        return ".".join((*col.path, leaf))
+    if isinstance(k, TimeTruncKey):
+        return _key_display(k.source) if isinstance(k.source, (ColumnKey, ColumnSqlKey)) else key_display(k.source)
+    if isinstance(k, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*k.path, column_leaf(k)))
     return type(k).__name__
 
 

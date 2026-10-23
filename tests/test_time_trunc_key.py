@@ -56,6 +56,7 @@ class TestTimeTruncKeyConstruction:
     def test_preserves_columnkey_path_for_cross_model(self) -> None:
         col = ColumnKey(path=("customers",), leaf="signup_at")
         k = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
+        assert isinstance(k.source, ColumnKey)
         assert k.source.path == ("customers",)
         assert k.source.leaf == "signup_at"
 
@@ -124,7 +125,7 @@ class TestTimeTruncKeyImmutability:
 
 
 class TestTimeTruncKeyWithColumnSqlKey:
-    """``TimeTruncKey.source`` is widened to accept
+    """``TimeTruncKey.source`` accepts
     ``ColumnSqlKey`` so a derived (``Column.sql`` set) temporal column can be
     a time dimension. Identity is structural over the (derived-column, grain)
     pair, exactly like the base-column case."""
@@ -141,6 +142,7 @@ class TestTimeTruncKeyWithColumnSqlKey:
             path=("customers",), model="customers", column_name="effective_at",
         )
         k = TimeTruncKey(source=col, granularity=TimeGranularity.DAY)
+        assert isinstance(k.source, ColumnSqlKey)
         assert k.source.path == ("customers",)
         assert k.source.column_name == "effective_at"
 

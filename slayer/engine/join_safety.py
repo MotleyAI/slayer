@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -37,7 +37,6 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     ValueKey,
-    column_path,
     reroot_value_key,
     source_anchor_path,
     substitute_value_keys,
@@ -236,7 +235,7 @@ def _contradiction_finding(finding) -> JoinSafetyFinding:
 
 def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     if isinstance(key, TimeTruncKey):
-        return column_path(key.source)
+        return source_anchor_path(key)
     return tuple(getattr(key, "path", ()) or ())
 
 
@@ -424,6 +423,8 @@ def _reroot_leaf_via_host(
 ) -> Optional[ValueKey]:
     if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
         return None
+    if isinstance(r, TimeTruncKey) and not isinstance(r.source, (ColumnKey, ColumnSqlKey)):
+        return None  # an expression's leaves reroot one by one
     hp = key_host_path(r)
     if isinstance(r, ColumnKey) and _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
         route = home_spine_route(root_model=root_model, models_by_name=models_by_name)
@@ -444,7 +445,7 @@ def _reroot_leaf_via_host(
         return None  # resolved through the root's own join to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
-            "source": r.source.model_copy(update={"path": via_host}),
+            "source": cast(ColumnKey | ColumnSqlKey, r.source).model_copy(update={"path": via_host}),
         })
     return r.model_copy(update={"path": via_host})
 
@@ -461,8 +462,8 @@ def reroot_from_root(
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        # The walk also yields TimeTruncKey.source, but substitute matches the
-        # whole TimeTruncKey pre-order, so the inner-column entry is inert.
+        # A column bucket reroots whole (substitute matches it pre-order, so its
+        # inner-column entry is inert); an expression bucket's leaves reroot alone.
         rerooted = _reroot_leaf_via_host(
             r, target_path=tp, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,

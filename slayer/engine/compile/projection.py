@@ -161,6 +161,7 @@ class ValueRegistry:
             and public_name == key.column_name
         ) or (
             isinstance(key, TimeTruncKey)
+            and isinstance(key.source, (ColumnKey, ColumnSqlKey))
             and column_path(key.source) == ()
             and public_name == column_leaf(key.source)
         )

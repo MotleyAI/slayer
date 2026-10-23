@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
-    AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
-    walk_value_keys,
+    AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
+    column_leaf, walk_value_keys,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.refs import key_display
@@ -198,8 +198,10 @@ def check_axis_rebucket(
     if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
     column = rerooted.source
+    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+        return
     owner = walk_key_path(model=root, path=tuple(column.path), bundle=bundle)
-    leaf = column.leaf if isinstance(column, ColumnKey) else column.column_name
+    leaf = column_leaf(column)
     col = owner.get_column(leaf) if owner is not None else None
     if col is None or col.granularity is None:
         return

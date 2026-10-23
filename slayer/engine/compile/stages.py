@@ -178,17 +178,13 @@ __all__ = [
 ]
 
 
-def _row_key_path(key: ValueKey) -> tuple:
-    if isinstance(key, TimeTruncKey):
-        return _row_key_path(key.source)
-    return tuple(getattr(key, "path", ()))
-
-
 def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[AggregateSource, tuple]]:
     """(source, join path) of the MIN/MAX wrap a grouped ORDER BY row value needs, else ``None``."""
-    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
-        return (key.source if isinstance(key, TimeTruncKey) else key), _row_key_path(key)
+    if isinstance(key, TimeTruncKey):
+        # Not a legal aggregate source; wrap its untruncated source (DATE_TRUNC is monotonic).
+        return _order_wrap_source(key.source, dim_keys=dim_keys)
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return key, key.path
     if not isinstance(key, EXPRESSION_SOURCE_KINDS) or any(
         isinstance(k, (AggregateKey, TransformKey))
         or (isinstance(k, ColumnKey) and k.leaf.startswith(REGROUP_LEAF_PREFIX))
@@ -198,7 +194,7 @@ def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[
     off_grain = row_refs_off_grain(key, dim_keys)
     if not off_grain:
         return None
-    return key, next((p for p in map(_row_key_path, off_grain) if p), ())
+    return key, next((p for p in map(source_anchor_path, off_grain) if p), ())
 
 
 # Duration-windowed measures (``window='90d'``).
@@ -531,18 +527,18 @@ def _first_unattributable_arg_leaf(
             host_model=host_model, host_name=host_name,
         )
         if reason is not None:
-            leaf = column_leaf(arg.source if isinstance(arg, TimeTruncKey) else arg)
+            leaf = column_leaf(arg)
             return [(leaf if arg is value or name is None else name, reason)]
     return []
 
 
 def _param_row_columns(
     agg: AggregateKey,
-) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey | TimeTruncKey]]:
+) -> Iterator[Tuple[Optional[str], object, ColumnKey | ColumnSqlKey]]:
     """``(parameter name or None, parameter value, column row leaf)`` per argument."""
     for name, value in [*((None, a) for a in agg.args), *agg.kwargs]:
         for arg in parameter_row_leaves(value):
-            if isinstance(arg, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            if isinstance(arg, (ColumnKey, ColumnSqlKey)):
                 yield name, value, arg
 
 
@@ -1512,10 +1508,6 @@ def _reverse_hops(
 
 
 def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
-    if isinstance(r, TimeTruncKey):
-        return r.model_copy(update={
-            "source": r.source.model_copy(update={"path": node_path}),
-        })
     return r.model_copy(update={"path": node_path})
 
 
@@ -1623,7 +1615,9 @@ def _operand_null(k: Any, *, h: Tuple[str, ...], srcs: _NullSources) -> bool:
     """Is value operand ``k`` NULL when hop ``h`` and its descendants are NULL?
     A leaf's null-source paths decide it; arithmetic over a null operand is null;
     a predicate is null iff UNKNOWN; a ScalarCall / Star is data-dependent."""
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+    if isinstance(k, TimeTruncKey):
+        return _operand_null(k.source, h=h, srcs=srcs)
+    if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
         return any(_is_prefix(h, p) for p in srcs.get(k, frozenset()))
     if isinstance(k, InKey) or (
         isinstance(k, ArithmeticKey) and k.op.lower() in _PREDICATE_OPS
@@ -1724,10 +1718,9 @@ def _conjunct_push_plan(
     srcs: Dict[ValueKey, "frozenset[Tuple[str, ...]]"] = {}
     host_node: Optional[Tuple[str, ...]] = None
     for r in walk_value_keys(cj):
-        if not isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+        if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey)):
             continue
-        col = r.source if isinstance(r, TimeTruncKey) else r
-        hp = tuple(getattr(col, "path", ()) or ())
+        hp = tuple(r.path)
         base_model, base_node, rel, host_node = _resolve_ref_anchor(
             hp, tp=tp, root_model=root_model, host_model=host_model,
             lookup=lookup, nodes=nodes, host_name=host_name,
@@ -1738,7 +1731,7 @@ def _conjunct_push_plan(
             models_by_name=lookup, nodes=nodes,
         )
         dep_terminals = _register_dep_hops(
-            col, node_path=node_path, host_model=host_model, lookup=lookup,
+            r, node_path=node_path, host_model=host_model, lookup=lookup,
             bundle=bundle, nodes=nodes,
         )
         remapped = _remap_ref_path(r, node_path)
@@ -1746,7 +1739,7 @@ def _conjunct_push_plan(
         # dependency terminal is — unless data-dependent (a star, a
         # non-propagating derived definition).
         if isinstance(r, StarKey) or not _ref_null_propagates(
-            col, host_model=host_model, models_by_name=lookup, bundle=bundle,
+            r, host_model=host_model, models_by_name=lookup, bundle=bundle,
         ):
             srcs[remapped] = frozenset()
         else:
