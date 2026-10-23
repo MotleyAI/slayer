@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from slayer.core.errors import GranularityCallError
 from slayer.core.query import SlayerQuery, TimeDimension
-from tests._dev2119_fixtures import EFF
+from tests._dev2119_fixtures import EFF, EFF_NAME
 
 CAST_TXT = "CAST(created_txt AS DATE)"
 
@@ -133,6 +133,27 @@ class TestNames:
     def test_collision_with_a_plain_dimension(self) -> None:
         with pytest.raises(ValueError, match="region"):
             _q(dimensions=["region"], time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "region"}])
+
+    @pytest.mark.parametrize("entries", [
+        {"dimensions": [{"expression": EFF}], "time_dimensions": [{"dimension": EFF, "granularity": "month"}]},
+        {"dimensions": [{"expression": "upper(city)", "name": EFF_NAME}],
+         "time_dimensions": [{"dimension": EFF, "granularity": "month"}]},
+        {"time_dimensions": [{"dimension": EFF, "granularity": "month"},
+                             {"dimension": "created_at", "granularity": "year", "name": EFF_NAME}]},
+        {"time_dimensions": [{"dimension": "created_at", "granularity": "year", "name": EFF_NAME},
+                             {"dimension": EFF, "granularity": "month"}]},
+        {"time_dimensions": [{"dimension": "created_at + 1", "granularity": "month"},
+                             {"dimension": "created_at - 1", "granularity": "year"}]},
+    ], ids=["computed-auto", "computed-named", "td-named-after", "td-named-before", "sanitised-alike"])
+    def test_auto_name_collision_fails_at_construction(self, entries: dict) -> None:
+        with pytest.raises(ValueError, match="used twice"):
+            _q(**entries)
+
+    @pytest.mark.parametrize("dimension", [EFF, "created_at"])
+    def test_one_source_at_two_granularities_is_not_a_collision(self, dimension: str) -> None:
+        query = _q(time_dimensions=[{"dimension": dimension, "granularity": "month"},
+                                    {"dimension": dimension, "granularity": "year"}])
+        assert [t.granularity for t in _tds(query)] == ["month", "year"]
 
 
 class TestDedupe:

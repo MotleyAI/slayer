@@ -687,11 +687,14 @@ class ComputedDimension(BaseModel):
 def computed_dimension_name(expression: str) -> str:
     """An unnamed computed dimension's name: its expression's canonical text, sanitised, so every
     spelling of one expression names it alike."""
+    return auto_name_from_expression(_canonical_expression_text(expression))
+
+
+def _canonical_expression_text(expression: str) -> str:
     try:
-        text = canonical_measure_text(parse_expr(expression))
+        return canonical_measure_text(parse_expr(expression))
     except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
-        text = expression
-    return auto_name_from_expression(text)
+        return expression
 
 
 def _coerce_column_ref(v: Any) -> Any:
@@ -1396,7 +1399,7 @@ class SlayerQuery(BaseModel):
         """Collapse exact-duplicate time dimensions; reject same text+granularity differing
         in date range, name or label. Compares source-model-prefix-stripped text, so
         ``created_at`` and ``orders.created_at`` are one."""
-        if not self.time_dimensions:
+        if not (tds := self.time_dimensions):
             return self
         model_name = self.source_model_name
 
@@ -1406,7 +1409,7 @@ class SlayerQuery(BaseModel):
 
         seen: dict[tuple[str, str], tuple] = {}
         result: list[TimeDimension] = []
-        for td in self.time_dimensions:
+        for td in tds:
             canon = _canon(td)
             base = (canon[0], str(canon[1]))
             prior = seen.get(base)
@@ -1419,23 +1422,32 @@ class SlayerQuery(BaseModel):
                     f"{td.granularity} granularity: same dimension and "
                     f"granularity must not differ in date range, name or label."
                 )
-        if len(result) != len(self.time_dimensions):
+        if len(result) != len(tds):
             self.time_dimensions = result
         self._check_unique_dimension_names()
         return self
 
     def _check_unique_dimension_names(self) -> None:
-        """A named time dimension's name is unique across dimensions and time dimensions."""
+        """Time-dimension names, an unnamed expression's included, are unique across dimensions and
+        time dimensions; an auto-name repeats only for its own expression, which granularity
+        suffixes or binding tell apart."""
         taken: set[str] = set()
         for dim in self.dimensions or ():
             if (name := dim.name if isinstance(dim, ComputedDimension) else dim.full_name) is not None:
                 taken.add(name)
+        auto: dict[str, str] = {}
         for td in self.time_dimensions or ():
-            if td.name is None:
-                continue
-            if td.name in taken:
-                raise ValueError(f"Dimension name {td.name!r} is used twice; names must be unique.")
-            taken.add(td.name)
+            if td.name is not None:
+                if td.name in taken or td.name in auto:
+                    raise ValueError(f"Dimension name {td.name!r} is used twice; names must be unique.")
+                taken.add(td.name)
+            elif td.column_ref is None:
+                name, text = computed_dimension_name(td.dimension), _canonical_expression_text(td.dimension)
+                if name in taken or auto.setdefault(name, text) != text:
+                    raise ValueError(
+                        f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
+                        f"distinct `name`."
+                    )
 
     def _validate_distinct_dimension_values(self) -> None:
         """Cheap, model-free rejection for ``distinct_dimension_values=False``: non-empty
