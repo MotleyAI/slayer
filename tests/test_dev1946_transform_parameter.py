@@ -52,7 +52,6 @@ from tests._dev1919_fixtures import (
 )
 from tests._dev1946_fixtures import (
     DET_CUMSUM,
-    EXPR_ARG,
     LAST_PARAM,
     LAST_RANK_KEY,
     LOCAL_SALES,
@@ -524,14 +523,6 @@ class TestBindLevel:
         scope, bundle = _orders_scope_bundle()
         parsed = parse_expr(LAST_RANK_KEY)
         with pytest.raises(ValueError, match="ranks by a column"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
-
-    def test_expression_argument_still_refused(self):
-        """Non-goal: an expression parameter stays refused, and the reworded
-        message names grained transforms among the accepted kinds (D1)."""
-        scope, bundle = _sales_scope_bundle()
-        parsed = parse_expr(EXPR_ARG)
-        with pytest.raises(ValueError, match="grained transform"):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):

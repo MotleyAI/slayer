@@ -390,7 +390,7 @@ class TestGranularityCalls:
         msg = str(ei.value)
         for gran in GRANULARITIES:
             assert gran in msg, f"error must name granularity {gran!r}: {msg}"
-        assert "(col" in msg, msg
+        assert "(expr" in msg, msg
 
     async def test_non_temporal_expression_operand_rejected(self, engine) -> None:
         with pytest.raises(DateOperandTypeError, match=r"upper\(code\)"):

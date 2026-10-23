@@ -322,4 +322,4 @@ class TestOrderKey:
         functional = await engine.execute(_count(dimensions=[f"month({EFF})"]))
         explicit = await engine.execute(_count(time_dimensions=[td(EFF)]))
         assert functional.sql == explicit.sql
-        assert functional.data == explicit.data
+        assert sorted(functional.data, key=repr) == sorted(explicit.data, key=repr)

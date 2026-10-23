@@ -410,7 +410,7 @@ class TestTimeDimensionColumnAlias:
         assert q.time_dimensions
         assert q.time_dimensions[0].dimension == "created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
-        assert dumped == {"dimension": {"name": "created_at"}, "granularity": "month"}
+        assert dumped == {"dimension": "created_at", "granularity": "month"}
 
     def test_column_key_accepts_a_column_ref_object(self) -> None:
         td = TimeDimension.model_validate({
