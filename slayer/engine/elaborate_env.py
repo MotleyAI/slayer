@@ -166,7 +166,7 @@ def _key_display(k: ValueKey) -> str:
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
     if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        col = k.column if isinstance(k, TimeTruncKey) else k
+        col = k.source if isinstance(k, TimeTruncKey) else k
         leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
         return ".".join((*col.path, leaf))
     return type(k).__name__
@@ -868,7 +868,7 @@ def check_unrelated_row_read(
     """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
-    ref = key_display(reference.column if isinstance(reference, TimeTruncKey) else reference)
+    ref = key_display(reference.source if isinstance(reference, TimeTruncKey) else reference)
     raise UnrelatedDatasetError(
         summary=f"{ref} reads {dataset}, which no join path reaches from the population "
         f"{population}: it meets {population} as a product, so it is read only through aggregates.",
@@ -1109,7 +1109,7 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
     keys = [key for root in roots for key in walk_value_keys(root)]
     for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
-            _require_temporal(str(key.granularity), key.column, column_type=column_type)
+            _require_temporal(str(key.granularity), key.source, column_type=column_type)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)
@@ -1140,8 +1140,8 @@ def _time_operand(
     """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
-        t = temporal_type(operand.column, column_type=column_type)
-        return operand.column, t, operand.granularity
+        t = temporal_type(operand.source, column_type=column_type)
+        return operand.source, t, operand.granularity
     t = temporal_type(operand, column_type=column_type)
     if t is None:
         typed = type_date_values(operand)

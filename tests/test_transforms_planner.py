@@ -331,7 +331,7 @@ class TestIterSlotDepsTransformAux:
         # time_key can be a TimeTruncKey too — same dep yield rule.
         inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
         tt = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         tk = TransformKey(op="cumsum", input=inner, time_key=tt)

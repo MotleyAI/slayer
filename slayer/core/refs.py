@@ -195,7 +195,7 @@ def agg_signature_suffix(
 
 def _partition_key_display(key: Any) -> str:
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, ColumnKey):
         parts = [*key.path, key.leaf]
     elif isinstance(key, ColumnSqlKey):
@@ -208,7 +208,7 @@ def _partition_key_display(key: Any) -> str:
 def dotted_key_display(pk: ValueKey) -> str:
     """Human-readable dotted path for a key in error messages."""
     if isinstance(pk, TimeTruncKey):
-        return dotted_key_display(pk.column)
+        return dotted_key_display(pk.source)
     return key_display(pk)
 
 
@@ -281,7 +281,7 @@ def key_display(key: ValueKey) -> str:
     if isinstance(key, ColumnSqlKey):
         return ".".join((*key.path, key.column_name))
     if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.column)})"
+        return f"{key.granularity}({key_display(key.source)})"
     if isinstance(key, StarKey):
         return ".".join((*key.path, "*"))
     if isinstance(key, LiteralKey):

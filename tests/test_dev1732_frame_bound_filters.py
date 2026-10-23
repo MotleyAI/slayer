@@ -130,7 +130,7 @@ class TestFrameBoundRecognition:
         """A derived (``Column.sql``) temporal column binds to a
         ``ColumnSqlKey``; ``_build_date_range_filter`` binds its
         date-range bound column through the same path that produces
-        ``TimeTruncKey.column``, so identity matching covers it for free."""
+        ``TimeTruncKey.source``, so identity matching covers it for free."""
         derived = ColumnSqlKey(path=(), model="orders", column_name="event_at")
         key = _cmp(">=", derived, _lit("2024-06-01"))
         assert strip_frame_bounds(key=key, time_columns=frozenset({derived})) is None
@@ -840,7 +840,7 @@ class TestFrameBoundColumnSet:
             _orders(),
         )
         visible = {
-            s.key.column
+            s.key.source
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and not s.hidden
         }
@@ -849,7 +849,7 @@ class TestFrameBoundColumnSet:
         )
         # A hidden slot's column never leaks into the set.
         hidden_cols = {
-            s.key.column
+            s.key.source
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and s.hidden
         }

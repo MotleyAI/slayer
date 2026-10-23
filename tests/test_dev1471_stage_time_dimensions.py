@@ -87,7 +87,7 @@ class TestStageBinder:
         td = TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.YEAR)
         bound = bind_time_dimension(td, scope=stage, bundle=_bundle())
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(path=(), leaf="created_at")
+        assert bound.bound.value_key.source == ColumnKey(path=(), leaf="created_at")
         assert bound.bound.value_key.granularity == "year"
         assert bound.column_type == DataType.TIMESTAMP
         assert bound.upstream_granularity == TG.MONTH

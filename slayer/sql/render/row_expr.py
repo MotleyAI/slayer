@@ -418,7 +418,7 @@ def render_row_expression(
             operands=numeric_parts(key=key, parts=[_part(o) for o in key.operands], column_type=column_type),
         )
     if isinstance(key, TimeTruncKey):
-        return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
+        return dialect.build_bucket(col_expr=_part(key.source), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return iif_case_chain(key=key, part=_part, column_type=column_type)

@@ -323,7 +323,7 @@ class TimeTruncKey(_FrozenKey, frozen=True):
     Different granularities on the same column are distinct slots.
     """
 
-    column: ColumnKey | ColumnSqlKey
+    source: ColumnKey | ColumnSqlKey
     granularity: Granularity
 
     @property
@@ -331,23 +331,23 @@ class TimeTruncKey(_FrozenKey, frozen=True):
         return Phase.ROW
 
     def children(self) -> Tuple["ValueKey", ...]:
-        return (self.column,)
+        return (self.source,)
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
     ) -> "TimeTruncKey":
         m = _ChildMapper(fn)
-        column = m(self.column)
-        return self.model_copy(update={"column": column}) if m.changed else self
+        source = m(self.source)
+        return self.model_copy(update={"source": source}) if m.changed else self
 
 
 def column_leaf(col: ColumnKey | ColumnSqlKey) -> str:
-    """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
+    """Leaf column name of a ``TimeTruncKey.source`` regardless of kind."""
     return getattr(col, "leaf", None) or getattr(col, "column_name")
 
 
 def column_path(col: ColumnKey | ColumnSqlKey) -> Tuple[str, ...]:
-    """Join path of a ``TimeTruncKey.column`` regardless of kind."""
+    """Join path of a ``TimeTruncKey.source`` regardless of kind."""
     return col.path
 
 
@@ -1189,7 +1189,7 @@ def substitute_value_keys(
     Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
     replaced atomically (children never traversed, replacements never
     re-substituted); everything else routes through ``map_children`` (a
-    protocol-less kind raises). ``TimeTruncKey.column`` IS traversed.
+    protocol-less kind raises). ``TimeTruncKey.source`` IS traversed.
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
@@ -1285,7 +1285,7 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
         t = column_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
-        return temporal_type(key.column, column_type=column_type)
+        return temporal_type(key.source, column_type=column_type)
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
@@ -1734,7 +1734,7 @@ def parameter_row_leaves(value) -> List[ValueKey]:
 def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
     """Join path of a row-level leaf key regardless of kind."""
     if isinstance(k, TimeTruncKey):
-        return column_path(k.column)
+        return column_path(k.source)
     return getattr(k, "path", ())
 
 

@@ -117,7 +117,7 @@ class TestKeyClosure:
         assert got == ()
 
     def test_time_trunc_delegates_to_its_column(self):
-        key = TimeTruncKey(column=_regions_sqlkey("bad_pop"), granularity=TimeGranularity.MONTH)
+        key = TimeTruncKey(source=_regions_sqlkey("bad_pop"), granularity=TimeGranularity.MONTH)
         got = self._key(key)
         assert got is not None
         assert CROSS in got

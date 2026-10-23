@@ -2216,7 +2216,7 @@ class SQLGenerator:
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
                     col_expr = self._raw_time_col_expr_for_planned(
-                        time_column=key.column,
+                        time_column=key.source,
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
@@ -2456,9 +2456,9 @@ class SQLGenerator:
             tslot = slots_by_id.get(sid)
             assert tslot is not None
             base_alias = _alias_of(sid)
-            src_scope.resolve(tslot.key.column)
+            src_scope.resolve(tslot.key.source)
             raw = self._raw_time_col_expr_for_planned(
-                time_column=tslot.key.column, source_model=source_model,
+                time_column=tslot.key.source, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
             trunc = self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity)
@@ -2471,9 +2471,9 @@ class SQLGenerator:
         wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
         assert wtd_slot is not None
         wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
-        src_scope.resolve(wtd_slot.key.column)
+        src_scope.resolve(wtd_slot.key.source)
         raw_time = self._raw_time_col_expr_for_planned(
-            time_column=wtd_slot.key.column, source_model=source_model,
+            time_column=wtd_slot.key.source, source_model=source_model,
             source_relation=source_relation, bundle=bundle,
         )
         src_cols.append(raw_time.copy().as_("_w_time"))
@@ -2588,7 +2588,7 @@ class SQLGenerator:
         # exclusive upper edge.
         # Calendar parts apply one by one in written order, clamping like date_add.
         assert wtd_slot is not None
-        time_type = src_scope.column_type(wtd_slot.key.column)
+        time_type = src_scope.column_type(wtd_slot.key.source)
         operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
         unit, step, _ = granularity_parts(plan.window_granularity)
         bucket_end = self._date_offset(_base_col(wtd_alias), count=step, unit=unit, operand=operand)
@@ -2727,10 +2727,10 @@ class SQLGenerator:
 
         if isinstance(key, TimeTruncKey):
             raw = self._raw_time_col_expr_for_planned(
-                time_column=key.column, source_model=root_model,
+                time_column=key.source, source_model=root_model,
                 source_relation=root_relation, bundle=bundle,
             )
-            _register(raw, column_path(key.column))
+            _register(raw, column_path(key.source))
             return self._build_date_trunc(col_expr=raw, granularity=key.granularity)
         if isinstance(key, ColumnKey):
             expr = self._joined_or_local_dim_expr(
@@ -3360,9 +3360,9 @@ class SQLGenerator:
         for sid in (*plan.other_time_dimension_slot_ids,
                     plan.window_time_dimension_slot_id):
             tslot = slots_by_id[sid]
-            scope.resolve(tslot.key.column)
+            scope.resolve(tslot.key.source)
             raw = self._raw_time_col_expr_for_planned(
-                time_column=tslot.key.column, source_model=source_model,
+                time_column=tslot.key.source, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
             _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
@@ -4361,7 +4361,7 @@ class SQLGenerator:
             if isinstance(key, ColumnKey):
                 _add(key.path)
             elif isinstance(key, TimeTruncKey):
-                _add(key.column.path)
+                _add(column_path(key.source))
 
         for sid in base_render_order:
             _add_row_slot(sid)
@@ -4519,7 +4519,7 @@ class SQLGenerator:
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
         """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's column."""
-        axis_column = axis.column if isinstance(axis, TimeTruncKey) else None
+        axis_column = axis.source if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
             for plan in planned_query.regroup_attach_plans
@@ -4538,7 +4538,7 @@ class SQLGenerator:
         """A row slot's grain membership: a dimension, or a time dimension off the axis's column."""
         key = slot.key
         if isinstance(key, TimeTruncKey):
-            return axis_column is not None and key.column != axis_column
+            return axis_column is not None and key.source != axis_column
         return isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension
 
     def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved measure / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
@@ -5215,12 +5215,12 @@ class SQLGenerator:
             if slot is None or slot.phase != Phase.ROW:
                 continue
             key = slot.key
-            if isinstance(key, TimeTruncKey) and isinstance(key.column, ColumnSqlKey):
+            if isinstance(key, TimeTruncKey) and isinstance(key.source, ColumnSqlKey):
                 raw = self._raw_time_col_expr_for_planned(
-                    time_column=key.column, source_model=source_model,
+                    time_column=key.source, source_model=source_model,
                     source_relation=source_relation, bundle=bundle,
                 )
-                _add(key.column.path)
+                _add(column_path(key.source))
                 for p in self._joined_paths_in_sql(
                     sql_expr=raw, source_relation=source_relation,
                     source_model=source_model, bundle=bundle,
@@ -5373,7 +5373,7 @@ class SQLGenerator:
     def _raw_time_col_expr_for_planned(
         self, *, time_column, source_model, source_relation: str, bundle,
     ) -> Expression:
-        """Untruncated time expression for a ``TimeTruncKey.column``"""
+        """Untruncated time expression for a ``TimeTruncKey.source``"""
 
         if isinstance(time_column, ColumnKey):
             return self._joined_or_local_dim_expr(
@@ -6267,7 +6267,7 @@ class SQLGenerator:
         # A hidden ROW column ordered in an UNGROUPED query emits a split <relation>.<column> reference (the row is the
         # grain, so the bare ref is legal and Law 1 pulls the join in).
         key = slot.key
-        row_key = key.column if isinstance(key, TimeTruncKey) else key
+        row_key = key.source if isinstance(key, TimeTruncKey) else key
         if source_model is not None and isinstance(row_key, ColumnKey):
             return self._joined_or_local_dim_expr(
                 path=row_key.path, leaf=row_key.leaf,

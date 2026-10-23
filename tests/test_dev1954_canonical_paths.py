@@ -170,7 +170,7 @@ class TestBoundKeysAreCanonical:
                           granularity=TimeGranularity.YEAR),
             scope=_scope(), bundle=_bundle())
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == \
+        assert bound.bound.value_key.source == \
             ColumnKey(path=("customers", "hr"), leaf="founded_at")
         assert bound.bound.routed_dotted == "customers.hr.founded_at"
 

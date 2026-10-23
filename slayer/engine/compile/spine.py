@@ -51,7 +51,7 @@ def _mentions(key: ValueKey, spine: ColumnKey) -> bool:
 
 def _bare(key: ValueKey, spine: ColumnKey) -> bool:
     """``spine`` occurs outside a bucket of it."""
-    if isinstance(key, TimeTruncKey) and key.column == spine:
+    if isinstance(key, TimeTruncKey) and key.source == spine:
         return False
     return key == spine or any(_bare(c, spine) for c in key.children())
 
@@ -140,7 +140,7 @@ def _checked_spine_time_dimensions(
         check_spine_plain_use(offender=dm.declared_name if _bare(key, spine) else None, position="measure")
     spine_tds = [
         dm.bound.value_key for dm in prebound.declared_measures[n_dims:n_dims + n_tds]
-        if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.column == spine
+        if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.source == spine
     ]
     projected = set(spine_tds)
     for spec in prebound.order_specs:
@@ -195,9 +195,9 @@ def check_axis_rebucket(
 ) -> None:
     """A spine bucket attributed through a fact's axis obeys that axis column's recorded granularity."""
     spine = spine_column(host)
-    if not (isinstance(host_key, TimeTruncKey) and host_key.column == spine and isinstance(rerooted, TimeTruncKey)):
+    if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
-    column = rerooted.column
+    column = rerooted.source
     owner = walk_key_path(model=root, path=tuple(column.path), bundle=bundle)
     leaf = column.leaf if isinstance(column, ColumnKey) else column.column_name
     col = owner.get_column(leaf) if owner is not None else None

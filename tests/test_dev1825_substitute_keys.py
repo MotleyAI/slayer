@@ -75,12 +75,12 @@ class TestDirectAndNestedHits:
         assert substitute_value_keys(ik, MAPPING).column == PLACEHOLDER
 
     def test_column_to_column_inside_time_trunc(self) -> None:
-        # TimeTruncKey.column is typed ColumnKey/ColumnSqlKey — a column-to-
+        # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
         # column mapping must reach through it.
         other = ColumnKey(path=(), leaf="shipped_at")
-        tt = TimeTruncKey(column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        tt = TimeTruncKey(source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         out = substitute_value_keys(tt, {ColumnKey(path=(), leaf="ordered_at"): other})
-        assert out.column == other
+        assert out.source == other
 
 
 class TestAtomicity:
@@ -108,7 +108,7 @@ class TestTotality:
             ColumnKey: CITY,
             ColumnSqlKey: ColumnSqlKey(path=(), model="orders", column_name="margin"),
             TimeTruncKey: TimeTruncKey(
-                column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
+                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
             ),
             StarKey: StarKey(),
             LiteralKey: LiteralKey(value=Decimal("1")),

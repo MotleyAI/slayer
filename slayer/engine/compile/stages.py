@@ -180,7 +180,7 @@ __all__ = [
 
 def _row_key_path(key: ValueKey) -> tuple:
     if isinstance(key, TimeTruncKey):
-        return _row_key_path(key.column)
+        return _row_key_path(key.source)
     return tuple(getattr(key, "path", ()))
 
 
@@ -188,7 +188,7 @@ def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[
     """(source, join path) of the MIN/MAX wrap a grouped ORDER BY row value needs, else ``None``."""
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         # A TimeTruncKey is not a legal aggregate source; wrap its underlying column (DATE_TRUNC is monotonic).
-        return (key.column if isinstance(key, TimeTruncKey) else key), _row_key_path(key)
+        return (key.source if isinstance(key, TimeTruncKey) else key), _row_key_path(key)
     if not isinstance(key, EXPRESSION_SOURCE_KINDS) or any(
         isinstance(k, (AggregateKey, TransformKey))
         or (isinstance(k, ColumnKey) and k.leaf.startswith(REGROUP_LEAF_PREFIX))
@@ -282,7 +282,7 @@ def _stable_text(obj: Any) -> str:
 def _regroup_grain_name(pk: ValueKey) -> str:
     """A column's path/leaf spelling; any other key a key-derived identifier."""
     if isinstance(pk, TimeTruncKey):
-        return f"{_regroup_grain_name(pk.column)}_{pk.granularity}"
+        return f"{_regroup_grain_name(pk.source)}_{pk.granularity}"
     if isinstance(pk, (ColumnKey, ColumnSqlKey)):
         return "__".join([*pk.path, column_leaf(pk)])
     return f"grain_{hashlib.sha1(_stable_text(pk).encode()).hexdigest()[:8]}"
@@ -531,7 +531,7 @@ def _first_unattributable_arg_leaf(
             host_model=host_model, host_name=host_name,
         )
         if reason is not None:
-            leaf = column_leaf(arg.column if isinstance(arg, TimeTruncKey) else arg)
+            leaf = column_leaf(arg.source if isinstance(arg, TimeTruncKey) else arg)
             return [(leaf if arg is value or name is None else name, reason)]
     return []
 
@@ -1190,7 +1190,7 @@ def _plan_shifted_attaches(
     }
     inherited = _frame_free_filters(
         prebound=prebound, filter_typings=filter_typings,
-        time_columns=frozenset(k.column for k in td_keys if isinstance(k, TimeTruncKey)),
+        time_columns=frozenset(k.source for k in td_keys if isinstance(k, TimeTruncKey)),
     )
     producer_model = scope.source_model if isinstance(scope, ModelScope) else None
     kernel_root = producer_model or bundle.source_model
@@ -1514,7 +1514,7 @@ def _reverse_hops(
 def _remap_ref_path(r: ValueKey, node_path: Tuple[str, ...]) -> ValueKey:
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
-            "column": r.column.model_copy(update={"path": node_path}),
+            "source": r.source.model_copy(update={"path": node_path}),
         })
     return r.model_copy(update={"path": node_path})
 
@@ -1726,7 +1726,7 @@ def _conjunct_push_plan(
     for r in walk_value_keys(cj):
         if not isinstance(r, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
             continue
-        col = r.column if isinstance(r, TimeTruncKey) else r
+        col = r.source if isinstance(r, TimeTruncKey) else r
         hp = tuple(getattr(col, "path", ()) or ())
         base_model, base_node, rel, host_node = _resolve_ref_anchor(
             hp, tp=tp, root_model=root_model, host_model=host_model,
@@ -4359,7 +4359,7 @@ def _plan_empty_base_grain(
 def _frame_bound_columns(*, grain: Optional[List[SlotId]], registry) -> List[ValueKey]:
     """Raw columns of the grain's time dimensions — an explicit bound on one is a FRAME bound."""
     keys = (registry.get(sid).key for sid in grain or ())
-    return list(dict.fromkeys(k.column for k in keys if isinstance(k, TimeTruncKey)))
+    return list(dict.fromkeys(k.source for k in keys if isinstance(k, TimeTruncKey)))
 
 
 def _plan_src_row_filters(
@@ -4425,7 +4425,7 @@ def _bucket_slots(slots: List[ValueSlot]):
 def _value_anchor_path(key: ValueKey) -> Tuple[str, ...]:
     """The join path a path-derived output's auto-name is prefixed with."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
         return tuple(key.path)
     if isinstance(key, AggregateKey):
@@ -4488,7 +4488,7 @@ def _leaf_variants(
     """``rest`` first, then ``rest`` with its source column's name swapped for
     each of that column's respellings."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, AggregateKey):
         key = key.source
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
@@ -4552,7 +4552,7 @@ def _surviving_default(*, projection, columns: List[StageColumn], root: Optional
     wanted = ColumnKey(path=(), leaf=default)
     visible = [projection.registry.get(sid) for sid in projection.public_projection]
     for slot, column in zip((s for s in visible if not s.hidden), columns):
-        key = slot.key.column if isinstance(slot.key, TimeTruncKey) else slot.key
+        key = slot.key.source if isinstance(slot.key, TimeTruncKey) else slot.key
         if key == wanted:
             return column.name
     return None
@@ -4565,7 +4565,7 @@ def _source_column(
     """The column a row-level stage output reads (a model column or an upstream stage
     column), for the metadata it carries downstream; ``None`` for anything else."""
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return None
     leaf = column_leaf(key)

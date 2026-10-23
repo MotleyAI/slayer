@@ -22,7 +22,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 4. One bucket key
 
-- [ ] 4.1 Rename `TimeTruncKey.column` → `source` with `la:deterministic-refactor`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
+- [x] 4.1 Rename `TimeTruncKey.column` → `source` with `la:deterministic-refactor`; verify `la-typecheck`, `dr-mock-lint` and the full unit suite
 - [ ] 4.2 Widen `source` to any row-level key; move `column_leaf` / `column_path` callers (`generator.py`, `stages.py`, `spine.py`, `bind_inputs.py`, `time_bounds.py`, `naming.py`, `ranked_planner.py`, `value_expr.py`) to the key's references; render truncation over any row-level source; verify golden baselines byte-identical
 
 ## 5. Time dimensions

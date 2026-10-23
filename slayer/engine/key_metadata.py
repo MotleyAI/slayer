@@ -258,7 +258,7 @@ def dimension_key_metadata(
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:
             return date_type, None, None
-    inner = key.column if isinstance(key, TimeTruncKey) else key
+    inner = key.source if isinstance(key, TimeTruncKey) else key
     path = tuple(getattr(inner, "path", ()) or ())
     leaf = getattr(inner, "leaf", None) or getattr(inner, "column_name", None)
     if leaf is None:

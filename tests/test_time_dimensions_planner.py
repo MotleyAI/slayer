@@ -131,7 +131,7 @@ def _orders_with_derived_temporal() -> SlayerModel:
     """Host model with a derived (Column.sql) temporal column.
 
     Used to pin the 7b.3b rejection contract: derived TD columns route
-    through ``ColumnSqlKey`` and ``TimeTruncKey.column`` is typed as
+    through ``ColumnSqlKey`` and ``TimeTruncKey.source`` is typed as
     ``ColumnKey``, so the binder must raise rather than silently produce
     an ill-typed key. A later issue can widen TimeTruncKey if/when this
     case is needed.
@@ -200,7 +200,7 @@ class TestBindTimeDimension:
             td, scope=ModelScope(source_model=model), bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(path=(), leaf="created_at")
+        assert bound.bound.value_key.source == ColumnKey(path=(), leaf="created_at")
         assert bound.bound.value_key.granularity == "month"
         assert bound.bound.phase == Phase.ROW
 
@@ -214,7 +214,7 @@ class TestBindTimeDimension:
             td, scope=ModelScope(source_model=host), bundle=_bundle_joined(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(
+        assert bound.bound.value_key.source == ColumnKey(
             path=("customers",), leaf="signed_up_at",
         )
         assert bound.bound.value_key.granularity == "day"
@@ -264,7 +264,7 @@ class TestBindTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        col_key = bound.bound.value_key.column
+        col_key = bound.bound.value_key.source
         assert isinstance(col_key, ColumnKey)
         assert col_key.leaf == "reviewed_at"
         assert bound.bound.value_key.granularity == "week"
@@ -283,14 +283,14 @@ class TestBindTimeDimension:
             bundle=_bundle_multi_hop(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(
+        assert bound.bound.value_key.source == ColumnKey(
             path=("customers", "regions"), leaf="opened_at",
         )
         assert bound.bound.value_key.granularity == "month"
 
     def test_derived_column_sql_td_binds(self) -> None:
         # A derived (Column.sql) temporal column now
-        # binds to ``TimeTruncKey(column=ColumnSqlKey(...))`` — full support,
+        # binds to ``TimeTruncKey(source=ColumnSqlKey(...))`` — full support,
         # no NotImplementedError. The grain still rides on the TimeTruncKey.
 
         host = _orders_with_derived_temporal()
@@ -304,7 +304,7 @@ class TestBindTimeDimension:
             bundle=_bundle_derived(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=(), model="orders", column_name="created_day",
         )
         assert bound.bound.value_key.granularity == "day"
@@ -319,7 +319,7 @@ class TestBindTimeDimension:
 class TestPlanningPrimitivesForTimeTruncKey:
     def test_iter_slot_deps_yields_timetrunckey(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         deps = list(_iter_slot_deps(key))
@@ -335,7 +335,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
         # adding a time dimension does not auto-add the raw column as a
         # separate output column.)
         col = ColumnKey(path=(), leaf="created_at")
-        key = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
+        key = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         deps = list(_iter_slot_deps(key))
         assert deps == [key]
 
@@ -343,21 +343,21 @@ class TestPlanningPrimitivesForTimeTruncKey:
         # Legacy result-key contract: alias is the column name only —
         # the granularity goes into the SQL DATE_TRUNC, not the alias.
         key = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert _canonical_name(key) == "created_at"
 
     def test_canonical_name_joined_uses_dunder_path(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=("customers",), leaf="signed_up_at"),
+            source=ColumnKey(path=("customers",), leaf="signed_up_at"),
             granularity=TimeGranularity.DAY,
         )
         assert _canonical_name(key) == "customers__signed_up_at"
 
     def test_canonical_name_multi_hop_path(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=("customers", "regions"), leaf="opened_at"),
+            source=ColumnKey(path=("customers", "regions"), leaf="opened_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert _canonical_name(key) == "customers__regions__opened_at"
@@ -372,11 +372,11 @@ class TestValueRegistryTimeTrunc:
     def test_same_column_same_grain_interns_once(self) -> None:
         reg = ValueRegistry()
         k1 = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k2 = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         sid1 = reg.intern(key=k1, declared_name="created_at", phase=Phase.ROW)
@@ -389,11 +389,11 @@ class TestValueRegistryTimeTrunc:
         # they share an underlying column.
         reg = ValueRegistry()
         k_month = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k_day = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.DAY,
         )
         sid_m = reg.intern(
@@ -407,11 +407,11 @@ class TestValueRegistryTimeTrunc:
     def test_different_column_distinct_slots(self) -> None:
         reg = ValueRegistry()
         k_a = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k_b = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="reviewed_at"),
+            source=ColumnKey(path=(), leaf="reviewed_at"),
             granularity=TimeGranularity.MONTH,
         )
         sid_a = reg.intern(key=k_a, declared_name="created_at", phase=Phase.ROW)

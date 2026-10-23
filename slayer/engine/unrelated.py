@@ -146,7 +146,7 @@ class ProductSides:
         elif isinstance(node, TransformKey):
             yield from self._walk_transform(node, inputs=inputs)
         elif isinstance(node, TimeTruncKey):
-            yield from self._walk(node.column, inputs=inputs)
+            yield from self._walk(node.source, inputs=inputs)
         elif isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
             if not inputs:
                 yield from ((node, dataset) for dataset in sorted(self.crossed(node)))
@@ -189,7 +189,7 @@ def _row_leaves(node: ValueKey) -> Iterator[ValueKey]:
     if isinstance(node, (AggregateKey, TransformKey)):
         return
     if isinstance(node, TimeTruncKey):
-        yield from _row_leaves(node.column)
+        yield from _row_leaves(node.source)
         return
     if isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
         yield node

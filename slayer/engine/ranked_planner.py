@@ -71,7 +71,7 @@ def _time_dimension_raw_column(
     """The first time dimension's RAW column, un-truncated."""
     for key in row_keys:
         if isinstance(key, TimeTruncKey):
-            return key.column
+            return key.source
     return None
 
 

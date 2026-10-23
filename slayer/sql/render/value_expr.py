@@ -376,7 +376,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
 
     if isinstance(key, TimeTruncKey):
         column = _require_scope(ctx, key).resolve(
-            key.column, consumer=ctx.consumer,
+            key.source, consumer=ctx.consumer,
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
         return ctx.dialect.build_bucket(col_expr=column, granularity=key.granularity)

@@ -37,6 +37,7 @@ from slayer.core.keys import (
     StarKey,
     TimeTruncKey,
     ValueKey,
+    column_path,
     reroot_value_key,
     source_anchor_path,
     substitute_value_keys,
@@ -235,7 +236,7 @@ def _contradiction_finding(finding) -> JoinSafetyFinding:
 
 def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     if isinstance(key, TimeTruncKey):
-        return tuple(getattr(key.column, "path", ()) or ())
+        return column_path(key.source)
     return tuple(getattr(key, "path", ()) or ())
 
 
@@ -443,7 +444,7 @@ def _reroot_leaf_via_host(
         return None  # resolved through the root's own join to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
-            "column": r.column.model_copy(update={"path": via_host}),
+            "source": r.source.model_copy(update={"path": via_host}),
         })
     return r.model_copy(update={"path": via_host})
 
@@ -460,7 +461,7 @@ def reroot_from_root(
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        # The walk also yields TimeTruncKey.column, but substitute matches the
+        # The walk also yields TimeTruncKey.source, but substitute matches the
         # whole TimeTruncKey pre-order, so the inner-column entry is inert.
         rerooted = _reroot_leaf_via_host(
             r, target_path=tp, root_model=root_model,
@@ -687,7 +688,7 @@ def undetermined_witness(
 def _determination_operands(key: ValueKey) -> Optional[Iterable[ValueKey]]:
     """The operands whose determination decides ``key``'s, else ``None`` (opaque)."""
     if isinstance(key, TimeTruncKey):
-        return (key.column,)
+        return (key.source,)
     if isinstance(key, AggregateKey):
         return key.partition_keys
     if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):

@@ -544,6 +544,6 @@ class TestBindLevel:
 
         def _ranked(gran: TimeGranularity) -> TransformKey:
             return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
-                TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=gran)]))
+                TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=gran)]))
 
         assert agg_kwarg_canonical_str(_ranked(TimeGranularity.MONTH)) != agg_kwarg_canonical_str(_ranked(TimeGranularity.YEAR))

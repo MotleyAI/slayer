@@ -143,8 +143,8 @@ def _bound_td(col: str, gran: str, key: TimeTruncKey, **meta) -> tuple:
 
 
 class TestEquivalentTimeDimensionMetadataGuard:
-    K_MONTH = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
-    K_YEAR = TimeTruncKey(column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
+    K_MONTH = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
+    K_YEAR = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
 
     def test_conflicting_date_range_raises(self) -> None:
         tds = [

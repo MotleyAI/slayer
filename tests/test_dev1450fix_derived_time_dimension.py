@@ -2,7 +2,7 @@
 
 A ``TimeDimension`` whose column resolves to a DERIVED column
 (``Column.sql`` set) now works everywhere a base-column time dimension
-does. The typed pipeline widens ``TimeTruncKey.column`` to
+does. The typed pipeline widens ``TimeTruncKey.source`` to
 ``Union[ColumnKey, ColumnSqlKey]`` and the SQL generator applies
 ``DATE_TRUNC`` over the EXPANDED derived expression rather than over a
 bare identifier.
@@ -164,7 +164,7 @@ class TestBindDerivedTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=(), model="orders", column_name="effective_at",
         )
         assert bound.bound.value_key.granularity == "month"
@@ -181,7 +181,7 @@ class TestBindDerivedTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=("customers",), model="customers", column_name="signup_eff",
         )
 

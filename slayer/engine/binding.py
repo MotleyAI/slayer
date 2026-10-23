@@ -190,7 +190,7 @@ def bind_time_dimension(
     resolved = granularity or resolve_granularity(td.granularity, defined=bundle.granularities)
     if resolved is None:
         raise ValueError(f"time dimension {full!r}: unknown granularity {td.granularity!r}")
-    time_key = TimeTruncKey(column=bound_col, granularity=resolved)
+    time_key = TimeTruncKey(source=bound_col, granularity=resolved)
     routed = _canonical_if_routed(
         parsed=DottedRef(parts=tuple(full.split("."))) if "." in full else Ref(name=full),
         value_key=bound_col, scope=scope,
@@ -271,7 +271,7 @@ def _canonical_if_routed(
     its typed hop path (auto-routed or respelled) — or the canonical name of a
     stale flat ``Ref`` — else ``None``, so every already-canonical ref keeps a
     byte-identical result key."""
-    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
+    key = value_key.source if isinstance(value_key, TimeTruncKey) else value_key
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return None  # saved measures canonicalize in bind_inputs._resolve_saved_measure_ref
     if isinstance(parsed, Ref):
@@ -1236,7 +1236,7 @@ def _bind_granularity_call(
     column = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
     if not isinstance(column, (ColumnKey, ColumnSqlKey)):
         raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    return TimeTruncKey(column=column, granularity=granularity)
+    return TimeTruncKey(source=column, granularity=granularity)
 
 
 def _bind_agg_source(

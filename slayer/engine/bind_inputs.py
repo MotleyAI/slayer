@@ -603,9 +603,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         if not isinstance(vk, TimeTruncKey):
             continue
         # Ambiguous only if the same column already mapped to a DIFFERENT bucket.
-        if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
-            _td_ambiguous_sources.add(vk.column)
-        _td_by_source[vk.column] = vk
+        if vk.source in _td_by_source and _td_by_source[vk.source] != vk:
+            _td_ambiguous_sources.add(vk.source)
+        _td_by_source[vk.source] = vk
         _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
@@ -1343,7 +1343,7 @@ def _snap_whole_periods(
     grans_by_column: Dict[ValueKey, List[Granularity]] = {}
     for td_key in td_keys:
         if isinstance(td_key, TimeTruncKey):
-            grans = grans_by_column.setdefault(td_key.column, [])
+            grans = grans_by_column.setdefault(td_key.source, [])
             if td_key.granularity not in grans:
                 grans.append(td_key.granularity)
     conflicts = [
