@@ -33,6 +33,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 - [x] 5.4 Stage boundary: expression time dimensions emit a typed, bucketed `StageColumn` without single-column provenance; verify the two-stage scenarios
 - [x] 5.5 Per-leaf re-bucketing; verify its scenarios
 - [x] 5.6 Spine: refuse expressions reading `time_spine.timestamp`, admit other expression time dimensions into P; verify 2.3
+- [x] 5.7 Literal `{var}` placeholders in a time-dimension expression substitute as in a computed dimension and an unnamed one is named from its template; a whole-dimension or granularity placeholder stays refused; verify the `queries/variables` scenarios
 
 ## 6. Partition keys, ranking, parameters
 

@@ -1226,7 +1226,7 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
     moved: List[TimeDimension] = []
     for item in query.dimensions or []:
         td = (
-            _datasource_time_dimension(item.expression, bundle=bundle)
+            _datasource_time_dimension(item.expression, template=item.template, bundle=bundle)
             if isinstance(item, ComputedDimension)
             and item.name == computed_dimension_name(item.template)
             else None
@@ -1242,7 +1242,7 @@ def _resolve_granularity_calls(query: SlayerQuery, *, bundle: ResolvedSourceBund
     })
 
 
-def _datasource_time_dimension(entry: str, *, bundle: ResolvedSourceBundle) -> Optional[TimeDimension]:
+def _datasource_time_dimension(entry: str, *, template: str, bundle: ResolvedSourceBundle) -> Optional[TimeDimension]:
     node, callee = call_callee(entry)
     if callee is None:
         return None
@@ -1251,7 +1251,10 @@ def _datasource_time_dimension(entry: str, *, bundle: ResolvedSourceBundle) -> O
     if definition is not None:
         argument = granularity_call_argument(node, entry)
         check_granularity_call_shape(entry=entry, argument=argument)
-        return TimeDimension.model_validate({"dimension": argument, "granularity": definition.name})
+        td = TimeDimension.model_validate({"dimension": argument, "granularity": definition.name})
+        if template != entry:
+            td._template = granularity_call_argument(call_callee(template)[0], template)
+        return td
     if column is not None and normalize_aggregation_name(callee) not in BUILTIN_AGGREGATIONS:
         check_dimension_call_known(entry=entry, defined=bundle.granularities)
     return None

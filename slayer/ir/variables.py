@@ -3,8 +3,8 @@
 - :func:`merge_query_variables` collapses the four variable layers into the
   effective dict (runtime > stage > outer > model_defaults).
 - :func:`apply_variables_to_query` binds ``{var}`` as literals into a query's
-  filters, measure formulas, computed-dimension expressions and order
-  expressions, and substitutes its ``date_range`` bounds.
+  filters, measure formulas, computed- and time-dimension expressions and
+  order expressions, and substitutes its ``date_range`` bounds.
 - :func:`substitute_model_sql_surfaces` substitutes a model's four Mode-A
   surfaces (SQL regime) and binds its saved measure formulas.
 """
@@ -96,16 +96,17 @@ def _date_range_bound(text: str, variables: Dict[str, Any]) -> str:
 
 
 def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) -> TimeDimension:
-    if not td.date_range:
-        return td
-    bounds = [None if b is None else _date_range_bound(b, variables) for b in td.date_range]
-    if bounds == td.date_range:
+    dimension = bind_variables(td.dimension, variables)
+    bounds = td.date_range and [None if b is None else _date_range_bound(b, variables) for b in td.date_range]
+    if dimension == td.dimension and bounds == td.date_range:
         return td
     # Revalidated so a substituted bound is shape-checked like a literal one.
-    return TimeDimension.model_validate({
-        "dimension": td.dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
+    bound = TimeDimension.model_validate({
+        "dimension": dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
         "label": td.label,
     })
+    bound._template = td.template
+    return bound
 
 
 def apply_variables_to_query(

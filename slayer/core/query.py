@@ -47,6 +47,7 @@ _STRICT_RETIRED_AT = 4
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
+_WHOLE_PLACEHOLDER_RE = re.compile(r"^\s*\{[a-zA-Z_]\w*\}\s*$", re.ASCII)
 
 # Leading callee of a whole-string single call ``name( ... )``; used only when
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
@@ -78,9 +79,10 @@ def _single_col_of_source(node: AggCall) -> str | None:
 
 
 def call_callee(entry: str) -> tuple[Any, str | None]:
-    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any."""
+    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any; placeholders
+    parse as probe literals, since only the shape is read."""
     try:
-        node: Any = parse_expr(entry)
+        node: Any = parse_expr(render_probe_text(entry))
     except Exception:
         node = None
     if isinstance(node, AggCall):
@@ -463,12 +465,13 @@ def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
 
 def query_variable_surfaces(query: "SlayerQuery") -> list[str]:
     """Every text of ``query`` that substitutes ``{var}``: filters, measure formulas,
-    computed-dimension expressions, order expressions and ``date_range`` bounds."""
+    computed-dimension and time-dimension expressions, order expressions and ``date_range`` bounds."""
     return [
         *(query.filters or []),
         *(m.formula for m in query.measures or []),
         *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
         *(o.raw_formula for o in query.order or [] if o.raw_formula),
+        *(td.dimension for td in query.time_dimensions or []),
         *(b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None),
     ]
 
@@ -790,9 +793,13 @@ def _date_range_problem(date_range: list[str | None]) -> str | None:
 
 
 def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, column: Any = None) -> None:
-    """Variables supply literals: a ``{var}`` naming a time dimension's granularity or column is refused."""
-    for what, value in (("granularity", granularity), ("column", column)):
-        if isinstance(value, str) and _bare_variable_names(value):
+    """Variables supply literals: a ``{var}`` naming a time dimension's granularity, or standing for its
+    whole dimension, is refused; one inside an expression is a literal."""
+    for what, value, names_it in (
+        ("granularity", granularity, lambda text: bool(_bare_variable_names(text))),
+        ("column", column, lambda text: _WHOLE_PLACEHOLDER_RE.match(text) is not None),
+    ):
+        if isinstance(value, str) and names_it(value):
             raise ValueError(
                 f"Time dimension {entry!r}: variables supply literal values; they can't name a {what} ({value!r})."
             )
@@ -839,6 +846,13 @@ class TimeDimension(BaseModel):
         ),
     )
     label: str | None = None
+    # Pre-substitution dimension; an unnamed expression is named from it.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The dimension as written, before ``{var}`` substitution."""
+        return self._template or self.dimension
 
     @model_validator(mode="before")
     @classmethod
@@ -857,10 +871,10 @@ class TimeDimension(BaseModel):
 
     @property
     def effective_name(self) -> str | None:
-        """``name``, else an expression's sanitised text; ``None`` for an unnamed column."""
+        """``name``, else an expression's sanitised template; ``None`` for an unnamed column."""
         if self.name is not None or self.column_ref is not None:
             return self.name
-        return computed_dimension_name(self.dimension)
+        return computed_dimension_name(self.template)
 
     @model_validator(mode="after")
     def _check_date_range(self) -> "TimeDimension":
@@ -1404,7 +1418,7 @@ class SlayerQuery(BaseModel):
         model_name = self.source_model_name
 
         def _canon(td: TimeDimension) -> tuple:
-            text = _model_prefix_pattern(model_name).sub("", td.dimension) if model_name else td.dimension
+            text = _model_prefix_pattern(model_name).sub("", td.template) if model_name else td.template
             return (text, td.granularity, tuple(td.date_range or ()), td.name, td.label)
 
         seen: dict[tuple[str, str], tuple] = {}
@@ -1442,7 +1456,7 @@ class SlayerQuery(BaseModel):
                     raise ValueError(f"Dimension name {td.name!r} is used twice; names must be unique.")
                 taken.add(td.name)
             elif td.column_ref is None:
-                name, text = computed_dimension_name(td.dimension), _canonical_expression_text(td.dimension)
+                name, text = computed_dimension_name(td.template), _canonical_expression_text(td.template)
                 if name in taken or auto.setdefault(name, text) != text:
                     raise ValueError(
                         f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
