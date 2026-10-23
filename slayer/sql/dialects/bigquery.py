@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 # Caveat: a single-backticked word-only path like `ds.tbl` false-positive mangles; quote segments singly.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
+_DATETIME = exp.DataType.build("DATETIME")
 
 
 def _date_part_unit(unit: TimeGranularity) -> Expression:
@@ -120,6 +121,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     alias_quote_close: ClassVar[str] = "`"
     regex_flavour: ClassVar[RegexFlavour] = RE2
     like_escape_clause: ClassVar[bool] = False
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "concat_ws":
@@ -192,7 +194,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 col_expr=col_expr, granularity=granularity,
             )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+            col_expr = self.promote_to_timestamp(col_expr)
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
         return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
 
@@ -205,7 +207,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         ))
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
-        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMPTZ"))
+        """SLayer's TIMESTAMP is naive: ``DATETIME`` (a zoned ``TIMESTAMP`` reads as its UTC wall clock)."""
+        already = (isinstance(expr, exp.Cast) and expr.to.this is exp.DataType.Type.DATETIME) or (
+            isinstance(expr, exp.Anonymous) and expr.name.upper() == "CURRENT_DATETIME")
+        return expr.copy() if already else exp.Cast(this=expr.copy(), to=_DATETIME.copy())
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
+        zoned = to.this is exp.DataType.Type.TIMESTAMPTZ
+        return _DATETIME.copy() if data_type is DataType.TIMESTAMP and zoned else to
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
@@ -213,7 +222,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_timestamp(self) -> Expression:
-        return exp.CurrentTimestamp()
+        return anon("CURRENT_DATETIME")
 
     def build_temporal_comparison(
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
@@ -242,15 +251,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_date_diff(
         self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
     ) -> Expression:
-        """``DATE_DIFF`` counts date-part boundaries; ``TIMESTAMP_DIFF`` counts elapsed units, so its
+        """``DATE_DIFF`` counts date-part boundaries; ``DATETIME_DIFF`` counts elapsed units, so its
         operands are truncated first (and it has no week/month/quarter/year)."""
         if unit in SUB_DAY_GRANULARITIES:
-            if operand is DataType.DATE:
-                start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
 
             def trunc(e: Expression) -> Expression:
-                return exp.Anonymous(this="TIMESTAMP_TRUNC", expressions=[e.copy(), exp.var(unit.value.upper())])
-            return exp.Anonymous(this="TIMESTAMP_DIFF", expressions=[
+                return exp.Anonymous(this="DATETIME_TRUNC", expressions=[e.copy(), exp.var(unit.value.upper())])
+            return exp.Anonymous(this="DATETIME_DIFF", expressions=[
                 trunc(end), trunc(start), exp.var(unit.value.upper()),
             ])
         if operand is DataType.TIMESTAMP:
@@ -265,20 +273,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATE_ADD`` keeps a DATE a DATE; timestamps use ``TIMESTAMP_ADD`` up to a day and
-        ``DATETIME_ADD`` (which clamps at month-end) for months."""
+        """``DATE_ADD`` keeps a DATE a DATE; timestamps use ``DATETIME_ADD`` (which clamps at month-end)."""
         if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
             return exp.Anonymous(this="DATE_ADD", expressions=[expr.copy(), _interval(count.copy(), unit)])
-        base = self.promote_to_timestamp(expr) if operand is DataType.DATE else expr.copy()
+        base = self.promote_to_timestamp(expr)
         if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
-            days = exp.Mul(this=exp.Paren(this=count.copy()), expression=exp.Literal.number(7))
-            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(days, TimeGranularity.DAY)])
-        if unit in SUB_DAY_GRANULARITIES or unit is TimeGranularity.DAY:
-            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(count.copy(), unit)])
-        moved = exp.Anonymous(this="DATETIME_ADD", expressions=[
-            exp.Cast(this=base, to=exp.DataType.build("DATETIME")), _interval(count.copy(), unit),
-        ])
-        return self.promote_to_timestamp(moved)
+            count = exp.Mul(this=exp.Paren(this=count.copy()), expression=exp.Literal.number(7))
+            unit = TimeGranularity.DAY
+        return exp.Anonymous(this="DATETIME_ADD", expressions=[base, _interval(count.copy(), unit)])
 
     def build_engine(
         self,

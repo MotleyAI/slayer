@@ -69,6 +69,11 @@ class MysqlDialect(SqlDialect):
             return exp.Unicode(this=args[0].copy())
         return super().build_text_call(fn, args)
 
+    def binary_text(self, value: Expression) -> Expression:
+        """Read as ``utf8mb4`` (any column charset) under its binary collation."""
+        utf8 = exp.Cast(this=value.copy(), to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+        return exp.Collate(this=utf8, expression=exp.var("utf8mb4_bin"))
+
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
         """``SUBSTRING_INDEX`` twice; ``''`` past the last field."""
         inner = anon("SUBSTRING_INDEX", value, delimiter, lit(index))

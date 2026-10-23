@@ -16,6 +16,7 @@ import os
 import pathlib
 import tomllib
 import uuid
+from typing import NoReturn
 
 import pytest
 import sqlalchemy as sa
@@ -60,11 +61,13 @@ from snowflake.connector.errors import ProgrammingError  # ALLOW(import-not-top)
 
 _TOML_PATH = pathlib.Path("~/.snowflake/connections.toml").expanduser()
 _CONNECTION_NAME = os.environ.get("SLAYER_SNOWFLAKE_CONNECTION", "slayer_test")
+# Set by CI when the secret is present: an unreachable Snowflake fails instead of skipping.
+_REQUIRED = os.environ.get("SLAYER_SNOWFLAKE_REQUIRED") == "1"
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        not _TOML_PATH.is_file(),
+        not _TOML_PATH.is_file() and not _REQUIRED,
         reason=f"{_TOML_PATH} not present; skipping Snowflake live tests",
     ),
 ]
@@ -73,6 +76,8 @@ pytestmark = [
 def _load_profile() -> dict:
     """Read the named profile from connections.toml. Returns {} if the
     profile is absent; tests using this surface their own skip reason."""
+    if not _TOML_PATH.is_file():
+        return {}
     with open(_TOML_PATH, "rb") as f:
         data = tomllib.load(f)
     profile = data.get(_CONNECTION_NAME)
@@ -81,10 +86,16 @@ def _load_profile() -> dict:
     return profile
 
 
+def _unavailable(reason: str) -> NoReturn:
+    if _REQUIRED:
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _profile_or_skip() -> dict:
     profile = _load_profile()
     if not profile:
-        pytest.skip(
+        _unavailable(
             f"Snowflake profile '{_CONNECTION_NAME}' not found in {_TOML_PATH}; "
             f"set $SLAYER_SNOWFLAKE_CONNECTION or add a [{_CONNECTION_NAME}] profile."
         )
@@ -109,7 +120,7 @@ def sf_transient_schema():
     try:
         conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
     except Exception as exc:
-        pytest.skip(f"Could not connect to Snowflake via '{_CONNECTION_NAME}': {exc}")
+        _unavailable(f"Could not connect to Snowflake via '{_CONNECTION_NAME}': {exc}")
         return  # for type checkers
     schema_name = f"SLAYER_TEST_{uuid.uuid4().hex[:12].upper()}"
     db_name = profile.get("database")

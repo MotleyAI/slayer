@@ -7,7 +7,7 @@ decorate live in ``slayer.ir.prebound``.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional, Tuple, TypeGuard
+from typing import Callable, Optional, Tuple, TypeGuard
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -30,13 +30,14 @@ from slayer.core.keys import (
     join_conditional_branch_types,
     temporal_type,
 )
-from slayer.core.join_walker import model_column_type
+from slayer.core.join_walker import model_column_lookup, model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
+from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
@@ -155,6 +156,31 @@ def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeF
     if scope.source_model is None:
         return lambda _key: None
     return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
+
+
+def _stage_column_lookup(schema: StageSchema) -> Callable[[object], object]:
+    def lookup(key: object) -> object:
+        return schema.get(key.leaf) if isinstance(key, ColumnKey) and not key.path else None
+    return lookup
+
+
+def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callable[[object], bool]:
+    """Whether a column leaf holds a zoned instant on the bundle's dialect (its ``db_type`` names one)."""
+    zoned = get_dialect(bundle.dialect).zoned_timestamp_db_types
+    if not zoned:
+        return lambda _key: False
+    lookup: Callable[[object], object]
+    if isinstance(scope, StageSchema):
+        lookup = _stage_column_lookup(scope)
+    elif scope.source_model is not None:
+        lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)
+    else:
+        return lambda _key: False
+
+    def is_zoned(key: object) -> bool:
+        db_type = getattr(lookup(key), "db_type", None)
+        return bool(db_type) and db_type.split("(")[0].strip().upper() in zoned
+    return is_zoned
 
 
 def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:

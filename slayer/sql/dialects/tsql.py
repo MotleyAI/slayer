@@ -173,11 +173,17 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         if fn in ("lpad", "rpad"):
             return self.portable_pad(fn=fn, s=args[0], n=args[1], fill=pad_fill(args))
         if fn == "contains":
-            found = exp.GT(this=anon("CHARINDEX", args[1], args[0]), expression=lit(0))
+            found = exp.GT(this=self.text_position(args[0], args[1]), expression=lit(0))
             empty = exp.And(this=exp.EQ(this=anon("DATALENGTH", args[1]), expression=lit(0)),
                             expression=exp.Not(this=any_null(args[0])))
             return either(found, empty)
         return super().build_text_call(fn, args)
+
+    def binary_text(self, value: Expression) -> Expression:
+        # COLLATE binds tighter than any operator.
+        atomic = isinstance(value, (exp.Column, exp.Literal, exp.Paren))
+        operand = value.copy() if atomic else exp.Paren(this=value.copy())
+        return exp.Collate(this=operand, expression=exp.var("Latin1_General_100_BIN2"))
 
     def code_point_char(self, n: Expression) -> Expression:
         """``NCHAR``, astral code points as their UTF-16 surrogate pair (no supplementary collation needed)."""

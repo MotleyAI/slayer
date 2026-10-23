@@ -24,6 +24,7 @@ from slayer.engine.schema_scope import (
     _dialect_qualifies_tokens,
     default_schema_ref_for_engine,
 )
+from slayer.sql.dialects import dialect_for_ds_type
 
 # Float-like INFORMATION_SCHEMA type names
 _FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
@@ -322,6 +323,7 @@ def _get_columns_fallback(
     bare listing never sweeps another catalog.
     """
     ref = _resolve_fallback_ref(sa_engine, ref)
+    zoned_types = dialect_for_ds_type(getattr(getattr(sa_engine, "dialect", None), "name", None)).zoned_timestamp_db_types
     schema = ref.name if ref else None
     catalog = ref.catalog if ref else None
     sql, params = _info_schema_columns_query(
@@ -335,7 +337,10 @@ def _get_columns_fallback(
         # type mapping and db_type capture see the inner type.
         unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
         sa_type, is_float = _info_schema_type(unwrapped)
-        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) else None
+        lossy = is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) or (
+            bool(unwrapped) and unwrapped.upper() in zoned_types
+        )
+        db_type = unwrapped if lossy else None
         result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,

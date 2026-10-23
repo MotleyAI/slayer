@@ -6,7 +6,7 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import (
@@ -1307,6 +1307,37 @@ def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey
     if isinstance(rebuilt, ScalarCallKey):
         return _coerce_scalar_args(rebuilt, text=text, number=number)
     return rebuilt
+
+
+_ZONED_COMPARED_OPS = frozenset({
+    "==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from",
+})
+
+
+def coerce_zoned_comparisons(
+    key: ValueKey, *, zoned: Callable[[object], bool], column_type: ColumnTypeFn,
+) -> ValueKey:
+    """A naive timestamp compared with a zoned-instant column converts to the column's type; the column stays bare."""
+    rebuilt = cast(ValueKey, key.map_children(
+        lambda c: coerce_zoned_comparisons(c, zoned=zoned, column_type=column_type)))
+    if not (isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _ZONED_COMPARED_OPS and len(rebuilt.operands) == 2):
+        return rebuilt
+    left, right = rebuilt.operands
+
+    def naive(k: ValueKey) -> bool:
+        # A temporal literal renders as ISO text, which already reads as the column's type.
+        literal = isinstance(k, LiteralKey) and isinstance(k.value, date)
+        return not literal and not zoned(k) and temporal_type(k, column_type=column_type) is DataType.TIMESTAMP
+
+    if zoned(left) and naive(right):
+        return rebuilt.model_copy(update={"operands": (left, _as_zoned(right))})
+    if zoned(right) and naive(left):
+        return rebuilt.model_copy(update={"operands": (_as_zoned(left), right)})
+    return rebuilt
+
+
+def _as_zoned(key: ValueKey) -> ValueKey:
+    return CastKey(source=key, type_text="TIMESTAMP", data_type=DataType.TIMESTAMP)
 
 
 def _coerce_binary(key: ArithmeticKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:

@@ -205,6 +205,28 @@ class TestTrimLowering:
         assert f"{fn.upper()}(LIB.CODE, ' ')" in sql.upper(), sql
 
 
+_TEXT_MATCHES = ["starts_with(word, 'ad')", "ends_with(word, 'ad')", "contains(word, 'ad')", "strpos(word, 'ad')",
+                 "instr(word, 'ad')", "POSITION('ad' IN word)"]
+
+
+class TestTextMatchingIgnoresCollation:
+    @pytest.mark.parametrize(("dialect", "marker"), [("mysql", "COLLATE UTF8MB4_BIN"),
+                                                     ("tsql", "COLLATE LATIN1_GENERAL_100_BIN2")])
+    @pytest.mark.parametrize("expr", _TEXT_MATCHES)
+    async def test_insensitive_default_engines_compare_binary(self, dialect: str, marker: str, expr: str) -> None:
+        sql = (await emit_lib(lib_query(expr), dialect=dialect)).upper()
+        assert sql.count(marker) >= 2, sql
+
+    async def test_tsql_collates_a_compound_operand_whole(self) -> None:
+        sql = await emit_lib(lib_query("contains(word || 'x', 'ad')"), dialect="tsql")
+        assert "( lib.word + 'x' ) COLLATE" in " ".join(sql.split()), sql
+
+    @pytest.mark.parametrize("dialect", [d for d in TIER1 if d not in ("mysql", "tsql")])
+    async def test_other_engines_compare_as_written(self, dialect: str) -> None:
+        sql = (await emit_lib(lib_query("starts_with(word, 'ad')"), dialect=dialect)).upper()
+        assert "COLLATE" not in sql, sql
+
+
 class TestExcludedFunctions:
     @pytest.mark.parametrize("expr", [
         "initcap(word)", "random()", "to_date(word, 'YYYY')", "strftime(word, '%Y')",

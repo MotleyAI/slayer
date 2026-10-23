@@ -258,6 +258,8 @@ def render_cast(
     """The database's own cast of the author's type; ``TRY_CAST`` through the dialect's lowering, and a
     ``TRY_CAST`` of ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable)."""
     to = cast_target(key.type_text, dialect=dialect)
+    if key.try_:
+        to = dialect.try_cast_type(to, data_type=key.data_type)
     source = key.source
     if key.try_ and direct and isinstance(source, ScalarCallKey) and source.name == "json_value":
         value, path, native = json_operands(source, part=part, dialect=dialect)

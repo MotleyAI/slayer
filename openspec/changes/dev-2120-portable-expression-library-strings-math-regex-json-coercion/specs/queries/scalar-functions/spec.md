@@ -56,8 +56,8 @@ A function that needs a newer server than the connected one SHALL be rejected at
 The library SHALL provide, with Postgres meanings:
 
 - `left(s, n)` / `right(s, n)` — the first / last `n` characters; a negative `n` drops the last / first `|n|` characters.
-- `starts_with(s, p)` / `ends_with(s, p)` / `contains(s, p)` — BOOLEAN; `p` is plain text, never a pattern.
-- `strpos(s, p)` — the 1-based position of the first `p` in `s`, 0 when absent; the same function as `instr` and `POSITION(p IN s)`.
+- `starts_with(s, p)` / `ends_with(s, p)` / `contains(s, p)` — BOOLEAN; `p` is plain text, never a pattern, matched case- and accent-sensitively whatever the column's collation.
+- `strpos(s, p)` — the 1-based position of the first `p` in `s`, 0 when absent, matched like `contains`; the same function as `instr` and `POSITION(p IN s)`.
 - `lpad(s, n[, fill])` / `rpad(s, n[, fill])` — pad to `n` characters with `fill` (default one space), truncating `s` when it is longer than `n`.
 - `reverse(s)` — the characters of `s` in reverse order.
 - `repeat(s, n)` — `s` repeated `n` times; empty for `n ≤ 0`.
@@ -71,6 +71,11 @@ Lengths, positions and counts SHALL be in characters, not bytes.
 
 - **WHEN** a filter is `contains(code, '5%')` over rows holding `'15%'` and `'150'`
 - **THEN** it keeps `'15%'` only
+
+#### Scenario: Case-sensitive whatever the collation
+
+- **WHEN** a filter is `starts_with(name, 'ad')` over a row holding `'Ada'` on MySQL with a case-insensitive collation
+- **THEN** it drops the row
 
 #### Scenario: Non-ASCII characters
 

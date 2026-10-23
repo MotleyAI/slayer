@@ -37,6 +37,8 @@
 - [x] 5.5 `build_like` hook (D9): `ESCAPE '\'`, ClickHouse / BigQuery native escapes, SQL Server `[` bracketing incl. column patterns, `ILIKE` fallback; verify 2.6
 - [x] 5.6 SQLite registered functions (D8): regex trio, `slayer_like_glob`, any missing string functions; `LIKE` → `GLOB`, `ILIKE` → native `LIKE`; verify 2.3 / 2.6 on SQLite
 - [x] 5.7 Server-profile predicate generalised (D5); SQL Server `server_profile_sql` / `parse_server_profile`; version errors for regex and `greatest` / `least`; verify 2.2 / 2.3 version scenarios
+- [x] 5.8 BigQuery TIMESTAMP is DATETIME; zoned `TIMESTAMP` columns keep `db_type` and compare through a cast of the other side (D13)
+- [x] 5.9 `starts_with` / `ends_with` / `contains` / `strpos` compare binary on MySQL (`BINARY`) and SQL Server (`COLLATE Latin1_General_100_BIN2`); verify emissions
 
 ## 6. Ingestion
 

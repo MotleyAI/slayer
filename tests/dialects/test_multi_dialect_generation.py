@@ -720,7 +720,8 @@ class TestStringHygieneDialectTranslation:
         [
             ("sqlite", "INSTR(orders.status, ',')"),
             ("postgres", "POSITION(',' IN orders.status)"),
-            ("mysql", "LOCATE(',', orders.status)"),
+            ("mysql", "LOCATE(\n    CAST(',' AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin,\n"
+                      "    CAST(orders.status AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin\n  )"),
             ("duckdb", "STRPOS(orders.status, ',')"),
             ("clickhouse", "positionUTF8(orders.status, ',')"),
         ],

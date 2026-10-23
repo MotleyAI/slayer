@@ -251,7 +251,9 @@ jobs:
         # `secrets.SNOWFLAKE_CONNECTIONS_TOML`.
         env:
           SLAYER_SNOWFLAKE_CONNECTION: slayer_test
-        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -m integration --timeout=300
+          # The secret is present (gate above), so an unreachable Snowflake fails rather than skips.
+          SLAYER_SNOWFLAKE_REQUIRED: "1"
+        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -rs -m integration --timeout=300
 
       - name: Wipe Snowflake credentials
         if: always()

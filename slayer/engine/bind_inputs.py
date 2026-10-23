@@ -89,6 +89,7 @@ from slayer.engine.elaborate_env import (
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
     coerce_text_numbers,
+    coerce_zoned_comparisons,
     resolve_time_points,
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
@@ -97,6 +98,7 @@ from slayer.engine.key_metadata import (
     measure_key_preserves_native_type,
     measure_key_type,
     scope_column_type,
+    scope_zoned_timestamp,
     stage_measure_type,
 )
 from slayer.core.syntax import (
@@ -505,6 +507,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             order_specs.append(OrderSpec(bound=bo, direction=o.direction, nulls=o.nulls or "default"))
 
     column_type = scope_column_type(scope=scope, bundle=bundle)
+    zoned = scope_zoned_timestamp(scope=scope, bundle=bundle)
     check_date_operands(
         roots=[
             *(dm.bound.value_key for dm in declared_measures),
@@ -515,9 +518,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
     # Every time point resolves against the execution's one clock reading.
     declared_measures, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: coerce_text_numbers(
-            resolve_time_points(vk, column_type=column_type, now=bundle.now, units=bundle.granularities),
-            column_type=column_type,
+        lambda vk: coerce_zoned_comparisons(
+            coerce_text_numbers(
+                resolve_time_points(vk, column_type=column_type, now=bundle.now, units=bundle.granularities),
+                column_type=column_type,
+            ),
+            zoned=zoned, column_type=column_type,
         ),
         declared_measures=declared_measures,
         bound_filters=bound_filters,

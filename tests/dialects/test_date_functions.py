@@ -148,10 +148,10 @@ class TestDialectBranches:
 
     @pytest.mark.parametrize("unit", SUB_DAY)
     @pytest.mark.parametrize("operand", OPERANDS)
-    def test_bigquery_sub_day_add_is_timestamp(self, unit: TimeGranularity, operand: DataType) -> None:
+    def test_bigquery_sub_day_add_is_datetime(self, unit: TimeGranularity, operand: DataType) -> None:
         sql = _sql(get_dialect("bigquery").build_date_add(
             expr=_col(), count=exp.Literal.number(1), unit=unit, operand=operand), "bigquery")
-        assert "TIMESTAMP" in sql, sql
+        assert "DATETIME_ADD(" in sql, sql
         assert not re.search(r"\bDATE_(ADD|SUB)\(", sql), sql
 
     @pytest.mark.parametrize("unit", list(TimeGranularity))
@@ -172,10 +172,10 @@ class TestDialectBranches:
         assert "TIMESTAMP" not in sql, sql
 
     @pytest.mark.parametrize("unit", SUB_DAY)
-    def test_bigquery_sub_day_diff_uses_timestamp_functions(self, unit: TimeGranularity) -> None:
+    def test_bigquery_sub_day_diff_uses_datetime_functions(self, unit: TimeGranularity) -> None:
         sql = _sql(get_dialect("bigquery").build_date_diff(
             unit=unit, start=_col("s"), end=_col("e"), operand=DataType.TIMESTAMP), "bigquery")
-        assert "TIMESTAMP_" in sql, sql
+        assert "DATETIME_DIFF(" in sql, sql
         assert "DATE_DIFF(" not in sql, sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb"])

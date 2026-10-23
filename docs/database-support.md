@@ -283,6 +283,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older models), compares against them unconverted while the other side is cast to `TIMESTAMP`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
   `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
   explain=True)` returns the dry-run SQL unchanged rather than an execution

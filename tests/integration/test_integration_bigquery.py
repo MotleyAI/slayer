@@ -13,6 +13,7 @@ with commented tables, ingested, and deleted on teardown.
 
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
     ingest_datasource,
     ingest_datasource_idempotent,
@@ -284,11 +286,13 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
                      for rid, doc in DOCS_ROWS)
     client.query(f"CREATE TABLE {dataset_id}.docs (id INT64, payload JSON)").result()
     client.query(f"INSERT INTO {dataset_id}.docs VALUES {rows}").result()
+    client.query(f"CREATE TABLE {dataset_id}.events (id INT64, zoned_ts TIMESTAMP, wall_ts DATETIME)").result()
+    client.query(f"INSERT INTO {dataset_id}.events VALUES {_EVENT_ROWS}").result()
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
     run_sync(storage.save_datasource(ds))
     run_sync(storage.save_model(lib_model(data_source=ds.name)))
-    for model in ingest_datasource(datasource=ds, include_tables=["docs"]):
+    for model in ingest_datasource(datasource=ds, include_tables=["docs", "events"]):
         run_sync(storage.save_model(model))
     return storage
 
@@ -299,3 +303,21 @@ async def test_dev2120_library(bq_dev2120_storage) -> None:
 
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
     await check_native_json(SlayerQueryEngine(storage=bq_dev2120_storage))
+
+
+_EVENT_ROWS = ("(1, TIMESTAMP '2024-02-29 10:00:00 UTC', DATETIME '2024-02-29 10:00:00'), "
+               "(2, TIMESTAMP '2025-06-01 23:30:00 UTC', DATETIME '2025-06-01 23:30:00')")
+
+
+async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
+    model = await bq_dev2120_storage.get_model("events", data_source="bqtest")
+    db_types = {c.name: c.db_type for c in model.columns if c.name in ("zoned_ts", "wall_ts")}
+    assert db_types == {"zoned_ts": "TIMESTAMP", "wall_ts": None}
+    engine = SlayerQueryEngine(storage=bq_dev2120_storage)
+    for column in ("zoned_ts", "wall_ts"):
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "events", "dimensions": ["id", {"expression": f"date_add({column}, 1, 'day')", "name": "v"}],
+            "filters": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
+        }))
+        got = {int(r["events.id"]): r["events.v"] for r in resp.data}
+        assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)

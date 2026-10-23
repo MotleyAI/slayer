@@ -69,3 +69,17 @@ The documentation SHALL state that the DOUBLE reading loses precision for intege
 
 - **WHEN** a filter is `TRY_CAST(id_txt AS BIGINT) = 12345678901234567`
 - **THEN** it compares exactly
+
+### Requirement: A naive timestamp meets a zoned column in the column's type
+
+SLayer's TIMESTAMP SHALL be a naive wall-clock value on every dialect (BigQuery `DATETIME`) — the result of `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions. Where a column's `db_type` is the dialect's zoned instant type (BigQuery `TIMESTAMP`), a comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`, `IS [NOT] DISTINCT FROM`) between that column and a non-literal TIMESTAMP value SHALL convert the value to the column's type, reading it as UTC, and SHALL leave the column unconverted.
+
+#### Scenario: now() against a BigQuery TIMESTAMP column
+
+- **WHEN** a filter is `created_at < now()` over a BigQuery `TIMESTAMP` column ingested with `db_type` `TIMESTAMP`
+- **THEN** it keeps the rows before the current UTC instant, comparing the column itself
+
+#### Scenario: now() against a BigQuery DATETIME column
+
+- **WHEN** a filter is `created_at < now()` over a BigQuery `DATETIME` column
+- **THEN** it keeps the rows before the current UTC wall clock

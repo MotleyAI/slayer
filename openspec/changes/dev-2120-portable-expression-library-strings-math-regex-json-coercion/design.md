@@ -70,6 +70,10 @@ A brace pair inside a Mode-B string literal whose contents are only digits, comm
 
 Alternatives: doubling quantifier braces (`'[0-9]{{3}}'`) — rejected: standard regex fails as written; every non-name pair literal — rejected: a mistyped placeholder (`'{start-date}'`) would silently become text; exempting pattern positions from substitution — rejected: substitution precedes parsing and would forbid placeholders in patterns.
 
+### D13. BigQuery TIMESTAMP is DATETIME
+
+SLayer's TIMESTAMP is naive, so on BigQuery every SLayer-produced timestamp is `DATETIME`: `CURRENT_DATETIME()`, `DATETIME_ADD` / `DATETIME_DIFF` / `DATETIME_TRUNC`, and `SAFE_CAST(… AS DATETIME)` for `TRY_CAST` / `RETURNING` (a plain `CAST` stays the database's own). Ingestion keeps `db_type` for the dialect's zoned type (`SqlDialect.zoned_timestamp_db_types`, BigQuery `TIMESTAMP`), and the binder casts the other side of a comparison with such a column to `TIMESTAMP`, so the column stays bare and partition pruning holds. Query time zones are DEV-2000.
+
 ## Risks / Trade-offs
 
 - [Golden SQL churn: every Mode-B `LIKE` gains `ESCAPE '\'`; SQLite `LIKE` becomes `GLOB`] → regenerate baselines; release note.

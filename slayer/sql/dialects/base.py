@@ -88,7 +88,7 @@ def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
 
 TextFn = Literal[
     "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
-    "chr", "ascii", "trim", "ltrim", "rtrim",
+    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr",
 ]
 TrimFn = Literal["trim", "ltrim", "rtrim"]
 MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
@@ -452,6 +452,13 @@ class SqlDialect(BaseModel):
         """Whether this dialect can express a CAST to ``data_type``."""
         return data_type.this not in VENDOR_ONLY_CAST_TYPES or data_type.this in self.vendor_cast_types
 
+    #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
+        return to
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
         return exp.TryCast(this=as_text(value), to=to)
@@ -512,16 +519,19 @@ class SqlDialect(BaseModel):
         if fn in ("left", "right"):
             return self._left_right(fn=fn, s=s, n=args[1])
         if fn == "starts_with":
-            return exp.EQ(this=self.char_substring(s, lit(1), self.char_length(args[1])), expression=args[1].copy())
+            head = self.char_substring(s, lit(1), self.char_length(args[1]))
+            return exp.EQ(this=self.binary_text(head), expression=self.binary_text(args[1]))
         if fn == "ends_with":
             p = args[1]
             start = case((exp.GTE(this=self.char_length(s), expression=self.char_length(p)),
                           exp.Add(this=exp.Sub(this=self.char_length(s), expression=self.char_length(p)),
                                   expression=lit(1))), default=lit(1))
-            return exp.EQ(this=self.char_substring(s, start, self.char_length(p)), expression=p.copy())
+            tail = self.char_substring(s, start, self.char_length(p))
+            return exp.EQ(this=self.binary_text(tail), expression=self.binary_text(p))
         if fn == "contains":
-            return exp.GT(this=self.rewrite_target_ast(exp.StrPosition(this=s.copy(), substr=args[1].copy())),
-                          expression=lit(0))
+            return exp.GT(this=self.text_position(s, args[1]), expression=lit(0))
+        if fn in ("strpos", "instr"):
+            return self.text_position(s, args[1])
         if fn in ("lpad", "rpad"):
             return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
         if fn == "reverse":
@@ -533,6 +543,14 @@ class SqlDialect(BaseModel):
         if fn == "chr":
             return self._code_point_guard(s, self.code_point_char(s))
         return self.first_code_point(s)
+
+    def binary_text(self, value: Expression) -> Expression:
+        """``value`` compared case- and accent-sensitively whatever its collation; default: as is."""
+        return value.copy()
+
+    def text_position(self, s: Expression, p: Expression) -> Expression:
+        """The 1-based character position of the first ``p`` in ``s``, 0 when absent, compared binary."""
+        return self.rewrite_target_ast(exp.StrPosition(this=self.binary_text(s), substr=self.binary_text(p)))
 
     def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
         """Postgres ``trim`` / ``ltrim`` / ``rtrim``: spaces only, never other whitespace."""
