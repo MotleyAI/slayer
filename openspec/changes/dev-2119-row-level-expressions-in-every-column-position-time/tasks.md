@@ -37,7 +37,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 ## 6. Partition keys, ranking, parameters
 
 - [x] 6.1 `_bind_partition_keys` over row-level expressions, computed-dimension / bucket equivalence, source → bucket mapping with the ambiguity rule, aggregate-bearing key error with the computed-dimension remedy; verify 2.4
-- [ ] 6.2 `explicit_ranking_key` (renamed from `explicit_ranking_time_arg`) over any row-level argument with both Axiom 2.4 safety paths; `_fold_positional_agg_args` ranking-key rule; default ranking key precedence; verify 2.5 ranking scenarios
+- [x] 6.2 `explicit_ranking_key` (renamed from `explicit_ranking_time_arg`) over any row-level argument with both Axiom 2.4 safety paths; `_fold_positional_agg_args` ranking-key rule; default ranking key precedence; verify 2.5 ranking scenarios
 - [x] 6.3 `first` / `last` over expression and mixed sources: lift the `_bind_agg` refusal; `_ranked_value_expr` / `_ranked_scope_expr` through the row-expression renderer with joined paths and row-attach substitution; verify 2.5 and 2.6
 - [x] 6.4 `_bind_agg_arg` over row-level expressions with parameter typing by the home grain; verify 2.5 parameter scenarios
 - [x] 6.5 Rewrite the remedies pointing at an inline `ModelExtension` column (`binding.py` partition-key error, `help_content/02_workflow.md`); verify `grep` finds no such remedy

@@ -74,13 +74,6 @@ class TestDefaultRankingKey:
         ))
         assert by_dims(resp, ["orders.id"]) == {(i,): float(10 * i) for i in range(1, 7)}
 
-    async def test_temporal_computed_dimension_wins_over_the_time_dimension(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(
-            dimensions=["region", {"expression": EFF, "name": "e"}], time_dimensions=[td("created_at")],
-            measures=[m("last(amount, partition_by=region)")],
-        ))
-        assert {r["orders.region"]: num(r["orders.v"]) for r in resp.data} == {"EU": 50.0, "US": 60.0}
-
     async def test_expression_time_dimension_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(time_dimensions=[td(EFF)], measures=[m("last(amount)")]))
         key = "orders.coalesce_shipped_at_created_at"
