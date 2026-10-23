@@ -18,7 +18,7 @@ from slayer.core.keys import (
     Phase,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import ValueSlot
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import (
@@ -302,7 +302,7 @@ async def test_d_cross_cross_model_derived_time_arg(
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.DAY,
         )],
         measures=[{

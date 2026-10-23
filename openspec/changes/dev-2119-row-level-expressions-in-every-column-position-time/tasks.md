@@ -27,12 +27,12 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 5. Time dimensions
 
-- [ ] 5.1 `TimeDimension.dimension` as text, legacy object / `column` alias coercion, `gran(expr)` functional forms, `name`, dedupe / strip / merge / variables / facade rebuilders, name uniqueness; verify 2.1 construction scenarios
+- [x] 5.1 `TimeDimension.dimension` as text, legacy object / `column` alias coercion, `gran(expr)` functional forms, `name`, dedupe / strip / merge / variables / facade rebuilders, name uniqueness; verify 2.1 construction scenarios
 - [ ] 5.2 Binding of expression time dimensions (home, row-level check), checker typing with the source → type map, `date_range`, `whole_periods_only`, frame bounds, `window=` / transforms, result keys and names, `main_time_dimension` and `partition_by=` by name; verify 2.1 and 2.2
-- [ ] 5.3 Every `full_name` / `name` / `model` consumer (`unrelated.py`, `model_reads.py`, `schema_drift.py`, `population.py`, `time_spine.py`) on parsed references; verify their suites
-- [ ] 5.4 Stage boundary: expression time dimensions emit a typed, bucketed `StageColumn` without single-column provenance; verify the two-stage scenarios
-- [ ] 5.5 Per-leaf re-bucketing; verify its scenarios
-- [ ] 5.6 Spine: refuse expressions reading `time_spine.timestamp`, admit other expression time dimensions into P; verify 2.3
+- [x] 5.3 Every `full_name` / `name` / `model` consumer (`unrelated.py`, `model_reads.py`, `schema_drift.py`, `population.py`, `time_spine.py`) on parsed references; verify their suites
+- [x] 5.4 Stage boundary: expression time dimensions emit a typed, bucketed `StageColumn` without single-column provenance; verify the two-stage scenarios
+- [x] 5.5 Per-leaf re-bucketing; verify its scenarios
+- [x] 5.6 Spine: refuse expressions reading `time_spine.timestamp`, admit other expression time dimensions into P; verify 2.3
 
 ## 6. Partition keys, ranking, parameters
 

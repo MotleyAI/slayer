@@ -132,7 +132,7 @@ async def _generate(query: SlayerQuery, *, dialect: str = "postgres") -> str:
 
 
 _MONTH = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 

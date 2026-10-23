@@ -448,7 +448,7 @@ class TestSynthesizedGrainNames:
                 Column(name="created_at", type=DataType.TIMESTAMP),
             ]),
         ]
-        months = [TimeDimension(dimension=ColumnRef(name=n), granularity=TimeGranularity.MONTH)
+        months = [TimeDimension(dimension=n, granularity=TimeGranularity.MONTH)
                   for n in ("created_at", "customers.created_at")]
         q = SlayerQuery(
             source_model="orders", dimensions=[ColumnRef(name="region")], time_dimensions=months,

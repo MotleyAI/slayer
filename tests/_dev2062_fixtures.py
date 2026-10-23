@@ -30,7 +30,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -93,7 +93,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name="order_date"), granularity=TimeGranularity.MONTH, date_range=date_range,
+        dimension="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
     )]
 
 

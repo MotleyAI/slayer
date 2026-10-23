@@ -449,7 +449,7 @@ async def _windowed_sql(formula: str, agg: Aggregation) -> str:
     ]})
     query = SlayerQuery(
         source_model="orders", measures=[ModelMeasure(formula=formula, name="m")],
-        time_dimensions=[TimeDimension(dimension=ColumnRef(name="ordered_at"), granularity=TimeGranularity.MONTH)],
+        time_dimensions=[TimeDimension(dimension="ordered_at", granularity=TimeGranularity.MONTH)],
     )
     return " ".join((await _engine_generate(query=query, model=model)).split())
 

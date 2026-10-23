@@ -700,7 +700,7 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count")],
@@ -715,7 +715,7 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count")],

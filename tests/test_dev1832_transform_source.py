@@ -30,7 +30,6 @@ from tests._dev1832_fixtures import (
     CHANGE_SUM_BY_MONTH,
     COLLAPSE_MIXED_BY_MONTH,
     CONSEC_SUM_BY_MONTH,
-    ColumnRef,
     CUMSUM_MINUS_LAST_BY_MONTH,
     EMPTY_GRAIN_MIXED_BY_MONTH,
     FIRST_SUM_BY_MONTH,
@@ -179,7 +178,7 @@ class TestUngrainedTransformConstituent:
 
 
 def _year_td() -> TimeDimension:
-    return TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return TimeDimension(dimension="ordered_at",
                          granularity=TimeGranularity.YEAR)
 
 

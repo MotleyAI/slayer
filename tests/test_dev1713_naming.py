@@ -250,7 +250,7 @@ class TestJoinedDimensionDottedKeys:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
@@ -328,7 +328,7 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
@@ -355,7 +355,7 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
@@ -621,7 +621,7 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
@@ -674,7 +674,7 @@ class TestTimeShiftCteDecollision:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -715,7 +715,7 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[

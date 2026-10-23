@@ -372,7 +372,7 @@ def _joined_orders() -> SlayerModel:
 
 
 _MONTHLY_CREATED_AT = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -580,7 +580,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="ship_date"),
+                    dimension="ship_date",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -632,7 +632,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -659,7 +659,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -773,7 +773,7 @@ class TestWindowedSrcFrameBounds:
         query = _windowed_query(
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-06-01", "2024-12-31"],
                 ),
@@ -803,7 +803,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension=ColumnRef(name="ship_date"),
+                        dimension="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -830,7 +830,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension=ColumnRef(name="ship_date"),
+                        dimension="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -921,7 +921,7 @@ class TestTimeShiftFrameBounds:
             _shift_query(
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                         date_range=["2024-06-01", "2024-12-31"],
                     ),

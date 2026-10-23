@@ -103,7 +103,8 @@ def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) ->
         return td
     # Revalidated so a substituted bound is shape-checked like a literal one.
     return TimeDimension.model_validate({
-        "dimension": td.dimension, "granularity": td.granularity, "date_range": bounds, "label": td.label,
+        "dimension": td.dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
+        "label": td.label,
     })
 
 

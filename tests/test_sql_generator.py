@@ -223,7 +223,7 @@ class TestBasicQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -311,7 +311,7 @@ class TestTimeDimensions:
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -324,7 +324,7 @@ class TestTimeDimensions:
             measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.DAY,
                     date_range=["2024-01-01", "2024-12-31"],
                 ),
@@ -632,7 +632,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="cumsum(revenue:sum)", name="rev_running")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -649,7 +649,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.WEEK_SUNDAY,
             )],
             measures=[
@@ -671,7 +671,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.WEEK_SUNDAY,
             )],
             measures=[
@@ -688,7 +688,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(revenue:sum)", "name": "running_revenue"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -702,7 +702,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_streak"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -726,7 +726,7 @@ class TestFields:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "consecutive_periods(revenue:sum > 0)",
@@ -742,7 +742,7 @@ class TestFields:
     async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "consecutive_periods(revenue:sum > 0) >= 2", "name": "long_enough"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -756,7 +756,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -781,8 +781,8 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="delivery_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="delivery_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
         )
@@ -825,7 +825,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],  # local to orders — no join needed
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 {"formula": "revenue:sum(window='90d')", "name": "revenue_90d"},
                 {"formula": "customers.id:count_distinct", "name": "n_customers"},
@@ -848,7 +848,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
             filters=["customers.region_id = 5"],
         )
@@ -898,7 +898,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
             filters=["customers.regions.name = 'US'"],
         )
@@ -918,7 +918,7 @@ class TestFields:
         """A filter on a windowed measure must apply post-aggregation, not as HAVING on the base CTE. The base CTE doesn't compute the windowed value — applying a HAVING there would use the wrong (non-windowed) aggregate."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
             filters=["revenue:sum(window='90d') > 100"],
         )
@@ -941,7 +941,7 @@ class TestFields:
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.DAY)],
             measures=[{"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -962,7 +962,7 @@ class TestFields:
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.DAY)],
             measures=[{"formula": "revenue:sum(window='1w2d3h4min5s')", "name": "revenue_window"}],
         )
         sql = await _generate(
@@ -984,7 +984,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 {"formula": "revenue:sum(window='90d')", "name": "rev_90d"},
                 {"formula": "revenue:avg(window='30d')", "name": "rev_30d"},
@@ -1020,7 +1020,7 @@ class TestFields:
         )
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "paid_revenue:sum(window='90d')", "name": "pr_90d"}],
         )
         sql = await _generate(generator=generator, query=query, model=model)
@@ -1052,7 +1052,7 @@ class TestFields:
         )
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "flagged_revenue:sum(window='90d')", "name": "fr_90d"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
@@ -1087,7 +1087,7 @@ class TestFields:
         )
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
@@ -1104,7 +1104,7 @@ class TestFields:
         """ORDER BY the windowed measure's public alias must resolve against the combined SELECT (the ``_cm_`` join-back column), not the base."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
             order=[{"column": {"name": "revenue_90d"}, "direction": "desc"}],
         )
@@ -1131,7 +1131,7 @@ class TestFields:
         """F4: a query WHERE-phase row filter constrains the ``_src`` scope (host-rooted scope inherits host row filters)."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
             filters=["status = 'completed'"],
         )
@@ -1149,7 +1149,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-06-01", "2024-12-31"],
             )],
@@ -1173,7 +1173,7 @@ class TestFields:
         """DEV-1732: an EXPLICIT relational bound on the raw window time column is a FRAME bound, not a population filter — so it bounds ``_base`` and is stripped from ``_src``, exactly like the ``date_range`` spelling of the same intent."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
             filters=["created_at >= '2024-06-01'"],
         )
@@ -1194,7 +1194,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -1208,7 +1208,7 @@ class TestFields:
         """Codex#2: the same windowed formula selected under two names interns to ONE slot / ONE ``_cm_`` CTE, but BOTH public aliases must surface in the combined projection (the CTE's single aggregate column is remapped ``AS`` each alias) — the later alias must not be dropped."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 {"formula": "revenue:sum(window='90d')", "name": "rev_a"},
                 {"formula": "revenue:sum(window='90d')", "name": "rev_b"},
@@ -1244,7 +1244,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.signup_at"), granularity=TimeGranularity.MONTH,
+                dimension="customers.signup_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
         )
@@ -1261,7 +1261,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1)", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1274,7 +1274,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="lag(revenue:sum, 1)", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1285,7 +1285,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="lead(revenue:sum, 1)", name="rev_next")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1296,7 +1296,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1311,7 +1311,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change_pct(revenue:sum)", name="rev_pct")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1334,7 +1334,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="last(revenue:sum)", name="latest_rev")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1347,7 +1347,7 @@ class TestFields:
         orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1366,7 +1366,7 @@ class TestFields:
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1381,7 +1381,7 @@ class TestFields:
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="balance:first(ordered_at)")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1396,7 +1396,7 @@ class TestFields:
         orders_model.columns.append(Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="revenue:last(ordered_at)"),
                 ModelMeasure(formula="balance:last(updated_at)"),
@@ -1418,7 +1418,7 @@ class TestFields:
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="revenue:last"),
                 ModelMeasure(formula="balance:last(ordered_at)"),
@@ -1436,7 +1436,7 @@ class TestFields:
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="revenue:last(ordered_at)"),
                 ModelMeasure(formula="balance:first(ordered_at)"),
@@ -1455,7 +1455,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1470,7 +1470,7 @@ class TestFields:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-03-01", "2024-03-31"],
                 )
@@ -1490,7 +1490,7 @@ class TestFields:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-03-01", "2024-03-31"],
                 )
@@ -1508,7 +1508,7 @@ class TestFields:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-03-01", "2024-03-31"],
                 )
@@ -1525,7 +1525,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1539,7 +1539,7 @@ class TestFields:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-03-01", "2024-03-31"],
                 )
@@ -1557,7 +1557,7 @@ class TestFields:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.QUARTER,
                     date_range=["2024-07-01", "2024-09-30"],
                 )
@@ -1579,7 +1579,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
             ],
             measures=[
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
@@ -1601,7 +1601,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
             ],
             measures=[
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
@@ -1650,7 +1650,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
             ],
             measures=[
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
@@ -1688,7 +1688,7 @@ class TestFields:
             source_model="orders",
             dimensions=[ColumnRef(name="_t0_growth")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
             ],
             measures=[
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
@@ -1719,7 +1719,7 @@ class TestFields:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
             ],
             measures=[
                 ModelMeasure(formula="revenue:sum", name="total_revenue"),
@@ -1744,7 +1744,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(time_shift(revenue:sum, -1, 'year'))", name="x")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1755,7 +1755,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
             filters=["rev_change < 0"],
         )
@@ -1769,7 +1769,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum")],
             filters=["last(change(revenue:sum)) < 0"],
         )
@@ -1783,7 +1783,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
             filters=["status == 'completed'", "rev_change > 0"],
         )
@@ -2055,7 +2055,7 @@ class TestRankFamilyTransforms:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH
+                    dimension="created_at", granularity=TimeGranularity.MONTH
                 )
             ],
             measures=[
@@ -2188,7 +2188,7 @@ class TestNestedFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(formula="cumsum(change(revenue:sum))", name="delta"),
@@ -2205,7 +2205,7 @@ class TestNestedFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="revenue:sum"),
                 ModelMeasure(formula="change(cumsum(revenue:sum))", name="delta"),
@@ -2220,7 +2220,7 @@ class TestNestedFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="*:count"),
                 ModelMeasure(formula="revenue:sum"),
@@ -2340,7 +2340,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_model)
         assert "COUNT(" in sql
@@ -2368,7 +2368,7 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="ts"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="ts", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -2380,7 +2380,7 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -2394,7 +2394,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_model)
@@ -2413,7 +2413,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
@@ -2446,7 +2446,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='7d')",
@@ -2753,7 +2753,7 @@ class TestPathAliasJoinInference:
             source_model="events",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="user_signup_date"),
+                    dimension="user_signup_date",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
@@ -3256,7 +3256,7 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="cumsum(region_pop_sum:sum)")],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -4033,7 +4033,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[ModelMeasure(formula="completed_balance:last")],
         )
@@ -4058,7 +4058,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[ModelMeasure(formula="completed_balance:first")],
         )
@@ -4079,7 +4079,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[ModelMeasure(formula="balance:last")],
         )
@@ -4102,7 +4102,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[
                 ModelMeasure(formula="balance:last"),
@@ -4150,7 +4150,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[ModelMeasure(formula="active_balance:last")],
         )
@@ -4256,7 +4256,7 @@ class TestFilteredMeasures:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             measures=[
                 ModelMeasure(formula="active_balance:last"),
@@ -6485,7 +6485,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
                 source_model="policy",
                 measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="policy_amount.effective_date"),
+                    dimension="policy_amount.effective_date",
                     granularity=TimeGranularity.MONTH,
                 )],
             )
@@ -6654,7 +6654,7 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             ],
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
         )
@@ -7376,7 +7376,7 @@ class TestIsolatedFilteredMeasureCTEs:
             measures=[ModelMeasure(formula="latest_payment:last")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
@@ -7402,7 +7402,7 @@ class TestIsolatedFilteredMeasureCTEs:
             measures=[ModelMeasure(formula="latest_payment:last")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
@@ -7434,7 +7434,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
@@ -7477,7 +7477,7 @@ class TestIsolatedFilteredMeasureCTEs:
             measures=[ModelMeasure(formula="earliest_reserve:first(updated_at)")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
@@ -7508,7 +7508,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
@@ -7712,7 +7712,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 ModelMeasure(formula="cumsum(loss_payment_amt:sum)", name="cum_loss"),
             ],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             filters=["cumsum(loss_payment_amt:sum) > 0"],
         )
@@ -7751,7 +7751,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 ModelMeasure(formula="cumsum(loss_payment_amt:sum)", name="cum_loss"),
             ],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             filters=[
                 "loss_payment_amt:sum > 1000",
@@ -7824,7 +7824,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             order=[
                 OrderItem(column="latest_pmt", direction="desc"),
@@ -7860,7 +7860,7 @@ class TestIsolatedFilteredMeasureCTEs:
             measures=[ModelMeasure(formula="latest_payment:last(updated_at)", name="latest_pmt")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
             ],
             filters=["latest_pmt > 500"],
         )
@@ -7931,7 +7931,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=("2020-01-01", "2021-01-01"),
                 ),
@@ -8045,7 +8045,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -8135,7 +8135,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -8872,7 +8872,7 @@ class TestCastEmissionNonBasePaths:
             source_model="orders_for_window",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -8902,7 +8902,7 @@ class TestCastEmissionNonBasePaths:
             source_model="orders_for_window2",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -10100,7 +10100,7 @@ class TestWindowedMeasureGuards:
     async def test_windowed_non_sum_avg_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}],
         )
         # DEV-1915 lift: window= is no longer restricted to sum/avg; min renders.
@@ -10140,7 +10140,7 @@ class TestWindowedMeasureGuards:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
         )
         # DEV-1836: fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
@@ -10151,7 +10151,7 @@ class TestWindowedMeasureGuards:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 {"formula": "revenue:sum(window='90d')", "name": "rev_w"},
                 {"formula": "time_shift(revenue:sum, -1)", "name": "rev_prev"},
@@ -10166,7 +10166,7 @@ class TestWindowedMeasureGuards:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
         )
         # DEV-1835 lift: a windowed aggregate feeding a transform now renders instead of raising; the emitted SQL must be scope-closed and fully lowered (no ``__regroup__`` sentinel).
@@ -10177,7 +10177,7 @@ class TestWindowedMeasureGuards:
     async def test_windowed_in_arithmetic_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d') / 2", "name": "half_w"}],
         )
         # DEV-1835 lift: a windowed aggregate inside scalar arithmetic now renders instead of raising; scope-closed and fully lowered.
@@ -10188,7 +10188,7 @@ class TestWindowedMeasureGuards:
     async def test_windowed_filter_only_hidden_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum", "name": "rev"}],
             filters=["revenue:sum(window='90d') > 100"],
         )
@@ -10200,7 +10200,7 @@ class TestWindowedMeasureGuards:
     async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
             filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"],
         )
@@ -10217,7 +10217,7 @@ class TestWindowedMeasureGuards:
         """A malformed compact duration must raise a clear ``ValueError`` at plan time, not silently degrade."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": f"revenue:sum(window='{bad}')", "name": "rev_w"}],
         )
         with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
@@ -10227,7 +10227,7 @@ class TestWindowedMeasureGuards:
         """An empty window duration must raise the distinct empty-duration error."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='')", "name": "rev_w"}],
         )
         with pytest.raises(ValueError, match="cannot be empty"):
@@ -10237,7 +10237,7 @@ class TestWindowedMeasureGuards:
         """Codex C4: a non-string ``window`` value (e.g. ``window=90``) must be normalized to a ``ValueError`` — never a raw ``TypeError`` from feeding a number to the compact-duration regex."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window=90)", "name": "rev_w"}],
         )
         with pytest.raises(ValueError):
@@ -10257,7 +10257,7 @@ class TestWindowedMeasureGuards:
         )
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "amount_col:myagg(window='90d')", "name": "w"}],
         )
         sql = await _engine_generate(query=query, model=model)
@@ -10271,7 +10271,7 @@ class TestWindowedMeasureGuards:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
         )
         # DEV-1835: the G4/G6 guards are gone — a windowed aggregate nested in a transform now renders; the SQL must be scope-closed and fully lowered.
@@ -10295,7 +10295,7 @@ class TestWindowedMeasureGuards:
             created_at,
             Column(name="revenue", sql="amount", type=DataType.DOUBLE),
         ]
-        td = [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)]
+        td = [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)]
 
         def _plain() -> SlayerModel:
             return SlayerModel(
@@ -10397,7 +10397,7 @@ class TestWindowedMeasureGuards:
         """Codex round 5: a single filter mixing a windowed measure with a ROW predicate (not just a plain aggregate — G7's case) is reclassified whole to POST, so the row part would neither filter pre-aggregation nor resolve against an unprojected ``_base`` column. Reject it at plan time."""
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
             filters=["revenue:sum(window='90d') > 100 and status = 'active'"],
         )

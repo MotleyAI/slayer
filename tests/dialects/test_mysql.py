@@ -211,7 +211,7 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],

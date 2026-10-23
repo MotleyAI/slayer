@@ -63,7 +63,7 @@ def first_hop_names(query: SlayerQuery) -> set[str]:
         out.update(_parsed_heads(d.expression, as_filter=False) if isinstance(d, ComputedDimension)
                    else _path_head(d.full_name))
     for td in query.time_dimensions or []:
-        out.update(_path_head(td.dimension.full_name))
+        out.update(_parsed_heads(td.dimension, as_filter=False))
     for f in query.filters or []:
         out.update(_parsed_heads(f, as_filter=True))
     for o in query.order or []:

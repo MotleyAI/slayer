@@ -30,7 +30,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import TimeDimensionColumnError, UnknownReferenceError
 from slayer.core.keys import AggregateKey, ColumnKey, Phase, TimeTruncKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
@@ -193,7 +193,7 @@ class TestBindTimeDimension:
     def test_local_td_yields_timetrunckey(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -207,7 +207,7 @@ class TestBindTimeDimension:
     def test_joined_td_path_is_populated(self) -> None:
         host = _orders_with_customers_join()
         td = TimeDimension(
-            dimension=ColumnRef(name="customers.signed_up_at"),
+            dimension="customers.signed_up_at",
             granularity=TimeGranularity.DAY,
         )
         bound = bind_time_dimension(
@@ -224,13 +224,13 @@ class TestBindTimeDimension:
         with pytest.raises(TimeDimensionColumnError, match="temporal"):
             check_time_dimension_column(
                 name="status", column_type=DataType.TEXT,
-                upstream_granularity=None, requested_granularity=TimeGranularity.MONTH,
+                requested_granularity=TimeGranularity.MONTH,
             )
 
     def test_unknown_column_raises_unknown_reference(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="not_a_column"),
+            dimension="not_a_column",
             granularity=TimeGranularity.MONTH,
         )
         scope = ModelScope(source_model=model)
@@ -243,7 +243,7 @@ class TestBindTimeDimension:
 
     def test_model_scope_without_source_model_rejected(self) -> None:
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         scope = ModelScope(source_model=None)
@@ -255,7 +255,7 @@ class TestBindTimeDimension:
         # DATE is in the same temporal bucket as TIMESTAMP — should bind.
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="reviewed_at"),
+            dimension="reviewed_at",
             granularity=TimeGranularity.WEEK,
         )
         bound = bind_time_dimension(
@@ -274,7 +274,7 @@ class TestBindTimeDimension:
         # multi-hop path. The bound key carries the full path.
         host = _orders_with_customers_join()
         td = TimeDimension(
-            dimension=ColumnRef(name="customers.regions.opened_at"),
+            dimension="customers.regions.opened_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -295,7 +295,7 @@ class TestBindTimeDimension:
 
         host = _orders_with_derived_temporal()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_day"),
+            dimension="created_day",
             granularity=TimeGranularity.DAY,
         )
         bound = bind_time_dimension(
@@ -428,7 +428,7 @@ class TestProjectionPlannerTimeDimensions:
     def test_td_declared_measure_is_public_not_hidden(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -469,7 +469,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -493,7 +493,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     label="Order date",
                 ),
@@ -517,7 +517,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signed_up_at"),
+                    dimension="customers.signed_up_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -534,7 +534,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signed_up_at"),
+                    dimension="customers.signed_up_at",
                     granularity=TimeGranularity.DAY,
                     label="Customer signup",
                 ),
@@ -554,7 +554,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.opened_at"),
+                    dimension="customers.regions.opened_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -572,7 +572,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -592,7 +592,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -611,7 +611,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

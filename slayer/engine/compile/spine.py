@@ -205,10 +205,11 @@ def check_axis_rebucket(
     col = owner.get_column(leaf) if owner is not None else None
     if col is None or col.granularity is None:
         return
+    name = ".".join((*column.path, leaf))
+    upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
     check_time_dimension_column(
-        name=".".join((*column.path, leaf)), column_type=col.type,
-        upstream_granularity=resolve_granularity(col.granularity, defined=bundle.granularities),
-        requested_granularity=rerooted.granularity,
+        name=name, column_type=col.type, requested_granularity=rerooted.granularity,
+        bucketed_leaves=() if upstream is None else ((name, upstream),),
     )
 
 

@@ -876,7 +876,7 @@ def _stage_refs(stage: SlayerQuery) -> list[str]:
         for ref in _measure_formula_refs(formula)
     ]
     refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
-    refs += [td.dimension.full_name for td in stage.time_dimensions or []]
+    refs += [ref for td in stage.time_dimensions or [] for ref in _measure_formula_refs(td.dimension)]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
     refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]
     return refs

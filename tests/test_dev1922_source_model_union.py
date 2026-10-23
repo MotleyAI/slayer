@@ -408,7 +408,7 @@ class TestTimeDimensionColumnAlias:
             time_dimensions=[{"column": "created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
-        assert q.time_dimensions[0].dimension.name == "created_at"
+        assert q.time_dimensions[0].dimension == "created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
         assert dumped == {"dimension": {"name": "created_at"}, "granularity": "month"}
 
@@ -416,19 +416,19 @@ class TestTimeDimensionColumnAlias:
         td = TimeDimension.model_validate({
             "column": {"name": "created_at", "model": "orders"}, "granularity": "day",
         })
-        assert (td.dimension.name, td.dimension.model) == ("created_at", "orders")
+        assert td.dimension == "orders.created_at"
 
     def test_dimension_key_and_keyword_still_validate(self) -> None:
         via_key = TimeDimension.model_validate({"dimension": "created_at", "granularity": "month"})
         via_kw = TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )
         assert via_key == via_kw
-        assert via_kw.dimension.name == "created_at"
+        assert via_kw.dimension == "created_at"
 
     def test_dimension_wins_when_both_keys_are_present(self) -> None:
         td = TimeDimension.model_validate({"dimension": "a", "column": "b", "granularity": "month"})
-        assert td.dimension.name == "a"
+        assert td.dimension == "a"
 
     def test_schema_advertises_dimension_only(self) -> None:
         props = SlayerQuery.model_json_schema()["$defs"]["TimeDimension"]["properties"]

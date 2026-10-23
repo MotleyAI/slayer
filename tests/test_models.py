@@ -1479,17 +1479,15 @@ class TestStringCoercion:
 
     def test_time_dimension_string(self) -> None:
         td = TimeDimension(dimension="created_at", granularity="month")
-        assert td.dimension.name == "created_at"
-        assert td.dimension.model is None
+        assert td.dimension == "created_at"
 
     def test_time_dimension_dotted_string(self) -> None:
         td = TimeDimension(dimension="customers.ordered_at", granularity="month")
-        assert td.dimension.name == "ordered_at"
-        assert td.dimension.model == "customers"
+        assert td.dimension == "customers.ordered_at"
 
     def test_time_dimension_dict_still_works(self) -> None:
-        td = TimeDimension(dimension={"name": "created_at"}, granularity="month")
-        assert td.dimension.name == "created_at"
+        td = TimeDimension.model_validate({"dimension": {"name": "created_at"}, "granularity": "month"})
+        assert td.dimension == "created_at"
 
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
         query = SlayerQuery(
@@ -1498,7 +1496,7 @@ class TestStringCoercion:
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             order=[{"column": "_count", "direction": "desc"}],
         )
-        assert query.time_dimensions[0].dimension.name == "created_at"
+        assert query.time_dimensions[0].dimension == "created_at"
         assert query.order[0].column.name == "_count"
         assert query.order[0].direction == "desc"
 
@@ -1818,8 +1816,7 @@ class TestStripSourceModelPrefix:
             time_dimensions=[{"dimension": "orders.created_at", "granularity": "month"}],
         )
         stripped = q.strip_source_model_prefix()
-        assert stripped.time_dimensions[0].dimension.model is None
-        assert stripped.time_dimensions[0].dimension.name == "created_at"
+        assert stripped.time_dimensions[0].dimension == "created_at"
 
     def test_time_dimension_preserves_other_fields(self) -> None:
         """Granularity, date_range, label are preserved after stripping."""
@@ -1834,8 +1831,7 @@ class TestStripSourceModelPrefix:
         )
         stripped = q.strip_source_model_prefix()
         td = stripped.time_dimensions[0]
-        assert td.dimension.name == "created_at"
-        assert td.dimension.model is None
+        assert td.dimension == "created_at"
         assert td.granularity == TimeGranularity.MONTH
         assert td.date_range == ["2024-01-01", "2024-12-31"]
         assert td.label == "Month"
@@ -1846,7 +1842,7 @@ class TestStripSourceModelPrefix:
             time_dimensions=[{"dimension": "customers.created_at", "granularity": "day"}],
         )
         stripped = q.strip_source_model_prefix()
-        assert stripped.time_dimensions[0].dimension.model == "customers"
+        assert stripped.time_dimensions[0].dimension == "customers.created_at"
 
     # --- Fields (formulas) ---
 

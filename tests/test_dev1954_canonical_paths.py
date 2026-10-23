@@ -19,7 +19,7 @@ from slayer.core.errors import UnknownReferenceError
 from slayer.core.join_walker import walk, walk_cancelling
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
 from slayer.core.models import ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, TimeDimension
+from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine import bind_inputs, param_binding, schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
@@ -166,7 +166,7 @@ class TestBoundKeysAreCanonical:
 
     def test_time_trunc_key(self) -> None:
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="customers.regions.founded_at"),
+            TimeDimension(dimension="customers.regions.founded_at",
                           granularity=TimeGranularity.YEAR),
             scope=_scope(), bundle=_bundle())
         assert isinstance(bound.bound.value_key, TimeTruncKey)
@@ -271,7 +271,7 @@ class TestNamedEdgeTypedByModelName:
     async def test_named_edge_time_dimension(self, engine) -> None:
         query = orders_q(
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.regions.founded_at"),
+                dimension="customers.regions.founded_at",
                 granularity=TimeGranularity.YEAR)],
             measures=["amount:sum"],
             order=[{"column": "customers.regions.founded_at", "direction": "asc"}])
@@ -315,7 +315,7 @@ class TestMixedSpellingsJoinOnce:
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == {"South": 200.0}
 
     async def test_functional_order_on_a_time_dimension(self, engine) -> None:
-        td = [TimeDimension(dimension=ColumnRef(name="customers.hr.founded_at"),
+        td = [TimeDimension(dimension="customers.hr.founded_at",
                             granularity=TimeGranularity.YEAR)]
         mixed = orders_q(time_dimensions=td, measures=["amount:sum"], order=[
             {"column": "max(customers.regions.founded_at)", "direction": "desc"}])

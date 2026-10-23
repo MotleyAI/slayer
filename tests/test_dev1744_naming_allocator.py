@@ -292,7 +292,7 @@ class TestCrossModelCteNameAllocation:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
@@ -419,7 +419,7 @@ class TestAllocatorRouting:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
@@ -600,7 +600,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],

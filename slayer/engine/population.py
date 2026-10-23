@@ -154,8 +154,8 @@ def _filter_refs(
 def _query_dimension_refs(query: SlayerQuery) -> list[str]:
     """Row-valued refs of the query's dimensions + time dimensions.
 
-    Computed dimensions contribute their row-valued and partition_by refs (never
-    refs inside an aggregation); plain and time dimensions contribute their name.
+    Computed and time dimensions contribute their row-valued and partition_by refs
+    (never refs inside an aggregation); plain dimensions contribute their name.
     """
     refs: list[str] = []
     for dim in query.dimensions or []:
@@ -164,7 +164,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
         else:
             refs.append(dim.full_name)
     for td in query.time_dimensions or []:
-        refs.append(td.dimension.full_name)
+        refs.extend(_computed_dimension_refs(td.dimension))
     return refs
 
 
@@ -460,7 +460,7 @@ def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
             if not mentions_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
         ] or None,
         "time_dimensions": [
-            td for td in query.time_dimensions or [] if not names_spine(td.dimension.full_name)
+            td for td in query.time_dimensions or [] if not mentions_spine(td.dimension)
         ] or None,
         "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
         "measures": None,
