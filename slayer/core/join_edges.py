@@ -18,6 +18,7 @@ __all__ = [
     "relationship_signature",
     "resolve_join_ref",
     "resolve_join_refs",
+    "same_edge",
     "without_joins",
 ]
 
@@ -56,6 +57,15 @@ class JoinEdgeRef(BaseModel):
 
 def _pair_set(pairs: list[list[str]]) -> frozenset[tuple[str, str]]:
     return frozenset((p[0], p[1]) for p in pairs)
+
+
+def same_edge(a: ModelJoin, b: ModelJoin) -> bool:
+    """Whether two declarations on one model are one edge: equal in all but metadata and pair order."""
+    return (
+        (a.target_model, a.name, a.join_type, a.cardinality)
+        == (b.target_model, b.name, b.join_type, b.cardinality)
+        and _pair_set(a.join_pairs) == _pair_set(b.join_pairs)
+    )
 
 
 def _joins_to(model: SlayerModel, target: str) -> list[ModelJoin]:

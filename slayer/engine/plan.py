@@ -131,6 +131,7 @@ def _stage_scope_and_bundle_unframed(
     if sib is not None and isinstance(src, ModelExtension):
         base = model_from_stage_schema(
             name=sib, schema=stage_schemas[sib], data_source=data_source,
+            joins=bundle.saved_joins(sib),
         )
         overlaid = apply_extension_overlay(base, src)
         others = {n: s for n, s in stage_schemas.items() if n != sib}
@@ -144,12 +145,15 @@ def _stage_scope_and_bundle_unframed(
     if isinstance(src, str) and src in stage_schemas:
         synth = model_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
+            joins=bundle.saved_joins(src),
         )
         others = {n: s for n, s in stage_schemas.items() if n != src}
         sb = stage_bundle_with_siblings(
             bundle=bundle, source_model=synth,
             sibling_schemas=others, data_source=data_source,
         )
+        if src in bundle.query_backed:
+            return ModelScope(source_model=synth), sb
         return stage_schemas[src], sb
 
     # 3. Model-scoped: the stage's own resolved source model.

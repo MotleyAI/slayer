@@ -262,7 +262,7 @@ async def _split_query_backed(
 ) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
     """Split ``models`` into referenced models and query-backed placeholders, closing
     over each placeholder's stage bases and each model's definition-named models (and
-    their components). Placeholders keep their stored form with joins dropped; on-chain
+    their components). Placeholders keep their stored form, including declared joins; on-chain
     names are never loaded."""
     referenced: Dict[str, SlayerModel] = {}
     query_backed: Dict[str, SlayerModel] = {}
@@ -279,7 +279,7 @@ async def _split_query_backed(
                 storage=storage, data_source=data_source, failures=failures,
             ) if not is_spine(m))
             continue
-        query_backed[model.name] = model.model_copy(update={"joins": []})
+        query_backed[model.name] = model
         pending.extend(await _stage_base_components(
             model=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
             storage=storage, data_source=data_source, failures=failures,
