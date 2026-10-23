@@ -122,6 +122,25 @@ class TestLiteralOutOfDomain:
             await emit_lib(query, dialect=dialect)
 
 
+class TestSplitPartEmptyDelimiter:
+    @pytest.mark.parametrize(("index", "expected"), [(1, "a/b/c"), (2, ""), (-1, "a/b/c"), (-2, "")])
+    async def test_whole_value_is_the_one_field(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
+        assert await _value(engine, f"split_part(s, '', {index})", row=3) == expected
+
+    @pytest.mark.parametrize(("index", "expected"), [(2, "b"), (-1, "c")])
+    async def test_space_delimiter_is_not_empty(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
+        assert await _value(engine, f"split_part('a b c', ' ', {index})") == expected
+
+    async def test_tsql_space_has_length_one(self) -> None:
+        sql = await emit_lib(lib_query("split_part(word, ' ', -1)"), dialect="tsql")
+        assert "LEN(CAST(' ' AS NVARCHAR(MAX)) + 'x') - 1" in " ".join(sql.split()), sql
+
+    @pytest.mark.parametrize("dialect", ["tsql", "mysql"])
+    async def test_field_count_never_divides_by_zero(self, dialect: str) -> None:
+        sql = await emit_lib(lib_query("split_part(word, tag, -1)"), dialect=dialect)
+        assert "NULLIF(" in sql.upper(), sql
+
+
 class TestSplitPartIndex:
     @pytest.mark.parametrize("expr", [
         "split_part(s, '/', n)", "split_part(s, '/', 0)", "split_part(s, '/', 1.5)", "split_part(s, '/', 1 + 1)",

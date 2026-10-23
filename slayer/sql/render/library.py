@@ -16,9 +16,12 @@ from slayer.sql.dialects.base import (
     MathFn,
     SqlDialect,
     TextFn,
+    any_null,
+    case,
     is_extremum_fn,
     is_math_fn,
     is_text_fn,
+    lit,
     literal_int,
 )
 
@@ -67,7 +70,7 @@ def render_library_call(*, name: str, args: List[Expression], dialect: SqlDialec
     if is_extremum_fn(name):
         return dialect.build_extremum(name, tuple(args))
     if name == "split_part":
-        return dialect.build_split_part(args[0], args[1], _int(args[2]))
+        return _split_part(args, dialect=dialect)
     if name in ("like", "ilike"):
         pattern = args[1]
         written = parse_like(pattern.this) if isinstance(pattern, exp.Literal) and pattern.is_string else pattern
@@ -77,6 +80,14 @@ def render_library_call(*, name: str, args: List[Expression], dialect: SqlDialec
     if name in _REGEX:
         return _render_regex(name=name, args=args, dialect=dialect)
     return None
+
+
+def _split_part(args: List[Expression], *, dialect: SqlDialect) -> Expression:
+    """An empty delimiter leaves the whole value as the one field (Postgres), whatever the engine's own split."""
+    value, delimiter, index = args[0], args[1], _int(args[2])
+    whole = value.copy() if abs(index) == 1 else case((exp.Not(this=any_null(value)), lit("")))
+    empty = exp.EQ(this=dialect.char_length(delimiter), expression=lit(0))
+    return case((empty, whole), default=dialect.build_split_part(value, delimiter, index))
 
 
 def _render_regex(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:

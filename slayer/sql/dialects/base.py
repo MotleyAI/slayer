@@ -635,7 +635,8 @@ class SqlDialect(BaseModel):
         """How many ``delimiter``-separated fields ``value`` has."""
         removed = self.char_length(anon("REPLACE", value, delimiter, lit("")))
         gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
-        return exp.Add(this=exp.IntDiv(this=gap, expression=self.char_length(delimiter)), expression=lit(1))
+        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
+        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
 
     def code_point_char(self, n: Expression) -> Expression:
         """The character of Unicode code point ``n`` (in range)."""
