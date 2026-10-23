@@ -30,6 +30,7 @@ from slayer.engine.schema_drift import (
     _build_stage_graph,
     _filter_refs_dsl,
     _measure_formula_refs,
+    _ref_stored_edges,
 )
 from slayer.core.syntax import (
     AggCall,
@@ -109,6 +110,19 @@ class TestStageGraphBidirectional:
         assert _attribute_ref_to_base(
             ref="customers.name", base_name="customers", graph=graph,
         ) is None
+
+    def test_extension_repeating_a_stored_join_is_that_stored_edge(self) -> None:
+        join = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])
+        models = _ext_models()
+        models["orders"] = models["orders"].model_copy(update={"joins": [join]})
+        graph = _build_stage_graph(
+            stage=SlayerQuery(source_model=ModelExtension(source_name="orders", joins=[join])),
+            stage_source_name="orders", models_by_name=models,
+        )
+        assert _attribute_ref_to_base(
+            ref="customers.name", base_name="customers", graph=graph,
+        ) == "name"
+        assert [e.target_model for e in _ref_stored_edges(ref="customers.name", graph=graph)] == ["customers"]
 
 
 class TestWalkParsedRefs:

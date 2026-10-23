@@ -1,6 +1,6 @@
 """Dependency-free column-introspection helpers.
 
-Extracted from ``slayer/engine/ingestion.py`` (DEV-1578) so the
+Extracted from ``slayer/engine/ingestion.py`` so the
 forced-filter column-presence probe in ``slayer/engine/query_engine.py``
 can reuse ``_safe_get_columns`` without importing ``ingestion`` (which
 imports ``query_engine`` — a cycle). ``ingestion`` and ``schema_drift``
@@ -24,6 +24,7 @@ from slayer.engine.schema_scope import (
     _dialect_qualifies_tokens,
     default_schema_ref_for_engine,
 )
+from slayer.sql.dialects import dialect_for_ds_type
 
 # Float-like INFORMATION_SCHEMA type names
 _FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
@@ -35,7 +36,7 @@ _FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
 )
 
 # Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback).
-# DEV-1361: integer family → INT, floating family → DOUBLE.
+# Integer family → INT, floating family → DOUBLE.
 _INFO_SCHEMA_TYPE_MAP = {
     # Integer family
     "INTEGER": DataType.INT,
@@ -70,8 +71,8 @@ def _clean_comment(value: Optional[str]) -> Optional[str]:
 
 # Per-dialect column-comment queries for the fallback path. INFORMATION_SCHEMA
 # has no standard comment column, so each dialect needs its own source
-# (DEV-1809). Each entry is ``(template, schema_clause, default_clause,
-# catalog_clause)``; ``catalog_clause`` is appended (DEV-1758) only when the
+# Each entry is ``(template, schema_clause, default_clause,
+# catalog_clause)``; ``catalog_clause`` is appended only when the
 # ref carries a catalog, so a same-named table in an attached DuckDB catalog
 # can't cross-assign its comments. SQL Server / BigQuery are omitted: their
 # Inspector paths already surface comments, and their fallback equivalents are
@@ -210,7 +211,7 @@ def _info_schema_columns_query(
 ) -> tuple[str, Dict]:
     """Build the parameterized INFORMATION_SCHEMA.columns query for one table.
 
-    The ``table_catalog`` predicate is added (DEV-1758) only when ``catalog``
+    The ``table_catalog`` predicate is added only when ``catalog``
     is supplied — a same-named table in an attached DuckDB catalog must not
     union its columns into this one.
     """
@@ -273,10 +274,18 @@ def is_exact_numeric_db_type(db_type: Optional[str]) -> bool:
     return "DECIMAL" in token or "NUMERIC" in token
 
 
+_JSON_DB_TYPES = frozenset({"JSON", "JSONB", "VARIANT", "OBJECT"})
+
+
+def is_json_db_type(db_type: Optional[str]) -> bool:
+    """Whether ``db_type`` names a JSON-family type (JSON / JSONB, Snowflake VARIANT / OBJECT)."""
+    return bool(db_type) and db_type.split("(")[0].upper().strip() in _JSON_DB_TYPES
+
+
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
-    NUMERIC/DECIMAL resolve float-vs-integer by scale (DEV-1361). Substring
+    NUMERIC/DECIMAL resolve float-vs-integer by scale. Substring
     branches are ordered widest-match-last: ``FLOATING POINT`` and ``INTERVAL``
     both contain ``INT`` but must not read as INT.
     """
@@ -314,6 +323,7 @@ def _get_columns_fallback(
     bare listing never sweeps another catalog.
     """
     ref = _resolve_fallback_ref(sa_engine, ref)
+    zoned_types = dialect_for_ds_type(getattr(getattr(sa_engine, "dialect", None), "name", None)).zoned_timestamp_db_types
     schema = ref.name if ref else None
     catalog = ref.catalog if ref else None
     sql, params = _info_schema_columns_query(
@@ -327,7 +337,10 @@ def _get_columns_fallback(
         # type mapping and db_type capture see the inner type.
         unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
         sa_type, is_float = _info_schema_type(unwrapped)
-        db_type = unwrapped if is_exact_numeric_db_type(unwrapped) else None
+        lossy = is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) or (
+            bool(unwrapped) and unwrapped.upper() in zoned_types
+        )
+        db_type = unwrapped if lossy else None
         result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,

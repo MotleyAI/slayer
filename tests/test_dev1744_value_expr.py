@@ -817,16 +817,16 @@ class TestB5ScalarCallPolicy:
         assert "DECIMAL" in out.upper(), out
 
     def test_like_stays_the_sql_operator(self) -> None:
-        """``like(value, pattern)`` is the one allowlist member that is an
-        OPERATOR, not a function call. Both legacy paths special-case it; the
-        unified renderer keeps that."""
+        """``like(value, pattern)`` is an OPERATOR, not a function call, with the backslash
+        escape of the one LIKE pattern language."""
         key = ScalarCallKey(
             name="like",
             args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
-        assert isinstance(out, exp.Like)
-        assert _sql(out) == "orders.label LIKE 'x%'"
+        assert isinstance(out, exp.Escape)
+        assert isinstance(out.this, exp.Like)
+        assert _sql(out) == "orders.label LIKE 'x%' ESCAPE '\\'"
 
     def test_nested_scalar_calls_use_one_policy_throughout(self) -> None:
         """The policy applies at every depth — a nested call must not fall back

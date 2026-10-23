@@ -116,7 +116,7 @@ from slayer.ir.planned import (
     is_spliced,
     plan_has_semi_join_filters,
     plans_read_clock,
-    plans_try_cast,
+    planned_keys,
 )
 from slayer.engine.schema_drift import (
     AppliedEntry,
@@ -753,10 +753,10 @@ class SlayerQueryEngine:
     async def _render_dialect(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
     ) -> "str | SqlDialect":
-        """``dialect``, carrying the server profile when rendering a ``TRY_CAST`` reads it; an unreadable
+        """``dialect``, carrying the server profile when rendering the plan reads it; an unreadable
         profile renders as an unknown server."""
         sql_dialect = get_dialect(dialect)
-        if not sql_dialect.try_cast_reads_profile or not plans_try_cast(planned_list):
+        if not sql_dialect.profile_needed(planned_keys(planned_list)):
             return dialect
         try:
             profile = await self._client_for(datasource).server_profile()

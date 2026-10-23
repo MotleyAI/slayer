@@ -111,14 +111,13 @@ async def test_consecutive_periods_over_date_column(
 @pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
 @pytest.mark.parametrize("formula,comparison", [
     ("consecutive_periods(sum(v) > 0)",
-     "CAST(`_cp_prev_ev___x` AS TIMESTAMP) = "
-     "CAST(DATETIME_ADD(CAST(CAST(`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP)"),
+     "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
     ("time_shift(v:sum, -1, 'month')",
-     "CAST(DATETIME_ADD(CAST(CAST(base.`ev___{dim}` AS TIMESTAMP) AS DATETIME), INTERVAL -1 MONTH) AS TIMESTAMP) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS TIMESTAMP)"),
+     "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
+     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS DATETIME)"),
 ])
-async def test_bigquery_bucket_comparisons_are_timestamps(dim: str, formula: str, comparison: str) -> None:
-    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as TIMESTAMP.
+async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
     model = _ev_model()
     model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({

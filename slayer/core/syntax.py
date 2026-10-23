@@ -5,7 +5,8 @@ query measures / dimensions / filters / order) with one SQL-compatible pyparsing
 pure syntax, no scope resolution or named-measure expansion (binder's job). Every spelling
 of a construct collapses to one node: CASE → ``iif``, ``EXTRACT`` → ``date_part``,
 ``count(distinct x)`` → ``count_distinct``, ``BETWEEN`` → its conjunction, ``x::t`` →
-``Cast``, interval literals → ``date_add``.
+``Cast``, interval literals → ``date_add``, regex operators → ``regexp_like``, JSON arrows and
+aliases → ``json_value``, ``date_trunc(unit, x)`` → ``unit(x)``.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import threading
 import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
+from itertools import count
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union, cast
 
 import pyparsing as pp
@@ -33,9 +35,12 @@ from slayer.core.enums import (
     ambiguous_weekday_message,
     normalize_aggregation_name,
 )
-from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError
-from slayer.core.keys import DATE_UNIT_ARGS, SCALAR_FUNCTIONS, check_scalar_arity
+from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError, UnknownFunctionError, VariableError
+from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
+from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
+from slayer.core.regex_pattern import RegexPattern
+from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +95,14 @@ class Placeholder(_BaseNode):
     """An unsubstituted ``{name}`` variable in a literal slot."""
 
     name: str
+    # Offset in the parsed text; not part of identity.
+    start: int = -1
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Placeholder) and self.name == other.name
+
+    def __hash__(self) -> int:
+        return hash(("Placeholder", self.name))
 
 
 class TupleLit(_BaseNode):
@@ -411,7 +424,7 @@ def _placeholder_node(s: str, loc: int, toks: pp.ParseResults) -> Placeholder:
     rest = s[end:].lstrip()
     if rest.startswith(("(", ".")) or (rest.startswith(":") and not rest.startswith("::")):
         raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a function, column or path.")
-    return Placeholder(name=raw[1:-1])
+    return Placeholder(name=raw[1:-1], start=loc)
 
 
 def _reject_placeholder(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
@@ -638,6 +651,21 @@ def _extract_node(toks: List[Any]) -> ScalarCall:
 
 
 _on(_EXTRACT, _extract_node)
+
+_RETURNING_TYPES = frozenset({"INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "TEXT"})
+_JSON_VALUE_RETURNING = (pp.Suppress(_kw("json_value")) + LPAR + expr + COMMA + expr + pp.Suppress(_kw("returning"))
+                         + _need(_TYPE_SPEC, "RETURNING needs a type: INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP or TEXT.")
+                         + _need(RPAR, "json_value(x, path RETURNING <type>) is missing its ')'."))
+
+
+def _json_value_returning(toks: List[Any]) -> Cast:
+    value, path, type_text = toks
+    if type_text not in _RETURNING_TYPES:
+        raise _Problem(f"json_value() RETURNING {type_text} is not supported; use one of {', '.join(sorted(_RETURNING_TYPES))}.")
+    return Cast(source=ScalarCall(name="json_value", args=(value, path)), type_text=type_text, try_=True)
+
+
+_on(_JSON_VALUE_RETURNING, _json_value_returning)
 _POSITION = _on((pp.Suppress(_kw("position")) + LPAR + _concat_level + pp.Suppress(_kw("in")) + expr + RPAR), lambda toks: ScalarCall(name="instr", args=(toks[1], toks[0])))
 _SUBSTRING = _on((pp.Suppress(_kw("substring")) + LPAR + expr + pp.Suppress(_kw("from")) + expr
               + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: ScalarCall(name="substr", args=tuple(toks)))
@@ -710,9 +738,10 @@ _CLOCK = _on((_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)), 
 _PAREN = LPAR + expr + RPAR
 _PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
 _KEYWORD_LED = pp.FollowedBy(pp.Regex(
-    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|time|interval|current_date|current_timestamp)"
-    r"(?![A-Za-z0-9_])"
-)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK)
+    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|time|interval|current_date|current_timestamp"
+    r"|json_value)(?![A-Za-z0-9_])"
+)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
+      | _JSON_VALUE_RETURNING)
 _ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
          | _CALL | _COLON_AGG | _REF)
 
@@ -774,11 +803,47 @@ def _fold_arith(toks: pp.ParseResults) -> Any:
     return node
 
 
+_BARE_ARROW = (
+    "'->' yields a JSON value, which Mode B does not read; end the chain with ->> to read the value as text, "
+    "e.g. payload -> 'a' ->> 'b'."
+)
+
+
+def _arrow_steps(operand: Any) -> Tuple[Any, ...]:
+    """The path steps one ``->`` / ``->>`` operand adds: a ``'$…'`` path, a key, or an array index."""
+    value = operand.value if isinstance(operand, Literal) else None
+    try:
+        if isinstance(value, str):
+            return parse_json_path(value).steps if value.startswith("$") else (check_key(value),)
+    except JsonPathError as e:
+        raise _Problem(f"{e}.") from None
+    if isinstance(value, Decimal) and value == value.to_integral_value() and value >= 0:
+        return (int(value),)
+    raise _Problem(
+        "the right operand of -> / ->> must be a literal key ('a'), a non-negative array index (0) or a "
+        "'$…' path."
+    )
+
+
 def _fold_concat(toks: pp.ParseResults) -> Any:
+    """``||`` concatenation and ``->`` / ``->>`` JSON reads share one left-associative level, as in Postgres."""
     items = list(toks[0])
     node = items[0]
-    for right in items[1:]:
-        node = ScalarCall(name="concat", args=(node, right))
+    chain: Optional[Tuple[Any, Tuple[Any, ...]]] = None
+    for op, right in zip(items[1::2], items[2::2]):
+        if op == "||":
+            if chain is not None:
+                raise _Problem(_BARE_ARROW)
+            node = ScalarCall(name="concat", args=(node, right))
+            continue
+        base, steps = chain if chain is not None else (node, ())
+        steps = (*steps, *_arrow_steps(right))
+        if op == "->":
+            chain = (base, steps)
+        else:
+            node, chain = ScalarCall(name="json_value", args=(base, Literal(value=json_path_text(steps)))), None
+    if chain is not None:
+        raise _Problem(_BARE_ARROW)
     return node
 
 
@@ -788,10 +853,10 @@ _PIPE = _sym(r"\|(?!\|)", "'|'") + _fail("'|' is not an operator; use || to conc
 _concat_level <<= pp.infix_notation(_PRIMARY, [
     (DCOLON + _need(_TYPE_SPEC, "'::' needs a type."), 1, pp.OpAssoc.LEFT, _fold_casts),
     (pp.Suppress(_sym(r"\*\*", "'**'")), 2, pp.OpAssoc.RIGHT, _pow),
-    (_sym("[+-]", "'-' or '+'"), 1, pp.OpAssoc.RIGHT, _signed),
+    (_sym(r"\+|-(?!>)", "'-' or '+'"), 1, pp.OpAssoc.RIGHT, _signed),
     (_FLOORDIV | _sym(r"\*(?!\*)|/(?!/)|%", "'*', '/' or '%'"), 2, pp.OpAssoc.LEFT, _fold_arith),
-    (_sym("[+-]", "'+' or '-'"), 2, pp.OpAssoc.LEFT, _fold_arith),
-    (pp.Suppress(_PIPE | _sym(r"\|\|", "'||'")), 2, pp.OpAssoc.LEFT, _fold_concat),
+    (_sym(r"\+|-(?!>)", "'+' or '-'"), 2, pp.OpAssoc.LEFT, _fold_arith),
+    (_PIPE | _sym(r"\|\||->>|->", "'||', '->' or '->>'"), 2, pp.OpAssoc.LEFT, _fold_concat),
 ], lpar=pp.NoMatch(), rpar=pp.NoMatch())  # pyright: ignore[reportArgumentType] — unannotated; documented to accept a ParserElement
 
 # -- comparison level ----------------------------------------------------------
@@ -827,6 +892,13 @@ def _truth_test(left: Any, toks: List[Any]) -> Any:
     known = Cmp(op=_is_op(True), left=left, right=Literal(value=None))
     test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
     return _negated(test, negate)
+
+
+def _regex_operator(left: Any, toks: List[Any]) -> Any:
+    """``~`` / ``~*`` / ``!~`` / ``!~*`` as ``[NOT] regexp_like(left, p[, 'i'])``."""
+    op, pattern = toks
+    flags = (Literal(value="i"),) if op.endswith("*") else ()
+    return _negated(ScalarCall(name="regexp_like", args=(left, pattern, *flags)), op.startswith("!"))
 
 
 def _in_rhs_elements(items: List[Any]) -> TupleLit:
@@ -874,8 +946,11 @@ _CMP_SUFFIX = (
               )), t[0]))
     | _suffix(_NOT_FLAG + _kw("like", "ilike") + _concat_level,
               lambda left, t: _negated(ScalarCall(name=t[1].lower(), args=(left, t[2])), t[0]))
-    | (_NOT_FLAG + _kw("similar") + _kw("to")) + _fail("SIMILAR TO is not supported; use LIKE or ILIKE.")
-    | (_kw("regexp", "rlike") + _fail("the REGEXP / RLIKE operators are not supported; use LIKE or ILIKE."))
+    | _suffix(_sym(r"!~\*|!~|~\*|~", "regex operator") + _concat_level, _regex_operator)
+    | (_NOT_FLAG + _kw("similar") + _kw("to")) + _fail(
+        "SIMILAR TO is not supported; use LIKE, ILIKE or a regex (x ~ 'p', regexp_like(x, 'p')).")
+    | (_kw("regexp", "rlike") + _fail(
+        "the REGEXP / RLIKE operators are not supported; use x ~ 'p' or regexp_like(x, 'p')."))
 )
 
 
@@ -962,6 +1037,7 @@ def placeholder_names(parsed: Any) -> List[str]:
 
 
 _ANY_BRACE_RE = re.compile(r"\{\{|\}\}|\{([^}]*)\}")
+_DIGIT_BRACES_RE = re.compile(r"[0-9, ]*")
 _NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
@@ -977,24 +1053,89 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
         if region.kind == "code" and ("{?" in chunk or "?}" in chunk):
             raise ValueError(f"{_OPTIONAL_BLOCKS} Got: {text!r}.")
         for m in _ANY_BRACE_RE.finditer(chunk):
-            _check_variable(m, text=text, variables=variables)
+            _check_variable(m, text=text, variables=variables, in_string=region.kind == "string")
     # Strings bound and ``{{`` / ``}}`` outside strings read as braces: the grammar judges the variable slots.
-    parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
-    return _spliced(text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False)
+    template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
+    text_slots = _text_slot_ordinals(template, variables=variables)
+    return _spliced(
+        text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
+    )
+
+
+def _text_slot_ordinals(template: Any, *, variables: Mapping[str, Any]) -> frozenset[int]:
+    """Textual ordinals of the placeholders filling a pattern / path / replacement slot, checked here so an
+    error names the variable."""
+    starts = sorted({n.start for n in _walk_parsed(template) if isinstance(n, Placeholder)})
+    return frozenset(
+        starts.index(placeholder.start)
+        for node in _walk_parsed(template)
+        if isinstance(node, ScalarCall) and node.name in STRING_SLOTS
+        for placeholder in _checked_slot_placeholders(node, variables=variables)
+    )
+
+
+def _checked_slot_placeholders(call: ScalarCall, *, variables: Mapping[str, Any]) -> List[Placeholder]:
+    """``call``'s text-slot placeholders, each value checked against its slot."""
+    found: List[Placeholder] = []
+    pattern: Optional[RegexPattern] = None
+    for pos in STRING_SLOTS[call.name]:
+        arg = call.args[pos] if pos < len(call.args) else None
+        value = _slot_text(call, pos=pos, arg=arg, variables=variables)
+        if value is None:
+            continue
+        variable = arg.name if isinstance(arg, Placeholder) else None
+        pattern = _check_slot(call.name, pos=pos, value=value, variable=variable, pattern=pattern)
+        if isinstance(arg, Placeholder):
+            found.append(arg)
+    return found
+
+
+def _slot_text(call: ScalarCall, *, pos: int, arg: Any, variables: Mapping[str, Any]) -> Optional[str]:
+    """The text filling a slot: a variable's value (which must be text) or a string literal's."""
+    if not isinstance(arg, Placeholder):
+        value = getattr(arg, "value", None)
+        return value if isinstance(value, str) else None
+    value = variables.get(arg.name)
+    if not isinstance(value, str):
+        raise VariableError(
+            f"Variable '{arg.name}' fills the {slot_name(call.name, pos)} of {call.name}() and must hold text; "
+            f"got {type(value).__name__}."
+        )
+    return value
+
+
+def _check_slot(
+    fn: str, *, pos: int, value: str, variable: Optional[str], pattern: Optional[RegexPattern],
+) -> Optional[RegexPattern]:
+    """Checks one slot's text; returns the call's pattern so far."""
+    if fn == "json_value":
+        if variable:
+            check_path(fn, value, variable=variable)
+        return pattern
+    if pos == 1:
+        return check_pattern(fn, value, variable=variable)
+    if variable and pattern is not None:
+        check_replacement(fn, value, pattern=pattern, variable=variable)
+    return pattern
 
 
 def _spliced(
     text: str, *, variables: Mapping[str, Any], regions: List[_Region], kinds: Tuple[str, ...], code_braces: bool,
+    text_slots: frozenset[int] = frozenset(),
 ) -> str:
     out: List[str] = []
     cursor = 0
+    ordinal = count()
     for region in regions:
         out.append(text[cursor:region.start])
         chunk = text[region.start:region.end]
         if region.kind in kinds:
             in_string = region.kind == "string"
             chunk = _ANY_BRACE_RE.sub(
-                partial(_bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables),
+                partial(
+                    _bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables,
+                    text_slots=text_slots, ordinal=ordinal,
+                ),
                 chunk,
             )
         elif code_braces:
@@ -1005,31 +1146,42 @@ def _spliced(
     return "".join(out)
 
 
-def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str, Any]) -> None:
-    if match.group(0) in ("{{", "}}"):
+def _literal_braces(match: "re.Match[str]", *, in_string: bool) -> bool:
+    """A string-literal brace pair holding only digits, commas and spaces (``{3}``, ``{1, 2}``) is text."""
+    return in_string and match.group(1) is not None and _DIGIT_BRACES_RE.fullmatch(match.group(1)) is not None
+
+
+def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str, Any], in_string: bool) -> None:
+    if match.group(0) in ("{{", "}}") or _literal_braces(match, in_string=in_string):
         return
     name = match.group(1)
     if not re.fullmatch(_VAR_NAME, name):
-        raise ValueError(
+        raise VariableError(
             f"Invalid variable name '{name}' in filter: {text!r}. "
             f"Variable names must contain only letters, digits, and underscores."
         )
     if name not in variables:
-        raise ValueError(
-            f"Undefined variable '{name}' in filter: {text!r}. Available variables: {sorted(variables)}"
+        hint = " For literal braces in a string (e.g. a regex), write {{ and }}." if in_string else ""
+        raise VariableError(
+            f"Undefined variable '{name}' in filter: {text!r}. Available variables: {sorted(variables)}.{hint}"
         )
 
 
 def _bound_text(
     match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
+    text_slots: frozenset[int], ordinal: Iterator[int],
 ) -> str:
     whole = match.group(0)
     if whole in ("{{", "}}"):
         return whole[0]
+    if _literal_braces(match, in_string=in_string):
+        return whole
     name = match.group(1)
     value = variables[name]
     if in_string:
         return _value_text(name, value).replace("'", "''")
+    if next(ordinal) in text_slots:
+        return _literal_text(name, value)
     start = region_start + match.start()
     if _opens_in_list(text, start=start, end=region_start + match.end()):
         values = value if isinstance(value, (list, tuple)) else [value]
@@ -1373,6 +1525,16 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         return TransformCall(op=func_name, input=args[0], args=args[1:], kwargs=kwargs)
 
+    spelling = _SPELLINGS.get(func_name.lower())
+    if spelling is not None:
+        if kwargs:
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {func_name}() takes positional arguments only.")
+        _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+        try:
+            return spelling(args)
+        except _Problem as problem:
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {problem.detail}") from None
+
     # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
@@ -1415,6 +1577,51 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             f"aggregation names must be defined on the model."
         ),
     )
+
+
+def _date_trunc(args: Tuple[Any, ...]) -> ParsedExpr:
+    """``date_trunc(unit, x)`` → the granularity call ``unit(x)``."""
+    if len(args) != 2 or not (isinstance(args[0], Literal) and isinstance(args[0].value, str)):
+        raise _Problem("date_trunc() takes a unit string literal and a value: date_trunc('month', x).")
+    unit = args[0].value.lower()
+    if not unit.isidentifier() or unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or (
+        normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
+    ) or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES:
+        raise _Problem(f"unknown date_trunc() unit {args[0].value!r}; use a granularity such as 'month'.")
+    return _dispatch_call(unit, args=(args[1],), kwargs=(), original=_STATE.text)
+
+
+def _json_alias(name: str):
+    def build(args: Tuple[Any, ...]) -> ParsedExpr:
+        if len(args) != 2:
+            raise _Problem(f"{name}(x, path) takes exactly two arguments; for a typed result use "
+                           f"json_value(x, path RETURNING <type>).")
+        return ScalarCall(name="json_value", args=args)
+    return build
+
+
+def _json_key_list(name: str):
+    def build(args: Tuple[Any, ...]) -> ParsedExpr:
+        keys = args[1:]
+        if not keys or not all(isinstance(k, Literal) and isinstance(k.value, str) for k in keys):
+            raise _Problem(f"{name}(x, 'key', …) takes string-literal keys after the value.")
+        try:
+            path = json_path_text(tuple(check_key(k.value) for k in keys))
+        except JsonPathError as e:
+            raise _Problem(f"{e}.") from None
+        return ScalarCall(name="json_value", args=(args[0], Literal(value=path)))
+    return build
+
+
+# Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
+_SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
+    "strpos": lambda args: ScalarCall(name="instr", args=args),
+    "date_trunc": _date_trunc,
+    "json_extract": _json_alias("json_extract"),
+    "json_extract_scalar": _json_alias("json_extract_scalar"),
+    "json_extract_path_text": _json_key_list("json_extract_path_text"),
+    "jsonb_extract_path_text": _json_key_list("jsonb_extract_path_text"),
+}
 
 
 def keyword_spelling(node: Any) -> Optional[str]:

@@ -357,16 +357,13 @@ by.
 
 ### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
-allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
-`rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
-null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
-`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), scalar min/max
-(`greatest`, `least`), and [date functions](references.md#date-and-time-functions)
-(`date_part`, `date_diff`, `date_add`, `current_date`, `now`). The SQL `||` concat operator is
-rewritten to `concat(...)` automatically. See
-[references](references.md#scalar-functions-and-dialect-semantics) for the
-full list and per-dialect semantics.
+Filters in `SlayerQuery.filters` accept the
+[portable function library](references.md#the-portable-function-library) — strings
+(`lower`, `left`, `split_part`, `concat_ws`, …), math (`round`, `div`, `atan2`, …), null
+handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
+`payload ->> 'key'`) and [date functions](references.md#date-and-time-functions) — each with
+one meaning on every database. The SQL `||` concat operator is rewritten to `concat(...)`
+automatically.
 
 ```json
 "filters": [
@@ -375,16 +372,15 @@ full list and per-dialect semantics.
   "replace(category, ',', '') = 'books'",
   "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
   "coalesce(nickname, name) = 'Ada'",
-  "first || ' ' || last = 'jane doe'"
+  "first || ' ' || last = 'jane doe'",
+  "regexp_like(sku, '^[A-Z]{3}-[0-9]+$')",
+  "json_value(payload, '$.plan') = 'pro'"
 ]
 ```
 
-Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
-sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
-time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
-`SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
-allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
-`Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL).
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind — and raw SQL
+functions outside the library (`initcap`, `to_date`, …) belong in `Column.sql` /
+`Column.filter` / `SlayerModel.filters` (Mode A SQL).
 
 ### Filtering on Computed Columns
 

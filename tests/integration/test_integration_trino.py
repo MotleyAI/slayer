@@ -43,6 +43,12 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
     sql_literal,
 )
+from tests._dev2120_fixtures import (
+    LIB,
+    check_library,
+    lib_model,
+    server_table_statements as dev2120_table_statements,
+)
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
@@ -1272,3 +1278,23 @@ def test_every_trino_alias_failure_is_quoted(trino_container) -> None:
                 dialect="trino", words=keyword_universe(), table="kw_probe", column="a",
                 fails=sa_statement_fails(engine), workers=8,
             ) == []
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_dev2120_storage(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, dev2120_table_statements(LIB, dialect="trino")) as schema:
+        yield _storage(
+            str(tmp_path_factory.mktemp("trino_dev2120")), _ds_config(trino_container, schema),
+            [lib_model(data_source=_DS)],
+        )
+
+
+@pytest.mark.integration
+class TestTrinoPortableLibrary:
+    async def test_library(self, _trino_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_trino_dev2120_storage))

@@ -702,8 +702,9 @@ rows:
   intent: The same function means the same thing on every engine.
   origin: Malloy
   slayer:
-    verdict: partial
-    text: "Functions SLayer translates per engine (date parts, differences, math, conditionals); others, e.g. regex, are written in the warehouse's own SQL."
+    verdict: 'yes'
+    text: "One library (strings, math, regex, JSON, dates, TEXT-vs-number coercion) with one meaning on every engine, verified per engine."
+    caveat: "Postgres 16+ for NULL-on-error JSON reads and TRY_CAST; SQL Server 2025+ for regex."
   malloy:
     verdict: 'yes'
     text: Broad standard library plus a native escape.

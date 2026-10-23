@@ -36,8 +36,10 @@ from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for bac
     _resolve_fallback_ref,
     _safe_get_columns,
     is_exact_numeric_db_type,
+    is_json_db_type,
 )
 from slayer.sql import engine_factory, sqlite_introspect
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.engine.schema_scope import (
     SchemaRef,
     SkippedSchema,
@@ -630,8 +632,19 @@ def _safe_get_table_comment(
         return None
 
 
-def _introspected_column(col: dict[str, Any], *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL)."""
+def _sa_type_is_json(sa_type: sa.types.TypeEngine) -> bool:
+    """A JSON-family type (``json_value`` reads it natively): JSON / JSONB, Snowflake VARIANT / OBJECT / ARRAY."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    names = (type(sa_type).__name__, str(sa_type))
+    snowflake_array = type(sa_type).__name__.upper() == "ARRAY" and type(sa_type).__module__.startswith("snowflake")
+    return any(is_json_db_type(n) for n in names) or snowflake_array
+
+
+def _introspected_column(
+    col: dict[str, Any], *, name: str, primary_key: bool, zoned_types: frozenset[str] = frozenset(),
+) -> IntrospectedColumn:
+    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL, JSON,
+    a zoned timestamp in ``zoned_types``)."""
     col_type = col["type"]
     db_type: str | None = None
     if isinstance(col_type, DataType):
@@ -641,7 +654,9 @@ def _introspected_column(col: dict[str, Any], *, name: str, primary_key: bool) -
     else:
         data_type = _sa_type_to_data_type(col_type)
         is_float = _sa_type_is_float(col_type)
-        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
+        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type) or (
+            type(col_type).__name__.upper() in zoned_types
+        ):
             db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
     return IntrospectedColumn(
         name=name, type=data_type, primary_key=primary_key, is_float=is_float,
@@ -658,9 +673,10 @@ def _introspect_query_columns_via_inspector(
     """Introspect the table's own columns."""
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
+    zoned_types = dialect_for_ds_type(sa_engine.dialect.name).zoned_timestamp_db_types
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
     return [
-        _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns)
+        _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns, zoned_types=zoned_types)
         for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
         if "." not in col["name"]
     ]

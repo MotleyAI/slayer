@@ -7,26 +7,37 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import lru_cache
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from typing import ClassVar, Optional
+from typing import Callable, ClassVar, Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath
 from slayer.core.keys import cast_data_type
+from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
+from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
 from slayer.core.time_points import parse_temporal_value
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     FALSE_WORDS,
     TRUE_WORDS,
     VENDOR_ONLY_CAST_TYPES,
+    ExtremumFn,
+    MathFn,
     SqlDialect,
     TemporalComparisonOp,
+    TextFn,
+    anon,
     as_text,
+    case,
     iso_text,
+    lit,
 )
+from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
 
 
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
@@ -408,8 +419,119 @@ def _slayer_try_cast(text, target):
     return text
 
 
+def _nulls(fn: Callable) -> Callable:
+    def wrapped(*args):
+        return None if any(a is None for a in args) else fn(*args)
+    return wrapped
+
+
+@lru_cache(maxsize=1024)
+def _compiled(pattern: str, flags: str) -> "re.Pattern[str]":
+    return re.compile(pattern, re.DOTALL | (re.IGNORECASE if "i" in flags else 0))
+
+
+def _regexp_like(value, pattern, flags):
+    if value is None or pattern is None:
+        return None
+    return int(_compiled(pattern, flags or "").search(str(value)) is not None)
+
+
+def _regexp_extract(value, pattern, group):
+    if value is None or pattern is None or group is None:
+        return None
+    match = _compiled(pattern, "").search(str(value))
+    return None if match is None else match.group(int(group)) or ""
+
+
+def _regexp_replace(value, pattern, replacement, flags):
+    """``replacement`` is portable text: ``\\1``-``\\9`` insert a group, ``\\\\`` a backslash."""
+    if value is None or pattern is None or replacement is None:
+        return None
+    compiled = _compiled(pattern, flags or "")
+    parts = parse_replacement(replacement, groups=compiled.groups).parts
+
+    def substitute(match: "re.Match[str]") -> str:
+        return "".join(p if isinstance(p, str) else (match.group(p.index) or "") for p in parts)
+    return compiled.sub(substitute, str(value))
+
+
+_GLOB_SPECIALS = {"*": "[*]", "?": "[?]", "[": "[[]"}
+
+
+def like_to_glob(pattern: Optional[str]) -> Optional[str]:
+    """A LIKE pattern as the GLOB pattern with its meaning (case-sensitive, collation-free)."""
+    if pattern is None:
+        return None
+    out = []
+    for part in parse_like(pattern).parts:
+        if isinstance(part, LikeWildcard):
+            out.append("*" if part.kind == "any" else "?")
+        else:
+            out.append("".join(_GLOB_SPECIALS.get(ch, ch) for ch in part))
+    return "".join(out)
+
+
+def _pad(s: str, n, fill: str, *, left: bool) -> str:
+    n = int(n)
+    if n <= 0:
+        return ""
+    if len(s) >= n or not fill:
+        return s[:n]
+    padding = (fill * n)[:n - len(s)]
+    return padding + s if left else s + padding
+
+
+def _split_part(s: str, delimiter: str, index) -> str:
+    fields = s.split(delimiter) if delimiter else [s]
+    index = int(index)
+    if index > 0:
+        return fields[index - 1] if index <= len(fields) else ""
+    return fields[index] if -index <= len(fields) else ""
+
+
+def _fmod(a, b):
+    if a is None or b is None or b == 0:
+        return None
+    return math.fmod(a, b) if isinstance(a, float) or isinstance(b, float) else int(math.fmod(a, b))
+
+
+def _trunc(x):
+    if x is None:
+        return None
+    return math.trunc(x) if isinstance(x, int) else float(math.trunc(x))
+
+
+def _cbrt(x: float) -> float:
+    return math.copysign(abs(x) ** (1 / 3), x)
+
+
+_TEXT_UDFS: dict = {
+    "slayer_lpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=True))),
+    "slayer_rpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=False))),
+    "slayer_reverse": (1, _nulls(lambda s: str(s)[::-1])),
+    "slayer_repeat": (2, _nulls(lambda s, n: str(s) * max(int(n), 0))),
+    "slayer_split_part": (3, _nulls(lambda s, d, k: _split_part(str(s), str(d), k))),
+    "slayer_concat_ws": (-1, lambda sep, *args: None if sep is None else str(sep).join(
+        str(a) for a in args if a is not None)),
+    "slayer_like_glob": (1, like_to_glob),
+    "slayer_regexp_like": (3, _regexp_like),
+    "slayer_regexp_extract": (3, _regexp_extract),
+    "slayer_regexp_replace": (4, _regexp_replace),
+    # SQLAlchemy's pysqlite registers ``floor`` as ``math.floor``, which fails on NULL.
+    "floor": (1, _nulls(lambda x: float(math.floor(x)) if isinstance(x, float) else math.floor(x))),
+    "slayer_fmod": (2, _fmod),
+    "slayer_trunc": (1, _trunc),
+    "slayer_pi": (0, lambda: math.pi),
+    "slayer_cbrt": (1, _nulls(_cbrt)),
+    "slayer_atan2": (2, _nulls(math.atan2)),
+    **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+}
+
+
 def register_sqlite_udfs(dbapi_connection) -> None:
     """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
+    for name, (narg, fn) in _TEXT_UDFS.items():
+        dbapi_connection.create_function(name, narg, fn, deterministic=True)
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
     dbapi_connection.create_function("log2", 1, _log2)
@@ -438,6 +560,11 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_aggregate("covar_pop", 2, _CovarPopAgg)
 
 
+def _like_source(pattern: LikePattern) -> str:
+    """``pattern`` back as LIKE text (the GLOB conversion runs in ``slayer_like_glob``)."""
+    return like_text(pattern)
+
+
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     # Any type name is a column affinity on SQLite.
@@ -451,6 +578,107 @@ class SqliteDialect(SqlDialect):
     exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
     url_scheme: str | None = "sqlite"
+
+    regex_flavour: ClassVar[RegexFlavour] = PYTHON
+    json_db_types: ClassVar[frozenset[str]] = frozenset()
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """SQLite lacks the padding, reversing, repeating and separator functions: registered ones stand in."""
+        if fn in ("lpad", "rpad"):
+            return anon(f"slayer_{fn}", *args, *([] if len(args) > 2 else [lit(" ")]))
+        if fn in ("reverse", "repeat", "concat_ws"):
+            return anon(f"slayer_{fn}", *args)
+        return super().build_text_call(fn, args)
+
+    def code_point_char(self, n: Expression) -> Expression:
+        return anon("CHAR", n)
+
+    def first_code_point(self, s: Expression) -> Expression:
+        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("UNICODE", s))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        return anon("slayer_split_part", value, delimiter, lit(index))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        """Math functions are registered (SQLite builds may lack them); the domain guards stay."""
+        if fn in ("asin", "acos"):
+            inside = exp.Between(this=args[0].copy(), low=lit(-1), high=lit(1))
+            return case((inside, anon(f"slayer_{fn}", args[0])))
+        if fn == "div":
+            return super().build_math_call(fn, args)
+        return anon(f"slayer_{fn}", *args)
+
+    def truncate(self, value: Expression) -> Expression:
+        return anon("slayer_trunc", value)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """Scalar ``MAX`` / ``MIN`` propagate NULL: each term coalesces to a present argument."""
+        return self.coalesced_extremum(fn, args, spelling="min_max")
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``%`` truncates real operands to integers first; non-integers use ``fmod``."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        return anon("slayer_fmod", left, right)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("slayer_regexp_like", value, self.regex_text(pattern), lit("i" if case_insensitive else ""))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        return anon("slayer_regexp_extract", value, self.regex_text(pattern), lit(group))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        portable = "".join(
+            f"\\{p.index}" if isinstance(p, RegexGroupRef) else p.replace("\\", "\\\\") for p in replacement.parts
+        )
+        return anon("slayer_regexp_replace", value, self.regex_text(pattern), lit(portable),
+                    lit("i" if case_insensitive else ""))
+
+    def build_like(
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
+    ) -> Expression:
+        """``LIKE`` is ``GLOB`` over the converted pattern (case-sensitive whatever the collation);
+        ``ILIKE`` is SQLite's own case-insensitive ``LIKE``."""
+        if case_insensitive:
+            return super().build_like(value, pattern, case_insensitive)
+        text = lit(_like_source(pattern)) if isinstance(pattern, LikePattern) else pattern.copy()
+        return exp.Glob(this=value.copy(), expression=anon("slayer_like_glob", text))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        kind, read = self._json_parts(value, path)
+        text = case(
+            (exp.In(this=kind, expressions=[lit("true"), lit("false")]), kind.copy()),
+            (exp.In(this=kind.copy(), expressions=[lit("text"), lit("integer"), lit("real")]),
+             exp.Cast(this=read, to=exp.DataType.build("TEXT"))),
+        )
+        return case((anon("JSON_VALID", value), text))
+
+    def build_json_value_as(
+        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,
+    ) -> Expression:
+        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``."""
+        kind, read = self._json_parts(value, path)
+        from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
+        direct: list = []
+        if target is DataType.INT:
+            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")), read.copy())]
+        elif target is DataType.DOUBLE:
+            direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
+                       exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]
+        elif target is DataType.BOOLEAN:
+            direct = [(exp.EQ(this=kind.copy(), expression=lit("true")), lit(1)),
+                      (exp.EQ(this=kind.copy(), expression=lit("false")), lit(0))]
+        elif target is DataType.TEXT:
+            return self.build_json_value(value, path, native)
+        return case((anon("JSON_VALID", value), case(*direct, from_text)))
+
+    def _json_parts(self, value: Expression, path: JsonPath) -> tuple[Expression, Expression]:
+        text = lit(path.text)
+        return anon("JSON_TYPE", value, text), anon("JSON_EXTRACT", value, text)
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""

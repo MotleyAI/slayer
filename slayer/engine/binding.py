@@ -13,6 +13,8 @@ from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGu
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    ScalarArgumentError,
+    ScalarOperandTypeError,
     AggregationArgumentError,
     AggregationFilterError,
     AggregationNotAllowedError,
@@ -36,8 +38,9 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, TEXT_RESULT_SCALARS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, numeric_valued, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
+    resolved_terminal,
     aggregation_owner,
     canonical_path,
     terminal_model,
@@ -82,7 +85,18 @@ from slayer.core.syntax import (
     placeholder_names,
     positional_hint,
 )
-from slayer.sql.sql_expr import build_cast_type, has_window_function
+from slayer.core.scalar_args import (
+    REGEX_FUNCTIONS,
+    check_domain,
+    check_flags,
+    check_group,
+    check_path,
+    check_pattern,
+    check_replacement,
+    check_split_index,
+    slot_name,
+)
+from slayer.sql.sql_expr import build_cast_type, has_window_function, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
@@ -1049,12 +1063,6 @@ def _not_an_aggregation_source(bound: ValueKey, *, agg: str) -> AggregationNotAl
     )
 
 
-# Scalar functions whose result is certainly text, for the best-effort
-# expression type inference.
-_TEXT_RESULT_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr",
-    "substring", "concat",
-})
 # Null-handling / min-max scalars whose result class follows their arguments.
 _ARG_CLASS_SCALARS = frozenset({
     "coalesce", "ifnull", "nullif", "greatest", "least",
@@ -1064,7 +1072,7 @@ def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> boo
     if isinstance(key, str):
         return True
     if isinstance(key, ScalarCallKey):
-        if key.name in _TEXT_RESULT_SCALARS:
+        if key.name in TEXT_RESULT_SCALARS:
             return True
         if key.name in _ARG_CLASS_SCALARS:
             return any(
@@ -1102,10 +1110,11 @@ def _reject_non_numeric_expression_agg(
         kind = "text"
     else:
         return
+    remedy = " (numbers stored as text: TRY_CAST(x AS DOUBLE))" if kind == "text" else ""
     raise AggregationNotAllowedError(
         column=key_display(source), agg=agg,
         reason=f"{agg!r} requires a numeric value, but the aggregated expression is non-numeric ({kind}). Use a "
-        f"counting or min/max aggregation, or make the expression numeric.",
+        f"counting or min/max aggregation, or make the expression numeric{remedy}.",
     )
 
 
@@ -1537,8 +1546,12 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
     allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
     if custom or agg in allowed:
         return None
+    remedy = (
+        f" For numbers stored as text, convert them: {agg}(TRY_CAST({leaf} AS DOUBLE))."
+        if col.type is DataType.TEXT and agg in NUMERIC_ONLY_AGGREGATIONS else ""
+    )
     return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
-            f"default aggregations are {sorted(allowed)}.")
+            f"default aggregations are {sorted(allowed)}.{remedy}")
 
 
 def _bind_agg_arg(
@@ -1826,6 +1839,8 @@ def _bind_scalar(
             f"{canonical_measure_text(parsed.args[1])!r}."
         )
 
+    _check_library_literals(parsed)
+
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
         key = _bind(
             a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
@@ -1843,7 +1858,74 @@ def _bind_scalar(
         raise _with_hint(e, hint=positional_hint(e.name)) from e
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])
+    if parsed.name == "json_value":
+        args = (_json_input(args[0], scope=scope, bundle=bundle), *args[1:])
     return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _text_literal(parsed: ScalarCall, pos: int) -> str:
+    """The string literal at ``pos`` of a library call's text slot (pattern, replacement, path)."""
+    value = _fold_to_scalar(parsed.args[pos])
+    if not isinstance(value, str):
+        slot = slot_name(parsed.name, pos)
+        raise ScalarArgumentError(
+            summary=f"the {slot} of {parsed.name}() must be a string literal or a {{variable}}; got "
+            f"`{canonical_measure_text(parsed.args[pos])}`.",
+            suggestion=f"Write the {slot} as a literal, e.g. '…', or pass it through `variables`.",
+        )
+    return value
+
+
+def _check_library_literals(parsed: ScalarCall) -> None:
+    """The literal-only arguments of a library call: patterns, replacements, paths, flags, groups, indices, domains."""
+    name, args = parsed.name, parsed.args
+    if name in REGEX_FUNCTIONS:
+        pattern = check_pattern(name, _text_literal(parsed, 1))
+        if name == "regexp_replace":
+            check_replacement(name, _text_literal(parsed, 2), pattern=pattern)
+        extra = 3 if name == "regexp_replace" else 2
+        if len(args) > extra and name == "regexp_extract":
+            check_group(name, _fold_to_scalar(args[extra]), pattern=pattern)
+        elif len(args) > extra:
+            check_flags(name, _fold_to_scalar(args[extra]))
+    elif name == "json_value":
+        check_path(name, _text_literal(parsed, 1))
+    elif name == "split_part":
+        check_split_index(_fold_to_scalar(args[2]))
+    for pos, arg in enumerate(args):
+        value = _fold_to_scalar(arg)
+        if value is not _NOT_SCALAR:
+            check_domain(name, pos, value, text=canonical_measure_text(arg))
+
+
+def _json_input(arg: ValueKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> ValueKey:
+    """``json_value``'s input: TEXT as is, a native JSON column read as its own type (``CAST(col AS JSONB)``)."""
+    column_type = scope_column_type(scope=scope, bundle=bundle)
+    db_type = _json_db_type(arg, scope=scope, bundle=bundle)
+    if db_type is not None:
+        return CastKey(source=arg, type_text=db_type, data_type=DataType.UNKNOWN)
+    declared = column_type(arg) if isinstance(arg, (ColumnKey, ColumnSqlKey)) else None
+    if declared in (None, DataType.TEXT) and not (
+        numeric_valued(arg, column_type=column_type) or boolean_valued(arg, column_type=column_type)
+        or temporal_type(arg, column_type=column_type) is not None
+    ):
+        return arg
+    raise ScalarOperandTypeError(
+        summary=f"json_value() reads JSON text or a JSON column; `{key_display(arg)}` is "
+        f"{(declared or DataType.UNKNOWN).value if declared not in (None, DataType.TEXT) else 'not text'}.",
+        suggestion="Pass a TEXT column holding JSON, or a column of the database's JSON type.",
+    )
+
+
+def _json_db_type(arg: ValueKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[str]:
+    """The database JSON type of a column ``arg`` (``JSONB``, ``VARIANT``, …), when it has one."""
+    if not isinstance(arg, ColumnKey) or not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    owner = resolved_terminal(root=scope.source_model, path=arg.path, models_by_name=bundle.models_by_name)
+    col = owner.get_column(arg.leaf) if owner is not None else None
+    if col is None or not col.db_type:
+        return None
+    return native_json_type(col.db_type, dialect=bundle.dialect)
 
 
 def _is_integer_literal(parsed: ParsedExpr) -> bool:

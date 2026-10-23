@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine.url import make_url
@@ -19,8 +19,12 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError
+from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError, ServerVersionError
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
+from slayer.core.json_path import JsonPath
+from slayer.core.like_pattern import LikePattern
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
 from slayer.sql._identifier_fit import (
     SqlLexis,
     fit_identifier,
@@ -82,6 +86,77 @@ def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
     return name in get_args(StatAgg2Name)
 
 
+TextFn = Literal[
+    "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
+    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
+]
+TrimFn = Literal["trim", "ltrim", "rtrim"]
+MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
+ExtremumFn = Literal["greatest", "least"]
+
+
+def is_text_fn(name: str) -> TypeGuard[TextFn]:
+    return name in get_args(TextFn)
+
+
+def is_math_fn(name: str) -> TypeGuard[MathFn]:
+    return name in get_args(MathFn)
+
+
+def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
+    return name in get_args(ExtremumFn)
+
+
+def anon(name: str, *args: Expression) -> exp.Anonymous:
+    """``NAME(args)`` emitted as written on every dialect (no transpilation)."""
+    return exp.Anonymous(this=name, expressions=[a.copy() for a in args])
+
+
+def case(*branches: tuple[Expression, Expression], default: Optional[Expression] = None) -> exp.Case:
+    return exp.Case(ifs=[exp.If(this=c, true=v) for c, v in branches], default=default)
+
+
+def lit(value: int | str) -> Expression:
+    return exp.Literal.number(value) if isinstance(value, int) else exp.Literal.string(value)
+
+
+def is_null(value: Expression) -> Expression:
+    return exp.Is(this=operand_copy(value), expression=exp.Null())
+
+
+def either(*conditions: Expression) -> Expression:
+    """``c1 OR c2 OR …``."""
+    out = conditions[0]
+    for condition in conditions[1:]:
+        out = exp.Or(this=out, expression=condition)
+    return out
+
+
+def any_null(*values: Expression) -> Expression:
+    return either(*(is_null(v) for v in values))
+
+
+def func(name: str, *args: Expression) -> Expression:
+    """``exp.func``: the named sqlglot function, transpiled per dialect."""
+    node = exp.func(name, *(a.copy() for a in args))
+    assert isinstance(node, Expression)  # concrete Func classes and Anonymous all are
+    return node
+
+
+def pad_fill(args: Sequence[Expression]) -> Expression:
+    """``lpad`` / ``rpad``'s fill: the third argument, else one space."""
+    return args[2] if len(args) > 2 else lit(" ")
+
+
+def literal_value(node: Expression) -> Optional[int]:
+    """An integer literal's value (``-2`` included), else ``None``."""
+    return literal_int(node)
+
+
+#: Code points ``chr`` takes: 1 to 0x10FFFF without the surrogates.
+CHR_RANGES = ((1, 0xD7FF), (0xE000, 0x10FFFF))
+
+
 _OPERATOR_SHAPED = (exp.Binary, exp.Unary, exp.Between, exp.In)
 
 
@@ -111,6 +186,25 @@ COMPARISON_NODES: dict[str, Any] = {
 NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
 TRUE_WORDS = ("true", "t", "yes", "1")
 FALSE_WORDS = ("false", "f", "no", "0")
+
+
+#: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
+ZONED_READ = "slayer_zoned_read"
+
+
+def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:
+    """A zoned column read stays bare where the other side is already in the zoned type (a ``TIMESTAMP``
+    cast, ISO text, another zoned column), so the comparison keeps partition pruning."""
+    def zoned(node: Expression) -> bool:
+        return isinstance(node, exp.Cast) and bool(node.meta.get(ZONED_READ))
+
+    def in_zoned_type(node: Expression) -> bool:
+        return zoned(node) or (isinstance(node, exp.Literal) and node.is_string) or (
+            isinstance(node, exp.Cast) and node.to.this is exp.DataType.Type.TIMESTAMPTZ)
+
+    new_left = left.this if zoned(left) and in_zoned_type(right) else left
+    new_right = right.this if zoned(right) and in_zoned_type(left) else right
+    return new_left, new_right
 
 
 def as_text(value: Expression) -> Expression:
@@ -325,10 +419,8 @@ class SqlDialect(BaseModel):
     # Whether setting the statement timeout depends on the server profile (probed only then).
     timeout_reads_profile: bool = False
 
-    # The server's profile, when SQL generation needs it (Postgres TRY_CAST); unknown otherwise.
+    # The server's profile, when SQL generation reads it (``profile_needed``); unknown otherwise.
     server_profile: ServerProfile = ServerProfile()
-    # Whether rendering a TRY_CAST reads ``server_profile``.
-    try_cast_reads_profile: bool = False
 
     # An ``IN`` subquery and its joins run once on the initiator (``GLOBAL``): exact over shards.
     global_in_subqueries: bool = False
@@ -379,6 +471,21 @@ class SqlDialect(BaseModel):
         """Whether this dialect can express a CAST to ``data_type``."""
         return data_type.this not in VENDOR_ONLY_CAST_TYPES or data_type.this in self.vendor_cast_types
 
+    #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
+
+    def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
+        """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
+        return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """A column as SLayer reads it; default: as stored."""
+        return column
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
+        return to
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
         return exp.TryCast(this=as_text(value), to=to)
@@ -390,6 +497,289 @@ class SqlDialect(BaseModel):
         if self.ilike_native:
             return exp.ILike(this=value, expression=pattern)
         return exp.Like(this=exp.Lower(this=value), expression=exp.Lower(this=pattern))
+
+    # -- The portable library (spec: queries/scalar-functions, regex, json, string-matching) -------
+
+    #: How this engine spells the portable regex.
+    regex_flavour: ClassVar[RegexFlavour] = POSTGRES
+    #: This engine's JSON column types (a column of one is read natively by ``json_value``).
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
+    #: Whether LIKE takes ``ESCAPE '\'`` (else backslash already escapes).
+    like_escape_clause: ClassVar[bool] = True
+    #: Whether ``[`` is a LIKE metacharacter (SQL Server).
+    like_brackets: ClassVar[bool] = False
+
+    def profile_needed(self, keys: Iterable[object]) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Whether rendering ``keys`` reads ``server_profile``."""
+        return False
+
+    def require_version(self, *, minimum: tuple[int, int], what: str, release: str) -> None:
+        """Fail closed when the known server version is below ``minimum``; an unknown version emits."""
+        version = self.server_profile.version
+        if version is not None and version < minimum:
+            raise ServerVersionError(
+                summary=f"{what} needs {release} or later; the server reports version {version[0]}.{version[1]}.",
+                suggestion=f"Upgrade to {release}, or express the computation without {what}.",
+            )
+
+    def char_length(self, value: Expression) -> Expression:
+        """The length of ``value`` in characters."""
+        return self.rewrite_target_ast(exp.Length(this=value.copy()))
+
+    def char_substring(self, value: Expression, start: Expression, length: Expression) -> Expression:
+        """``length`` characters of ``value`` from the 1-based ``start``."""
+        return self.rewrite_target_ast(exp.Substring(this=value.copy(), start=start.copy(), length=length.copy()))
+
+    def text_repeat(self, value: Expression, count: Expression) -> Expression:
+        """``value`` repeated ``count`` (≥ 1) times."""
+        return anon("REPEAT", value, count)
+
+    def truncate(self, value: Expression) -> Expression:
+        """``value`` truncated toward zero."""
+        return self.rewrite_target_ast(func("TRUNC", value))
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """A library string function with its Postgres meaning (characters, never bytes)."""
+        s = args[0]
+        if fn in ("trim", "ltrim", "rtrim"):
+            return self.trim_spaces(fn, s)
+        if fn in ("left", "right"):
+            return self._left_right(fn=fn, s=s, n=args[1])
+        if fn == "starts_with":
+            head = self.char_substring(s, lit(1), self.char_length(args[1]))
+            return exp.EQ(this=self.binary_text(head), expression=self.binary_text(args[1]))
+        if fn == "ends_with":
+            p = args[1]
+            start = case((exp.GTE(this=self.char_length(s), expression=self.char_length(p)),
+                          exp.Add(this=exp.Sub(this=self.char_length(s), expression=self.char_length(p)),
+                                  expression=lit(1))), default=lit(1))
+            tail = self.char_substring(s, start, self.char_length(p))
+            return exp.EQ(this=self.binary_text(tail), expression=self.binary_text(p))
+        if fn == "contains":
+            return exp.GT(this=self.text_position(s, args[1]), expression=lit(0))
+        if fn in ("strpos", "instr"):
+            return self.text_position(s, args[1])
+        if fn == "replace":
+            return self.rewrite_target_ast(func("REPLACE", *args))
+        if fn in ("lpad", "rpad"):
+            return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
+        if fn == "reverse":
+            return anon("REVERSE", s)
+        if fn == "repeat":
+            return self._non_positive_empty(args[1], self.text_repeat(s, args[1]), source=s)
+        if fn == "concat_ws":
+            return anon("CONCAT_WS", *args)
+        if fn == "chr":
+            return self._code_point_guard(s, self.code_point_char(s))
+        return self.first_code_point(s)
+
+    def binary_text(self, value: Expression) -> Expression:
+        """``value`` compared case- and accent-sensitively whatever its collation; default: as is."""
+        return value.copy()
+
+    def text_position(self, s: Expression, p: Expression) -> Expression:
+        """The 1-based character position of the first ``p`` in ``s``, 0 when absent, compared binary."""
+        return self.rewrite_target_ast(exp.StrPosition(this=self.binary_text(s), substr=self.binary_text(p)))
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """Postgres ``trim`` / ``ltrim`` / ``rtrim``: spaces only, never other whitespace."""
+        return self.rewrite_target_ast(func(fn.upper(), s))
+
+    def _left_right(self, *, fn: TextFn, s: Expression, n: Expression) -> Expression:
+        """Postgres ``left`` / ``right``: a negative count drops that many characters from the other end."""
+        length = self.char_length(s)
+        kept = exp.Add(this=length, expression=n.copy())
+        if fn == "left":
+            positive = self.char_substring(s, lit(1), n)
+            negative = self.char_substring(s, lit(1), kept)
+        else:
+            positive = self.char_substring(s, exp.Add(this=exp.Sub(this=length.copy(), expression=n.copy()),
+                                                      expression=lit(1)), n)
+            negative = self.char_substring(s, exp.Sub(this=lit(1), expression=n.copy()), kept.copy())
+        branches: list[tuple[Expression, Expression]] = [(any_null(s, n), exp.Null())]
+        if fn == "right":
+            branches.append((exp.GTE(this=n.copy(), expression=length.copy()), s.copy()))
+        branches += [(exp.GTE(this=n.copy(), expression=lit(0)), positive),
+                     (exp.GT(this=kept.copy(), expression=lit(0)), negative)]
+        return case(*branches, default=lit(""))
+
+    def _non_positive_empty(self, n: Expression, value: Expression, *, source: Expression) -> Expression:
+        """``value``, or ``''`` for a count ≤ 0 (a NULL ``source`` stays NULL)."""
+        count = literal_value(n)
+        if count is not None:
+            return value if count > 0 else case((exp.Not(this=any_null(source)), lit("")))
+        return case((exp.LTE(this=n.copy(), expression=lit(0)), case((exp.Not(this=any_null(source)), lit("")))),
+                    default=value)
+
+    def _pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
+        node = anon("LPAD" if fn == "lpad" else "RPAD", s, n, fill)
+        return self._non_positive_empty(n, node, source=s)
+
+    def portable_pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
+        """``lpad`` / ``rpad`` built from substring and repeat, for an engine without them."""
+        length = self.char_length(s)
+        padding = self.char_substring(self.text_repeat(fill, n), lit(1), exp.Sub(this=n.copy(), expression=length))
+        padded = self.concat_text(padding, s) if fn == "lpad" else self.concat_text(s, padding)
+        return case(
+            (any_null(s, n, fill), exp.Null()),
+            (exp.LTE(this=n.copy(), expression=lit(0)), lit("")),
+            (exp.GTE(this=length.copy(), expression=n.copy()), self.char_substring(s, lit(1), n)),
+            (exp.EQ(this=self.char_length(fill), expression=lit(0)), s.copy()),
+            default=padded,
+        )
+
+    def concat_text(self, left: Expression, right: Expression) -> Expression:
+        return exp.DPipe(this=left.copy(), expression=right.copy())
+
+    def field_count(self, value: Expression, delimiter: Expression) -> Expression:
+        """How many ``delimiter``-separated fields ``value`` has."""
+        removed = self.char_length(anon("REPLACE", value, delimiter, lit("")))
+        gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
+        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
+        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
+
+    def code_point_char(self, n: Expression) -> Expression:
+        """The character of Unicode code point ``n`` (in range)."""
+        return anon("CHR", n)
+
+    def _code_point_guard(self, n: Expression, value: Expression) -> Expression:
+        """``value`` where ``n`` is a Unicode scalar value, else NULL."""
+        inside = either(*(exp.Between(this=n.copy(), low=lit(lo), high=lit(hi)) for lo, hi in CHR_RANGES))
+        return case((inside, value))
+
+    def first_code_point(self, s: Expression) -> Expression:
+        """The code point of ``s``'s first character; 0 for ``''``."""
+        return anon("ASCII", s)
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """The ``index``-th field (negative: from the end); ``''`` beyond the last."""
+        return anon("SPLIT_PART", value, delimiter, lit(index))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        """A library math function; an out-of-domain argument yields NULL."""
+        if fn == "div":
+            divisor = exp.Nullif(this=operand_copy(args[1]), expression=lit(0))
+            return self.truncate(exp.Div(this=operand_copy(args[0]), expression=divisor))
+        if fn == "pi":
+            return anon("PI")
+        if fn in ("asin", "acos"):
+            inside = exp.Between(this=args[0].copy(), low=lit(-1), high=lit(1))
+            return case((inside, self.rewrite_target_ast(func(fn.upper(), args[0]))))
+        if fn == "cbrt":
+            return self.cube_root(args[0])
+        return self.rewrite_target_ast(func(fn.upper(), *args))
+
+    def cube_root(self, value: Expression) -> Expression:
+        return anon("CBRT", value)
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``greatest`` / ``least`` of the non-NULL arguments; NULL only when all are NULL."""
+        return anon(fn.upper(), *args)
+
+    def coalesced_extremum(
+        self, fn: ExtremumFn, args: tuple[Expression, ...], *, spelling: Literal["upper", "lower", "min_max"],
+    ) -> Expression:
+        """``GREATEST(COALESCE(a, b, c), COALESCE(b, a, c), …)`` for an engine whose function propagates NULL
+        (``min_max``: the scalar ``MAX`` / ``MIN``)."""
+        terms = [exp.Coalesce(this=a.copy(), expressions=[o.copy() for j, o in enumerate(args) if j != i])
+                 for i, a in enumerate(args)]
+        name = {"upper": fn.upper(), "lower": fn, "min_max": "MAX" if fn == "greatest" else "MIN"}[spelling]
+        return anon(name, *terms)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """``left % right`` truncated (the result takes the dividend's sign); ``integer``: both are integers."""
+        return exp.Mod(this=operand_copy(left), expression=operand_copy(right))
+
+    # Regex
+
+    def regex_text(
+        self, pattern: RegexPattern, *, case_insensitive: bool = False, capture: Optional[int] = None,
+        wrap: bool = False, anchored: bool = False,
+    ) -> Expression:
+        return lit(emit_regex(pattern, self.regex_flavour, case_insensitive=case_insensitive, capture=capture,
+                              wrap=wrap, anchored=anchored))
+
+    def replacement_text(self, replacement: RegexReplacement) -> Expression:
+        return lit(emit_replacement(replacement, self.regex_flavour))
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """Whether ``pattern`` matches anywhere in ``value``."""
+        node = exp.RegexpILike if case_insensitive else exp.RegexpLike
+        return node(this=value.copy(), expression=self.regex_text(pattern))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """The first match (``group`` 0) or its ``group``; NULL on no match, ``''`` for a group that did not
+        take part."""
+        match = anon("REGEXP_MATCH", value, self.regex_text(pattern, wrap=True),
+                     *([lit("i")] if case_insensitive else []))
+        picked = exp.Bracket(this=exp.Paren(this=match), expressions=[lit(group)])
+        return self.skipped_group_empty(value, pattern, group, picked)
+
+    def skipped_group_empty(
+        self, value: Expression, pattern: RegexPattern, group: int, extracted: Expression,
+    ) -> Expression:
+        """``extracted`` with a skipped group's NULL read as ``''`` (NULL stays for no match)."""
+        if group == 0:
+            return extracted
+        matched = self.build_regexp_like(value, pattern, False)
+        return case((matched, exp.Coalesce(this=extracted, expressions=[lit("")])))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        """``value`` with every match replaced."""
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement),
+                    lit("gi" if case_insensitive else "g"))
+
+    # LIKE
+
+    def like_pattern(self, pattern: LikePattern | Expression) -> Expression:
+        """The pattern as this engine's backslash-escaped LIKE text."""
+        if isinstance(pattern, LikePattern):
+            return lit(like_text(pattern, brackets=self.like_brackets))
+        return like_expression(pattern.copy(), brackets=self.like_brackets)
+
+    def build_like(
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
+    ) -> Expression:
+        """``LIKE`` / ``ILIKE`` in the one LIKE pattern language."""
+        text = self.like_pattern(pattern)
+        if not case_insensitive:
+            node: Expression = exp.Like(this=value.copy(), expression=text)
+        elif self.ilike_native:
+            node = exp.ILike(this=value.copy(), expression=text)
+        else:
+            node = exp.Like(this=exp.Lower(this=value.copy()), expression=exp.Lower(this=text))
+        return exp.Escape(this=node, expression=lit("\\")) if self.like_escape_clause else node
+
+    # JSON
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        """The scalar at ``path`` as TEXT; NULL when missing, JSON null, an object or an array."""
+        jsonb = exp.DataType.build("JSONB")
+        already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
+        doc = value.copy() if already else exp.Cast(this=value.copy(), to=jsonb)
+        keys = [lit(str(step)) for step in path.steps]
+        found = anon("JSONB_EXTRACT_PATH", doc, *keys)
+        scalar = exp.In(this=anon("JSONB_TYPEOF", found), expressions=[lit("string"), lit("number"), lit("boolean")])
+        read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
+        if native or not self.validates_json_input():
+            return read
+        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
+        return case((valid, read))
+
+    def validates_json_input(self) -> bool:
+        """Whether malformed JSON text can be detected (Postgres 16+)."""
+        version = self.server_profile.version
+        return version is not None and version >= (16, 0)
+
+    def build_json_value_as(
+        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,  # NOSONAR(S1172) — hook parameter read by dialect overrides
+    ) -> Expression:
+        """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
+        return self.build_try_cast(self.build_json_value(value, path, native), to)
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

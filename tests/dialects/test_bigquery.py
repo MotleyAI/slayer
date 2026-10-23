@@ -73,7 +73,7 @@ def test_explain_prefix_is_none() -> None:
 def test_log_native_flags() -> None:
     d = BigqueryDialect()
     assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
+    assert d.should_use_native_log(2) is False
 
 
 def test_build_explain_sql_raises() -> None:

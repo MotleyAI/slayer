@@ -135,6 +135,18 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="date_add() count `…` is not numeric."
          + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
          category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_number_literal", exc="ScalarOperandTypeError",
+         message="'…' is not a number, so it cannot meet the number `…`."
+         + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+         message="…() reads numbers, but `…` is TEXT."
+         + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
+    _row(module=_EE, function="_text_concat_args", exc="ScalarOperandTypeError",
+         message="Text concatenation has no portable spelling for the BOOLEAN `…`."
+         + SUGGEST + "Spell it explicitly: CASE WHEN … THEN 'true' ELSE 'false' END.",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
     _row(module=_EE, function="_raise_not_a_time_point", exc="TimeLiteralError",
          message="'…' is not a time point."
          + AT + "comparison with `…`"

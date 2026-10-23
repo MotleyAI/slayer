@@ -7,7 +7,7 @@ decorate live in ``slayer.ir.prebound``.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional, Tuple, TypeGuard
+from typing import Callable, Optional, Tuple, TypeGuard
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -30,13 +30,14 @@ from slayer.core.keys import (
     join_conditional_branch_types,
     temporal_type,
 )
-from slayer.core.join_walker import model_column_type
+from slayer.core.join_walker import model_column_lookup, model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.engine.introspect_utils import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
+from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
@@ -155,6 +156,16 @@ def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeF
     if scope.source_model is None:
         return lambda _key: None
     return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
+
+
+def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callable[[object], bool]:
+    """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
+    reads naive)."""
+    dialect = get_dialect(bundle.dialect)
+    if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.source_model is None:
+        return lambda _key: False
+    lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)
+    return lambda key: dialect.is_zoned_db_type(getattr(lookup(key), "db_type", None))
 
 
 def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:

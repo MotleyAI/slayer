@@ -6,7 +6,8 @@ algebra type error raises here, each invoked at its family's original checkpoint
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import (
     Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
@@ -32,6 +33,7 @@ from slayer.core.errors import (
     PartitionKeyError,
     PositionTypingError,
     ReaggregationError,
+    ScalarOperandTypeError,
     TimeAxisError,
     TimeDimensionColumnError,
     TimeLiteralError,
@@ -47,6 +49,7 @@ from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    NUMERIC_ARG_SCALARS,
     AggregateKey,
     ColumnTypeFn,
     ConsumerNode,
@@ -57,6 +60,8 @@ from slayer.core.keys import (
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
     is_reaggregation_key,
+    boolean_valued,
+    numeric_valued,
     split_top_level_and,
     ArithmeticKey,
     ColumnKey,
@@ -65,6 +70,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     CastKey,
+    SCALAR_SPECS,
     ScalarCallKey,
     TimePointCmpKey,
     TimeTruncKey,
@@ -1008,10 +1014,6 @@ def check_time_dimension_column(
         )
 
 
-# Allowlisted scalars whose result is never numeric.
-_TEXT_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr", "substring", "concat",
-})
 _NON_NUMERIC_TYPES = frozenset({
     DataType.TEXT, DataType.BOOLEAN, DataType.DATE, DataType.TIMESTAMP, DataType.UNKNOWN,
 })
@@ -1038,9 +1040,6 @@ def _operand_display(k: object) -> str:
 _LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
     bool: DataType.BOOLEAN, str: DataType.TEXT,
 })
-_SCALAR_RESULT_TYPES: Mapping[str, DataType] = MappingProxyType({
-    **{name: DataType.TEXT for name in _TEXT_SCALARS}, "like": DataType.BOOLEAN, "ilike": DataType.BOOLEAN,
-})
 
 
 def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
@@ -1051,7 +1050,8 @@ def _leaf_count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[Data
     if isinstance(key, (ArithmeticKey, TimePointCmpKey, InKey)) and is_boolean_shaped(key):
         return DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
-        return _SCALAR_RESULT_TYPES.get(key.name)
+        spec = SCALAR_SPECS.get(key.name)
+        return None if spec is None else spec.result
     if isinstance(key, CastKey) and key.data_type is not DataType.UNKNOWN:
         return key.data_type
     return None
@@ -1241,6 +1241,173 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
     if key.literal_on_left:
         return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
     return ArithmeticKey(op=op, operands=(key.operand, literal))
+
+
+# Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
+_COERCED_OPS = frozenset({
+    "==", "!=", "<", "<=", ">", ">=", "is distinct from", "is not distinct from", "+", "-", "*", "/", "%",
+})
+_TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
+
+
+def _text_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly TEXT."""
+    if isinstance(key, LiteralKey):
+        return isinstance(key.value, str)
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.TEXT
+    if isinstance(key, CastKey):
+        return key.data_type is DataType.TEXT
+    if isinstance(key, AggregateKey):
+        return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, column_type=column_type)
+    if isinstance(key, ScalarCallKey):
+        spec = SCALAR_SPECS.get(key.name)
+        if spec is not None and spec.result is not None:
+            return spec.result is DataType.TEXT
+        values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+        known = [a for a in values if not (isinstance(a, LiteralKey) and a.value is None)]
+        return bool(known) and all(_text_valued(a, column_type=column_type) for a in known)
+    return False
+
+
+def _as_number(key: ValueKey, *, beside: ValueKey) -> ValueKey:
+    """A TEXT operand read as a number: a literal converted now, anything else ``TRY_CAST(… AS DOUBLE)``."""
+    if isinstance(key, LiteralKey) and isinstance(key.value, str):
+        return LiteralKey(value=_number_literal(key.value, beside=beside))
+    return CastKey(source=key, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=True)
+
+
+def _number_literal(text: str, *, beside: ValueKey) -> Decimal:
+    try:
+        value = Decimal(text.strip())
+    except InvalidOperation:
+        value = None
+    if value is None or not value.is_finite():
+        raise ScalarOperandTypeError(
+            summary=f"'{text}' is not a number, so it cannot meet the number `{_operand_display(beside)}`.",
+            suggestion="Compare with a number (e.g. 100), or compare text with text.",
+        )
+    return value
+
+
+def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey:
+    """TEXT beside a number in a comparison, ``IN``, arithmetic or ``greatest`` / ``least`` reads as a number;
+    a number function over TEXT fails (literals convert); ``||`` reads a number as its text and refuses a BOOLEAN."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_text_numbers(c, column_type=column_type)))
+
+    def text(k: object) -> bool:
+        return _text_valued(k, column_type=column_type)
+
+    def number(k: object) -> bool:
+        return numeric_valued(k, column_type=column_type)
+
+    def boolean(k: object) -> bool:
+        return boolean_valued(k, column_type=column_type)
+
+    if isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _COERCED_OPS and len(rebuilt.operands) == 2:
+        return _coerce_binary(rebuilt, text=text, number=number)
+    if isinstance(rebuilt, InKey):
+        return _coerce_in(rebuilt, text=text, number=number)
+    if isinstance(rebuilt, ScalarCallKey):
+        return _coerce_scalar_args(rebuilt, text=text, number=number, boolean=boolean)
+    return rebuilt
+
+
+_ZONED_COMPARED_OPS = frozenset({
+    "==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from",
+})
+
+
+def coerce_zoned_comparisons(
+    key: ValueKey, *, zoned: Callable[[object], bool], column_type: ColumnTypeFn,
+) -> ValueKey:
+    """A naive timestamp compared with a zoned-instant column converts to the column's type; the column stays bare."""
+    rebuilt = cast(ValueKey, key.map_children(
+        lambda c: coerce_zoned_comparisons(c, zoned=zoned, column_type=column_type)))
+    if not (isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _ZONED_COMPARED_OPS and len(rebuilt.operands) == 2):
+        return rebuilt
+    left, right = rebuilt.operands
+
+    def naive(k: ValueKey) -> bool:
+        # A temporal literal renders as ISO text, which already reads as the column's type.
+        literal = isinstance(k, LiteralKey) and isinstance(k.value, date)
+        return not literal and not zoned(k) and temporal_type(k, column_type=column_type) is DataType.TIMESTAMP
+
+    if zoned(left) and naive(right):
+        return rebuilt.model_copy(update={"operands": (left, _as_zoned(right))})
+    if zoned(right) and naive(left):
+        return rebuilt.model_copy(update={"operands": (_as_zoned(left), right)})
+    return rebuilt
+
+
+def _as_zoned(key: ValueKey) -> ValueKey:
+    return CastKey(source=key, type_text="TIMESTAMP", data_type=DataType.TIMESTAMP)
+
+
+def _coerce_binary(key: ArithmeticKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    left, right = key.operands
+    if text(left) and number(right):
+        return key.model_copy(update={"operands": (_as_number(left, beside=right), right)})
+    if number(left) and text(right):
+        return key.model_copy(update={"operands": (left, _as_number(right, beside=left))})
+    return key
+
+
+def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    if text(key.column) and all(number(v) for v in key.values):
+        return key.model_copy(update={"column": _as_number(key.column, beside=key.values[0])})
+    if number(key.column) and any(text(v) for v in key.values):
+        values = tuple(cast(LiteralKey, _as_number(v, beside=key.column)) if text(v) else v for v in key.values)
+        return key.model_copy(update={"values": values})
+    return key
+
+
+def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) -> list:
+    """A number function's arguments: TEXT literals converted, any other TEXT refused."""
+    args = list(key.args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
+            args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
+        elif text(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
+                suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
+            )
+    return args
+
+
+def _text_concat_args(
+    key: ScalarCallKey, *, number: Callable[[object], bool], boolean: Callable[[object], bool],
+) -> list:
+    """Concatenation arguments: a number reads as its text; a BOOLEAN has no portable text."""
+    for arg in key.args:
+        if boolean(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"Text concatenation has no portable spelling for the BOOLEAN `{display}`.",
+                suggestion=f"Spell it explicitly: CASE WHEN {display} THEN 'true' ELSE 'false' END.",
+            )
+    return [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
+            for a in key.args]
+
+
+def _coerce_scalar_args(
+    key: ScalarCallKey, *, text: Callable[[object], bool], number: Callable[[object], bool],
+    boolean: Callable[[object], bool],
+) -> ValueKey:
+    args = list(key.args)
+    if key.name in ("greatest", "least"):
+        numbers = [a for a in args if number(a)]
+        if numbers:
+            args = [_as_number(cast(ValueKey, a), beside=cast(ValueKey, numbers[0])) if text(a) else a for a in args]
+    elif key.name in NUMERIC_ARG_SCALARS:
+        args = _numeric_scalar_args(key, text=text)
+    elif key.name in ("concat", "concat_ws"):
+        args = _text_concat_args(key, number=number, boolean=boolean)
+    if args == list(key.args):
+        return key
+    return key.model_copy(update={"args": tuple(args)})
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:
