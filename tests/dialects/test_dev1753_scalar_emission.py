@@ -20,8 +20,8 @@ def _same(sql: str) -> dict[str, str]:
 EXPECTED: dict[tuple[str, int], dict[str, str]] = {
     ("ceiling", 1): {**_same("CEIL(a)"), "tsql": "CEILING(a)"},
     ("sign", 1): _same("SIGN(a)"),
-    ("ltrim", 1): _same("LTRIM(a)"),
-    ("rtrim", 1): _same("RTRIM(a)"),
+    ("ltrim", 1): {**_same("LTRIM(a)"), "bigquery": "LTRIM(a, ' ')"},
+    ("rtrim", 1): {**_same("RTRIM(a)"), "bigquery": "RTRIM(a, ' ')"},
     # T-SQL SUBSTRING requires a length; DATALENGTH(a) reaches the end, trailing spaces included.
     ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, DATALENGTH(a))",
                        "clickhouse": "substringUTF8(a, b)"},

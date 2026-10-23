@@ -18,6 +18,7 @@ import threading
 import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
+from itertools import count
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union, cast
 
 import pyparsing as pp
@@ -38,6 +39,7 @@ from slayer.core.errors import GranularityCallError, IllegalWindowInFilterError,
 from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
 from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
 from slayer.core.refs import split_agg_suffix
+from slayer.core.regex_pattern import RegexPattern
 from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
 
 
@@ -93,6 +95,14 @@ class Placeholder(_BaseNode):
     """An unsubstituted ``{name}`` variable in a literal slot."""
 
     name: str
+    # Offset in the parsed text; not part of identity.
+    start: int = -1
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Placeholder) and self.name == other.name
+
+    def __hash__(self) -> int:
+        return hash(("Placeholder", self.name))
 
 
 class TupleLit(_BaseNode):
@@ -414,7 +424,7 @@ def _placeholder_node(s: str, loc: int, toks: pp.ParseResults) -> Placeholder:
     rest = s[end:].lstrip()
     if rest.startswith(("(", ".")) or (rest.startswith(":") and not rest.startswith("::")):
         raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a function, column or path.")
-    return Placeholder(name=raw[1:-1])
+    return Placeholder(name=raw[1:-1], start=loc)
 
 
 def _reject_placeholder(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
@@ -1046,48 +1056,76 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
             _check_variable(m, text=text, variables=variables, in_string=region.kind == "string")
     # Strings bound and ``{{`` / ``}}`` outside strings read as braces: the grammar judges the variable slots.
     template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
-    text_slots = _text_slot_variables(template, variables=variables)
+    text_slots = _text_slot_ordinals(template, variables=variables)
     return _spliced(
         text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
     )
 
 
-def _text_slot_variables(template: Any, *, variables: Mapping[str, Any]) -> frozenset[str]:
-    """Variables filling a pattern / path / replacement slot, checked here so an error names the variable."""
-    names: set = set()
-    for node in _walk_parsed(template):
-        if not isinstance(node, ScalarCall) or node.name not in STRING_SLOTS:
+def _text_slot_ordinals(template: Any, *, variables: Mapping[str, Any]) -> frozenset[int]:
+    """Textual ordinals of the placeholders filling a pattern / path / replacement slot, checked here so an
+    error names the variable."""
+    starts = sorted({n.start for n in _walk_parsed(template) if isinstance(n, Placeholder)})
+    return frozenset(
+        starts.index(placeholder.start)
+        for node in _walk_parsed(template)
+        if isinstance(node, ScalarCall) and node.name in STRING_SLOTS
+        for placeholder in _checked_slot_placeholders(node, variables=variables)
+    )
+
+
+def _checked_slot_placeholders(call: ScalarCall, *, variables: Mapping[str, Any]) -> List[Placeholder]:
+    """``call``'s text-slot placeholders, each value checked against its slot."""
+    found: List[Placeholder] = []
+    pattern: Optional[RegexPattern] = None
+    for pos in STRING_SLOTS[call.name]:
+        arg = call.args[pos] if pos < len(call.args) else None
+        value = _slot_text(call, pos=pos, arg=arg, variables=variables)
+        if value is None:
             continue
-        pattern = None
-        for pos in STRING_SLOTS[node.name]:
-            arg = node.args[pos] if pos < len(node.args) else None
-            value = variables.get(arg.name) if isinstance(arg, Placeholder) else getattr(arg, "value", None)
-            if isinstance(arg, Placeholder) and not isinstance(value, str):
-                raise VariableError(
-                    f"Variable '{arg.name}' fills the {slot_name(node.name, pos)} of {node.name}() and must hold "
-                    f"text; got {type(value).__name__}."
-                )
-            if not isinstance(value, str):
-                continue
-            variable = arg.name if isinstance(arg, Placeholder) else None
-            if node.name == "json_value":
-                if variable:
-                    check_path(node.name, value, variable=variable)
-            elif pos == 1:
-                pattern = check_pattern(node.name, value, variable=variable)
-            elif variable and pattern is not None:
-                check_replacement(node.name, value, pattern=pattern, variable=variable)
-            if variable:
-                names.add(variable)
-    return frozenset(names)
+        variable = arg.name if isinstance(arg, Placeholder) else None
+        pattern = _check_slot(call.name, pos=pos, value=value, variable=variable, pattern=pattern)
+        if isinstance(arg, Placeholder):
+            found.append(arg)
+    return found
+
+
+def _slot_text(call: ScalarCall, *, pos: int, arg: Any, variables: Mapping[str, Any]) -> Optional[str]:
+    """The text filling a slot: a variable's value (which must be text) or a string literal's."""
+    if not isinstance(arg, Placeholder):
+        value = getattr(arg, "value", None)
+        return value if isinstance(value, str) else None
+    value = variables.get(arg.name)
+    if not isinstance(value, str):
+        raise VariableError(
+            f"Variable '{arg.name}' fills the {slot_name(call.name, pos)} of {call.name}() and must hold text; "
+            f"got {type(value).__name__}."
+        )
+    return value
+
+
+def _check_slot(
+    fn: str, *, pos: int, value: str, variable: Optional[str], pattern: Optional[RegexPattern],
+) -> Optional[RegexPattern]:
+    """Checks one slot's text; returns the call's pattern so far."""
+    if fn == "json_value":
+        if variable:
+            check_path(fn, value, variable=variable)
+        return pattern
+    if pos == 1:
+        return check_pattern(fn, value, variable=variable)
+    if variable and pattern is not None:
+        check_replacement(fn, value, pattern=pattern, variable=variable)
+    return pattern
 
 
 def _spliced(
     text: str, *, variables: Mapping[str, Any], regions: List[_Region], kinds: Tuple[str, ...], code_braces: bool,
-    text_slots: frozenset[str] = frozenset(),
+    text_slots: frozenset[int] = frozenset(),
 ) -> str:
     out: List[str] = []
     cursor = 0
+    ordinal = count()
     for region in regions:
         out.append(text[cursor:region.start])
         chunk = text[region.start:region.end]
@@ -1096,7 +1134,7 @@ def _spliced(
             chunk = _ANY_BRACE_RE.sub(
                 partial(
                     _bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables,
-                    text_slots=text_slots,
+                    text_slots=text_slots, ordinal=ordinal,
                 ),
                 chunk,
             )
@@ -1131,7 +1169,7 @@ def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str
 
 def _bound_text(
     match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
-    text_slots: frozenset[str] = frozenset(),
+    text_slots: frozenset[int], ordinal: Iterator[int],
 ) -> str:
     whole = match.group(0)
     if whole in ("{{", "}}"):
@@ -1142,7 +1180,7 @@ def _bound_text(
     value = variables[name]
     if in_string:
         return _value_text(name, value).replace("'", "''")
-    if name in text_slots:
+    if next(ordinal) in text_slots:
         return _literal_text(name, value)
     start = region_start + match.start()
     if _opens_in_list(text, start=start, end=region_start + match.end()):
@@ -1548,7 +1586,7 @@ def _date_trunc(args: Tuple[Any, ...]) -> ParsedExpr:
     unit = args[0].value.lower()
     if not unit.isidentifier() or unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or (
         normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
-    ):
+    ) or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES:
         raise _Problem(f"unknown date_trunc() unit {args[0].value!r}; use a granularity such as 'month'.")
     return _dispatch_call(unit, args=(args[1],), kwargs=(), original=_STATE.text)
 

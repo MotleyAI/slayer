@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Tuple, Union
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,7 +22,7 @@ class LikePattern(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    parts: Tuple[Union[str, LikeWildcard], ...]
+    parts: tuple[str | LikeWildcard, ...]
 
 
 @lru_cache(maxsize=4096)

@@ -184,6 +184,27 @@ class TestGreatestLeastLowering:
         assert "GREATEST_IGNORE_NULLS(" in sql.upper(), sql
 
 
+class TestLogLowering:
+    @pytest.mark.parametrize("dialect", TIER1)
+    async def test_one_argument_log_is_base_ten(self, dialect: str) -> None:
+        sql = (await emit_lib(lib_query("log(x)"), dialect=dialect)).upper()
+        assert "LOG10(" in sql, sql
+        assert "LN(" not in sql, sql
+
+    async def test_bigquery_log2_takes_the_base_argument(self) -> None:
+        sql = (await emit_lib(lib_query("log2(x)"), dialect="bigquery")).upper()
+        assert "LOG2(" not in sql, sql
+        assert "LOG(LIB.X, 2)" in sql, sql
+
+
+class TestTrimLowering:
+    @pytest.mark.parametrize("dialect", ["bigquery", "trino"])
+    @pytest.mark.parametrize("fn", ["trim", "ltrim", "rtrim"])
+    async def test_whitespace_trimming_engines_trim_spaces_only(self, dialect: str, fn: str) -> None:
+        sql = await emit_lib(lib_query(f"{fn}(code)"), dialect=dialect)
+        assert f"{fn.upper()}(LIB.CODE, ' ')" in sql.upper(), sql
+
+
 class TestExcludedFunctions:
     @pytest.mark.parametrize("expr", [
         "initcap(word)", "random()", "to_date(word, 'YYYY')", "strftime(word, '%Y')",

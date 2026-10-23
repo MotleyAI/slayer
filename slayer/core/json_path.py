@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
-_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_KEY_RE = re.compile(r"[A-Za-z_]\w*", re.ASCII)
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MODE_WORDS = ("lax", "strict")
 
 
@@ -25,7 +25,7 @@ class JsonPath(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    steps: Tuple[Union[str, int], ...]
+    steps: tuple[str | int, ...]
 
     @property
     def text(self) -> str:
@@ -33,7 +33,7 @@ class JsonPath(BaseModel):
         return json_path_text(self.steps)
 
 
-def json_path_text(steps: Tuple[Union[str, int], ...]) -> str:
+def json_path_text(steps: tuple[str | int, ...]) -> str:
     """``$`` plus each step: ``.key`` for a plain key, ``."key"`` for any other, ``[n]`` for an index."""
     out = ["$"]
     for step in steps:
@@ -47,9 +47,11 @@ def json_path_text(steps: Tuple[Union[str, int], ...]) -> str:
 
 
 def check_key(key: str) -> str:
-    """``key`` when the subset can spell it (no double quote or backslash)."""
+    """``key`` when the subset can spell it (no double quote, backslash or control character)."""
     if '"' in key or "\\" in key:
         raise JsonPathError(f"the key {key!r} with a double quote or backslash")
+    if _CONTROL_RE.search(key):
+        raise JsonPathError(f"the key {key!r} with a control character")
     return key
 
 
@@ -61,7 +63,7 @@ class _Reader:
     def peek(self) -> str:
         return self.text[self.pos] if self.pos < len(self.text) else ""
 
-    def steps(self) -> Tuple[Union[str, int], ...]:
+    def steps(self) -> tuple[str | int, ...]:
         out: list = []
         while self.pos < len(self.text):
             ch = self.peek()

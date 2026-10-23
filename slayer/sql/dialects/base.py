@@ -6,7 +6,7 @@ import hashlib
 import re
 from datetime import date, datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, Union, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Iterable, Sequence
 
 from pydantic import BaseModel, ConfigDict
@@ -88,8 +88,9 @@ def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
 
 TextFn = Literal[
     "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
-    "chr", "ascii",
+    "chr", "ascii", "trim", "ltrim", "rtrim",
 ]
+TrimFn = Literal["trim", "ltrim", "rtrim"]
 MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
 ExtremumFn = Literal["greatest", "least"]
 
@@ -115,7 +116,7 @@ def case(*branches: tuple[Expression, Expression], default: Optional[Expression]
     return exp.Case(ifs=[exp.If(this=c, true=v) for c, v in branches], default=default)
 
 
-def lit(value: Union[int, str]) -> Expression:
+def lit(value: int | str) -> Expression:
     return exp.Literal.number(value) if isinstance(value, int) else exp.Literal.string(value)
 
 
@@ -506,6 +507,8 @@ class SqlDialect(BaseModel):
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """A library string function with its Postgres meaning (characters, never bytes)."""
         s = args[0]
+        if fn in ("trim", "ltrim", "rtrim"):
+            return self.trim_spaces(fn, s)
         if fn in ("left", "right"):
             return self._left_right(fn=fn, s=s, n=args[1])
         if fn == "starts_with":
@@ -530,6 +533,10 @@ class SqlDialect(BaseModel):
         if fn == "chr":
             return self._code_point_guard(s, self.code_point_char(s))
         return self.first_code_point(s)
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """Postgres ``trim`` / ``ltrim`` / ``rtrim``: spaces only, never other whitespace."""
+        return self.rewrite_target_ast(func(fn.upper(), s))
 
     def _left_right(self, *, fn: TextFn, s: Expression, n: Expression) -> Expression:
         """Postgres ``left`` / ``right``: a negative count drops that many characters from the other end."""
@@ -631,7 +638,7 @@ class SqlDialect(BaseModel):
         name = {"upper": fn.upper(), "lower": fn, "min_max": "MAX" if fn == "greatest" else "MIN"}[spelling]
         return anon(name, *terms)
 
-    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """``left % right`` truncated (the result takes the dividend's sign); ``integer``: both are integers."""
         return exp.Mod(this=operand_copy(left), expression=operand_copy(right))
 
@@ -680,14 +687,14 @@ class SqlDialect(BaseModel):
 
     # LIKE
 
-    def like_pattern(self, pattern: Union[LikePattern, Expression]) -> Expression:
+    def like_pattern(self, pattern: LikePattern | Expression) -> Expression:
         """The pattern as this engine's backslash-escaped LIKE text."""
         if isinstance(pattern, LikePattern):
             return lit(like_text(pattern, brackets=self.like_brackets))
         return like_expression(pattern.copy(), brackets=self.like_brackets)
 
     def build_like(
-        self, value: Expression, pattern: Union[LikePattern, Expression], case_insensitive: bool,
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
     ) -> Expression:
         """``LIKE`` / ``ILIKE`` in the one LIKE pattern language."""
         text = self.like_pattern(pattern)
@@ -712,7 +719,7 @@ class SqlDialect(BaseModel):
         read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
         if native or not self.validates_json_input():
             return read
-        valid = anon("PG_INPUT_IS_VALID", value, lit("jsonb"))
+        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
         return case((valid, read))
 
     def validates_json_input(self) -> bool:
@@ -721,7 +728,7 @@ class SqlDialect(BaseModel):
         return version is not None and version >= (16, 0)
 
     def build_json_value_as(
-        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,
+        self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,  # NOSONAR(S1172) — hook parameter read by dialect overrides
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         return self.build_try_cast(self.build_json_value(value, path, native), to)

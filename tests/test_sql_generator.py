@@ -8344,7 +8344,7 @@ _LOG10_NATIVE_DIALECTS = frozenset({
 })
 _LOG2_NATIVE_DIALECTS = frozenset({
     "sqlite", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
+    "trino", "presto", "databricks", "spark",
 })
 
 

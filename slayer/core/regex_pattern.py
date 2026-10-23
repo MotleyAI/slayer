@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -70,14 +70,14 @@ class RegexRange(_Node):
     high: str
 
 
-BracketItem = Union[RegexChar, RegexRange, RegexClass]
+BracketItem = RegexChar | RegexRange | RegexClass
 
 
 class RegexBracket(_Node):
     """``[…]`` / ``[^…]``."""
 
     negated: bool
-    items: Tuple[BracketItem, ...]
+    items: tuple[BracketItem, ...]
 
 
 class RegexGroup(_Node):
@@ -90,17 +90,17 @@ class RegexGroup(_Node):
 class RegexRepeat(_Node):
     node: "RegexAtom"
     low: int
-    high: Optional[int]
+    high: int | None = None
 
 
-RegexAtom = Union[RegexChar, RegexAny, RegexAnchor, RegexClass, RegexBracket, RegexGroup]
-RegexItem = Union[RegexAtom, RegexRepeat]
+RegexAtom = RegexChar | RegexAny | RegexAnchor | RegexClass | RegexBracket | RegexGroup
+RegexItem = RegexAtom | RegexRepeat
 
 
 class RegexAlt(_Node):
     """Alternatives, each a sequence of items."""
 
-    branches: Tuple[Tuple[RegexItem, ...], ...]
+    branches: tuple[tuple[RegexItem, ...], ...]
 
 
 class RegexPattern(_Node):
@@ -117,7 +117,7 @@ class RegexGroupRef(_Node):
 class RegexReplacement(_Node):
     """A parsed replacement: literal text and ``\\1``-``\\9`` group references."""
 
-    parts: Tuple[Union[str, RegexGroupRef], ...]
+    parts: tuple[str | RegexGroupRef, ...]
 
 
 RegexGroup.model_rebuild()
@@ -147,7 +147,7 @@ class _Parser:
             raise RegexPatternError("the unbalanced parenthesis ')'")
         return RegexAlt(branches=tuple(branches))
 
-    def seq(self) -> Tuple[RegexItem, ...]:
+    def seq(self) -> tuple[RegexItem, ...]:
         items: list = []
         while not self.at_end() and self.peek() not in "|)":
             atom = self.atom()
@@ -190,7 +190,7 @@ class _Parser:
         self.pos += 1
         return RegexGroup(index=index, body=body)
 
-    def escape(self, *, in_bracket: bool) -> Union[RegexChar, RegexClass]:
+    def escape(self, *, in_bracket: bool) -> RegexChar | RegexClass:
         if self.at_end():
             raise RegexPatternError("the trailing backslash '\\'")
         ch = self.peek()
@@ -215,30 +215,35 @@ class _Parser:
         if negated:
             self.pos += 1
         items: list = []
-        first = True
         while True:
             if self.at_end():
                 raise RegexPatternError("the unterminated bracket expression '['")
-            ch = self.peek()
-            if ch == "]" and not first:
+            # A leading ``]`` is literal.
+            if self.peek() == "]" and items:
                 self.pos += 1
                 return RegexBracket(negated=negated, items=tuple(items))
-            first = False
-            if ch == "[" and self.peek(1) in (":", ".", "="):
-                end = self.text.find("]", self.pos)
-                construct = self.text[self.pos + 1:end] if end > 0 else self.text[self.pos + 1:]
-                raise RegexPatternError(f"the POSIX class '[{construct}]'")
-            self.pos += 1
-            item: BracketItem = self.escape(in_bracket=True) if ch == "\\" else RegexChar(char=ch)
-            if isinstance(item, RegexChar) and self.peek() == "-" and self.peek(1) not in ("]", ""):
-                self.pos += 1
-                high_ch = self.peek()
-                self.pos += 1
-                high = self.escape(in_bracket=True) if high_ch == "\\" else RegexChar(char=high_ch)
-                if not isinstance(high, RegexChar) or ord(high.char) < ord(item.char):
-                    raise RegexPatternError(f"the range '{item.char}-{high_ch}'")
-                item = RegexRange(low=item.char, high=high.char)
-            items.append(item)
+            items.append(self.bracket_item())
+
+    def bracket_item(self) -> BracketItem:
+        ch = self.peek()
+        if ch == "[" and self.peek(1) in (":", ".", "="):
+            end = self.text.find("]", self.pos)
+            construct = self.text[self.pos + 1:end] if end > 0 else self.text[self.pos + 1:]
+            raise RegexPatternError(f"the POSIX class '[{construct}]'")
+        self.pos += 1
+        item = self.escape(in_bracket=True) if ch == "\\" else RegexChar(char=ch)
+        if isinstance(item, RegexChar) and self.peek() == "-" and self.peek(1) not in ("]", ""):
+            return self.bracket_range(item)
+        return item
+
+    def bracket_range(self, low: RegexChar) -> RegexRange:
+        self.pos += 1
+        high_ch = self.peek()
+        self.pos += 1
+        high = self.escape(in_bracket=True) if high_ch == "\\" else RegexChar(char=high_ch)
+        if not isinstance(high, RegexChar) or ord(high.char) < ord(low.char):
+            raise RegexPatternError(f"the range '{low.char}-{high_ch}'")
+        return RegexRange(low=low.char, high=high.char)
 
     def quantified(self, atom: RegexAtom) -> RegexItem:
         bounds = self.quantifier()
@@ -256,7 +261,7 @@ class _Parser:
         low, high = bounds
         return RegexRepeat(node=atom, low=low, high=high)
 
-    def quantifier(self) -> Optional[Tuple[int, Optional[int]]]:
+    def quantifier(self) -> tuple[int, int | None] | None:
         self.quant_start = self.pos
         ch = self.peek()
         if ch in ("*", "+", "?"):
@@ -271,7 +276,10 @@ class _Parser:
             raise RegexPatternError("the brace '{' outside a repetition {m}, {m,} or {m,n} (write \\{ for a brace)")
         self.pos = end + 1
         low = int(low_text)
-        high = None if comma and not high_text else int(high_text) if high_text else low
+        if high_text:
+            high = int(high_text)
+        else:
+            high = None if comma else low
         if low > MAX_REPEAT or (high is not None and high > MAX_REPEAT):
             raise RegexPatternError(f"the repetition count above {MAX_REPEAT} in '{{{body}}}'")
         if high is not None and high < low:

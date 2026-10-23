@@ -26,6 +26,7 @@ from slayer.sql.dialects.base import (
     SqlDialect,
     TemporalComparisonOp,
     TextFn,
+    TrimFn,
     _digest,
     anon,
     any_null,
@@ -109,7 +110,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     explain_prefix: str | None = None
     explain_postfix: str = ""
     log10_native: bool = True
-    log2_native: bool = True
+    log2_native: bool = False
     max_identifier_bytes: int | None = 300  # column-name limit
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "bigquery"
@@ -126,6 +127,10 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         if fn == "ascii":
             return anon("UNICODE", args[0])
         return super().build_text_call(fn, args)
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """The bare form strips every whitespace character."""
+        return anon(fn.upper(), s, lit(" "))
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
         """``SPLIT`` indexed by ``SAFE_ORDINAL`` (reversed for a negative index); ``''`` past the end."""

@@ -743,14 +743,20 @@ async def check_library(engine: SlayerQueryEngine, *, gated: frozenset[str] = fr
     for case in library_cases():
         try:
             if gated & set(case.covers):
-                try:
-                    await engine.execute(case.query())
-                except SlayerError as exc:
-                    assert refusal in str(exc), str(exc)
-                else:
-                    raise AssertionError(f"expected a plan-time refusal naming {refusal}")
+                problem = await _refusal_problem(engine, case, refusal=refusal)
             else:
                 await run_case(engine, case)
+                problem = None
         except Exception as exc:  # noqa: BLE001 — report every failing case, not the first
-            failures.append(f"{case.case_id}: {type(exc).__name__}: {exc}")
+            problem = f"{type(exc).__name__}: {exc}"
+        if problem:
+            failures.append(f"{case.case_id}: {problem}")
     assert not failures, "\n\n".join(failures)
+
+
+async def _refusal_problem(engine: SlayerQueryEngine, case: Case, *, refusal: str) -> str | None:
+    try:
+        await engine.execute(case.query())
+    except SlayerError as exc:
+        return None if refusal in str(exc) else f"refusal without {refusal!r}: {exc}"
+    return f"expected a plan-time refusal naming {refusal}"

@@ -72,7 +72,7 @@ class _Emitter:
         low, high = item.low, item.high
         quant = {(0, None): "*", (1, None): "+", (0, 1): "?"}.get((low, high))
         if quant is None:
-            quant = f"{{{low}}}" if high == low else f"{{{low},}}" if high is None else f"{{{low},{high}}}"
+            quant = _braced_repeat(low, high)
         return self.atom(item.node) + quant
 
     def atom(self, atom: object) -> str:
@@ -94,6 +94,14 @@ class _Emitter:
     def bracket(self, negated: bool, ranges: List[List[Tuple[str, str]]]) -> str:
         flat = [r for group in ranges for r in group]
         return ("[^" if negated else "[") + _escaped_bracket(flat) + "]"
+
+
+def _braced_repeat(low: int, high: int | None) -> str:
+    if high == low:
+        return f"{{{low}}}"
+    if high is None:
+        return f"{{{low},}}"
+    return f"{{{low},{high}}}"
 
 
 def _class_ranges(cls: RegexClass) -> List[Tuple[str, str]]:

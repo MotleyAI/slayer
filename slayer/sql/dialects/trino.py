@@ -13,7 +13,7 @@ from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGra
 from slayer.core.errors import SlayerError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import ExtremumFn, SqlDialect, anon, any_null, case, lit
+from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TrimFn, anon, any_null, case, lit
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
 if TYPE_CHECKING:
@@ -146,6 +146,10 @@ class TrinoDialect(PrestoFamilyDialect):
     def first_code_point(self, s: Expression) -> Expression:
         first = exp.Cast(this=anon("SUBSTR", s, lit(1), lit(1)), to=exp.DataType.build("VARCHAR(1)"))
         return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("CODEPOINT", first))
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """The bare form strips every whitespace character."""
+        return anon(fn.upper(), s, lit(" "))
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
         """``element_at`` indexes from either end and is NULL past it."""

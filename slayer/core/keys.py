@@ -1472,20 +1472,29 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, ArithmeticKey):
         return key.op in _INT_OPS and all(integer_valued(o, column_type=column_type) for o in key.operands)
     if isinstance(key, AggregateKey):
-        agg = key.agg.lower()
-        return agg in _INTEGER_RESULT_AGGS or (
-            agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, column_type=column_type)
-        )
+        return _aggregate_integer_valued(key, column_type=column_type)
     if isinstance(key, ScalarCallKey):
-        spec = SCALAR_SPECS.get(key.name)
-        if spec is not None and spec.result is DataType.INT:
-            return True
-        if key.name in _INT_SCALARS or key.name in _VALUE_ARG_SCALARS:
-            values = [a for a in key.args if not _is_null_arg(a)]
-            if key.name in ("round",) and len(key.args) > 1:
-                return False
-            return bool(values) and all(integer_valued(a, column_type=column_type) for a in values)
+        return _scalar_integer_valued(key, column_type=column_type)
     return False
+
+
+def _aggregate_integer_valued(key: AggregateKey, *, column_type: ColumnTypeFn) -> bool:
+    agg = key.agg.lower()
+    return agg in _INTEGER_RESULT_AGGS or (
+        agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, column_type=column_type)
+    )
+
+
+def _scalar_integer_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+    spec = SCALAR_SPECS.get(key.name)
+    if spec is not None and spec.result is DataType.INT:
+        return True
+    if key.name not in _INT_SCALARS and key.name not in _VALUE_ARG_SCALARS:
+        return False
+    if key.name == "round" and len(key.args) > 1:
+        return False
+    values = [a for a in key.args if not _is_null_arg(a)]
+    return bool(values) and all(integer_valued(a, column_type=column_type) for a in values)
 
 
 def _boolean_positions(

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from slayer.core.errors import SlayerError
-from slayer.core.syntax import parse_expr
+from slayer.core.syntax import bind_variables, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2120_fixtures import (
     EXEC_BACKENDS,
@@ -79,6 +79,18 @@ class TestPatternSource:
     async def test_non_literal_replacement_rejected(self, engine: SlayerQueryEngine) -> None:
         await _rejected(engine, "replacement", dimensions=["id", {"expression": "regexp_replace(word, 'a', p)",
                                                                   "name": "v"}])
+
+    @pytest.mark.parametrize("text", [
+        "regexp_like(name, {v}) AND name = {v}",
+        "name = {v} AND regexp_like(name, {v})",
+    ])
+    def test_text_slot_quotes_only_its_own_occurrence(self, text: str) -> None:
+        with pytest.raises(ValueError, match="number or boolean slot"):
+            bind_variables(text, {"v": "abc"})
+
+    def test_every_text_slot_occurrence_quoted(self) -> None:
+        bound = bind_variables("regexp_like(a, {v}) OR regexp_like(b, {v}, 'i')", {"v": "x"})
+        assert bound == "regexp_like(a, 'x') OR regexp_like(b, 'x', 'i')"
 
 
 UNSUPPORTED = [

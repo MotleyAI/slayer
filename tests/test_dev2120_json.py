@@ -13,6 +13,7 @@ from sqlalchemy.dialects import mysql, postgresql
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
+from slayer.core.json_path import JsonPathError, parse_json_path
 from slayer.core.keys import CastKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -133,6 +134,15 @@ class TestPathSubset:
         quoted = path.replace("'", "''")
         await _rejected(engine, f"json_value(payload, '{quoted}')", any_of=names)
 
+    @pytest.mark.parametrize("key", ["a\nb", "a\tb", "a\x00b", "a\x7fb"])
+    def test_control_character_key_rejected(self, key: str) -> None:
+        with pytest.raises(JsonPathError, match="control character"):
+            parse_json_path(f'$."{key}"')
+
+    def test_control_character_arrow_key_rejected(self) -> None:
+        with pytest.raises(ValueError, match="control character"):
+            parse_expr("payload ->> 'a\tb'")
+
     async def test_non_literal_path_rejected(self, engine: SlayerQueryEngine) -> None:
         await _rejected(engine, "json_value(payload, prefix)", any_of=("path",))
 
@@ -216,6 +226,12 @@ class TestPostgresVersion:
         patch_profile(monkeypatch, version=(16, 2))
         sql = await emit_lib(JSON_VALUE_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" in sql.upper(), sql
+
+    async def test_validity_check_reads_text(self, monkeypatch) -> None:
+        # A jsonb column declared TEXT has no implicit cast to pg_input_is_valid's text argument.
+        patch_profile(monkeypatch, version=(16, 2))
+        sql = await emit_lib(JSON_VALUE_Q, dialect="postgres")
+        assert "PG_INPUT_IS_VALID(CAST(" in sql.upper(), sql
 
     @pytest.mark.parametrize("version", [(15, 4), None])
     async def test_older_or_unknown_server_follows_the_cast_contract(self, monkeypatch, version) -> None:

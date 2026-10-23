@@ -290,6 +290,9 @@ def render_scalar_call(
         return dialect.rewrite_target_ast(library)
     if name == "mod":
         return dialect.build_modulo(args[0], args[1], True)
+    if name == "log" and len(args) == 1:
+        # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
+        return passthrough_call(name="log10", args=args, dialect=dialect)
     return passthrough_call(name=name, args=args, dialect=dialect)
 
 

@@ -13,7 +13,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from typing import Callable, ClassVar, Optional, Union
+from typing import Callable, ClassVar, Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
@@ -639,7 +639,7 @@ class SqliteDialect(SqlDialect):
                     lit("i" if case_insensitive else ""))
 
     def build_like(
-        self, value: Expression, pattern: Union[LikePattern, Expression], case_insensitive: bool,
+        self, value: Expression, pattern: LikePattern | Expression, case_insensitive: bool,
     ) -> Expression:
         """``LIKE`` is ``GLOB`` over the converted pattern (case-sensitive whatever the collation);
         ``ILIKE`` is SQLite's own case-insensitive ``LIKE``."""

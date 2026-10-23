@@ -7,7 +7,7 @@ from typing import Any
 import pydantic
 import pytest
 
-from slayer.core.errors import UnknownGranularityError
+from slayer.core.errors import UnknownFunctionError, UnknownGranularityError
 from slayer.core.models import Aggregation
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
@@ -84,11 +84,16 @@ class TestUnknownUnit:
         with pytest.raises(UnknownGranularityError):
             await engine.execute(query)
 
+    @pytest.mark.parametrize("unit", ["doy", "dow", "weekday", "dayofweek", "isodow"])
+    def test_date_part_names_are_not_units(self, unit: str) -> None:
+        with pytest.raises(ValueError, match="unknown date_trunc"):
+            parse_expr(f"date_trunc('{unit}', ts)")
+
     async def test_expression_raises_the_granularity_calls_error(self, engine: SlayerQueryEngine) -> None:
         query = lib_query("date_trunc('fortnight', ts)")
-        with pytest.raises(Exception) as trunc:  # noqa: B017 — compared with the granularity call's own error below
+        with pytest.raises(UnknownFunctionError) as trunc:
             await engine.execute(query)
         query = lib_query("fortnight(ts)")
-        with pytest.raises(Exception) as gran:  # noqa: B017
+        with pytest.raises(UnknownFunctionError) as gran:
             await engine.execute(query)
         assert isinstance(trunc.value, (UnknownGranularityError, type(gran.value))), trunc.value

@@ -1301,23 +1301,45 @@ def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey
         return numeric_valued(k, column_type=column_type)
 
     if isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _COERCED_OPS and len(rebuilt.operands) == 2:
-        left, right = rebuilt.operands
-        if text(left) and number(right):
-            return rebuilt.model_copy(update={"operands": (_as_number(left, beside=right), right)})
-        if number(left) and text(right):
-            return rebuilt.model_copy(update={"operands": (left, _as_number(right, beside=left))})
-        return rebuilt
+        return _coerce_binary(rebuilt, text=text, number=number)
     if isinstance(rebuilt, InKey):
-        if text(rebuilt.column) and all(number(v) for v in rebuilt.values):
-            return rebuilt.model_copy(update={"column": _as_number(rebuilt.column, beside=rebuilt.values[0])})
-        if number(rebuilt.column) and any(text(v) for v in rebuilt.values):
-            values = tuple(cast(LiteralKey, _as_number(v, beside=rebuilt.column)) if text(v) else v
-                           for v in rebuilt.values)
-            return rebuilt.model_copy(update={"values": values})
-        return rebuilt
+        return _coerce_in(rebuilt, text=text, number=number)
     if isinstance(rebuilt, ScalarCallKey):
         return _coerce_scalar_args(rebuilt, text=text, number=number)
     return rebuilt
+
+
+def _coerce_binary(key: ArithmeticKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    left, right = key.operands
+    if text(left) and number(right):
+        return key.model_copy(update={"operands": (_as_number(left, beside=right), right)})
+    if number(left) and text(right):
+        return key.model_copy(update={"operands": (left, _as_number(right, beside=left))})
+    return key
+
+
+def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+    if text(key.column) and all(number(v) for v in key.values):
+        return key.model_copy(update={"column": _as_number(key.column, beside=key.values[0])})
+    if number(key.column) and any(text(v) for v in key.values):
+        values = tuple(cast(LiteralKey, _as_number(v, beside=key.column)) if text(v) else v for v in key.values)
+        return key.model_copy(update={"values": values})
+    return key
+
+
+def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) -> list:
+    """A number function's arguments: TEXT literals converted, any other TEXT refused."""
+    args = list(key.args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
+            args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
+        elif text(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
+                suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
+            )
+    return args
 
 
 def _coerce_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
@@ -1327,15 +1349,7 @@ def _coerce_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool], n
         if numbers:
             args = [_as_number(cast(ValueKey, a), beside=cast(ValueKey, numbers[0])) if text(a) else a for a in args]
     elif key.name in NUMERIC_ARG_SCALARS:
-        for i, arg in enumerate(args):
-            if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
-                args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
-            elif text(arg):
-                display = _operand_display(arg)
-                raise ScalarOperandTypeError(
-                    summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
-                    suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
-                )
+        args = _numeric_scalar_args(key, text=text)
     elif key.name == "concat":
         args = [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
                 for a in args]
