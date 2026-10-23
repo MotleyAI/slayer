@@ -48,7 +48,7 @@ Write tests from the specs of this change. Scenarios needing DEV-2101 forms (`CA
 
 ## 8. Architecture
 
-- [ ] 8.1 Apply H1 and H2 exactly as in design.md with `enforced: test:` tags naming this change's tests; verify `la-arch-check`
+- [x] 8.1 Apply H1 and H2 exactly as in design.md with `enforced: test:` tags naming this change's tests; verify `la-arch-check`
 
 ## 9. Docs and agent surfaces
 
