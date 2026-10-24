@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
@@ -175,6 +176,19 @@ def run_python(code: str, *, env: dict[str, str], timeout: float = SUBPROCESS_TI
     )
 
 
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def wait_for_port(port: int, *, timeout: float = 60.0) -> bool:
+    def listening() -> bool:
+        with socket.socket() as sock:
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+    return wait_until(listening, timeout=timeout)
+
+
 # --- sentinels --------------------------------------------------------------------------
 
 
@@ -278,8 +292,12 @@ class McpStdio:
         self.stderr = bytearray()
         self._lines: queue.Queue[bytes] = queue.Queue()
         self._next_id = 1
-        threading.Thread(target=self._pump_stdout, daemon=True).start()
-        threading.Thread(target=self._pump_stderr, daemon=True).start()
+        self._pumps = [
+            threading.Thread(target=self._pump_stdout, daemon=True),
+            threading.Thread(target=self._pump_stderr, daemon=True),
+        ]
+        for pump in self._pumps:
+            pump.start()
 
     def _pump_stdout(self) -> None:
         assert self.proc.stdout is not None
@@ -326,7 +344,14 @@ class McpStdio:
         self.proc.stdin.close()
 
     def wait(self, *, timeout: float = 30.0) -> int:
-        return self.proc.wait(timeout=timeout)
+        """Wait for exit and for stdout/stderr to be fully read."""
+        returncode = self.proc.wait(timeout=timeout)
+        for pump in self._pumps:
+            pump.join(timeout=10)
+        return returncode
+
+    def stderr_text(self) -> str:
+        return bytes(self.stderr).decode(errors="replace")
 
     def kill(self) -> None:
         if self.proc.poll() is None:

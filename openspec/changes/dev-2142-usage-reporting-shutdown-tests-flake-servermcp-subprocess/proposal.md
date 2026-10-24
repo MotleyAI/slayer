@@ -4,7 +4,7 @@ Server commands sometimes do not exit after SIGTERM/SIGINT (DEV-2142). Stdio `sl
 
 ## What Changes
 
-- One CLI-owned shutdown path for every server command (`serve`, `mcp`, `pg-serve`, `flight-serve`): the server's blocking loop runs in a worker thread; the main thread only waits; a termination signal calls the server's own stop and never raises into server code.
+- One CLI-owned shutdown path for every server command (`serve`, `mcp`, `pg-serve`, `flight-serve`): the server's blocking loop runs in a worker thread; the main thread only waits; a termination signal calls the server's own stop and never raises into a running server loop.
 - SIGTERM and SIGINT handlers installed as soon as a server command is parsed, chaining any callable handler already installed and leaving an inherited `SIG_IGN` ignored.
 - **BREAKING** Every server command stopped by SIGTERM/SIGINT exits 143/130 with no traceback (`serve`/`pg-serve` SIGINT exited 0; `flight-serve` SIGINT died by signal with a traceback).
 - A second SIGTERM/SIGINT during a graceful stop spools and exits at once.

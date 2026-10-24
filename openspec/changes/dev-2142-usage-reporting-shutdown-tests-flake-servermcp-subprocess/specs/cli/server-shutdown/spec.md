@@ -12,8 +12,8 @@ From the moment a server command starts, SIGTERM or SIGINT SHALL stop it, whatev
 - **THEN** it exits with 143 or 130 and stderr carries no traceback
 
 #### Scenario: Signal during startup
-- **WHEN** a server command receives SIGTERM before it accepts connections
-- **THEN** it exits with 143
+- **WHEN** a server command receives SIGTERM or SIGINT before it accepts connections
+- **THEN** it exits with 143 or 130 and stderr carries no traceback
 
 #### Scenario: Pre-installed handler
 - **WHEN** a handler for SIGTERM was installed before the command started and SIGTERM arrives

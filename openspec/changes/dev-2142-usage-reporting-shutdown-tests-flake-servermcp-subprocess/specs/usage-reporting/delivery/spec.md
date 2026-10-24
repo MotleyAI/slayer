@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Usage is spooled locally at process end
-Each process SHALL keep its counters in memory and write them to its own spool file when it ends — normal exit, SIGINT, server shutdown, end of input or broken pipe on stdio MCP, and SIGTERM for every server command (`serve`, `mcp`, `pg-serve`, `flight-serve`, chaining any handler already installed) — with no network request at that point. A server command stopped by SIGTERM or SIGINT SHALL count as a successful run; any other command interrupted by a signal SHALL count as failed. A process killed with SIGKILL loses its counts. A process that forks SHALL start the child with empty counters.
+Each process SHALL keep its counters in memory and write them to its own spool file when it ends — normal exit, SIGINT, server shutdown, end of input or broken pipe on stdio MCP, and SIGTERM for every server command (`serve`, `mcp`, `pg-serve`, `flight-serve`, chaining any handler already installed) — with no network request at that point. A server command stopped by SIGTERM or SIGINT SHALL count as a successful run, unless a second signal forces the stop before usage recording has started; any other command interrupted by a signal SHALL count as failed. A process killed with SIGKILL loses its counts. A process that forks SHALL start the child with empty counters.
 
 #### Scenario: stdio MCP terminated
 - **WHEN** an MCP client sends SIGTERM to a `slayer mcp` process that handled tool calls
@@ -12,7 +12,7 @@ Each process SHALL keep its counters in memory and write them to its own spool f
 - **THEN** it exits and its counters are written to a spool file
 
 #### Scenario: Signal-stopped server counts as ok
-- **WHEN** a server command is stopped by SIGTERM or SIGINT
+- **WHEN** a server command is stopped by SIGTERM or SIGINT — during startup, while serving, or forced by a second signal
 - **THEN** the report counts that command once as ok, with no error
 
 #### Scenario: Concurrent processes
