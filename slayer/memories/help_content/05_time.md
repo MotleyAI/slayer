@@ -43,5 +43,5 @@ incomplete bucket.
 ## Granularity calls
 
 `month(created_at)` in `dimensions`, `time_dimensions`, filters or order buckets the
-column: second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter,
+column, or any DATE/TIMESTAMP expression (`month(coalesce(shipped_at, created_at))`): second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter,
 year, or a custom granularity defined on the datasource (fiscal years and the like).

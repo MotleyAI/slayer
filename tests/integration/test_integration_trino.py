@@ -400,7 +400,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -416,7 +416,7 @@ class TestTrinoQueries:
     async def test_consecutive_periods_with_boolean_predicate(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="total:sum"),
                 ModelMeasure(formula="consecutive_periods(total:sum > 200)", name="positive_run"),
@@ -435,7 +435,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[ModelMeasure(formula="total:sum"), ModelMeasure(formula="change(total:sum)", name="amount_change")],
@@ -448,7 +448,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[ModelMeasure(formula="total:sum"), ModelMeasure(formula="change_pct(total:sum)", name="pct")],
@@ -461,7 +461,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -634,7 +634,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_cross_model_measure(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         result = await trino_cross_model_env.execute(query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         ))
@@ -645,7 +645,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_query_list_named(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
         outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
@@ -655,7 +655,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_create_model_from_query(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
         saved = await trino_cross_model_env.create_model_from_query(query=source, name="trino_monthly")

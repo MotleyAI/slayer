@@ -166,6 +166,7 @@ _DUCKDB_TRANSIENT_SIGNATURES = (
     r"broken pipe",
     r"could not establish",
     r"failed to (?:connect|download)",
+    r"remote file has changed",  # CDN edges serving different ETags mid-read
 )
 
 # httpfs transport errors DuckDB emits without naming the URL, but which can only

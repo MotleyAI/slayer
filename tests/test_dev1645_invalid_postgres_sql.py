@@ -282,7 +282,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],  # windowed -> combined CTE path
             filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
@@ -362,7 +362,7 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
             filters=["customers.regions.name == 'US'"],
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],

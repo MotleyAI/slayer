@@ -17,7 +17,6 @@ from tests._dev1835_fixtures import (
     OK_W90,
     REGION_LAST,
     TimeDimension,
-    ColumnRef,
     TimeGranularity,
     make_exec_engine,
     make_shipped_exec_engine,
@@ -62,7 +61,7 @@ class TestFrameBoundExecuted:
         ranged = await engine.execute(q(
             dimensions=["region"],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-12-31"],
             )],
@@ -88,7 +87,7 @@ class TestFrameBoundExecuted:
         ranged = await engine.execute(q(
             dimensions=["region"],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-12-31"],
             )],

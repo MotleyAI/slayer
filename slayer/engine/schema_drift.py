@@ -68,6 +68,7 @@ from slayer.sql import engine_factory, sqlite_introspect
 from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
+from slayer.ir.source_bundle import added_joins
 
 logger = logging.getLogger(__name__)
 
@@ -769,6 +770,8 @@ def _build_stage_graph(
     extension_joins = _stage_source_joins(stage)
     extension_targets = {j.target_model for j in extension_joins}
     base = models_by_name.get(stage_source_name) if stage_source_name else None
+    if base is not None:
+        extension_joins = added_joins(base=base, joins=extension_joins)
     source = base.model_copy(update={"joins": [*base.joins, *extension_joins]}) if base is not None else None
     models = {**models_by_name, source.name: source} if source is not None else models_by_name
     roots = [source] if source is not None else [models[t] for t in sorted(extension_targets) if t in models]
@@ -876,7 +879,7 @@ def _stage_refs(stage: SlayerQuery) -> list[str]:
         for ref in _measure_formula_refs(formula)
     ]
     refs += [getattr(d, "full_name", None) or str(d) for d in stage.dimensions or []]
-    refs += [td.dimension.full_name for td in stage.time_dimensions or []]
+    refs += [ref for td in stage.time_dimensions or [] for ref in _measure_formula_refs(td.dimension)]
     # Mode-B (DSL) filters: use the DSL parser so aggregations/transforms surface.
     refs += [col for f in stage.filters or [] for col in _filter_refs_dsl(f)]
     return refs

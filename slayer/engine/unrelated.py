@@ -63,7 +63,7 @@ def first_hop_names(query: SlayerQuery) -> set[str]:
         out.update(_parsed_heads(d.expression, as_filter=False) if isinstance(d, ComputedDimension)
                    else _path_head(d.full_name))
     for td in query.time_dimensions or []:
-        out.update(_path_head(td.dimension.full_name))
+        out.update(_parsed_heads(td.dimension, as_filter=False))
     for f in query.filters or []:
         out.update(_parsed_heads(f, as_filter=True))
     for o in query.order or []:
@@ -146,7 +146,7 @@ class ProductSides:
         elif isinstance(node, TransformKey):
             yield from self._walk_transform(node, inputs=inputs)
         elif isinstance(node, TimeTruncKey):
-            yield from self._walk(node.column, inputs=inputs)
+            yield from self._walk(node.source, inputs=inputs)
         elif isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
             if not inputs:
                 yield from ((node, dataset) for dataset in sorted(self.crossed(node)))
@@ -189,7 +189,7 @@ def _row_leaves(node: ValueKey) -> Iterator[ValueKey]:
     if isinstance(node, (AggregateKey, TransformKey)):
         return
     if isinstance(node, TimeTruncKey):
-        yield from _row_leaves(node.column)
+        yield from _row_leaves(node.source)
         return
     if isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
         yield node

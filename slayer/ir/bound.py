@@ -45,16 +45,17 @@ class BoundExpr(BaseModel):
 
 
 class BoundTimeDimension(BaseModel):
-    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the column
-    facts the checker judges — ``column_type`` and the recorded bucket
-    ``upstream_granularity`` (from a bucketed stage column or a model ``Column``'s
-    ``granularity``; ``None`` for an un-bucketed column)."""
+    """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
+    checker judges — a column's ``column_type`` (an expression is typed by the checker)
+    and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
+    ``Column``'s ``granularity`` records."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     bound: BoundExpr
     column_type: Optional[DataType] = None
-    upstream_granularity: Optional[Granularity] = None
+    bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
+    is_expression: bool = False
 
 
 def bound_filter_from_key(vk: ValueKey) -> BoundFilter:

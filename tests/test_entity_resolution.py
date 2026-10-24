@@ -593,7 +593,7 @@ class TestExtractEntitiesFromQuery:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="ordered_at"),
+                    dimension="ordered_at",
                     granularity=TimeGranularity.DAY,
                 )
             ],

@@ -12,7 +12,8 @@ filters, order, and computed dimensions.
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), plus the model's custom aggregations
-(`inspect` the model to list them).
+(`inspect` the model to list them). Any column argument may be a row-level expression:
+`weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
 `name=value` is a keyword argument in an aggregation or transform but a comparison in a
 scalar function (`iif(status = 'paid', …)`); write `==` for a comparison in a keyword slot.
 
@@ -43,7 +44,8 @@ suggested free name.
 
 `partition_by=` computes the aggregate at a coarser grain and repeats it on every row:
 one key, a list, a dotted path for a joined column, or `[]` for the grand total. Keys
-are spelled exactly like the query's dimensions. In a measure, filter, order or
+are spelled exactly like the query's dimensions, an expression key (`upper(city)`) being
+the computed dimension with that expression. In a measure, filter, order or
 transform input every key must be one of the query's dimensions (a time dimension
 partitions by its bucket). The coarser total is computed over the rows that pass the
 row-level conditions; aggregate conditions and `limit` never change it.

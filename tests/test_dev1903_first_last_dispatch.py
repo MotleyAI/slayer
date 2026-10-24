@@ -162,9 +162,10 @@ class TestBindDispatch:
         ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["store"]}),
         ("first(1)", {}),
     ])
-    def test_row_grain_expression_keeps_expression_error(self, formula, kw):
-        with pytest.raises(ValueError, match="not supported over an expression"):
-            _measure_key(formula, **kw)
+    def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):
+        key = _measure_key(formula, **kw)
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == "first"
 
     def test_transform_kwarg_error(self):
         with pytest.raises(

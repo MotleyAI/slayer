@@ -832,7 +832,7 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
         source_model="A",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="shifted_ts", model="B.C"),
+                dimension="B.C.shifted_ts",
                 granularity=TimeGranularity.DAY,
             )
         ],

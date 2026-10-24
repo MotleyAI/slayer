@@ -425,13 +425,6 @@ class TestExpressionErrors:
         resp = await _dry(q)
         assert resp.sql
 
-    async def test_first_last_over_expression_rejected(self) -> None:
-        # first/last need a plain column — the ranked kernel can't rank an
-        # expression, so reject at binding instead of crashing at SQL time.
-        q = _q(measures=["last(amount - cost, created_at)"])
-        with pytest.raises(ValueError, match="(?i)expression"):
-            await _dry(q)
-
 
 # ===========================================================================
 # Gates and types.

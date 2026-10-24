@@ -99,7 +99,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 CM = ModelMeasure(formula="policy_amount.policy_amount:sum", name="cm")
-MONTH = [TimeDimension(dimension=ColumnRef(name="created_at"),
+MONTH = [TimeDimension(dimension="created_at",
                        granularity=TimeGranularity.MONTH)]
 
 

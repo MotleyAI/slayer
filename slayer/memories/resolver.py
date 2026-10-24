@@ -550,7 +550,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
     local_names = {m.name for m in query.measures or [] if m.name} | {
         d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
-    }
+    } | {td.name for td in query.time_dimensions or [] if td.name}
     for kind, text in query_field_texts(query):
         for token in _field_entity_tokens(kind, text):
             if token in local_names:
