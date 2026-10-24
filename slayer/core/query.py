@@ -693,6 +693,16 @@ def computed_dimension_name(expression: str) -> str:
     return auto_name_from_expression(_canonical_expression_text(expression))
 
 
+def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
+    """A named or expression time dimension's name and what it may repeat for; ``None`` for an unnamed column."""
+    if td.name is None and td.column_ref is not None:
+        return None
+    text = _canonical_expression_text(td.template)
+    if td.name is not None:
+        return td.name, ("named", text, str(td.granularity))
+    return computed_dimension_name(td.template), ("auto", text)
+
+
 def _canonical_expression_text(expression: str) -> str:
     try:
         return canonical_measure_text(parse_expr(expression))
@@ -1452,13 +1462,9 @@ class SlayerQuery(BaseModel):
                 taken.add(name)
         identities: dict[str, tuple] = {}
         for td in self.time_dimensions or ():
-            if td.name is None and td.column_ref is not None:
+            if (named := _time_dimension_name_identity(td)) is None:
                 continue
-            text = _canonical_expression_text(td.template)
-            if td.name is not None:
-                name, identity = td.name, ("named", text, str(td.granularity))
-            else:
-                name, identity = computed_dimension_name(td.template), ("auto", text)
+            name, identity = named
             if name in taken or identities.setdefault(name, identity) != identity:
                 raise ValueError(
                     f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "

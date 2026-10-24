@@ -2717,23 +2717,16 @@ class SQLGenerator:
         cast_derived: bool = True,
     ) -> Expression:
         """One value expression anchored in a ranked CTE's own scope."""
-
-        def _register(expr: Expression, path: Tuple[str, ...]) -> None:
-            if path:
-                scope.join_paths.add(path)
-            for p in self._joined_paths_in_sql(
-                sql_expr=expr, source_relation=root_relation,
-                source_model=root_model, bundle=bundle,
-            ):
-                scope.join_paths.add(p)
-
         if isinstance(key, TimeTruncKey):
             if isinstance(key.source, (ColumnKey, ColumnSqlKey)):
                 raw = self._raw_time_col_expr_for_planned(
                     time_column=key.source, source_model=root_model,
                     source_relation=root_relation, bundle=bundle,
                 )
-                _register(raw, column_path(key.source))
+                self._register_ranked_paths(
+                    raw, column_path(key.source), root_model=root_model, root_relation=root_relation,
+                    bundle=bundle, scope=scope,
+                )
             else:
                 raw = self._ranked_scope_expr(
                     key=key.source, root_model=root_model, root_relation=root_relation,
@@ -2745,27 +2738,51 @@ class SQLGenerator:
                 path=key.path, leaf=key.leaf, source_model=root_model,
                 source_relation=root_relation, bundle=bundle,
             )
-            _register(expr, key.path)
+            self._register_ranked_paths(
+                expr, key.path, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+            )
             return expr
         if isinstance(key, ColumnSqlKey):
-            expr = self._derived_column_expr(
-                key=key, source_model=root_model,
-                source_relation=root_relation, bundle=bundle,
+            return self._ranked_derived_column_expr(
+                key=key, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+                cast_derived=cast_derived,
             )
-            if expr is None:
-                raise ValueError(
-                    f"Derived column {key.column_name!r} on model "
-                    f"{key.path[-1] if key.path else root_model.name!r} is not "
-                    f"in the resolved source bundle.",
-                )
-            _register(expr, key.path)
-            return expr if cast_derived else _strip_declared_cast(expr)
         if isinstance(key, (*SLOT_COMPOSITE_KINDS, LiteralKey)):
             return render_value_key(key=key, ctx=RenderContext(scope=scope, dialect=self._dialect))
         raise NotImplementedError(
             f"Ranked CTE cannot anchor a {type(key).__name__} — the grain and "
             f"the ranking key are row-level values.",
         )
+
+    def _ranked_derived_column_expr(
+        self, *, key: ColumnSqlKey, root_model, root_relation: str, bundle, scope: ScopeFrame, cast_derived: bool,
+    ) -> Expression:
+        expr = self._derived_column_expr(
+            key=key, source_model=root_model,
+            source_relation=root_relation, bundle=bundle,
+        )
+        if expr is None:
+            raise ValueError(
+                f"Derived column {key.column_name!r} on model "
+                f"{key.path[-1] if key.path else root_model.name!r} is not "
+                f"in the resolved source bundle.",
+            )
+        self._register_ranked_paths(
+            expr, key.path, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+        )
+        return expr if cast_derived else _strip_declared_cast(expr)
+
+    def _register_ranked_paths(
+        self, expr: Expression, path: Tuple[str, ...], *, root_model, root_relation: str, bundle, scope: ScopeFrame,
+    ) -> None:
+        """Record the join paths ``expr`` reads (``path`` included) in the ranked CTE's scope."""
+        if path:
+            scope.join_paths.add(path)
+        for p in self._joined_paths_in_sql(
+            sql_expr=expr, source_relation=root_relation,
+            source_model=root_model, bundle=bundle,
+        ):
+            scope.join_paths.add(p)
 
     def _ranked_value_expr(
         self, *, key, root_model, root_relation: str, bundle, scope: ScopeFrame,
