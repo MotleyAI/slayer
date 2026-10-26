@@ -1,4 +1,4 @@
-"""DEV-1444: outermost SELECT must project exactly user-declared dims+measures.
+"""Outermost SELECT must project exactly user-declared dims+measures.
 
 These tests pin the contract that the rendered outermost SELECT projects
 only the user-declared ``dimensions + time_dimensions + measures`` of the
@@ -81,7 +81,7 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> list[s
 
 # Fixtures
 async def _generate(query: SlayerQuery, model: SlayerModel, *, dialect: str = "postgres") -> str:
-    """Render a query's SQL through the typed pipeline (DEV-1484). The typed
+    """Render a query's SQL through the typed pipeline. The typed
     pipeline emits the outer projection trim directly — the legacy
     ``render_mode`` parameter is gone, so callers just inspect the emitted SQL.
     """
@@ -90,7 +90,7 @@ async def _generate(query: SlayerQuery, model: SlayerModel, *, dialect: str = "p
 
 @pytest.fixture
 def funds_model() -> SlayerModel:
-    """Mirrors the ``exchange_traded_funds.funds`` shape from the DEV-1444 repros."""
+    """Mirrors the ``exchange_traded_funds.funds`` shape from the original repros."""
     return SlayerModel(
         name="funds",
         sql_table="funds",
@@ -128,7 +128,7 @@ def orders_model() -> SlayerModel:
 
 
 async def _save_test_datasource(storage: YAMLStorage) -> None:
-    """DEV-1444 helper: persist a sqlite ``test`` datasource so dry-run/
+    """Persist a sqlite ``test`` datasource so dry-run/
     execute paths can resolve a dialect for any model whose
     ``data_source='test'``."""
     await storage.save_datasource(
@@ -164,8 +164,8 @@ async def orders_customers_engine(tmp_path):
     return SlayerQueryEngine(storage=storage), orders
 
 
-# Group A — DEV-1444 repros (the literal three issue reproducers).
-class TestDev1444Repros:
+# Group A — the literal three issue reproducers.
+class TestProjectionTrimRepros:
     async def test_repro1_order_by_aggregate_not_projected(
         self, funds_model: SlayerModel,
     ) -> None:
@@ -951,8 +951,8 @@ class TestProvenance:
             "orders.total",
             "orders.n",
         ], f"unexpected projection order:\n{sql}"
-        # DEV-1501: hidden order/filter aggregates materialise as inner
-        # base-CTE columns (engine.arc42.md P4). The hidden ``quantity_sum``
+        # Hidden order/filter aggregates materialise as inner
+        # base-CTE columns (python.engine.arc42.md P4). The hidden ``quantity_sum``
         # alias may appear in inner CTE / base SELECT but MUST NOT
         # appear in the OUTER public projection.
         assert all(
@@ -1208,12 +1208,12 @@ class TestCallSitesAndContractPins:
     async def test_get_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """DEV-1452 Stage B — ``get_column_types`` renders its type-probe
+        """``get_column_types`` renders its type-probe
         SQL through the typed ``generate_planned_stages`` entry point.
 
         (Was ``test_get_column_types_does_not_call_legacy_generate``, which
         spied on ``SQLGenerator.generate`` and asserted it was never called
-        with an ``enriched=`` kwarg. DEV-1703 deletes that entry point
+        with an ``enriched=`` kwarg. That entry point is deleted
         outright, so the negative form is both unspyable — there is no
         attribute left to patch — and vacuous. The positive half of the
         same contract is what is pinned here: the probe goes through the

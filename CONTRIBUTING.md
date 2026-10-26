@@ -84,7 +84,7 @@ Make changes with `/la:pr` in [Claude Code](https://docs.claude.com/en/docs/clau
 **Install the `la` plugin** at the version pinned in `pyproject.toml`, from inside Claude Code:
 
 ```text
-/plugin marketplace add MotleyAI/living-architecture#v0.3.1
+/plugin marketplace add MotleyAI/living-architecture#v0.4.0
 /plugin install la@living-architecture
 ```
 
