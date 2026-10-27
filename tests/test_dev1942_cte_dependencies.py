@@ -1,4 +1,4 @@
-"""DEV-1942 task 1.5 — CTE dependencies are declared (sql.arc42.md P6).
+"""CTE dependencies are declared (python.sql.arc42.md P6).
 
 The forward-reference validator (``assert_dependency_ordered_ctes``) flags any CTE
 that reads a sibling declared later in the same ``WITH`` — the DuckDB-rejected shape
