@@ -1087,8 +1087,8 @@ class SqlDialect(BaseModel):
             .where(all_of(where))
         )
 
-    def reflect_schema_description(  # NOSONAR(S1172) — no-op hook default
-        self, *, sa_engine: "sa.Engine", schema: str | None, configured_schema: str | None,
+    def reflect_schema_description(
+        self, *, sa_engine: "sa.Engine", schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
     ) -> str | None:
         """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
         return None

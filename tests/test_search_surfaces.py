@@ -1,5 +1,5 @@
 """End-to-end surface tests for the `search` MCP tool, REST endpoint,
-CLI subcommand, and Python client (DEV-1375).
+CLI subcommand, and Python client.
 
 Each surface delegates to the same `SearchService`; these tests confirm
 the wiring + the surface-specific I/O contract (JSON wrapping, error
@@ -86,12 +86,10 @@ async def test_mcp_search_tool_returns_json_with_three_lists(
 
 @pytest.mark.asyncio
 async def test_mcp_search_path_wires_engine_into_search_service(
-    storage_with_corpus: StorageBackend,
+    storage_with_corpus: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DEV-1516 codex finding #1: ``create_mcp_server`` constructs a
-    ``SearchService`` with an engine kwarg so the search-side refresh
-    actually fires in the MCP product path. This test catches a regression
-    where the engine wiring is dropped (the helper would silently no-op)."""
+    """``create_mcp_server`` constructs a ``SearchService`` with an engine kwarg
+    so the search-side refresh actually fires in the MCP product path."""
     constructed: list = []
 
     real_init = SearchService.__init__
@@ -102,12 +100,8 @@ async def test_mcp_search_path_wires_engine_into_search_service(
 
     # Patch on the class so the MCP factory's `SearchService(storage=..., engine=...)`
     # call funnels through us.
-    original = SearchService.__init__
-    SearchService.__init__ = capturing_init  # type: ignore[assignment]
-    try:
-        create_mcp_server(storage=storage_with_corpus)
-    finally:
-        SearchService.__init__ = original  # type: ignore[assignment]
+    monkeypatch.setattr(SearchService, "__init__", capturing_init)
+    create_mcp_server(storage=storage_with_corpus)
 
     assert constructed, "create_mcp_server should construct SearchService"
     # At least one construction must include a non-None engine kwarg.
@@ -122,7 +116,7 @@ async def test_mcp_search_path_wires_engine_into_search_service(
 
 @pytest.mark.asyncio
 async def test_rest_search_path_wires_engine_into_search_service(
-    storage_with_corpus: StorageBackend,
+    storage_with_corpus: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """REST counterpart of the MCP wiring test. ``create_app`` must also
     pass the engine to SearchService."""
@@ -133,12 +127,8 @@ async def test_rest_search_path_wires_engine_into_search_service(
         constructed.append(kwargs)
         return real_init(self, *args, **kwargs)
 
-    original = SearchService.__init__
-    SearchService.__init__ = capturing_init  # type: ignore[assignment]
-    try:
-        create_app(storage=storage_with_corpus)
-    finally:
-        SearchService.__init__ = original  # type: ignore[assignment]
+    monkeypatch.setattr(SearchService, "__init__", capturing_init)
+    create_app(storage=storage_with_corpus)
 
     assert constructed, "create_app should construct SearchService"
     assert any(
@@ -153,7 +143,7 @@ async def test_rest_search_path_wires_engine_into_search_service(
 async def test_mcp_search_friendly_warning_on_unknown_entity(
     storage_with_corpus: StorageBackend,
 ) -> None:
-    """DEV-1428: unknown entities become warnings; the MCP tool still
+    """Unknown entities become warnings; the MCP tool still
     returns the regular JSON response (the warning is visible inside)."""
     mcp = create_mcp_server(storage=storage_with_corpus)
     result_text = await _call_mcp_tool(
@@ -205,7 +195,7 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
 
 
 def test_rest_post_search_unknown_entity_returns_warning(tmp_path) -> None:
-    """DEV-1428: unknown entities become warnings rather than 400 — the
+    """Unknown entities become warnings rather than 400 — the
     REST endpoint returns 200 with the warning in ``warnings``."""
     storage = resolve_storage(str(tmp_path / "storage"))
 
@@ -328,7 +318,7 @@ async def test_client_search_round_trip(
 
 
 # ---------------------------------------------------------------------------
-# datasource filter (DEV-1409) — one test per surface
+# datasource filter — one test per surface
 # ---------------------------------------------------------------------------
 
 

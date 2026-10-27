@@ -36,6 +36,22 @@ _MYSQL_PART_FUNCTIONS = {
 }
 
 
+def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
+    """``term`` as sort keys in MySQL's native NULL order (NULLs low), led by an ``IS NULL`` key when it asks otherwise."""
+    descending = bool(term.args.get("desc"))
+    nulls_first = bool(term.args.get("nulls_first"))
+    if nulls_first != descending or term.this.is_int or isinstance(term.this, exp.Rand):
+        return [term]
+    is_null = exp.Case(
+        ifs=[exp.If(this=exp.Is(this=term.this.copy(), expression=exp.Null()), true=exp.Literal.number(1))],
+        default=exp.Literal.number(0),
+    )
+    return [
+        exp.Ordered(this=is_null, desc=nulls_first, nulls_first=not nulls_first),
+        exp.Ordered(this=term.this, desc=descending, nulls_first=not descending),
+    ]
+
+
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
@@ -67,6 +83,18 @@ class MysqlDialect(SqlDialect):
                 node.set("decimals", exp.Literal.number(0))
             return node
         return tree.transform(_fix)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Emulate NULL placement on each ORDER BY term as written, so an alias stays an alias.
+
+        sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
+        """
+        statement = statement.copy()
+        for select in statement.find_all(exp.Select):
+            order = select.args.get("order")
+            if order is not None:
+                order.set("expressions", [key for term in order.expressions for key in _native_null_keys(term)])
+        return statement
 
     def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
         """``FLOOR``: an integer ``CAST`` rounds here."""

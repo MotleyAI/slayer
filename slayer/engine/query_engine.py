@@ -313,6 +313,14 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
+def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
+    """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
+    if d.name != auto_name_from_expression(d.template):
+        return False
+    call = granularity_call_parts(d.expression)
+    return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
+
+
 def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
     """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
 
@@ -321,14 +329,12 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
     if query.order or query.distinct_dimension_values is False:
         return query
     dimensions: List[str] = []
-    # A datasource-granularity call in ``dimensions`` projects as a time dimension, after the others.
+    # Granularity calls project after the other dimensions, with the time dimensions.
     granularity_calls: List[str] = []
     for d in query.dimensions or []:
         if not isinstance(d, ComputedDimension):
             dimensions.append(d.full_name)
-            continue
-        call = granularity_call_parts(d.expression) if d.name == auto_name_from_expression(d.template) else None
-        if call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None:
+        elif _is_granularity_call(d, bundle=bundle):
             granularity_calls.append(d.expression)
         else:
             dimensions.append(d.name or d.expression)

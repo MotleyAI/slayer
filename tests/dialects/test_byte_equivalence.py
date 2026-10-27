@@ -97,7 +97,7 @@ _BASIC_QUERY = SlayerQuery(
             'GROUP BY\n'
             '  orders.status\n'
             'ORDER BY\n'
-            '  "orders.status" ASC',
+            '  orders.status ASC',
         ),
         (
             "mysql",
@@ -109,7 +109,8 @@ _BASIC_QUERY = SlayerQuery(
             "GROUP BY\n"
             "  orders.status\n"
             'ORDER BY\n'
-            '  CASE WHEN orders.status IS NULL THEN 1 ELSE 0 END, orders.status ASC',
+            '  CASE WHEN `orders.status` IS NULL THEN 1 ELSE 0 END ASC,\n'
+            '  `orders.status` ASC',
         ),
         (
             # DEV-1571 Bug 2: T-SQL bracketed dotted aliases are mangled
@@ -198,7 +199,7 @@ _TRUNC_QUERY = SlayerQuery(
             'GROUP BY\n'
             '  dateTrunc(\'MONTH\', orders.created_at)\n'
             'ORDER BY\n'
-            '  "orders.created_at" ASC',
+            '  dateTrunc(\'MONTH\', orders.created_at) ASC',
         ),
         (
             "mysql",
@@ -209,7 +210,8 @@ _TRUNC_QUERY = SlayerQuery(
             "GROUP BY\n"
             "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')\n"
             'ORDER BY\n'
-            "  CASE WHEN STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') IS NULL THEN 1 ELSE 0 END, STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') ASC",
+            "  CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC,\n"
+            "  `orders.created_at` ASC",
         ),
         (
             # DEV-1571 Bug 2: bracketed dotted aliases mangled.
@@ -293,7 +295,7 @@ _MEDIAN_QUERY = SlayerQuery(
             'GROUP BY\n'
             '  orders.status\n'
             'ORDER BY\n'
-            '  "orders.status" ASC',
+            '  orders.status ASC',
         ),
     ],
 )
@@ -376,7 +378,7 @@ _PCT_QUERY = SlayerQuery(
             'GROUP BY\n'
             '  orders.status\n'
             'ORDER BY\n'
-            '  "orders.status" ASC',
+            '  orders.status ASC',
         ),
     ],
 )

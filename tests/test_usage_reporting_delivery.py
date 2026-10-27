@@ -477,7 +477,8 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
-    usage_reporting_env.capture.behaviour.delay = 3.0
+    # Wide enough to outlast the disable subprocess on a loaded CI runner.
+    usage_reporting_env.capture.behaviour.delay = 10.0
     quiet_config()
     _spool_one()
     make_due()

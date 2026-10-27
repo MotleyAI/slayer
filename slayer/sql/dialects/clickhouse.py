@@ -196,6 +196,25 @@ class ClickhouseDialect(SqlDialect):
     def attach_correlated_setting(self, statement: Expression) -> None:
         _attach_ch_correlated_setting(statement)
 
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """ORDER BY a projection's expression, not its alias: a dotted alias such as
+        ``orders.created_at`` resolves to the source column of that name.
+
+        A windowed projection keeps its alias.
+        """
+        statement = statement.copy()
+        for select in statement.find_all(exp.Select):
+            order = select.args.get("order")
+            if order is None:
+                continue
+            projections = {p.alias: p.this for p in select.expressions if isinstance(p, exp.Alias)}
+            for term in order.expressions:
+                ref = term.this
+                projected = projections.get(ref.name) if isinstance(ref, exp.Column) and not ref.table else None
+                if projected is not None and projected.find(exp.Window) is None:
+                    ref.replace(projected.copy())
+        return statement
+
     def in_subquery_key(self, key: Expression) -> Expression:
         """``toNullable(key)``: pre-25 ``nullIn`` errors probing a non-Nullable set with a Nullable key."""
         return exp.Anonymous(this="toNullable", expressions=[key.copy()])

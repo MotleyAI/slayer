@@ -69,6 +69,7 @@ from slayer.usage_reporting import control as usage_reporting_control
 
 _STORAGE_DEFAULT = default_storage_path()
 _DATASOURCE_NAME_HELP = "Datasource name"
+_FORMAT_HELP = "Output format (default: text)."
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
@@ -538,7 +539,7 @@ examples:
         "--format",
         choices=["text", "json"],
         default="text",
-        help="Output format (default: text).",
+        help=_FORMAT_HELP,
     )
     _add_storage_arg(recommend_parser)
 
@@ -793,7 +794,7 @@ examples:
         "--format",
         choices=["json", "text"],
         default="text",
-        help="Output format (default: text).",
+        help=_FORMAT_HELP,
     )
 
     # ── memory ────────────────────────────────────────────────────────
@@ -1041,7 +1042,7 @@ examples:
         "--format",
         choices=["json", "text"],
         default="text",
-        help="Output format (default: text).",
+        help=_FORMAT_HELP,
     )
     search_parser.add_argument(
         "--verbose",

@@ -16,6 +16,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.engine.ingestion import ingest_datasource
@@ -362,7 +363,7 @@ class TestStaleDemoDatabase:
         try:
             assert holder.stdout is not None
             assert holder.stdout.readline().strip() == "locked"
-            with pytest.raises(Exception) as excinfo:
+            with pytest.raises(SlayerError) as excinfo:
                 _setup(storage, store_dir)
         finally:
             holder.communicate(input="")
