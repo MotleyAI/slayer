@@ -251,8 +251,8 @@ def test_cli_search_subcommand_help(monkeypatch, capsys) -> None:
     assert "search" in out.lower()
 
 
-def test_cli_search_refresh_samples_subcommand_help(monkeypatch, capsys) -> None:
-    code, _ = _run_cli(["search", "refresh-samples", "--help"], monkeypatch, capsys)
+def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch, capsys) -> None:
+    code, _ = _run_cli(["datasources", "refresh-samples", "--help"], monkeypatch, capsys)
     assert code == 0
 
 

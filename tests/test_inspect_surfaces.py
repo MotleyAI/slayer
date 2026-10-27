@@ -242,20 +242,17 @@ class TestCliSurface:
             )
         assert "nope" in buf.getvalue()
 
-    def test_run_inspect_invalid_arg_exits_nonzero(
+    def test_run_inspect_invalid_arg_raises(
         self, cli_storage: YAMLStorage
     ) -> None:
         from slayer.cli import _run_inspect
 
-        # Invalid args raise ValueError → _exit_with_error → sys.exit(1).
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
+        # Invalid args raise ValueError; main()'s error door renders it.
+        with pytest.raises(ValueError, match="entity_type"):
             _run_inspect(
                 args=_inspect_args(entity_type="banana"),
                 storage=cli_storage,
             )
-        assert exc.value.code == 1
-        assert "entity_type" in buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

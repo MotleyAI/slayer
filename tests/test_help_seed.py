@@ -21,7 +21,7 @@ import slayer.async_utils
 import slayer.cli as cli
 import slayer.mcp.server as mcp_server
 from slayer.api.server import create_app
-from slayer.cli import _run_inspect, _run_search, _run_search_query
+from slayer.cli import _run_inspect, _run_search_query
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.inspect.service import InspectService
@@ -351,18 +351,13 @@ class TestCliSeeding:
         assert (await storage.get_memory("help.intro")).learning
 
     def test_run_search_query_path_seeds(self) -> None:
-        # Codex(tests) #4: prove seeding fires on the NORMAL search dispatch
-        # (search_command != refresh-samples), not just when calling
-        # _run_search_query directly.
+        # Codex(tests) #4: prove seeding fires on the NORMAL search dispatch,
+        # not just when calling _run_search_query directly.
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "s")
-            ns = SimpleNamespace(
-                storage=path, search_command=None,
-                entities=None, query=None, question="hello", datasource=None,
-                max_results=5, cypher_filter=None, verbose=False, format="json",
-            )
-            _run_search(ns)
+            result = run_cli_in_process(["search", "hello", "--storage", path, "--format", "json"])
+            assert result.returncode == 0, result.stderr
             assert os.path.exists(
                 os.path.join(path, "memories", "help.intro.md")
             )
@@ -370,8 +365,7 @@ class TestCliSeeding:
     def test_refresh_samples_does_not_seed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Codex #7: seeding lives in _run_search_query, NOT _run_search, so
-        # `search refresh-samples` stays write-free.
+        # Codex #7: `datasources refresh-samples` stays write-free.
 
         calls: list[int] = []
 
@@ -380,18 +374,11 @@ class TestCliSeeding:
             return 0
 
         monkeypatch.setattr(cli, "seed_help_memories", _counting_seed)
-        called: list[str] = []
-        monkeypatch.setattr(
-            cli, "_run_search_refresh_samples",
-            lambda *, args, storage: called.append("refresh"),
-        )
         with tempfile.TemporaryDirectory() as tmpdir:
-            ns = SimpleNamespace(
-                storage=os.path.join(tmpdir, "s"),
-                search_command="refresh-samples",
-            )
-            cli._run_search(ns)
-        assert called == ["refresh"]
+            monkeypatch.setattr(cli, "_STORAGE_DEFAULT", os.path.join(tmpdir, "s"))
+            result = run_cli_in_process(["datasources", "refresh-samples"])
+        assert result.returncode == 0, result.stderr
+        assert "Sample-value refresh completed successfully." in result.stdout
         assert calls == []  # seed never fired on the refresh-samples path
 
 

@@ -50,6 +50,7 @@ from slayer.core.models import (
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 # ---------------------------------------------------------------------------
@@ -660,16 +661,16 @@ class TestCliCollection:
         self, cli_storage: YAMLStorage
     ) -> None:
 
-        args = _inspect_args(reference=[], entity_type="column")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
-            _run_inspect(args=args, storage=cli_storage)
-        assert exc.value.code == 1
+        result = run_cli_in_process(
+            ["inspect", "--type", "column", "--storage", cli_storage.base_dir],
+        )
+        assert result.returncode == 1
         # Must fail with the collection-unsupported message, NOT the old
         # empty-list rejection (so it can't pass for the wrong reason).
-        out = buf.getvalue()
-        assert "Collection view" in out
-        assert "must not be empty" not in out
+        assert len(result.stderr.splitlines()) == 1
+        assert result.stderr.startswith("Error: ")
+        assert "Collection view" in result.stderr
+        assert "must not be empty" not in result.stderr
 
     def test_single_positional_still_bare(
         self, cli_storage: YAMLStorage

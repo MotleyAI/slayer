@@ -89,7 +89,6 @@ def _orders_model(
 def _live_orders(
     *,
     columns: dict[str, DataType] | None = None,
-    pk_columns: set[str] | None = None,
 ) -> LiveTable:
     return LiveTable(
         columns=columns
@@ -99,7 +98,6 @@ def _live_orders(
             "status": DataType.TEXT,
             "customer_id": DataType.DOUBLE,
         },
-        pk_columns=pk_columns or {"id"},
     )
 
 
@@ -233,7 +231,6 @@ class TestDiffSqlTableModel:
         # Live reports TIMESTAMP — same bucket as DATE.
         live = LiveTable(
             columns={"id": DataType.DOUBLE, "happened_at": DataType.TIMESTAMP},
-            pk_columns={"id"},
         )
         entry, _ = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"events"}
@@ -1381,7 +1378,7 @@ class TestResolveLiveTable:
 
     @staticmethod
     def _live(name: str) -> LiveTable:
-        return LiveTable(columns={"id": DataType.DOUBLE}, pk_columns={"id"})
+        return LiveTable(columns={"id": DataType.DOUBLE})
 
     def test_bare_table_matches(self) -> None:
         live = self._live("orders")

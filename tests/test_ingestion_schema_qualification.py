@@ -31,18 +31,12 @@ from slayer.core.query import SlayerQuery
 from slayer.engine import ingestion as mod
 from slayer.engine import schema_drift as drift_mod
 from slayer.engine.ingestion import (
-    _get_pk_constraint_fallback,
     _print_ingest_addition,
     ingest_datasource,
     ingest_datasource_idempotent,
     ingest_datasource_report,
     introspect_table_to_model,
     list_ingestable_objects,
-)
-from slayer.engine.introspect_utils import (
-    _get_column_comments_fallback,
-    _get_columns_fallback,
-    _safe_get_columns,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import (
@@ -54,10 +48,10 @@ from slayer.engine.schema_drift import (
 )
 from slayer.engine.schema_scope import (
     SchemaEnumerationError,
-    SchemaRef,
     resolve_ingest_scope,
 )
 from slayer.mcp.server import _fetch_tables, create_mcp_server
+from slayer.sql.dialects import DuckdbDialect, ReflectedColumn, TableKeys, dialect_for_sa_backend
 from slayer.sql import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.type_refinement import _parse_sql_table_with_default_schema
@@ -333,6 +327,22 @@ class TestColumnCorruption:
 # ===========================================================================
 
 
+def _duck_columns(engine: sa.Engine, *, table: str, schema: str) -> list[ReflectedColumn]:
+    """DuckDB columns of ``att_main.<schema>.<table>``."""
+    return DuckdbDialect().reflect_columns(
+        sa_engine=engine, inspector=sa.inspect(engine),
+        table=table, schema=schema, catalog="att_main",
+    )
+
+
+def _duck_keys(engine: sa.Engine, *, table: str, schema: str) -> TableKeys:
+    """DuckDB keys of ``att_main.<schema>.<table>``."""
+    return DuckdbDialect().reflect_table_keys(
+        sa_engine=engine, inspector=sa.inspect(engine),
+        table=table, schema=schema, catalog="att_main",
+    )
+
+
 class TestAttachedCatalogs:
     def test_get_schema_names_are_catalog_qualified(self, attached_paths) -> None:
         """Sanity: the fixture actually attached, and DuckDB qualifies tokens."""
@@ -370,66 +380,62 @@ class TestAttachedCatalogs:
             assert scope.schemas[0].token == "att_main.main"
             assert scope.schemas[0].is_default is True
 
-    def test_column_fallback_accepts_a_qualified_token(self, attached_paths) -> None:
+    def test_columns_read_from_a_qualified_schema(self, attached_paths) -> None:
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="openfda_rest")
-            cols = {c["name"] for c in _get_columns_fallback(engine, "reports", ref)}
+            cols = {c.name for c in _duck_columns(engine, table="reports", schema="openfda_rest")}
             assert cols == {"id", "val"}
 
-    def test_column_fallback_never_unions_across_catalogs(self, attached_paths) -> None:
-        """``shared`` lives in both catalogs; the qualified token yields only the
-        current catalog's column, never the ``['m','o']`` union."""
+    def test_columns_never_union_across_catalogs(self, attached_paths) -> None:
+        """``shared`` lives in both catalogs; the current catalog yields only its
+        column, never the ``['m','o']`` union."""
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="main")
-            cols = {c["name"] for c in _get_columns_fallback(engine, "shared", ref)}
+            cols = {c.name for c in _duck_columns(engine, table="shared", schema="main")}
             assert cols == {"m"}
 
-    def test_primary_key_survives_a_qualified_token(self, attached_paths) -> None:
+    def test_primary_key_read_from_a_qualified_schema(self, attached_paths) -> None:
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="openfda_rest")
-            pk = _get_pk_constraint_fallback(engine, "reports", ref)
-            assert pk["constrained_columns"] == ["id"]
+            keys = _duck_keys(engine, table="reports", schema="openfda_rest")
+            assert keys.primary_key == ["id"]
 
-    def test_qualified_token_never_retries_bare(self, attached_paths) -> None:
+    def test_qualified_read_never_retries_bare(self, attached_paths) -> None:
         """The strongest no-bare-retry proof: ``only_in_other`` exists ONLY in
-        ``aaa``. A correct qualified probe of ``att_main.main`` finds nothing; a
+        ``aaa``. A correct qualified read of ``att_main.main`` finds nothing; a
         bare retry would wrongly reach into the attached catalog and return
         ``[y]``. The result MUST be empty (§3.2b: never retry bare)."""
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="main")
-            cols = [c["name"] for c in _get_columns_fallback(engine, "only_in_other", ref)]
+            cols = [c.name for c in _duck_columns(engine, table="only_in_other", schema="main")]
             assert cols == []
 
-    def test_pk_fallback_joins_on_the_catalog_too(self, attached_paths) -> None:
+    def test_pk_is_scoped_to_the_catalog_too(self, attached_paths) -> None:
         """``pktbl(id PK)`` exists in BOTH catalogs' ``main`` and DuckDB gives
-        both the SAME auto-generated constraint name. A schema-only join
-        duplicates the PK column (``['id','id']``); the three-way catalog join
-        keeps it to the current catalog's single ``id``."""
+        both the SAME auto-generated constraint name. A schema-only read
+        duplicates the PK column (``['id','id']``); scoping by catalog keeps it
+        to the current catalog's single ``id``."""
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="main")
-            pk = _get_pk_constraint_fallback(engine, "pktbl", ref)
-            assert pk["constrained_columns"] == ["id"]
+            keys = _duck_keys(engine, table="pktbl", schema="main")
+            assert keys.primary_key == ["id"]
 
-    def test_comment_fallback_does_not_bleed_across_catalogs(self, attached_paths) -> None:
-        """DEV-1809: ``commented.v`` carries a DIFFERENT comment in each catalog.
-        The qualified token must read only the current catalog's comment (needs
-        ``duckdb_columns().database_name = :catalog``)."""
+    def test_comments_do_not_bleed_across_catalogs(self, attached_paths) -> None:
+        """``commented.v`` carries a DIFFERENT comment in each catalog; only the
+        current catalog's comment is read."""
         with _open_attached(attached_paths) as engine:
-            ref = SchemaRef(catalog="att_main", name="main")
-            comments = _get_column_comments_fallback(engine, "commented", ref)
+            comments = {c.name: c.comment for c in _duck_columns(engine, table="commented", schema="main")}
             assert comments.get("v") == "att_main comment"
 
-    def test_column_fallback_ref_none_never_unions(self, attached_paths) -> None:
-        """Defensive branch: with ``ref=None`` and ``shared`` present in several
-        (catalog, schema) groups, the fallback must NOT silently union. It may
-        resolve to the default group ({m}) or refuse (ValueError) — never
-        ``{m, o}`` (§3.10, lowest-sorted-wins explicitly rejected)."""
+    def test_unscoped_table_never_unions(self, attached_paths) -> None:
+        """With no schema and ``shared`` present in several (catalog, schema)
+        groups, introspection must NOT silently union. It may resolve to the
+        default group ({m}) or refuse (ValueError) — never ``{m, o}`` (§3.10,
+        lowest-sorted-wins explicitly rejected)."""
         with _open_attached(attached_paths) as engine:
             try:
-                cols = {c["name"] for c in _get_columns_fallback(engine, "shared", None)}
+                model = introspect_table_to_model(
+                    sa_engine=engine, inspector=sa.inspect(engine),
+                    table_name="shared", schema=None, data_source="ds",
+                )
             except ValueError:
                 return                 # refusing to guess is acceptable
-            assert cols == {"m"}       # if it resolves, the default group; never the union
+            assert {c.name for c in model.columns} == {"m"}  # the default group; never the union
 
     def test_discovery_ref_none_does_not_sweep_the_attached_catalog(
         self, attached_paths
@@ -1143,7 +1149,7 @@ class TestLiveTableResolution:
     would let a dropped non-default table masquerade as its default twin."""
 
     def _live(self):
-        return LiveTable(columns={}, pk_columns=set(), fk_relationships=[])
+        return LiveTable(columns={})
 
     def test_three_part_resolves_via_last_two_segments(self) -> None:
         live = self._live()
@@ -1247,14 +1253,16 @@ class TestFirstDotParsers:
 
 class TestForcedFilterProbe:
     def test_probe_reads_the_current_catalog_column(self, attached_paths) -> None:
-        """The forced-filter presence probe goes through ``_safe_get_columns``;
-        with same-named tables across catalogs it must see the current
-        catalog's columns, never the union."""
+        """The forced-filter presence probe reads columns through the engine's
+        resolved dialect; with same-named tables across catalogs it must see the
+        current catalog's columns, never the union."""
         with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            ref = SchemaRef(catalog="att_main", name="main")
-            cols = {c["name"] for c in _safe_get_columns(insp, engine, "shared", ref)}
-            assert cols == {"m"}
+            dialect = dialect_for_sa_backend(engine.dialect.name)
+            cols = dialect.reflect_columns(
+                sa_engine=engine, inspector=sa.inspect(engine),
+                table="shared", schema="main", catalog="att_main",
+            )
+            assert {c.name for c in cols} == {"m"}
 
 
 # ===========================================================================
