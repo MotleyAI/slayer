@@ -734,7 +734,8 @@ class TestFields:
                        "name": "positive_streak"}],
         )
         sql = await _generate(generator=gen, query=query, model=orders_model)
-        assert "NULLS LAST" not in sql.upper(), (
+        # The outermost ORDER BY is the default result order, not the CTE's.
+        assert "NULLS LAST" not in sql.upper().rsplit("ORDER BY", 1)[0], (
             f"sqlite consecutive_periods CTE must not emit implicit "
             f"NULLS LAST (would change streak semantics for NULL time "
             f"values).\nsql:\n{sql}"

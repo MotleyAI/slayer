@@ -154,8 +154,9 @@ No arc42 edit. One normative-harness edit (approved, see decisions log): `archit
   - any other exception: `Error: <ExceptionClass>: <message> (rerun with --debug for the traceback)`.
 - `--debug` is accepted on the root parser and on every leaf command, before or after the subcommand
   (including nested leaves such as `datasources refresh-samples`); with it, the exception re-raises
-  with its full traceback. The leaf copies come from a shared parent parser with
-  `default=argparse.SUPPRESS`, so a leaf never resets a root-level `--debug` to False.
+  with its full traceback. The leaf copies are added by one walk over the finished parser tree (as the usage-token
+  assignment walks it) with `default=argparse.SUPPRESS`, so every subcommand has one and a leaf never
+  resets a root-level `--debug` to False.
 - Deleted: `_exit_with_error` and the per-command `except (SlayerError, ValueError)` catches that only
   converted to a message. Every remaining `print("Error: …")` + `sys.exit(1)` site in `cli.py` writes to
   stderr (they currently write to stdout).

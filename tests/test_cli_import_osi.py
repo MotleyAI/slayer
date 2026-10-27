@@ -118,4 +118,4 @@ def test_import_osi_duplicate_datasets_exits_cleanly(
     with pytest.raises(SystemExit) as exc_info:
         _run_import_osi(args)
     assert exc_info.value.code == 1
-    assert "Duplicate dataset names" in capsys.readouterr().out
+    assert "Duplicate dataset names" in capsys.readouterr().err
