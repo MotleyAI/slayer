@@ -82,11 +82,10 @@ class TestDemoKeywordDispatch:
             raise ValueError("stop here")
 
         monkeypatch.setattr(cli, "_parse_connection_string", fake_parse)
+        args = _make_args(connection_string="postgresql://host/db")
+        storage = object()
         with pytest.raises(SystemExit):
-            cli._run_datasources_create(
-                args=_make_args(connection_string="postgresql://host/db"),
-                storage=object(),
-            )
+            cli._run_datasources_create(args=args, storage=storage)
 
 
 class TestServeMcpDemoHook:

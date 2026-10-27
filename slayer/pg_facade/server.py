@@ -1,4 +1,4 @@
-"""asyncio TCP server for the Postgres facade (DEV-1486).
+"""asyncio TCP server for the Postgres facade.
 
 ``serve`` binds an ``asyncio`` server and drives one :class:`PgConnection` per
 accepted connection. ``run_pg_serve`` is the CLI entry point; it mirrors the
@@ -14,7 +14,11 @@ import logging
 import os
 import ssl
 import sys
+import threading
+from collections.abc import Callable, Coroutine
+from typing import Any
 
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.pg_facade.auth import Authenticator, validate_bind_address, validate_tls_pair
 from slayer.pg_facade.connection import EngineFactory, PgConnection, StorageProvider
 
@@ -37,7 +41,7 @@ async def serve(
     catalog_extra_relations=None,
     catalog_ttl_seconds: float | None = None,
 ) -> None:
-    """Bind and serve forever. Validates the bind/token combination first.
+    """Bind and serve until cancelled, then close every client connection. Validates the bind/token combination first.
 
     Supply either a static ``engine`` + ``storage``, or a ``storage_provider``
     that resolves a per-connection (e.g. tenant-scoped) storage from the
@@ -65,8 +69,12 @@ async def serve(
     authenticated = authenticator is not None and authenticator.requires_password
     effective_token = None if authenticator is not None else token
     validate_bind_address(host=host, token=effective_token, authenticated=authenticated)
+    connections: set[asyncio.Task[Any]] = set()
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            connections.add(task)
         conn = PgConnection(
             reader, writer, engine=engine, storage=storage,
             token=token, authenticator=authenticator,
@@ -80,13 +88,51 @@ async def serve(
         except Exception:  # noqa: BLE001 — never let one connection kill the server
             logger.exception("pg facade connection failed")
         finally:
+            if task is not None:
+                connections.discard(task)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
     server = await asyncio.start_server(handle, host=host, port=port)
-    async with server:
-        await server.serve_forever()
+    try:
+        await asyncio.get_running_loop().create_future()
+    finally:
+        # Not ``serve_forever``: on cancel it waits for idle client connections.
+        server.close()
+        for task in list(connections):
+            task.cancel()
+        await asyncio.gather(*connections, return_exceptions=True)
+        await server.wait_closed()
+
+
+class _StoppableRun:
+    """Runs a coroutine in its own event loop; ``stop`` cancels it from any thread, even before it starts."""
+
+    def __init__(self, coroutine: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        self._coroutine = coroutine
+        self._lock = threading.Lock()
+        self._stopped = False
+        self._task: asyncio.Task[None] | None = None
+
+    def run(self) -> None:
+        asyncio.run(self._main())
+
+    async def _main(self) -> None:
+        with self._lock:
+            if self._stopped:
+                return
+            self._task = asyncio.create_task(self._coroutine())
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+            task = self._task
+        if task is not None:
+            with contextlib.suppress(RuntimeError):  # loop already closed
+                task.get_loop().call_soon_threadsafe(task.cancel)
 
 
 def _build_tls_context(cert: str | None, key: str | None) -> ssl.SSLContext | None:
@@ -114,14 +160,14 @@ def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str
     return "0.0.0.0"  # noqa: S104 — intentional default; non-loopback requires a token
 
 
-def run_pg_serve(args, *, resolve_storage, prepare_demo) -> None:
-    """Construct storage/engine, then block on ``serve``.
+def run_pg_serve(
+    args, *, resolve_storage, prepare_demo, serve_until_terminated: Callable[..., None],
+) -> None:
+    """Construct storage/engine, then run ``serve`` until terminated.
 
-    ``resolve_storage`` / ``prepare_demo`` are injected by ``slayer/cli.py`` to
-    avoid importing the CLI's argparse helpers (circular dependency).
+    The helpers are injected by ``slayer/cli.py`` to avoid importing the CLI
+    (circular dependency).
     """
-    from slayer.engine.query_engine import SlayerQueryEngine
-
     storage = resolve_storage(args)
     if getattr(args, "demo", False):
         prepare_demo(args, storage)
@@ -138,20 +184,12 @@ def run_pg_serve(args, *, resolve_storage, prepare_demo) -> None:
 
     scheme = "postgresql+tls" if tls_ctx is not None else "postgresql"
     print(f"SLayer Postgres facade serving at {scheme}://{host}:{args.port}", flush=True)
+    server = _StoppableRun(
+        lambda: serve(host=host, port=args.port, engine=engine, storage=storage, token=token, tls_ctx=tls_ctx)
+    )
     try:
-        asyncio.run(
-            serve(
-                host=host,
-                port=args.port,
-                engine=engine,
-                storage=storage,
-                token=token,
-                tls_ctx=tls_ctx,
-            )
-        )
+        serve_until_terminated(run=server.run, stop=server.stop)
     except ValueError as exc:
         # validate_bind_address rejection (non-loopback without a token).
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
-    except KeyboardInterrupt:
-        pass

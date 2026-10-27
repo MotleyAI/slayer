@@ -10,25 +10,25 @@
 
 ## 2. Shutdown path in `slayer/cli.py`
 
-- [ ] 2.1 Replace `_unwind_on` with the D2 state machine: install SIGTERM/SIGINT handlers in `main()` right after `parse_args` for every server command; phases *before* / *armed* / *closing* / *after* around the counting scope, with a signal recorded *before* raised by the arm statement; chain callable prior handlers on the first signal only (exceptions swallowed); leave inherited `SIG_IGN`; further signal → hard exit (count ok before *closing*, flush, bounded send wait, `os._exit(128+signum)`), only recorded while *closing*. Verify: 1.1 chaining / `SIG_IGN` / second-signal cases and 1.4 pass.
-- [ ] 2.2 Add `_serve_until_terminated(*, run, stop)` (D1, D3). Verify: all 1.1 cases pass.
-- [ ] 2.3 Count a signal stop as ok (D5): catch the termination exception inside `usage_reporting.counting`, exit 128+signum after it; `mcp` exits via the hard-exit path after flushing. Verify: 1.1 stuck-stop, 1.2, 1.3, 1.4 ok-count assertions pass; short-command interrupt tests unchanged.
-- [ ] 2.4 `mcp` through the helper (`run = mcp.run`, no `stop`). Verify: 1.2, 1.6 pass.
-- [ ] 2.5 `serve` through the helper with `uvicorn.Server` / `uvicorn.Config` (`stop` sets `should_exit`). Verify: 1.3 `serve` cases and 1.7 pass.
+- [x] 2.1 Replace `_unwind_on` with the D2 state machine: install SIGTERM/SIGINT handlers in `main()` right after `parse_args` for every server command; phases *before* / *armed* / *closing* / *after* around the counting scope, with a signal recorded *before* raised by the arm statement; chain callable prior handlers on the first signal only (exceptions swallowed); leave inherited `SIG_IGN`; further signal → hard exit (count ok before *closing*, flush, bounded send wait, `os._exit(128+signum)`), only recorded while *closing*. Verify: 1.1 chaining / `SIG_IGN` / second-signal cases and 1.4 pass.
+- [x] 2.2 Add `_serve_until_terminated(*, run, stop)` (D1, D3). Verify: all 1.1 cases pass.
+- [x] 2.3 Count a signal stop as ok (D5): catch the termination exception inside `usage_reporting.counting`, exit 128+signum after it; `mcp` exits via the hard-exit path after flushing. Verify: 1.1 stuck-stop, 1.2, 1.3, 1.4 ok-count assertions pass; short-command interrupt tests unchanged.
+- [x] 2.4 `mcp` through the helper (`run = mcp.run`, no `stop`). Verify: 1.2, 1.6 pass.
+- [x] 2.5 `serve` through the helper with `uvicorn.Server` / `uvicorn.Config` (`stop` sets `should_exit`). Verify: 1.3 `serve` cases and 1.7 pass.
 
 ## 3. Protocol servers
 
-- [ ] 3.1 `slayer/flight/cli.py`: take the injected helper; build the server on the main thread; `run = server.wait`, `stop = server.shutdown` (once); no `serve()`. Verify: 1.3 flight cases pass.
-- [ ] 3.2 `slayer/pg_facade/server.py`: take the injected helper; track connection tasks in `serve()`; thread-safe `stop` closes the listener and cancels and awaits connection tasks (stop before loop start honoured); keep `ValueError → SystemExit(2)`; drop `except KeyboardInterrupt: pass`. Verify: 1.3 pg cases and 1.5 pass; existing pg-facade tests pass.
+- [x] 3.1 `slayer/flight/cli.py`: take the injected helper; build the server on the main thread; `run = server.wait`, `stop = server.shutdown` (once); no `serve()`. Verify: 1.3 flight cases pass.
+- [x] 3.2 `slayer/pg_facade/server.py`: take the injected helper; track connection tasks in `serve()`; thread-safe `stop` closes the listener and cancels and awaits connection tasks (stop before loop start honoured); keep `ValueError → SystemExit(2)`; drop `except KeyboardInterrupt: pass`. Verify: 1.3 pg cases and 1.5 pass; existing pg-facade tests pass.
 
 ## 4. Docs and architecture
 
-- [ ] 4.1 `docs/reference/usage-reporting.md`: one sentence — a server stopped by a signal counts as a normal run.
-- [ ] 4.2 `docs/reference/cli.md`: one sentence — server commands exit 143 on SIGTERM and 130 on SIGINT; a second signal forces the stop.
+- [x] 4.1 `docs/reference/usage-reporting.md`: one sentence — a server stopped by a signal counts as a normal run.
+- [x] 4.2 `docs/reference/cli.md`: one sentence — server commands exit 143 on SIGTERM and 130 on SIGINT; a second signal forces the stop.
 - [x] 4.3 `architecture/index.yaml`: add `cli: {touches: [python.surfaces, python.protocols]}` under `cross_cutting_specs` (user-approved in pr-plan). Verify: `poetry run la-arch-check` green.
 
 ## 5. Verification
 
-- [ ] 5.1 `poetry run pytest -m "not integration"` green.
-- [ ] 5.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no baseline growth) green.
-- [ ] 5.3 20 consecutive `poetry run pytest tests/test_usage_reporting_delivery.py -n auto` runs all pass, timeouts unchanged.
+- [x] 5.1 `poetry run pytest -m "not integration"` green.
+- [x] 5.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no baseline growth) green.
+- [x] 5.3 20 consecutive `poetry run pytest tests/test_usage_reporting_delivery.py -n auto` runs all pass, timeouts unchanged.

@@ -2,12 +2,16 @@
 
 import argparse
 import asyncio
+import contextlib
 import copy
 import json
 import os
 import signal
 import sys
-from typing import Any, NoReturn
+import threading
+from collections.abc import Callable
+from types import FrameType
+from typing import Any, Literal, NoReturn
 from urllib.parse import parse_qs, urlparse
 
 import sqlalchemy as sa
@@ -145,6 +149,8 @@ def main():
     parser = _build_parser()
     _assign_usage_tokens(parser)
     args = parser.parse_args()
+    token = getattr(args, "usage_token", None)
+    guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
 
     try:
         host_clock()  # Validates SLAYER_NOW before any command's side effects.
@@ -155,30 +161,133 @@ def main():
     if args.command == "usage-reporting":
         _run_usage_reporting(args)
         return
-    token = getattr(args, "usage_token", None)
     if token is not None:
         usage_reporting.start()
     try:
         with usage_reporting.counting(surface="cli", token=token):
-            _dispatch(parser, args)
-    except (SystemExit, KeyboardInterrupt) as exc:
-        if args.command == "mcp":
-            _exit_stdio_now(exc)
-        raise
+            try:
+                _guarded_dispatch(parser, args, guard=guard)
+            except _Terminated:
+                pass
     finally:
         usage_reporting.flush()
+    if guard is not None:
+        guard.finish(stdio=args.command == "mcp")
 
 
-def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
-    """Spool, then exit hard: stdio MCP's blocked stdin reader thread would hold up a normal exit."""
-    code = stop.code if isinstance(stop, SystemExit) else 128 + signal.SIGINT
-    if code is None:
-        code = 0
+_SIGNAL_POLL_SECONDS = 0.1
+
+
+class _Terminated(SystemExit):
+    """A server command stopped by a termination signal; ``code`` is 128 + its number."""
+
+
+class _TerminationGuard:
+    """SIGTERM / SIGINT handling for a server command, through phases before → armed → closing → after."""
+
+    def __init__(self, *, token: str | None) -> None:
+        self.phase: Literal["before", "armed", "closing", "after"] = "before"
+        self.signum: int | None = None
+        self.forcing = False
+        self.token = token
+        self.prior: dict[int, Callable[[int, FrameType | None], Any]] = {}
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous = signal.getsignal(signum)
+            if previous is signal.SIG_IGN:
+                continue
+            if callable(previous) and previous is not signal.default_int_handler:
+                self.prior[signum] = previous
+            signal.signal(signum, self._handle)
+
+    def _handle(self, signum: int, frame: FrameType | None) -> None:
+        if self.forcing:
+            os._exit(128 + signum)
+        if self.signum is not None:
+            if self.phase != "closing":
+                self._force(signum)
+            return
+        self.signum = signum
+        prior = self.prior.get(signum)
+        if prior is not None:
+            with contextlib.suppress(BaseException):  # a failing prior handler must not skip spool or exit
+                prior(signum, frame)
+        if self.phase == "armed":
+            raise _Terminated(128 + signum)
+
+    def _force(self, signum: int) -> NoReturn:
+        self.forcing = True
+        if self.phase in ("before", "armed"):
+            usage_reporting.record(surface="cli", token=self.token)
+        _exit_now(128 + signum)
+
+    def arm(self) -> None:
+        self.phase = "armed"
+        if self.signum is not None:
+            raise _Terminated(128 + self.signum)
+
+    def close(self) -> None:
+        self.phase = "closing"
+
+    def finish(self, *, stdio: bool) -> None:
+        """Turn a normal end into exit 128 + signal number if a signal arrived."""
+        self.phase = "after"
+        if self.signum is None:
+            return
+        if stdio:  # stdio MCP's stdin reader thread cannot be stopped
+            self.forcing = True
+            _exit_now(128 + self.signum)
+        sys.exit(128 + self.signum)
+
+
+def _guarded_dispatch(parser: argparse.ArgumentParser, args, *, guard: _TerminationGuard | None) -> None:
+    try:
+        if guard is not None:
+            guard.arm()
+        _dispatch(parser, args)
+    finally:
+        if guard is not None:
+            guard.close()
+
+
+def _exit_now(code: int) -> NoReturn:
+    """Spool, wait (bounded) for an in-flight send, then exit without interpreter teardown."""
     usage_reporting.flush()
     usage_reporting.shutdown()
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(code if isinstance(code, int) else 1)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(code)
+
+
+def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], object] | None) -> None:
+    """Run a server's blocking ``run`` in a worker thread; on a termination signal ``stop`` it and re-raise."""
+    failure: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            run()
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread
+            failure.append(exc)
+
+    worker = threading.Thread(target=target, name="slayer-server", daemon=True)
+    try:
+        worker.start()
+        _wait_for(worker)
+    except _Terminated:
+        if stop is not None:
+            stopper = threading.Thread(target=stop, name="slayer-server-stop", daemon=True)
+            stopper.start()
+            _wait_for(stopper)
+            _wait_for(worker)
+        raise
+    if failure:
+        raise failure[0]
+
+
+def _wait_for(thread: threading.Thread) -> None:
+    """Join, waking periodically: a signal taken by another thread runs its handler only once this thread wakes."""
+    while thread.is_alive():
+        thread.join(_SIGNAL_POLL_SECONDS)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1053,14 +1162,18 @@ _SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
 
 
 def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
-    if args.command in _SERVER_COMMANDS:
-        _unwind_on(signal.SIGTERM)
     if args.command == "serve":
         _run_serve(args)
     elif args.command == "flight-serve":
-        run_flight_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_flight_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "pg-serve":
-        run_pg_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_pg_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "mcp":
         _run_mcp(args)
     elif args.command == "query":
@@ -1573,7 +1686,12 @@ def _run_serve(args):
 
     import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
-    uvicorn.run(app=app, host=args.host, port=args.port)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+
+    def stop() -> None:
+        server.should_exit = True
+
+    _serve_until_terminated(run=server.run, stop=stop)
 
 
 def _run_mcp(args):
@@ -1583,20 +1701,7 @@ def _run_mcp(args):
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
     mcp = create_mcp_server(storage=storage, **_server_flags(args))
-    _unwind_on(signal.SIGINT)
-    mcp.run()
-
-
-def _unwind_on(signum: signal.Signals) -> None:
-    """Make ``signum`` raise ``SystemExit`` so a server unwinds and spools; chains any installed handler."""
-    previous = signal.getsignal(signum)
-
-    def handler(received, frame):
-        if callable(previous):
-            previous(received, frame)
-        raise SystemExit(128 + received)
-
-    signal.signal(signum, handler)
+    _serve_until_terminated(run=mcp.run, stop=None)
 
 
 def _parse_csv_arg(value):

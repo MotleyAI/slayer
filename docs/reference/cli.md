@@ -6,6 +6,8 @@ SLayer provides a command-line interface for server management, querying, and mo
 
 All commands accept a `--storage` flag to specify where models and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
 
+The server commands (`serve`, `mcp`, `pg-serve`, `flight-serve`) stop gracefully and exit 143 on SIGTERM and 130 on SIGINT; a second signal forces the stop.
+
 ## Commands
 
 ### `slayer serve`

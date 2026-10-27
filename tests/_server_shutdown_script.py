@@ -10,8 +10,10 @@ import os
 import signal
 import sys
 import threading
+import time
 import types
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from slayer import cli, usage_reporting
@@ -70,6 +72,51 @@ def _stuck_stop(_args) -> None:
 
     def stop() -> None:
         mark("STOPPING")
+        _forever.wait()
+
+    cli._serve_until_terminated(run=run, stop=stop)
+
+
+def _main_thread_sleeping() -> bool:
+    stat = Path(f"/proc/self/task/{threading.main_thread().native_id}/stat").read_text()
+    return stat.rsplit(")", 1)[1].split()[0] == "S"
+
+
+def _signal_once_main_sleeps(thread_id: int, sig: int) -> None:
+    """Deliver ``sig`` to the non-main thread ``thread_id`` once the main thread is blocked."""
+
+    def deliver() -> None:
+        streak = 0
+        while streak < 5:
+            streak = streak + 1 if _main_thread_sleeping() else 0
+            time.sleep(0.02)
+        signal.pthread_kill(thread_id, sig)
+
+    threading.Thread(target=deliver, daemon=True).start()
+
+
+def _worker_thread_signalled(args) -> None:
+    run, stop = _blocking_until_stopped()
+
+    def signalling_run() -> None:
+        _signal_once_main_sleeps(threading.get_ident(), args.sig)
+        run()
+
+    cli._serve_until_terminated(run=signalling_run, stop=stop)
+
+
+def _stop_thread_signalled(args) -> None:
+    worker: list[int] = []
+
+    def run() -> None:
+        worker.append(threading.get_ident())
+        usage_reporting.record(surface="mcp", token="query")
+        mark("RUNNING")
+        _forever.wait()
+
+    def stop() -> None:
+        mark("STOPPING")
+        _signal_once_main_sleeps(worker[0], args.sig)
         _forever.wait()
 
     cli._serve_until_terminated(run=run, stop=stop)
@@ -151,6 +198,8 @@ SCENARIOS: dict[str, Callable[[argparse.Namespace], None]] = {
     "join": _join,
     "early": _early,
     "stuck_stop": _stuck_stop,
+    "worker_thread_signalled": _worker_thread_signalled,
+    "stop_thread_signalled": _stop_thread_signalled,
     "uvicorn_stuck_stop": _uvicorn_stuck_stop,
     "served": lambda _args: mark("SERVED"),
     "returned": _returned,

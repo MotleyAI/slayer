@@ -152,6 +152,25 @@ def test_second_signal_forces_exit_from_stuck_stop(quiet: dict[str, str], second
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_taken_by_worker_thread_stops_once(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "worker_thread_signalled", sig=sig)
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, sig)
+    assert proc.out.count("STOP") == 1
+
+
+@pytest.mark.parametrize("second", _SIGNALS)
+def test_second_signal_taken_by_stop_thread_forces_exit(quiet: dict[str, str], second: signal.Signals) -> None:
+    proc = _scenario(quiet, "stop_thread_signalled", sig=second)
+    proc.expect("RUNNING")
+    proc.send(signal.SIGTERM)
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, second)
+    assert proc.out.count("STOPPING") == 1
+    assert usage(show(), "mcp:query")["ok"] == 1
+
+
 @pytest.mark.parametrize("second", _SIGNALS)
 def test_second_signal_forces_exit_from_stuck_uvicorn_stop(quiet: dict[str, str], second: signal.Signals) -> None:
     proc = _scenario(quiet, "uvicorn_stuck_stop")
