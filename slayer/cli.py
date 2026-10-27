@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Callable
 from types import FrameType
-from typing import Any, Literal, NoReturn
+from typing import Any, ClassVar, Literal, NoReturn
 from urllib.parse import parse_qs, urlparse
 
 import sqlalchemy as sa
@@ -192,11 +192,14 @@ class _Terminated(SystemExit):  # NOSONAR(S5709) — must pass through the comma
 
 
 class _TerminationGuard:
-    """SIGTERM / SIGINT handling for a server command, through phases before → armed → closing → after."""
+    """SIGTERM / SIGINT handling for a server command, through phases before → armed (⇄ serving) → closing → after."""
+
+    active: ClassVar["_TerminationGuard | None"] = None  # the guard whose handlers are installed
 
     def __init__(self, *, token: str | None) -> None:
-        self.phase: Literal["before", "armed", "closing", "after"] = "before"
+        self.phase: Literal["before", "armed", "serving", "closing", "after"] = "before"
         self.signum: int | None = None
+        self.signalled = threading.Event()
         self.forcing = False
         self.token = token
         self.prior: dict[int, Callable[[int, FrameType | None], Any]] = {}
@@ -209,6 +212,7 @@ class _TerminationGuard:
             if callable(previous) and previous is not signal.default_int_handler:
                 self.prior[signum] = previous
             signal.signal(signum, self._handle)
+        _TerminationGuard.active = self
 
     def _handle(self, signum: int, frame: FrameType | None) -> None:
         if self.forcing:
@@ -222,19 +226,26 @@ class _TerminationGuard:
         if prior is not None:
             with contextlib.suppress(BaseException):  # a failing prior handler must not skip spool or exit
                 prior(signum, frame)
+        self.signalled.set()
         if self.phase == "armed":
             raise _Terminated(128 + signum)
 
     def _force(self, signum: int) -> NoReturn:
         self.forcing = True
-        if self.phase in ("before", "armed"):
+        if self.phase in ("before", "armed", "serving"):
             usage_reporting.record(surface="cli", token=self.token)
         _exit_now(128 + signum)
 
     def arm(self) -> None:
+        """Signals raise from here on; one already recorded raises now."""
         self.phase = "armed"
         if self.signum is not None:
             raise _Terminated(128 + self.signum)
+
+    def serve(self) -> threading.Event:
+        """While a server runs, a signal only sets the returned Event: the main thread reacts, never interrupted."""
+        self.phase = "serving"
+        return self.signalled
 
     def close(self) -> None:
         self.phase = "closing"
@@ -257,6 +268,8 @@ class _TerminationGuard:
         """Put back the handlers this guard replaced."""
         for signum, handler in self.replaced.items():
             signal.signal(signum, handler)
+        if _TerminationGuard.active is self:
+            _TerminationGuard.active = None
 
 
 def _guarded_dispatch(parser: argparse.ArgumentParser, args, *, guard: _TerminationGuard | None) -> None:
@@ -280,9 +293,10 @@ def _exit_now(code: int) -> NoReturn:
 
 
 def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], object] | None) -> None:
-    """Run a server's blocking ``run`` in a worker thread; on a termination signal ``stop`` it and re-raise."""
+    """Run a server's blocking ``run`` in a worker thread until it returns or a termination signal ``stop``s it."""
+    guard = _TerminationGuard.active
     failure: list[BaseException] = []
-    worker_done = threading.Event()
+    done = threading.Event()
 
     def target() -> None:
         try:
@@ -290,19 +304,17 @@ def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], obj
         except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
             failure.append(exc)
         finally:
-            worker_done.set()
+            done.set()
 
-    worker = threading.Thread(target=target, name="slayer-server", daemon=True)
-    launched = False
+    signalled = guard.serve() if guard is not None else threading.Event()
     try:
-        worker.start()
-        launched = True
-        _wait_for(worker_done)
-    except _Terminated:
-        # A failed stop may never release the worker; one interrupted inside start() may never have run.
-        if _stop_server(stop) and launched:
-            _wait_for(worker_done)
-        raise
+        threading.Thread(target=target, name="slayer-server", daemon=True).start()
+        _wait_for(done, interrupt=signalled)
+        if signalled.is_set() and _stop_server(stop):  # a failed stop may never release the worker
+            _wait_for(done)
+    finally:
+        if guard is not None:
+            guard.arm()  # raises the termination exit if a signal stopped the server
     if failure:
         raise failure[0]
 
@@ -329,12 +341,9 @@ def _stop_server(stop: Callable[[], object] | None) -> bool:
     return stopped.is_set()
 
 
-def _wait_for(done: threading.Event) -> None:
-    """Wait, waking periodically so a signal another thread took gets handled.
-
-    An Event, not ``Thread.join``: on Python < 3.13 an exception interrupting ``join`` marks the thread dead.
-    """
-    while not done.is_set():
+def _wait_for(done: threading.Event, *, interrupt: threading.Event | None = None) -> None:
+    """Wait for ``done`` or ``interrupt``, waking periodically so a signal another thread took gets handled."""
+    while not done.is_set() and not (interrupt is not None and interrupt.is_set()):
         done.wait(_SIGNAL_POLL_SECONDS)
 
 

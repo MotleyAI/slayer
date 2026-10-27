@@ -70,6 +70,11 @@ async def serve(
     effective_token = None if authenticator is not None else token
     validate_bind_address(host=host, token=effective_token, authenticated=authenticated)
     connections: set[asyncio.Task[Any]] = set()
+    writers: set[asyncio.StreamWriter] = set()
+
+    def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Coroutine[Any, Any, None]:
+        writers.add(writer)  # before its handler task first runs, so a stop in between still closes it
+        return handle(reader, writer)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -90,16 +95,19 @@ async def serve(
         finally:
             if task is not None:
                 connections.discard(task)
+            writers.discard(writer)
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
-    server = await asyncio.start_server(handle, host=host, port=port)
+    server = await asyncio.start_server(accept, host=host, port=port)
     try:
         await asyncio.get_running_loop().create_future()
     finally:
         # Not ``serve_forever``: on cancel it waits for idle client connections.
         server.close()
+        for writer in writers:
+            writer.close()
         for task in connections:
             task.cancel()
         await asyncio.gather(*connections, return_exceptions=True)

@@ -183,11 +183,11 @@ def test_failing_stop_still_exits_on_first_signal(
 
 
 @pytest.mark.parametrize("sig", _SIGNALS)
-def test_signal_inside_worker_start_stops_without_waiting(quiet: dict[str, str], sig: signal.Signals) -> None:
+def test_signal_inside_worker_start_stops_once(quiet: dict[str, str], sig: signal.Signals) -> None:
     proc = _scenario(quiet, "signal_inside_worker_start", sig=sig)
     returncode = proc.finish(timeout=10)
     _assert_signal_stop(proc, returncode, sig)
-    assert proc.out == ["STOP"]
+    assert proc.out.count("STOP") == 1
 
 
 @_linux_only
