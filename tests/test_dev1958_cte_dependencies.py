@@ -1,4 +1,4 @@
-"""Shifted producer CTE dependencies (sql.arc42.md P6, design D7) and the
+"""Shifted producer CTE dependencies (python.sql.arc42.md P6, design D7) and the
 identity-deduplicated nested-plan traversal (design D8)."""
 
 from __future__ import annotations

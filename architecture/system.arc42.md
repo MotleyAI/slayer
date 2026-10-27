@@ -209,5 +209,5 @@ parser of the constrained convention `arch_check` enforces (`model-identity`, `m
 ## 6. Rationale
 
 The wedge is focused on the query pipeline because that is where boundary
-violations accumulate (see `sql.arc42.md`); buckets stay coarse until real work
+violations accumulate (see `python.sql.arc42.md`); buckets stay coarse until real work
 touches them.

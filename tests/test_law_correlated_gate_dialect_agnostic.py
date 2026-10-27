@@ -1,4 +1,4 @@
-"""Law (sql.arc42.md §3.2): the policy rewrite and the engine branch on dialect capabilities, never on names."""
+"""Law (python.sql.arc42.md §3.2): the policy rewrite and the engine branch on dialect capabilities, never on names."""
 
 from __future__ import annotations
 
