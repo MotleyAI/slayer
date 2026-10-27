@@ -118,22 +118,26 @@ _EXPECTED_SQL = {
     "postgres": (
         'SELECT orders.customer_id AS "orders.customer_id", '
         'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        'ORDER BY "orders.customer_id" ASC'
     ),
     "duckdb": (
         'SELECT orders.customer_id AS "orders.customer_id", '
         'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        'ORDER BY "orders.customer_id" ASC'
     ),
     "tsql": (
         "SELECT orders.customer_id AS [orders___customer_id], "
         "CAST(MAX(orders.created_at) AS DATETIME2) AS [orders___created_at_max] "
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY orders.customer_id "
+        "ORDER BY [orders___customer_id] ASC"
     ),
     "bigquery": (
         "SELECT orders.customer_id AS `orders___customer_id`, "
         "CAST(MAX(orders.created_at) AS DATETIME) AS `orders___created_at_max` "
-        "FROM orders AS orders GROUP BY orders.customer_id"
+        "FROM orders AS orders GROUP BY `orders___customer_id` "
+        "ORDER BY `orders___customer_id` ASC NULLS LAST"
     ),
 }
 

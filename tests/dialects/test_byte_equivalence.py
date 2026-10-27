@@ -59,7 +59,9 @@ _BASIC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "sqlite",
@@ -69,7 +71,9 @@ _BASIC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS REAL) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC NULLS LAST',
         ),
         (
             "duckdb",
@@ -79,7 +83,9 @@ _BASIC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS DOUBLE) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "clickhouse",
@@ -89,7 +95,9 @@ _BASIC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS Nullable(Float64)) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "mysql",
@@ -99,7 +107,9 @@ _BASIC_QUERY = SlayerQuery(
             "  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.revenue_sum`\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  orders.status",
+            "  orders.status\n"
+            'ORDER BY\n'
+            '  CASE WHEN orders.status IS NULL THEN 1 ELSE 0 END, orders.status ASC',
         ),
         (
             # DEV-1571 Bug 2: T-SQL bracketed dotted aliases are mangled
@@ -116,7 +126,9 @@ _BASIC_QUERY = SlayerQuery(
             "  CAST(SUM(orders.amount) AS FLOAT) AS [orders___revenue_sum]\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  orders.status",
+            "  orders.status\n"
+            'ORDER BY\n'
+            '  [orders___status] ASC',
         ),
     ],
 )
@@ -149,7 +161,9 @@ _TRUNC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)',
+            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            'ORDER BY\n'
+            '  "orders.created_at" ASC',
         ),
         (
             "sqlite",
@@ -158,7 +172,9 @@ _TRUNC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS REAL) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  STRFTIME(\'%Y-%m-01\', orders.created_at)',
+            '  STRFTIME(\'%Y-%m-01\', orders.created_at)\n'
+            'ORDER BY\n'
+            '  "orders.created_at" ASC NULLS LAST',
         ),
         (
             "duckdb",
@@ -167,7 +183,9 @@ _TRUNC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS DOUBLE) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)',
+            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            'ORDER BY\n'
+            '  "orders.created_at" ASC',
         ),
         (
             # ClickHouse accepts both ``dateTrunc`` and ``DATE_TRUNC``; sqlglot
@@ -178,7 +196,9 @@ _TRUNC_QUERY = SlayerQuery(
             '  CAST(SUM(orders.amount) AS Nullable(Float64)) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  dateTrunc(\'MONTH\', orders.created_at)',
+            '  dateTrunc(\'MONTH\', orders.created_at)\n'
+            'ORDER BY\n'
+            '  "orders.created_at" ASC',
         ),
         (
             "mysql",
@@ -187,7 +207,9 @@ _TRUNC_QUERY = SlayerQuery(
             "  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.revenue_sum`\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')",
+            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')\n"
+            'ORDER BY\n'
+            "  CASE WHEN STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') IS NULL THEN 1 ELSE 0 END, STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') ASC",
         ),
         (
             # DEV-1571 Bug 2: bracketed dotted aliases mangled.
@@ -197,7 +219,9 @@ _TRUNC_QUERY = SlayerQuery(
             "  CAST(SUM(orders.amount) AS FLOAT) AS [orders___revenue_sum]\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  DATETRUNC(month, orders.created_at)",
+            "  DATETRUNC(month, orders.created_at)\n"
+            'ORDER BY\n'
+            '  [orders___created_at] ASC',
         ),
     ],
 )
@@ -232,7 +256,9 @@ _MEDIAN_QUERY = SlayerQuery(
             '    orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "sqlite",
@@ -241,7 +267,9 @@ _MEDIAN_QUERY = SlayerQuery(
             '  CAST(PERCENTILE_CONT(orders.amount, 0.5) AS REAL) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC NULLS LAST',
         ),
         (
             "duckdb",
@@ -252,7 +280,9 @@ _MEDIAN_QUERY = SlayerQuery(
             '    orders.amount) AS DOUBLE) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "clickhouse",
@@ -261,7 +291,9 @@ _MEDIAN_QUERY = SlayerQuery(
             '  CAST(quantile(0.5)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
     ],
 )
@@ -307,7 +339,9 @@ _PCT_QUERY = SlayerQuery(
             '    orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "sqlite",
@@ -316,7 +350,9 @@ _PCT_QUERY = SlayerQuery(
             '  CAST(PERCENTILE_CONT(orders.amount, 0.95) AS REAL) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC NULLS LAST',
         ),
         (
             "duckdb",
@@ -327,7 +363,9 @@ _PCT_QUERY = SlayerQuery(
             '    orders.amount) AS DOUBLE) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
         (
             "clickhouse",
@@ -336,7 +374,9 @@ _PCT_QUERY = SlayerQuery(
             '  CAST(quantile(0.95)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  orders.status',
+            '  orders.status\n'
+            'ORDER BY\n'
+            '  "orders.status" ASC',
         ),
     ],
 )

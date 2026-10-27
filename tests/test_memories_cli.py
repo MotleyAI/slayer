@@ -148,14 +148,13 @@ class TestMemorySaveSubcommand:
     def test_save_requires_entities_or_query(
         self, seeded_storage_path, capsys
     ):
+        args = _args(
+            storage_path=seeded_storage_path,
+            memory_command="save",
+            learning="x",
+        )
         with pytest.raises(SystemExit):
-            _run_memory(
-                _args(
-                    storage_path=seeded_storage_path,
-                    memory_command="save",
-                    learning="x",
-                )
-            )
+            _run_memory(args)
 
 
 class TestMemoryForgetSubcommand:

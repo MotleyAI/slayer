@@ -143,7 +143,7 @@ from slayer.ir.variables import (
     model_needs_substitution_pass,
     substitute_model_sql_surfaces,
 )
-from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.introspect_utils import reflect_columns
 from slayer.engine.schema_scope import SchemaRef
 from slayer.memories.resolver import (
     _all_models_in_datasource,
@@ -798,11 +798,10 @@ class SlayerQueryEngine:
         try:
             sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
             inspector = sa.inspect(sa_engine)
-            # Carry the catalog so the DuckDB fallback never unions a same-named twin.
+            # Carry the catalog so a same-named twin in another catalog never unions in.
             ref = SchemaRef(catalog=scoped_table.catalog, name=schema)
-            cols = _safe_get_columns(
-                inspector=inspector, sa_engine=sa_engine,
-                table_name=scoped_table.name, ref=ref,
+            cols = reflect_columns(
+                sa_engine=sa_engine, inspector=inspector, table_name=scoped_table.name, ref=ref,
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(
@@ -816,7 +815,7 @@ class SlayerQueryEngine:
             return None
         if not cols:
             return None  # no columns resolved -> cannot confirm
-        names = {str(c.get("name", "")).lower() for c in cols}
+        names = {c.name.lower() for c in cols}
         present = column.lower() in names
         self._column_presence_cache[key] = present
         return present
@@ -1002,7 +1001,7 @@ class SlayerQueryEngine:
         rendered = await self._plan_and_render(
             query=query, named_queries=named_queries, runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source, override_datasource=override_datasource,
-            splice_chain=splice_chain,
+            splice_chain=splice_chain, result_order=True,
         )
         sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
         assert sql is not None
@@ -1047,10 +1046,12 @@ class SlayerQueryEngine:
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
         as_statement: bool = False,
+        result_order: bool = False,
     ) -> _Rendered:
         """Plan and render one statement, splicing the stored query-backed models it
         reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
-        as its AST for the caller to wrap and render once."""
+        as its AST for the caller to wrap and render once; ``result_order`` marks a
+        request's result (default-ordered)."""
         # Stage names are query-local: mint identities before anything resolves a name.
         localized, stage_displays = localize_stages([*named_queries.values(), query])
         query = localized[-1]
@@ -1170,6 +1171,7 @@ class SlayerQueryEngine:
         bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
+        bundle = bundle.model_copy(update={"default_result_order": result_order})
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         kept: Set[str] = set()
         sql: Optional[str] = None

@@ -1,11 +1,11 @@
 ## 1. Architecture
 
-- [ ] 1.1 Apply the approved `architecture/model.c4` edit (`surfaces` `specs ['mcp']` → `specs ['mcp', 'cli', 'demo']`, design.md decision 10, verbatim) and verify `poetry run la-arch-check` passes with the new `cli` / `demo` capabilities attached. Gotcha: `openspec/specs/cli` and `openspec/specs/demo` only exist after archive; if `la-arch-check` rejects an attachment to a missing spec dir, land this edit in the archive commit (pr-review stage) instead, verbatim.
+- [x] 1.1 Apply the approved `architecture/model.c4` edit (`surfaces` `specs ['mcp']` → `specs ['mcp', 'cli', 'demo']`, design.md decision 10, verbatim) and verify `poetry run la-arch-check` passes with the new `cli` / `demo` capabilities attached. Gotcha: `openspec/specs/cli` and `openspec/specs/demo` only exist after archive; if `la-arch-check` rejects an attachment to a missing spec dir, land this edit in the archive commit (pr-review stage) instead, verbatim.
 
 ## 2. Failing tests (pr-tests stage)
 
 Reflection (specs/models/fk-ingestion; design D1):
-- [ ] 2.1 DuckDB key reading: PK single + composite; FK single + composite in a non-default schema; an attached second catalog with same-named tables and different keys contributes nothing; UNIQUE single + composite marks `Column.unique` / feeds join cardinality (FK to a UNIQUE column → to-one); unique index over a quoted column → key; expression unique index → no key. Verify they fail on the current code.
+- [x] 2.1 DuckDB key reading: PK single + composite; FK single + composite in a non-default schema; an attached second catalog with same-named tables and different keys contributes nothing; UNIQUE single + composite marks `Column.unique` / feeds join cardinality (FK to a UNIQUE column → to-one); unique index over a quoted column → key; expression unique index → no key. Verify they fail on the current code.
 - [x] 2.2 Inspector-bypass proof: monkeypatch SQLAlchemy's `get_pk_constraint` / `get_foreign_keys` / `get_unique_constraints` / `get_columns` to raise like SA 2.0.55; DuckDB ingestion still yields every key, join and column (fails without the fix on any SA).
 - [x] 2.3 Demo on DuckDB ingests its six FK joins and composite `supplies` PK; the README query returns rows.
 - [x] 2.4 A failing key read logs one WARNING naming the table, the read and the error, and the table is still ingested (caplog).
@@ -39,20 +39,20 @@ Existing tests whose logic changes under the approved plan:
 
 ## 3. Implementation (pr-implement stage)
 
-- [ ] 3.1 `slayer/sql/dialects`: `ReflectedColumn`, `ReflectedForeignKey`, `TableKeys` (Pydantic); backend-name declarations + resolver with duplicate check; the type-string → `DataType` mapping moved from `introspect_utils`. Verify 2.7.
-- [ ] 3.2 Base `reflect_columns` / `reflect_table_keys` (today's Inspector + information_schema behaviour, catalog queries as sqlglot AST + `exec_driver_sql`); per-dialect comment queries and the BigQuery columns source as overrides; SQLite/BigQuery PK-authoritative overrides; SQLite `probes_integer_affinity` flag. Verify 2.5, 2.6.
-- [ ] 3.3 DuckDB overrides via `duckdb_columns()` / `duckdb_constraints()` / `duckdb_indexes()` (index `sql` parsed with sqlglot; plain columns only). Verify 2.1, 2.2.
-- [ ] 3.4 Route ingestion, schema drift (`_introspect_one_table` columns only; delete `LiveTable.pk_columns` / `fk_relationships`), the forced-filter column probe and `introspect_table_to_model` through the hooks; delete the superseded engine helpers listed in design D1.3; WARNING logging per failed key read. Verify 2.3, 2.4, 2.8 and the DEV-2118 tests `test_join_is_generated_for_a_non_default_schema` / `TestParallelFksAreAddressable[duckdb]` on the latest-SA leg.
+- [x] 3.1 `slayer/sql/dialects`: `ReflectedColumn`, `ReflectedForeignKey`, `TableKeys` (Pydantic); backend-name declarations + resolver with duplicate check; the type-string → `DataType` mapping moved from `introspect_utils`. Verify 2.7.
+- [x] 3.2 Base `reflect_columns` / `reflect_table_keys` (today's Inspector + information_schema behaviour, catalog queries as sqlglot AST + `exec_driver_sql`); per-dialect comment queries and the BigQuery columns source as overrides; SQLite/BigQuery PK-authoritative overrides; SQLite `probes_integer_affinity` flag. Verify 2.5, 2.6.
+- [x] 3.3 DuckDB overrides via `duckdb_columns()` / `duckdb_constraints()` / `duckdb_indexes()` (index `sql` parsed with sqlglot; plain columns only). Verify 2.1, 2.2.
+- [x] 3.4 Route ingestion, schema drift (`_introspect_one_table` columns only; delete `LiveTable.pk_columns` / `fk_relationships`), the forced-filter column probe and `introspect_table_to_model` through the hooks; delete the superseded engine helpers listed in design D1.3; WARNING logging per failed key read. Verify 2.3, 2.4, 2.8 and the DEV-2118 tests `test_join_is_generated_for_a_non_default_schema` / `TestParallelFksAreAddressable[duckdb]` on the latest-SA leg.
 - [ ] 3.5 CLI error door in `main()`, `--debug` parent parser (`default=argparse.SUPPRESS` on leaf copies), delete `_exit_with_error` and per-command catches, stderr for every `Error:` line; `--version`. Verify 2.9, 2.10.
-- [ ] 3.6 `search` positional question + `--question` alias + moved-command refusal; `datasources refresh-samples` (+ `--format`); usage key rename. Verify 2.11, 2.12.
-- [ ] 3.7 CLI table cells via `SlayerResponse._format_value`. Verify 2.13.
+- [x] 3.6 `search` positional question + `--question` alias + moved-command refusal; `datasources refresh-samples` (+ `--format`); usage key rename. Verify 2.11, 2.12.
+- [x] 3.7 CLI table cells via `SlayerResponse._format_value`. Verify 2.13.
 - [ ] 3.8 Default order: `apply_default_order` for the request's final stage only, `OrderSpec`s from the bound dimension slots, through the explicit-order path. Verify 2.14–2.17; then enumerate the golden baselines that gained an outermost ORDER BY and re-bless each individually, checking each diff is only that ORDER BY.
-- [ ] 3.9 Demo: `DECIMAL(12,2)` schema + exact cents conversion; `_ColumnEnrichment.db_type` gap-fill; canonical-projection schema check; sibling-build + factory release + `os.replace` rebuild; setup always via `ingest_datasource_idempotent` + enrichment; delete the fast path and model-overwrite path. Verify 2.18, 2.19.
-- [ ] 3.10 `Batch` before-validator folding retired usage keys through the recorder's shared unknown → other rule. Verify 2.20.
+- [x] 3.9 Demo: `DECIMAL(12,2)` schema + exact cents conversion; `_ColumnEnrichment.db_type` gap-fill; canonical-projection schema check; sibling-build + factory release + `os.replace` rebuild; setup always via `ingest_datasource_idempotent` + enrichment; delete the fast path and model-overwrite path. Verify 2.18, 2.19.
+- [x] 3.10 `Batch` before-validator folding retired usage keys through the recorder's shared unknown → other rule. Verify 2.20.
 
 ## 4. CI and docs
 
-- [ ] 4.1 `.github/workflows/ci.yml`: blocking unit-test job (Python 3.11) that upgrades `sqlalchemy` (`>=2.0,<2.1`), `duckdb`, `duckdb-engine` to their latest allowed versions, prints them, and runs `pytest tests/ -m "not integration"` with the main leg's flags. Verify locally by running the unit suite in a scratch venv with those upgrades.
+- [x] 4.1 `.github/workflows/ci.yml`: blocking unit-test job (Python 3.11) that upgrades `sqlalchemy` (`>=2.0,<2.1`), `duckdb`, `duckdb-engine` to their latest allowed versions, prints them, and runs `pytest tests/ -m "not integration"` with the main leg's flags. Verify locally by running the unit suite in a scratch venv with those upgrades.
 - [ ] 4.2 Docs (one sentence per change): `docs/interfaces/cli.md`, `docs/reference/cli.md` (refresh-samples under datasources, `search <question>`, `--version`, `--debug`, one-line errors, formatted table output); `docs/concepts/ingestion.md`, `docs/concepts/search.md`, `docs/concepts/models.md` (new refresh-samples spelling); `docs/concepts/queries.md` (default order); DuckDB keys from DuckDB's own catalog (ingestion / database-support page); demo money `DECIMAL(12,2)` wherever the demo schema is described. Verify with a grep for `search refresh-samples` returning only intentional mentions, and every touched page still linked from `zensical.toml`.
 
 ## 5. Gates

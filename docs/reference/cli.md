@@ -6,6 +6,10 @@ SLayer provides a command-line interface for server management, querying, and mo
 
 All commands accept a `--storage` flag to specify where models and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
 
+## Errors, `--debug` and `--version`
+
+A failing command prints one `Error: …` line on stderr and exits 1; add `--debug` (before or after the command) to see the full traceback, and run `slayer --version` to print the installed version.
+
 ## Commands
 
 ### `slayer serve`
@@ -77,7 +81,7 @@ slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--format` | `table` | Output format: `table` or `json` |
+| `--format` | `table` | Output format: `table` (numbers rendered through each column's or measure's `format`, as in MCP output) or `json` (raw values) |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
@@ -309,6 +313,22 @@ slayer datasources test my_postgres
 slayer datasources delete my_postgres
 ```
 
+#### `slayer datasources refresh-samples`
+
+Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort; a `--model` that does not resolve exits 1.
+
+```bash
+slayer datasources refresh-samples
+slayer datasources refresh-samples --data-source jaffle_shop
+slayer datasources refresh-samples --data-source jaffle_shop --model orders --model customers
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-source X` | all | Limit the refresh to one datasource. |
+| `--model M` | all | Repeatable; limit to specific models. |
+| `--format` | `text` | `text`, or `json` for the `{"errors": [...], "unresolved_models": [...]}` envelope. |
+
 #### `slayer datasources create`
 
 Create a datasource from a connection URL. The name is derived from the database portion of the URL (or the filename stem for SQLite/DuckDB) unless `--name` is passed. Pass `--ingest` to create and ingest in a single step.
@@ -384,8 +404,8 @@ Run semantic search over memories and canonical entities (datasources, models, c
 # Entity-driven
 slayer search --entity jaffle_shop.orders.order_total
 
-# Question-driven
-slayer search --question "What stores are in jaffle_shop?"
+# Question-driven (the question may also be given as --question)
+slayer search "What stores are in jaffle_shop?"
 
 # Query-driven (auto-extracts the entities the query references)
 slayer search --query @draft_query.json
@@ -411,28 +431,13 @@ slayer search --question "lifetime spend" --format json
 |------|---------|-------------|
 | `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, `memory:<id>`). Pass multiple times to combine. Drives the BM25 channel. |
 | `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`). Entities are auto-extracted from `source_model`, dimensions, measures, time dims, and filters. |
-| `--question TEXT` | | Free-text question. Drives Tantivy + embeddings. |
+| `QUESTION` / `--question TEXT` | | Free-text question, positional or as `--question` (not both). Drives Tantivy + embeddings. |
 | `--datasource DS` | | Pre-narrow every channel to ids rooted at the named datasource. Unknown name raises. |
 | `--cypher-filter CYPHER` | | Pre-narrow all three channels via a graph query. Full openCypher with `advanced_search` (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; anything richer raises with an install hint. |
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
 
 In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / `inspect_model` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
-
-### `slayer search refresh-samples`
-
-Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort.
-
-```bash
-slayer search refresh-samples
-slayer search refresh-samples --data-source jaffle_shop
-slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--data-source X` | all | Limit the refresh to one datasource. |
-| `--model M` | all | Repeatable; limit to specific models. |
 
 ### `slayer memory`
 

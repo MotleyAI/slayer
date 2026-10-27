@@ -29,7 +29,7 @@ This generates ~2 years of synthetic coffee-shop data into a local DuckDB file u
 slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
 ```
 
-Re-running is idempotent — the DuckDB is reused if it already exists, and the enrichment is additive-only (your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing joins are added; your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 

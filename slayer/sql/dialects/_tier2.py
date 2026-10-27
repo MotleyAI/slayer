@@ -21,6 +21,7 @@ from slayer.sql.dialects.trino import PrestoFamilyDialect
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
+    sa_backend_names: frozenset[str] = frozenset({"redshift"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -45,6 +46,7 @@ class PrestoDialect(PrestoFamilyDialect):
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
+    sa_backend_names: frozenset[str] = frozenset({"databricks"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -67,6 +69,7 @@ class SparkDialect(SqlDialect):
 class OracleDialect(SqlDialect):
     sqlglot_name: str = "oracle"
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
+    sa_backend_names: frozenset[str] = frozenset({"oracle"})
     explain_prefix: str | None = "EXPLAIN PLAN FOR"
     explain_postfix: str = ""
     # Oracle has neither LOG10 nor LOG2 as single-arg functions — keep

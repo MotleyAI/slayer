@@ -37,12 +37,10 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig
 from slayer.engine import ingestion
-from slayer.engine.introspect_utils import _info_schema_type
 from slayer.engine.schema_drift import _live_schema_for_datasource
 from slayer.engine.ingestion import (
     IntrospectedColumn,
     ingest_datasource,
-    _parse_info_schema_is_float,
     _sa_type_is_float,
     _sa_type_to_data_type,
     _sqlite_probe_integer_columns,
@@ -58,6 +56,7 @@ from slayer.sql.dialects import (
     TableKeys,
     dialect_for_sa_backend,
 )
+from slayer.sql.dialects.reflection import info_schema_type, parse_info_schema_is_float
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
 
@@ -87,7 +86,8 @@ class _CatalogEngine:
     @contextmanager
     def connect(self) -> Iterator[SimpleNamespace]:
         def _exec(statement: str, *args: Any, **kwargs: Any) -> _Rows:
-            assert not args and not kwargs, "catalog queries carry no bind parameters"
+            assert not args, "catalog queries carry no bind parameters"
+            assert not kwargs, "catalog queries carry no bind parameters"
             self.statements.append(statement)
             return _Rows(self._respond(statement))
 
@@ -144,7 +144,9 @@ def _literals(sql: str, *, read: str = "postgres") -> dict[str, str]:
     statements = sqlglot.parse(sql, read=read)
     assert len(statements) == 1, sql
     out: dict[str, str] = {}
-    for eq in statements[0].find_all(exp.EQ):
+    (statement,) = statements
+    assert statement is not None, sql
+    for eq in statement.find_all(exp.EQ):
         col, lit = eq.this, eq.expression
         if isinstance(col, exp.Column) and isinstance(lit, exp.Literal) and lit.is_string:
             out[col.name.lower()] = lit.this
@@ -197,7 +199,7 @@ class TestInfoSchemaTypeMapping:
         ],
     )
     def test_multi_word_types(self, data_type, expected_type, expected_float):
-        sa_type, is_float = _info_schema_type(data_type)
+        sa_type, is_float = info_schema_type(data_type)
         assert sa_type is expected_type
         assert is_float is expected_float
 
@@ -351,27 +353,27 @@ class TestSaTypeIsFloat:
 
 
 class TestParseInfoSchemaIsFloat:
-    """Tests for _parse_info_schema_is_float scale parsing from type strings."""
+    """Tests for parse_info_schema_is_float scale parsing from type strings."""
 
     def test_decimal_with_scale(self):
-        assert _parse_info_schema_is_float("DECIMAL(10,2)") is True
+        assert parse_info_schema_is_float("DECIMAL(10,2)") is True
 
     def test_decimal_with_zero_scale(self):
-        assert _parse_info_schema_is_float("DECIMAL(10,0)") is False
+        assert parse_info_schema_is_float("DECIMAL(10,0)") is False
 
     def test_numeric_with_scale(self):
-        assert _parse_info_schema_is_float("NUMERIC(18,4)") is True
+        assert parse_info_schema_is_float("NUMERIC(18,4)") is True
 
     def test_numeric_with_zero_scale(self):
-        assert _parse_info_schema_is_float("NUMERIC(18,0)") is False
+        assert parse_info_schema_is_float("NUMERIC(18,0)") is False
 
     def test_no_precision_info(self):
         """Bare 'DECIMAL' without parens defaults to float."""
-        assert _parse_info_schema_is_float("DECIMAL") is True
+        assert parse_info_schema_is_float("DECIMAL") is True
 
     def test_no_scale_in_parens(self):
         """DECIMAL(10) with only precision defaults to float."""
-        assert _parse_info_schema_is_float("DECIMAL(10)") is True
+        assert parse_info_schema_is_float("DECIMAL(10)") is True
 
 
 def _fk(column: str) -> ReflectedForeignKey:

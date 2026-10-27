@@ -11,7 +11,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
-import sqlalchemy as sa
+from sqlalchemy import exc
 from sqlalchemy.engine.reflection import Inspector
 
 from slayer.async_utils import run_sync
@@ -99,7 +99,7 @@ def sa_without_generic_key_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
     """SQLAlchemy >= 2.0.55 on DuckDB: the inherited Postgres key queries raise."""
 
     def _raise(*args: object, **kwargs: object) -> None:
-        raise sa.exc.ProgrammingError(statement="SELECT ... ::REGCLASS", params=None, orig=Exception(REGCLASS_ERROR))
+        raise exc.ProgrammingError(statement="SELECT ... ::REGCLASS", params=None, orig=Exception(REGCLASS_ERROR))
 
     for name in ("get_pk_constraint", "get_foreign_keys", "get_unique_constraints"):
         monkeypatch.setattr(Inspector, name, _raise)
@@ -111,10 +111,8 @@ def _setup(storage: YAMLStorage, store_dir: str) -> tuple:
 
 def _stored_models(storage: YAMLStorage) -> dict[str, SlayerModel]:
     names = run_sync(storage.list_models(data_source=jaffle_shop.DEMO_NAME))
-    return {
-        name: run_sync(storage.get_model(name=name, data_source=jaffle_shop.DEMO_NAME))
-        for name in names
-    }
+    loaded = {name: run_sync(storage.get_model(name=name, data_source=jaffle_shop.DEMO_NAME)) for name in names}
+    return {name: model for name, model in loaded.items() if model is not None}
 
 
 def _edges(models: dict[str, SlayerModel]) -> set[tuple[str, str]]:
@@ -243,15 +241,19 @@ class TestDemoMoneyIsExact:
         _setup(storage, store_dir)
         raw = duckdb.connect()
         try:
-            cents = raw.execute(
+            row = raw.execute(
                 "SELECT sum(order_total) FROM read_csv_auto(?)",
                 [os.path.join(jafgen_dir, "raw_orders.csv")],
-            ).fetchone()[0]
+            ).fetchone()
+            assert row is not None
+            cents = row[0]
         finally:
             raw.close()
         conn = _open_direct(_db_path(store_dir))
         try:
-            stored = conn.execute("SELECT sum(order_total) FROM orders").fetchone()[0]
+            stored_row = conn.execute("SELECT sum(order_total) FROM orders").fetchone()
+            assert stored_row is not None
+            stored = stored_row[0]
         finally:
             conn.close()
         assert isinstance(stored, Decimal)
@@ -358,6 +360,7 @@ class TestStaleDemoDatabase:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
         try:
+            assert holder.stdout is not None
             assert holder.stdout.readline().strip() == "locked"
             with pytest.raises(Exception) as excinfo:
                 _setup(storage, store_dir)

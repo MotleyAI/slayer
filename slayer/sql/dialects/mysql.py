@@ -21,6 +21,7 @@ from slayer.sql.dialects.base import (
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -38,6 +39,7 @@ _MYSQL_PART_FUNCTIONS = {
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
+    sa_backend_names: frozenset[str] = frozenset({"mysql"})
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -51,6 +53,11 @@ class MysqlDialect(SqlDialect):
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_execution_time = {timeout_seconds * 1000}"
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        return info_schema_comments_query(
+            comment_column="column_comment", default_schema=call("DATABASE"), location=location,
+        )
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
@@ -164,6 +171,7 @@ class MariadbDialect(MysqlDialect):
     """MariaDB renders as MySQL; it names its statement timeout differently."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+    sa_backend_names: frozenset[str] = frozenset({"mariadb"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_statement_time = {timeout_seconds}"

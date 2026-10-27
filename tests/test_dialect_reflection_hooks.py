@@ -13,7 +13,9 @@ import duckdb
 import pytest
 import sqlalchemy as sa
 import sqlglot
+from sqlalchemy import event
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.sql.dialects import (
@@ -78,7 +80,8 @@ class _RecordingConnection:
         return None
 
     def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
-        assert not args and not kwargs, "catalog queries carry no bind parameters"
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
         self._log.append(statement)
         return _Rows(self._respond(statement))
 
@@ -126,7 +129,7 @@ def _parse(sql: str, read: str) -> exp.Select:
     return tree
 
 
-def _eq_literals(tree: exp.Expression) -> dict[str, str]:
+def _eq_literals(tree: Expression) -> dict[str, str]:
     out: dict[str, str] = {}
     for eq in tree.find_all(exp.EQ):
         col, lit = eq.this, eq.expression
@@ -137,7 +140,7 @@ def _eq_literals(tree: exp.Expression) -> dict[str, str]:
     return out
 
 
-def _tables(tree: exp.Expression) -> set[str]:
+def _tables(tree: Expression) -> set[str]:
     return {
         ".".join(p.name.lower() for p in t.parts) for t in tree.find_all(exp.Table)
     }
@@ -167,7 +170,8 @@ class TestCatalogQueryEmission:
             "table_name": "orders", "table_schema": "sales", "table_catalog": "cat",
         }
         order = tree.args.get("order")
-        assert order is not None and "ordinal_position" in order.sql().lower()
+        assert order is not None
+        assert "ordinal_position" in order.sql().lower()
         assert cols == [ReflectedColumn(
             name="id", type=DataType.INT, is_float=False, db_type=None, comment=None,
         )]
@@ -299,7 +303,7 @@ def _attached(paths: tuple[Path, Path]) -> Iterator[sa.Engine]:
     main, other = paths
     with disposable_engine(f"duckdb:///{main}") as engine:
 
-        @sa.event.listens_for(engine, "connect")  # type: ignore[attr-defined]
+        @event.listens_for(engine, "connect")
         def _attach(dbapi_conn, _rec):  # noqa: ANN001
             dbapi_conn.execute(f"ATTACH IF NOT EXISTS '{other}' AS aaa")
 
@@ -354,7 +358,7 @@ class TestDuckdbTableKeys:
     def test_unparseable_unique_index_is_ignored(self, duck_paths) -> None:
         with _attached(duck_paths) as engine:
 
-            @sa.event.listens_for(engine, "before_cursor_execute", retval=True)  # type: ignore[attr-defined]
+            @event.listens_for(engine, "before_cursor_execute", retval=True)
             def _garble(_conn, _cursor, statement, parameters, *_rest):  # noqa: ANN001
                 return statement.replace("duckdb_indexes()", _GARBLED_INDEXES), parameters
 
@@ -435,11 +439,11 @@ def _statements(engine: sa.Engine) -> Iterator[list[str]]:
     def _record(_conn, _cursor, statement, *_rest) -> None:  # noqa: ANN001
         seen.append(statement)
 
-    sa.event.listen(engine, "before_cursor_execute", _record)
+    event.listen(engine, "before_cursor_execute", _record)
     try:
         yield seen
     finally:
-        sa.event.remove(engine, "before_cursor_execute", _record)
+        event.remove(engine, "before_cursor_execute", _record)
 
 
 class TestSqliteBaseKeys:

@@ -44,6 +44,7 @@ SLayer introspects each table's column types and generates a model:
 - **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`string` / `number` / `boolean` / `time` / `date`), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query.
 - **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
 - **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
+- On DuckDB, columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
 - **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
 - **No auto-generated `measures`** — `SlayerModel.measures` is the named-formula library and stays empty after ingestion. You can add named formulas later via the API/MCP if you want bare-name shortcuts (`{"formula": "aov"}`).
 - **`count(*)`** is always available without any model definition.
@@ -366,7 +367,7 @@ After the additive pass, `validate_models` runs against the in-scope models and 
 
 After validation, every ingest also refreshes the search corpus for the touched datasource:
 
-- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer search refresh-samples`). See [Search](search.md#sample-value-cache).
+- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer datasources refresh-samples`). See [Search](search.md#sample-value-cache).
 - **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3-dense-embedding-similarity).
 
 Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `advanced_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.

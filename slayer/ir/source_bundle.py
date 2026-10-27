@@ -66,6 +66,8 @@ class ResolvedSourceBundle(BaseModel):
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
     # A stored model shadows the built-in ``time_spine``.
     spine_clash: bool = False
+    # The stage planned is a request's result: no declared order sorts it by its grain.
+    default_result_order: bool = False
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
         """Linear lookup by name (list is small, O(n) scan is fine)."""

@@ -33,7 +33,7 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.introspect_utils import reflect_columns
 from slayer.engine.schema_scope import (
     SchemaEnumerationError,
     SchemaRef,
@@ -44,11 +44,7 @@ from slayer.engine.schema_scope import (
     split_sql_table,
 )
 from slayer.engine import ingestion
-from slayer.engine.ingestion import (
-    _safe_get_pk_constraint,
-    _sa_type_is_float,
-    _sa_type_to_data_type,
-)
+from slayer.engine.ingestion import _sa_type_to_data_type
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_search import reachable
@@ -230,14 +226,11 @@ class ApplyDriftResult(BaseModel):
 
 
 class LiveTable(BaseModel):
-    """One live table's columns/PK/FKs in SLayer's coarse type buckets."""
+    """One live table's columns in SLayer's coarse type buckets."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     columns: dict[str, DataType] = Field(default_factory=dict)
-    pk_columns: set[str] = Field(default_factory=set)
-    # Each entry: (local_column, ref_table, ref_column)
-    fk_relationships: list[tuple[str, str, str]] = Field(default_factory=list)
     # Listed but its metadata read failed: present, yet no drift evidence.
     readable: bool = True
 
@@ -1883,37 +1876,11 @@ def _introspect_one_table(
     table_name: str,
     ref: SchemaRef | None,
 ) -> LiveTable:
-    """Build a ``LiveTable`` for one table via ingestion's safe-introspection path; ``ref`` keeps column/PK fallbacks catalog-scoped on DuckDB."""
-    schema_token = ref.token if ref else None
-    cols_meta = _safe_get_columns(inspector, sa_engine, table_name, ref)
-    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
-    pk_columns = set(pk.get("constrained_columns", []) or [])
-
-    columns: dict[str, DataType] = {}
-    for col in cols_meta:
-        col_type = col["type"]
-        if isinstance(col_type, DataType):
-            columns[col["name"]] = col_type
-        else:
-            columns[col["name"]] = _sa_type_to_data_type(col_type)
-            # is_float irrelevant for bucket comparison (INT/FLOAT → NUMBER).
-            _ = _sa_type_is_float(col_type)
-
-    fks: list[tuple[str, str, str]] = []
-    try:
-        for fk in inspector.get_foreign_keys(table_name, schema=schema_token):
-            constrained = fk.get("constrained_columns") or []
-            referred_table = fk.get("referred_table")
-            referred = fk.get("referred_columns") or []
-            for src, tgt in zip(constrained, referred):
-                if referred_table:
-                    fks.append((src, referred_table, tgt))
-    except Exception:
-        # Some dialects (ClickHouse, BigQuery) don't surface FK metadata; joins
-        # are still validated by name.
-        pass
-
-    return LiveTable(columns=columns, pk_columns=pk_columns, fk_relationships=fks)
+    """One table's live columns via the reflection door; ``ref`` keeps the read catalog-scoped."""
+    cols = reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
+    return LiveTable(columns={
+        c.name: c.type if isinstance(c.type, DataType) else _sa_type_to_data_type(c.type) for c in cols
+    })
 
 
 # Cursor type-category strings → DataType buckets.

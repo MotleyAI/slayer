@@ -41,10 +41,10 @@ from slayer.engine.ingestion import (
     ingest_datasource_report,
     introspect_table_to_model,
 )
-from slayer.engine.introspect_utils import _clean_comment
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
 from slayer.mcp.server import _render_ingest_result
 from slayer.sql.dialects import dialect_for_sa_backend
+from slayer.sql.dialects.reflection import clean_comment
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -99,7 +99,8 @@ class _CommentEngine:
     @contextmanager
     def connect(self) -> Iterator[SimpleNamespace]:
         def _exec(statement: str, *args: Any, **kwargs: Any) -> _Rows:
-            assert not args and not kwargs, "catalog queries carry no bind parameters"
+            assert not args, "catalog queries carry no bind parameters"
+            assert not kwargs, "catalog queries carry no bind parameters"
             self.statements.append(statement)
             return _Rows(self._respond(statement))
 
@@ -187,16 +188,16 @@ def _col(model: SlayerModel, name: str) -> Column:
 
 class TestCleanComment:
     def test_strips_whitespace(self) -> None:
-        assert _clean_comment("  order id  ") == "order id"
+        assert clean_comment("  order id  ") == "order id"
 
     def test_empty_string_is_none(self) -> None:
-        assert _clean_comment("") is None
+        assert clean_comment("") is None
 
     def test_whitespace_only_is_none(self) -> None:
-        assert _clean_comment("   \n\t ") is None
+        assert clean_comment("   \n\t ") is None
 
     def test_none_passthrough(self) -> None:
-        assert _clean_comment(None) is None
+        assert clean_comment(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +359,7 @@ class TestColumnCommentsFallback:
         _, engine = _fallback_comments(backend="mysql", comments=[], table=payload, schema=payload)
         (sql,) = engine.comment_queries()
         (tree,) = sqlglot.parse(sql, read="mysql")
+        assert tree is not None
         values = {lit.this for lit in tree.find_all(exp.Literal) if lit.is_string}
         assert payload in values
 

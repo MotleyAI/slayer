@@ -327,7 +327,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     n_dims = len(query.dimensions or [])
     n_tds = len(query.time_dimensions or [])
     filter_alias_map: Dict[str, ValueKey] = {}
-    _, _, _agg_dms = partition_declared_measures(
+    _grain_dims, _grain_tds, _agg_dms = partition_declared_measures(
         declared_measures=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     for dm in _agg_dms:
@@ -495,6 +495,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     bundle=bundle,
                 )
             order_specs.append(OrderSpec(bound=bo, direction=o.direction))
+    if bundle.default_result_order and not order_specs and query.distinct_dimension_values is not False:
+        # No order: sort by the projected grain, as its explicit ascending spelling would.
+        order_specs = [
+            OrderSpec(bound=dm.bound, direction="asc")
+            for dm in (*_grain_dims, *_grain_tds)
+        ]
 
     column_type = scope_column_type(scope=scope, bundle=bundle)
     check_date_operands(

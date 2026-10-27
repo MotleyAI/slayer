@@ -12,6 +12,7 @@ from typing import Any, NoReturn
 import duckdb
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event, exc
 from pydantic import BaseModel
 from sqlalchemy.engine.reflection import Inspector
 
@@ -100,7 +101,7 @@ def _joins(model: SlayerModel) -> dict[str, tuple[list[list[str]], JoinCardinali
 
 
 def _raise_regclass(*_args: Any, **_kwargs: Any) -> NoReturn:
-    raise sa.exc.ProgrammingError("SELECT ...", {}, Exception(_REGCLASS))
+    raise exc.ProgrammingError("SELECT ...", {}, Exception(_REGCLASS))
 
 
 @pytest.fixture
@@ -161,7 +162,7 @@ def _attached(paths: tuple[Path, Path]) -> Iterator[sa.Engine]:
     main, other = paths
     with disposable_engine(f"duckdb:///{main}") as engine:
 
-        @sa.event.listens_for(engine, "connect")  # type: ignore[attr-defined]
+        @event.listens_for(engine, "connect")
         def _attach(dbapi_conn, _rec):  # noqa: ANN001
             dbapi_conn.execute(f"ATTACH IF NOT EXISTS '{other}' AS aaa")
 
@@ -238,11 +239,11 @@ def _failing(read: _FailedRead) -> Iterator[None]:
         if read.source in low and f"'{read.table}'" in low and read.marker in low:
             raise RuntimeError("boom-key-read")
 
-    sa.event.listen(sa.engine.Engine, "before_cursor_execute", _boom)
+    event.listen(sa.engine.Engine, "before_cursor_execute", _boom)
     try:
         yield
     finally:
-        sa.event.remove(sa.engine.Engine, "before_cursor_execute", _boom)
+        event.remove(sa.engine.Engine, "before_cursor_execute", _boom)
 
 
 def _warnings_naming(caplog: pytest.LogCaptureFixture, table: str) -> list[str]:
@@ -341,11 +342,11 @@ def statement_log() -> Iterator[list[str]]:
     def _record(_conn, _cursor, statement, *_rest) -> None:  # noqa: ANN001
         seen.append(statement)
 
-    sa.event.listen(sa.engine.Engine, "before_cursor_execute", _record)
+    event.listen(sa.engine.Engine, "before_cursor_execute", _record)
     try:
         yield seen
     finally:
-        sa.event.remove(sa.engine.Engine, "before_cursor_execute", _record)
+        event.remove(sa.engine.Engine, "before_cursor_execute", _record)
 
 
 class TestSqliteBaseBehaviour:

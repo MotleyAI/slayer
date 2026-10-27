@@ -83,8 +83,9 @@ def test_undeclared_backend_gets_the_base() -> None:
 
 def test_duplicate_declaration_fails_registry_build() -> None:
     clash = SqliteDialect(sa_backend_names=frozenset({"duckdb"}))
+    dialects = [DuckdbDialect(), clash]
     with pytest.raises(ValueError, match="duckdb"):
-        build_sa_backend_registry([DuckdbDialect(), clash])
+        build_sa_backend_registry(dialects)
 
 
 def test_registry_maps_each_declared_backend() -> None:
