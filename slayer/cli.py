@@ -334,8 +334,8 @@ def _wait_for(done: threading.Event) -> None:
 
     An Event, not ``Thread.join``: on Python < 3.13 an exception interrupting ``join`` marks the thread dead.
     """
-    while not done.wait(_SIGNAL_POLL_SECONDS):
-        pass
+    while not done.is_set():
+        done.wait(_SIGNAL_POLL_SECONDS)
 
 
 def _build_parser() -> argparse.ArgumentParser:
