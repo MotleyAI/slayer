@@ -77,6 +77,44 @@ def _stuck_stop(_args) -> None:
     cli._serve_until_terminated(run=run, stop=stop)
 
 
+def _slow_unwind(_args) -> None:
+    run, stop = _blocking_until_stopped()
+
+    def unwinding_run() -> None:
+        run()
+        time.sleep(0.5)
+        mark("UNWOUND")
+
+    cli._serve_until_terminated(run=unwinding_run, stop=stop)
+
+
+def _failing_stop(error: BaseException) -> Callable[[argparse.Namespace], None]:
+    def scenario(_args) -> None:
+        def run() -> None:
+            usage_reporting.record(surface="mcp", token="query")
+            mark("RUNNING")
+            _forever.wait()
+
+        def stop() -> None:
+            raise error
+
+        cli._serve_until_terminated(run=run, stop=stop)
+
+    return scenario
+
+
+def _signal_inside_worker_start(args) -> None:
+    real_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        if thread.name == "slayer-server":
+            signal.raise_signal(args.sig)
+        real_start(thread)
+
+    threading.Thread.start = start  # type: ignore[method-assign]
+    cli._serve_until_terminated(run=lambda: mark("RUNNING"), stop=lambda: mark("STOP"))
+
+
 def _main_thread_sleeping() -> bool:
     stat = Path(f"/proc/self/task/{threading.main_thread().native_id}/stat").read_text()
     return stat.rsplit(")", 1)[1].split()[0] == "S"
@@ -198,6 +236,10 @@ SCENARIOS: dict[str, Callable[[argparse.Namespace], None]] = {
     "join": _join,
     "early": _early,
     "stuck_stop": _stuck_stop,
+    "failing_stop": _failing_stop(RuntimeError("stop-boom")),
+    "failing_stop_exit": _failing_stop(SystemExit(3)),
+    "signal_inside_worker_start": _signal_inside_worker_start,
+    "slow_unwind": _slow_unwind,
     "worker_thread_signalled": _worker_thread_signalled,
     "stop_thread_signalled": _stop_thread_signalled,
     "uvicorn_stuck_stop": _uvicorn_stuck_stop,

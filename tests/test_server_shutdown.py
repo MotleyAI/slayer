@@ -155,6 +155,41 @@ def test_second_signal_forces_exit_from_stuck_stop(quiet: dict[str, str], second
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_waits_for_server_to_unwind(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "slow_unwind")
+    proc.expect("RUNNING")
+    proc.send(sig)
+    returncode = proc.finish()
+    _assert_signal_stop(proc, returncode, sig)
+    assert proc.out[-1] == "UNWOUND"
+
+
+@pytest.mark.parametrize(("scenario", "error"), [
+    ("failing_stop", "RuntimeError('stop-boom')"),
+    ("failing_stop_exit", "SystemExit(3)"),
+])
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_failing_stop_still_exits_on_first_signal(
+    quiet: dict[str, str], sig: signal.Signals, scenario: str, error: str,
+) -> None:
+    proc = _scenario(quiet, scenario)
+    proc.expect("RUNNING")
+    proc.send(sig)
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, sig)
+    assert f"server stop failed: {error}" in proc.stderr
+    assert usage(show(), "mcp:query")["ok"] == 1
+
+
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_inside_worker_start_stops_without_waiting(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "signal_inside_worker_start", sig=sig)
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, sig)
+    assert proc.out == ["STOP"]
+
+
 @_linux_only
 @pytest.mark.parametrize("sig", _SIGNALS)
 def test_signal_taken_by_worker_thread_stops_once(quiet: dict[str, str], sig: signal.Signals) -> None:

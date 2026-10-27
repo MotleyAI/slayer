@@ -282,32 +282,60 @@ def _exit_now(code: int) -> NoReturn:
 def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], object] | None) -> None:
     """Run a server's blocking ``run`` in a worker thread; on a termination signal ``stop`` it and re-raise."""
     failure: list[BaseException] = []
+    worker_done = threading.Event()
 
     def target() -> None:
         try:
             run()
         except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
             failure.append(exc)
+        finally:
+            worker_done.set()
 
     worker = threading.Thread(target=target, name="slayer-server", daemon=True)
+    launched = False
     try:
         worker.start()
-        _wait_for(worker)
+        launched = True
+        _wait_for(worker_done)
     except _Terminated:
-        if stop is not None:
-            stopper = threading.Thread(target=stop, name="slayer-server-stop", daemon=True)
-            stopper.start()
-            _wait_for(stopper)
-            _wait_for(worker)
+        # A failed stop may never release the worker; one interrupted inside start() may never have run.
+        if _stop_server(stop) and launched:
+            _wait_for(worker_done)
         raise
     if failure:
         raise failure[0]
 
 
-def _wait_for(thread: threading.Thread) -> None:
-    """Join, waking periodically: a signal taken by another thread runs its handler only once this thread wakes."""
-    while thread.is_alive():
-        thread.join(_SIGNAL_POLL_SECONDS)
+def _stop_server(stop: Callable[[], object] | None) -> bool:
+    """Run ``stop`` in its own thread and wait for it; whether it returned normally."""
+    if stop is None:
+        return False
+    stopped = threading.Event()
+    done = threading.Event()
+
+    def stopping() -> None:
+        try:
+            stop()
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — the signal still decides the exit
+            print(f"slayer: server stop failed: {exc!r}", file=sys.stderr)  # no traceback on a signal stop
+        else:
+            stopped.set()
+        finally:
+            done.set()
+
+    threading.Thread(target=stopping, name="slayer-server-stop", daemon=True).start()
+    _wait_for(done)
+    return stopped.is_set()
+
+
+def _wait_for(done: threading.Event) -> None:
+    """Wait, waking periodically so a signal another thread took gets handled.
+
+    An Event, not ``Thread.join``: on Python < 3.13 an exception interrupting ``join`` marks the thread dead.
+    """
+    while not done.wait(_SIGNAL_POLL_SECONDS):
+        pass
 
 
 def _build_parser() -> argparse.ArgumentParser:
