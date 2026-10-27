@@ -32,6 +32,7 @@ columns:
 - name: price
   sql: price
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: List price, in dollars.
