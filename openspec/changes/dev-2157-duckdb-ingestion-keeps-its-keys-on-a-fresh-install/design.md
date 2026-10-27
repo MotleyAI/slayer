@@ -175,11 +175,14 @@ No arc42 edit. One normative-harness edit (approved, see decisions log): `archit
   to right in result-column order. It goes through the same order binding and `build_ordered` door as
   an explicit order, so NULLs sort last on every dialect (SQL Server: native), per
   `docs/concepts/queries.md`.
-- Mechanism: binding is per stage and has no notion of "outermost", so the orchestrator passes an
-  explicit `apply_default_order` flag only for the request's final stage; the default `OrderSpec`s are
-  built from that stage's already-bound dimension / time-dimension slots (never re-derived from
-  names), so computed, joined and time-bucket dimensions sort exactly as projected. The default order is
-  applied where an explicit order is — before `LIMIT` / `OFFSET`.
+- Mechanism: right after slack normalization (and variable substitution) of an executed request's
+  final query, an absent or empty `order` is filled with one ascending item per projected dimension and
+  time dimension, in result-column order, each spelled as that dimension is declared, so it binds onto
+  the projected value through the explicit-order path (order items resolve against the declared
+  dimensions first). The orchestrator signals "executed request's final query" to the plan-and-render
+  step; planning and binding are unchanged. Query-backed-model expansion and type probes never get it.
+  Filled-in items are marked implied and record no stale-spelling warning (no position the user
+  wrote). The default order is applied where an explicit order is — before `LIMIT` / `OFFSET`.
 - Never applied to: inner stages of a query list, a query-backed model's backing query or
   `source_queries` consumed as a source, raw-rows queries (`distinct_dimension_values: false`),
   measure-only queries (no dimensions).
@@ -321,8 +324,9 @@ No arc42 edit. One normative-harness edit (approved, see decisions log): `archit
     it exists, else that key alone dropped (`flight`/`pg` have no `other`); no new keys. (codex)
 25. `--debug` leaf copies use `default=argparse.SUPPRESS` so they never reset a root `--debug`; tests in
     root, leaf and nested-leaf positions. (codex)
-26. Default order via an explicit `apply_default_order` flag for the final stage only, `OrderSpec`s built
-    from the bound dimension slots, applied before LIMIT/OFFSET. (codex)
+26. Default order as an entry rewrite of the final query's `order`, after slack normalization (which
+    moves a bare column misplaced under `measures` into `dimensions`), reusing the explicit-order
+    binding; applied before LIMIT/OFFSET. (codex; mechanism revised by the user)
 27. Default-order tests cover LIMIT/OFFSET, transforms, hidden order slots, time spine, pg/Flight
     facades, and unordered inner CTEs. (codex)
 28. DuckDB unique indexes accepted only when their `sql` parses to plain columns (sqlglot); expression

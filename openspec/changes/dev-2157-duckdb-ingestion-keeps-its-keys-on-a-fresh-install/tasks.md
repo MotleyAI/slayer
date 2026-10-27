@@ -46,7 +46,7 @@ Existing tests whose logic changes under the approved plan:
 - [ ] 3.5 CLI error door in `main()`, `--debug` parent parser (`default=argparse.SUPPRESS` on leaf copies), delete `_exit_with_error` and per-command catches, stderr for every `Error:` line; `--version`. Verify 2.9, 2.10.
 - [x] 3.6 `search` positional question + `--question` alias + moved-command refusal; `datasources refresh-samples` (+ `--format`); usage key rename. Verify 2.11, 2.12.
 - [x] 3.7 CLI table cells via `SlayerResponse._format_value`. Verify 2.13.
-- [ ] 3.8 Default order: `apply_default_order` for the request's final stage only, `OrderSpec`s from the bound dimension slots, through the explicit-order path. Verify 2.14–2.17; then enumerate the golden baselines that gained an outermost ORDER BY and re-bless each individually, checking each diff is only that ORDER BY.
+- [ ] 3.8 Default order: fill the final query's empty `order` from its projected dimensions right after slack normalization, through the explicit-order path. Verify 2.14–2.17; then enumerate the golden baselines that gained an outermost ORDER BY and re-bless each individually, checking each diff is only that ORDER BY.
 - [x] 3.9 Demo: `DECIMAL(12,2)` schema + exact cents conversion; `_ColumnEnrichment.db_type` gap-fill; canonical-projection schema check; sibling-build + factory release + `os.replace` rebuild; setup always via `ingest_datasource_idempotent` + enrichment; delete the fast path and model-overwrite path. Verify 2.18, 2.19.
 - [x] 3.10 `Batch` before-validator folding retired usage keys through the recorder's shared unknown → other rule. Verify 2.20.
 

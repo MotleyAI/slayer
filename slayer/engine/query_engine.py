@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousModelError,
@@ -57,10 +57,14 @@ from slayer.core.models import (
     _check_join_keys,
     join_key_error,
 )
+from slayer.core.granularity import resolve_granularity
 from slayer.core.query import (
+    ComputedDimension,
+    OrderItem,
     QueryRefinement,
     SlayerQuery,
     extract_variable_refs,
+    granularity_call_parts,
     refine_query,
     render_probe_text,
 )
@@ -92,7 +96,7 @@ from slayer.core.warnings import (
     UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
 )
-from slayer.core.refs import functional_agg_text
+from slayer.core.refs import auto_name_from_expression, functional_agg_text
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
@@ -307,6 +311,36 @@ def _merge_query_variables(
 ) -> Dict[str, Any]:
     """Merge variable layers per precedence ``runtime > stage > outer``."""
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
+
+
+def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
+    """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
+
+    Each item is spelled as its dimension is declared, so it binds onto the projected value.
+    """
+    if query.order or query.distinct_dimension_values is False:
+        return query
+    dimensions: List[str] = []
+    # A datasource-granularity call in ``dimensions`` projects as a time dimension, after the others.
+    granularity_calls: List[str] = []
+    for d in query.dimensions or []:
+        if not isinstance(d, ComputedDimension):
+            dimensions.append(d.full_name)
+            continue
+        call = granularity_call_parts(d.expression) if d.name == auto_name_from_expression(d.template) else None
+        if call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None:
+            granularity_calls.append(d.expression)
+        else:
+            dimensions.append(d.name or d.expression)
+    time_dimensions = [
+        f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
+        f"({td.dimension.full_name})"
+        for td in query.time_dimensions or []
+    ]
+    columns = [*dimensions, *time_dimensions, *granularity_calls]
+    if not columns:
+        return query
+    return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
 
 
 def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
@@ -1170,8 +1204,10 @@ class SlayerQueryEngine:
                 )
         bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
 
+        if result_order:
+            query = _with_default_order(query, bundle=bundle)
+
         # Plan the DAG (root last) and render the whole chain to one SQL string.
-        bundle = bundle.model_copy(update={"default_result_order": result_order})
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         kept: Set[str] = set()
         sql: Optional[str] = None
