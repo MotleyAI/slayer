@@ -48,6 +48,7 @@ import slayer.mcp.server as mcp_server_mod
 from slayer.api.server import create_app
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
+from tests._fake_uvicorn import fake_uvicorn
 
 
 # ─────────────────────────────────────────────────────────────────────────────  # NOSONAR(S125) — section separator, not commented-out code
@@ -187,7 +188,7 @@ def _mcp_args(**overrides) -> argparse.Namespace:
 
 
 def _patch_serve_dependencies(monkeypatch, *, capture: list, app_obj="APP"):
-    """Stub out _resolve_storage, _prepare_demo, create_app, and uvicorn.run
+    """Stub out _resolve_storage, _prepare_demo, create_app, and uvicorn's server
     so `_run_serve` can be called without touching real storage/network."""
     monkeypatch.setattr(cli, "_resolve_storage", lambda *a, **kw: "STORAGE")
     monkeypatch.setattr(
@@ -202,9 +203,9 @@ def _patch_serve_dependencies(monkeypatch, *, capture: list, app_obj="APP"):
     fake_api.create_app = fake_create_app
     monkeypatch.setitem(sys.modules, "slayer.api.server", fake_api)
 
-    fake_uvicorn = types.ModuleType("uvicorn")
-    fake_uvicorn.run = lambda *a, **kw: capture.append(("uvicorn_run", kw))
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn(
+        lambda app, host, port: capture.append(("uvicorn_run", {"app": app, "host": host, "port": port}))
+    ))
 
 
 def _patch_mcp_dependencies(monkeypatch, *, capture: list):

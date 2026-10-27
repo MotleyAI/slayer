@@ -9354,14 +9354,6 @@
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
-                    "startColumn": 21,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
                     "startColumn": 17,
                     "endColumn": 34,
                     "lineCount": 1
@@ -33384,14 +33376,6 @@
                 "range": {
                     "startColumn": 13,
                     "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 20,
                     "lineCount": 1
                 }
             },

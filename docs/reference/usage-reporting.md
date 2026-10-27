@@ -62,7 +62,8 @@ network at that point. A report is sent at most **once per 24 hours**, and only 
 running anyway (no heartbeat): when a `slayer` process starts, or a running server records an
 action, and the last successful send was 24 hours ago or more. The send merges all spool files
 and runs in a background thread; at exit SLayer waits for it at most about one second. Unsent
-data stays in the spool (capped at about 100 files / 1 MB) for a later try.
+data stays in the spool (capped at about 100 files / 1 MB) for a later try. A server stopped by
+SIGTERM or SIGINT counts as a normal, successful run.
 
 Usage reporting never changes a command's output or exit code: every usage reporting failure is ignored.
 
