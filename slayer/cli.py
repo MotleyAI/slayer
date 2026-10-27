@@ -7,7 +7,7 @@ import json
 import os
 import signal
 import sys
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, NoReturn
 from urllib.parse import parse_qs, urlparse
 
@@ -209,6 +209,23 @@ def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
     os._exit(code if isinstance(code, int) else 1)
 
 
+class _VersionAction(argparse.Action):
+    """``--version``: the package metadata is read only when asked, so its absence breaks no other command."""
+
+    def __init__(self, option_strings: list[str], dest: str = argparse.SUPPRESS, **kwargs: Any) -> None:
+        super().__init__(option_strings=option_strings, dest=dest, default=argparse.SUPPRESS, nargs=0,
+                         help="Show the version and exit.", **kwargs)
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: Any, option_string: str | None = None) -> None:
+        try:
+            installed = version("motley-slayer")
+        except PackageNotFoundError:
+            installed = "unknown"
+        print(f"slayer {installed}")
+        parser.exit()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="slayer",
@@ -238,7 +255,7 @@ docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"slayer {version('motley-slayer')}")
+    parser.add_argument("--version", action=_VersionAction)
     subparsers = parser.add_subparsers(dest="command")
 
     # ── serve ─────────────────────────────────────────────────────────

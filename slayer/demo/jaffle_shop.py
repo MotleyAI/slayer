@@ -13,7 +13,6 @@ an up-to-date DuckDB file and rebuilds one whose schema is stale.
 """
 
 import datetime as dt
-import io
 import os
 import shutil
 import subprocess
@@ -146,6 +145,8 @@ def _currency() -> NumberFormat:
 
 
 MONEY_DB_TYPE = "DECIMAL(12,2)"
+_CUSTOMER_ID_LABEL = "Customer ID"
+_ROW_COUNT = "count(id)"
 
 
 def _percent() -> NumberFormat:
@@ -192,7 +193,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     label="Store ID", description="Store where the order was placed."
                 ),
                 "customer_id": _ColumnEnrichment(
-                    label="Customer ID", description="Customer who placed the order."
+                    label=_CUSTOMER_ID_LABEL, description="Customer who placed the order."
                 ),
                 "subtotal": _ColumnEnrichment(
                     label="Net Sales",
@@ -237,7 +238,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 ),
                 ModelMeasure(
                     name="order_count",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Orders",
                     description="Number of orders.",
                     type=DataType.INT,
@@ -278,7 +279,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
         "customers": _TableEnrichment(
             description="Customers of the Jaffle Shop — one row per person.",
             columns={
-                "id": _ColumnEnrichment(label="Customer ID"),
+                "id": _ColumnEnrichment(label=_CUSTOMER_ID_LABEL),
                 "name": _ColumnEnrichment(label="Customer", description="Customer name."),
             },
             measures=[
@@ -364,7 +365,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="units_sold",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Units Sold",
                     description="Number of item units sold.",
                     type=DataType.INT,
@@ -414,7 +415,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             columns={
                 "id": _ColumnEnrichment(label="Tweet ID"),
                 "user_id": _ColumnEnrichment(
-                    label="Customer ID", description="Customer who tweeted."
+                    label=_CUSTOMER_ID_LABEL, description="Customer who tweeted."
                 ),
                 "tweeted_at": _ColumnEnrichment(
                     label="Tweet Date", description="When the tweet was posted."
@@ -424,7 +425,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             measures=[
                 ModelMeasure(
                     name="tweet_count",
-                    formula="count(id)",
+                    formula=_ROW_COUNT,
                     label="Tweets",
                     description="Number of tweets.",
                     type=DataType.INT,
@@ -540,7 +541,7 @@ def _stream_fileno(stream) -> int | None:
     """
     try:
         return stream.fileno()
-    except (AttributeError, io.UnsupportedOperation, ValueError, OSError):
+    except (AttributeError, ValueError, OSError):
         return None
 
 
@@ -864,16 +865,18 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     Creates missing models and additively merges existing ones (missing joins
     reconciled in), so every user edit survives.
     """
-    run_sync(ingest_datasource_idempotent(datasource=datasource, storage=storage))
+    result = run_sync(ingest_datasource_idempotent(datasource=datasource, storage=storage))
     stored = {
         m.name: m
         for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=datasource.name)))
     }
+    missing = [t for t in TABLE_NAMES if t not in stored]
+    if missing:
+        causes = "; ".join(f"{e.model_name}: {e.error}" for e in result.errors if e.model_name in missing)
+        raise SlayerError(f"Demo setup did not store the models {', '.join(missing)}" + (f" ({causes})" if causes else ""))
     models: list[SlayerModel] = []
     for table in TABLE_NAMES:
-        model = stored.get(table)
-        if model is None:
-            continue
+        model = stored[table]
         if apply_demo_enrichment(model):
             run_sync(storage.save_model(model))
         models.append(model)

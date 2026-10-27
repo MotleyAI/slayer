@@ -1207,6 +1207,47 @@ def _merge_one_column(
     return merged_col, did_widen, unique_filled, described
 
 
+class _ColumnsMerge(BaseModel):
+    """The persisted columns merged with the live columns they read."""
+
+    columns: list[Column]
+    widened: list[str] = Field(default_factory=list)
+    described: list[str] = Field(default_factory=list)
+    metadata_changed: bool = False
+
+
+def _spelling(column: Column) -> str:
+    return column.physical_name if column.is_base else column.name
+
+
+def _merge_persisted_columns(
+    *, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str], sqlite_widen_enabled: bool,
+) -> _ColumnsMerge:
+    """Each persisted column merged with the live column of its spelling."""
+    fresh_by_spelling = {_spelling(c): c for c in fresh.columns}
+    # The primary key is gap-filled as a whole: only a model with none takes the live one.
+    fill_key = not any(c.primary_key for c in persisted.columns)
+    out = _ColumnsMerge(columns=[])
+    for persisted_col in persisted.columns:
+        fresh_col = fresh_by_spelling.get(live_name[persisted_col.name])
+        merged_col, did_widen, unique_filled, described = _merge_one_column(
+            persisted_col=persisted_col,
+            fresh_col=fresh_col,
+            model_name=persisted.name,
+            sqlite_widen_enabled=sqlite_widen_enabled,
+        )
+        key_filled = fill_key and fresh_col is not None and fresh_col.primary_key
+        if key_filled:
+            merged_col = merged_col.model_copy(update={"primary_key": True})
+        out.columns.append(merged_col)
+        out.metadata_changed = out.metadata_changed or unique_filled or key_filled
+        if described:
+            out.described.append(persisted_col.name)
+        if did_widen:
+            out.widened.append(persisted_col.name)
+    return out
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
@@ -1218,40 +1259,30 @@ def _additive_merge_existing(
     Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
     non-None ``source_kind`` refresh.
     """
-    fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
     persisted_names = {c.name for c in persisted.columns}
     # A live column is the persisted column it is the physical spelling of, else the one named like it.
     live_name = {
         c.name: c.physical_name if c.is_base and c.physical_name not in persisted_names - {c.name} else c.name
         for c in persisted.columns
     }
+    columns = _merge_persisted_columns(
+        persisted=persisted, fresh=fresh, live_name=live_name, sqlite_widen_enabled=sqlite_widen_enabled,
+    )
+    merged_columns = columns.columns
+    keyed = any(c.primary_key for c in persisted.columns)
 
-    widened_column_names: list[str] = []
-    described_column_names: list[str] = []
-    merged_columns: list[Column] = []
-    metadata_changed = False
-    for persisted_col in persisted.columns:
-        merged_col, did_widen, unique_filled, described = _merge_one_column(
-            persisted_col=persisted_col,
-            fresh_col=fresh_by_name.get(live_name[persisted_col.name]),
-            model_name=persisted.name,
-            sqlite_widen_enabled=sqlite_widen_enabled,
-        )
-        metadata_changed = metadata_changed or unique_filled
-        if described:
-            described_column_names.append(persisted_col.name)
-        merged_columns.append(merged_col)
-        if did_widen:
-            widened_column_names.append(persisted_col.name)
-
-    new_cols = [c for c in fresh.columns if c.name not in persisted_names | set(live_name.values())]
+    matched = persisted_names | set(live_name.values())
+    new_cols = [
+        c.model_copy(update={"primary_key": False}) if keyed and c.primary_key else c
+        for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
+    ]
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 
     merged_joins, joins_metadata_changed = _merge_stored_joins(
         persisted=persisted, fresh=fresh
     )
-    metadata_changed = metadata_changed or joins_metadata_changed
+    metadata_changed = columns.metadata_changed or joins_metadata_changed
 
     kind_changed = (
         fresh.source_kind is not None
@@ -1262,10 +1293,10 @@ def _additive_merge_existing(
 
     if not (
         new_column_names
-        or widened_column_names
+        or columns.widened
         or kind_changed
         or metadata_changed
-        or described_column_names
+        or columns.described
         or model_described
     ):
         return AdditiveMergeResult(merged=persisted)
@@ -1279,10 +1310,10 @@ def _additive_merge_existing(
     return AdditiveMergeResult(
         merged=persisted.model_copy(update=update),
         new_columns=new_column_names,
-        widened_columns=widened_column_names,
+        widened_columns=columns.widened,
         kind_changed=kind_changed,
         metadata_changed=metadata_changed,
-        described_columns=described_column_names,
+        described_columns=columns.described,
         model_described=model_described,
     )
 

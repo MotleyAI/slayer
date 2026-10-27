@@ -175,6 +175,21 @@ def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
         run_sync(storage.save_model(model))
 
 
+EXPECTED_KEYS = {
+    "customers": {"id"},
+    "stores": {"id"},
+    "products": {"sku"},
+    "orders": {"id"},
+    "items": {"id"},
+    "supplies": {"id", "sku"},
+    "tweets": {"id"},
+}
+
+
+def _keys(models: dict[str, SlayerModel]) -> dict[str, set[str]]:
+    return {name: {c.name for c in m.columns if c.primary_key} for name, m in models.items()}
+
+
 def _strip_joins_and_edit(storage: YAMLStorage) -> None:
     for model in _stored_models(storage).values():
         model.joins = []
@@ -202,16 +217,7 @@ class TestDemoKeysAndJoins:
     def _assert_keys_and_joins(self, storage: YAMLStorage) -> None:
         models = _stored_models(storage)
         assert _edges(models) == EXPECTED_EDGES
-        pks = {name: {c.name for c in m.columns if c.primary_key} for name, m in models.items()}
-        assert pks == {
-            "customers": {"id"},
-            "stores": {"id"},
-            "products": {"sku"},
-            "orders": {"id"},
-            "items": {"id"},
-            "supplies": {"id", "sku"},
-            "tweets": {"id"},
-        }
+        assert _keys(models) == EXPECTED_KEYS
         assert _run(storage, README_QUERY)
 
     def test_demo_ingests_its_joins_and_keys(self, jaffle_generator, storage, store_dir) -> None:
@@ -383,6 +389,32 @@ class TestDemoSetupHealsModels:
         assert _edges(models) == EXPECTED_EDGES
         assert _column(models["orders"], "order_total").description == "My own total"
         assert _run(storage, README_QUERY)
+
+    def test_a_demo_model_that_is_not_stored_fails_setup(
+        self, jaffle_generator, storage, store_dir, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        save_model = storage.save_model
+
+        async def refuse_tweets(model: SlayerModel, **kwargs):
+            if model.name == "tweets":
+                raise RuntimeError("disk full")
+            return await save_model(model, **kwargs)
+
+        monkeypatch.setattr(storage, "save_model", refuse_tweets)
+        with pytest.raises(SlayerError, match=r"tweets.*disk full"):
+            _setup(storage, store_dir)
+
+    def test_keyless_models_regain_their_keys(self, jaffle_generator, storage, store_dir) -> None:
+        _setup(storage, store_dir)
+        for model in _stored_models(storage).values():
+            model.joins = []
+            for column in model.columns:
+                column.primary_key = False
+            run_sync(storage.save_model(model))
+        _setup(storage, store_dir)
+        models = _stored_models(storage)
+        assert _keys(models) == EXPECTED_KEYS
+        assert _edges(models) == EXPECTED_EDGES
 
     def test_joinless_models_regain_joins_with_rebuild(
         self, jaffle_generator, jafgen_dir, storage, store_dir, tmp_path,

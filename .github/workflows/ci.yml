@@ -132,6 +132,8 @@ jobs:
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       - name: Upgrade SQLAlchemy, duckdb and duckdb-engine to the newest allowed
+        env:
+          POETRY_INSTALLER_ONLY_BINARY: ":all:"
         run: |
           poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
           poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
