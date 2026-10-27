@@ -108,6 +108,10 @@ is the coercion from coarser to finer.
      search. Only aggregates and filters (Axiom 14) read across `×`; any other
      row-level read is a type error, so `×` never multiplies the population.
      [enforced: test:tests/test_unrelated_datasets.py]
+   - **3.2 List children.** A list column `L` of dataset `D` is a keyless
+     one-to-many child `D.L`: one row per non-NULL element, its value
+     `D.L.value`, each row determining its `D` row.
+     [target: DEV-2137]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home

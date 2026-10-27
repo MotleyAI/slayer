@@ -135,8 +135,8 @@ All code, old and new, MUST obey these.
     bending an existing kind's contract. Every kind dispatch fails closed on a
     kind it does not handle. [review]
 14. **Ingestion is idempotent and additive-only**: user metadata is never
-    overwritten by a re-ingest (`source_kind` refresh is the one documented
-    exception). [review]
+    overwritten by a re-ingest (documented exceptions: the `source_kind`
+    refresh, and a `TEXT` column re-typed to the list its live column is). [review]
 15. **Row-level security fails closed**: anything a session policy cannot
     confirm is rejected, never passed through unscoped. [review]
 16. **Logical names, physical once**: every model-level column reference —
