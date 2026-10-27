@@ -243,7 +243,11 @@ class _TerminationGuard:
         """Turn a normal end into exit 128 + signal number if a signal arrived."""
         self.phase = "after"
         if self.signum is None:
-            return
+            self.restore()  # later signals go to the original handlers; re-check one that came first
+            if self.signum is None:
+                return
+            for signum in self.replaced:  # it raced the restore: keep forcing on further signals
+                signal.signal(signum, self._handle)
         if stdio:  # stdio MCP's stdin reader thread cannot be stopped
             self.forcing = True
             _exit_now(128 + self.signum)

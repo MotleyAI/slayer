@@ -333,6 +333,41 @@ def test_main_restores_signal_handlers(
     assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
 
 
+def test_signal_just_before_handler_restore_is_not_lost(quiet: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(slayer_cli, "_run_serve", lambda _args: None)
+    real_restore = slayer_cli._TerminationGuard.restore
+    raised: list[bool] = []
+
+    def restore(guard: slayer_cli._TerminationGuard) -> None:
+        if not raised:
+            raised.append(True)
+            signal.raise_signal(signal.SIGTERM)
+        real_restore(guard)
+
+    monkeypatch.setattr(slayer_cli._TerminationGuard, "restore", restore)
+    assert cli(["serve"]).returncode == 128 + signal.SIGTERM
+
+
+def test_guard_stays_installed_after_signal_races_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    guard = slayer_cli._TerminationGuard(token=None)
+    real_restore = slayer_cli._TerminationGuard.restore
+
+    def restore() -> None:
+        real_restore(guard)
+        guard.signum = signal.SIGTERM
+
+    monkeypatch.setattr(guard, "restore", restore)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            guard.finish(stdio=False)
+        assert exc.value.code == 128 + signal.SIGTERM
+        assert signal.getsignal(signal.SIGTERM) == guard._handle
+    finally:
+        real_restore(guard)
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
 # --- the real server commands ------------------------------------------------------------------------------
 
 
