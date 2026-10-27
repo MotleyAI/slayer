@@ -59,6 +59,7 @@ class StageColumn(BaseModel):
     sql_alias: str
     public_alias: Optional[str] = None
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.
     granularity: CustomGranularity | GranularitySpec | None = None

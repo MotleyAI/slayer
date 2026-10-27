@@ -57,6 +57,8 @@ _MYSQL_PART_FUNCTIONS = {
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "MySQL"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[RegexFlavour] = ICU
 
@@ -251,6 +253,7 @@ class MariadbDialect(MysqlDialect):
     """MariaDB renders as MySQL; it names its statement timeout differently."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+    database_name: ClassVar[str] = "MariaDB"
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_statement_time = {timeout_seconds}"

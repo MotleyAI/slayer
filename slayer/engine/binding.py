@@ -38,7 +38,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, TEXT_RESULT_SCALARS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, numeric_valued, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, TEXT_RESULT_SCALARS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, numeric_valued, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     resolved_terminal,
     aggregation_owner,
@@ -64,6 +64,7 @@ from slayer.core.time_points import is_time_point, parse_temporal_value
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
+    ArrayLit,
     Arith,
     BoolOp,
     Cast,
@@ -398,9 +399,29 @@ def _bind(
         return ArithmeticKey(op=parsed.op, operands=(sub(parsed.operand),))
     if isinstance(parsed, BoolOp):
         return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
+    if isinstance(parsed, ArrayLit):
+        return _bind_array_literal(parsed, sub=sub)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
+    """A literal list: every element a literal (its NULL / type-family rules are the checker's)."""
+    values = []
+    for element in parsed.elements:
+        key = sub(element)
+        if isinstance(key, ArithmeticKey) and key.op == "-" and len(key.operands) == 1 \
+                and isinstance(key.operands[0], LiteralKey) and isinstance(key.operands[0].value, Decimal):
+            key = LiteralKey(value=-key.operands[0].value)
+        if not isinstance(key, LiteralKey):
+            raise ScalarArgumentError(
+                summary=f"Every element of the list literal `{canonical_measure_text(parsed)}` must be a literal; "
+                f"`{canonical_measure_text(element)}` is not.",
+                suggestion="Compare a list with another list column through contains_any / contains_all instead.",
+            )
+        values.append(key)
+    return ArrayLiteralKey(values=tuple(values))
 
 
 def _bind_leaf(
@@ -695,10 +716,26 @@ def _walk_join_chain(
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
+    _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
         models_by_name=models_by_name,
     )
+
+
+def _reject_opaque_elements(
+    *, host: SlayerModel, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> None:
+    """A hop naming a list of opaque elements: they have no element access."""
+    owner = resolved_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name)
+    column = owner.get_column(hop_path[index]) if owner is not None else None
+    if column is not None and column.type is DataType.ARRAY:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="ModelScope",
+            scope_summary=f"list column {column.name!r} holds opaque (UNKNOWN) elements, which have no element access",
+            suggestion="Declare the column's element_type, or use length() / IS NULL on the list.",
+        )
 
 
 def _route_edgeless_hop(
@@ -1550,6 +1587,8 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
         f" For numbers stored as text, convert them: {agg}(TRY_CAST({leaf} AS DOUBLE))."
         if col.type is DataType.TEXT and agg in NUMERIC_ONLY_AGGREGATIONS else ""
     )
+    if col.type is DataType.ARRAY:
+        remedy = f" {leaf!r} is a list; aggregate its elements: {agg}({leaf}.value)."
     return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
             f"default aggregations are {sorted(allowed)}.{remedy}")
 

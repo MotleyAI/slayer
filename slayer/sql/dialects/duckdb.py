@@ -14,11 +14,15 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import SqlDialect, TextFn, anon, case, lit, pad_fill
+from slayer.sql.dialects.base import SqlDialect, TextFn, anon, case, lit, non_null_elements, pad_fill
 from slayer.sql.dialects.patterns import RE2, RegexFlavour, emit_replacement
 
 #: ``json_type`` values that are not a scalar.
 _NON_SCALAR_JSON = ("OBJECT", "ARRAY", "NULL")
+
+
+def _compact(values: Expression) -> Expression:
+    return non_null_elements(values, filter_name="LIST_FILTER")
 
 
 class DuckdbDialect(SqlDialect):
@@ -33,6 +37,7 @@ class DuckdbDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
     regex_flavour: ClassVar[RegexFlavour] = RE2
+    database_name: ClassVar[str] = "DuckDB"
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
@@ -64,6 +69,18 @@ class DuckdbDialect(SqlDialect):
                                      expressions=[lit(t) for t in _NON_SCALAR_JSON]))
         read = case((scalar, anon("JSON_EXTRACT_STRING", value, text)))
         return case((anon("JSON_VALID", value), read))
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("LEN", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("LIST_CONTAINS", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ANY", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ALL", _compact(values), _compact(other))
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

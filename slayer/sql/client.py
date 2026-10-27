@@ -955,7 +955,7 @@ async def _execute_sql_async(
             timing.record("set_timeout", _t)
             _t = timing.start()
             result = await _exec_verbatim_async(conn, sql)
-            rows = _fetch_rows(result)
+            rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
             timing.record("query", _t)
     return ExecutionResult(rows=rows, warnings=skipped)
 
@@ -1032,10 +1032,17 @@ def _execute_sql_sync(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
     ) as skipped:
-        rows = _fetch_rows(_exec_verbatim(conn=conn, sql=sql))
+        rows = _fetch_rows(_exec_verbatim(conn=conn, sql=sql), dialect=dialect_for_ds_type(db_type))
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
-def _fetch_rows(result) -> list[dict[str, Any]]:
+def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
+    """Result rows, each driver list value (a tuple, a JSON-text array) as a Python list."""
     columns = list(result.keys())
-    return [dict(zip(columns, row)) for row in result.fetchall()]
+    description = getattr(getattr(result, "cursor", None), "description", None)
+    lists = dialect.list_result_columns(description) if description else frozenset()
+    return [
+        {c: dialect.list_result_value(v) if i in lists or isinstance(v, tuple) else v
+         for i, (c, v) in enumerate(zip(columns, row))}
+        for row in result.fetchall()
+    ]

@@ -22,11 +22,29 @@ class DataType(StrEnum):
     DATE = "DATE"
     TIMESTAMP = "TIMESTAMP"
     UNKNOWN = "UNKNOWN"
+    ARRAY = "ARRAY"
 
     @property
     def is_opaque(self) -> bool:
         """True when SLayer can store/display the column but not operate on it."""
         return self is DataType.UNKNOWN
+
+    @property
+    def is_list(self) -> bool:
+        return self is DataType.ARRAY
+
+
+#: The types a list's elements may have (``UNKNOWN``: opaque elements).
+ELEMENT_TYPES: frozenset[DataType] = frozenset(t for t in DataType if t is not DataType.ARRAY)
+
+
+def type_display(data_type: Optional[DataType], element_type: Optional[DataType] = None) -> str:
+    """``ARRAY<TEXT>`` for a list, else the type's value (``?`` when unknown)."""
+    if data_type is None:
+        return "?"
+    if data_type is DataType.ARRAY:
+        return f"ARRAY<{element_type.value if element_type is not None else 'UNKNOWN'}>"
+    return data_type.value
 
 
 # Legacy lowercase type spellings; pseudo-types drop to None (field default fires).
@@ -267,7 +285,11 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "stddev_samp", "stddev_pop",
     "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
+    "collect",
 })
+
+# Aggregations whose result is a list of their input's type.
+LIST_AGGREGATIONS: frozenset[str] = frozenset({"collect"})
 
 # Named once so classifier, planner and renderer agree.
 RANKED_AGGREGATIONS = ("first", "last")
@@ -335,6 +357,7 @@ class AggregationValueClass(StrEnum):
     PRESERVING = "preserving"                  # source type & format
     FLOAT_SOURCE_UNITS = "float_source_units"  # DOUBLE type, source format (else FLOAT)
     FLOAT_PLAIN = "float_plain"                # DOUBLE type, plain FLOAT format
+    LIST = "list"                              # ARRAY of the source type, no format
 
 
 def classify_aggregation(
@@ -349,6 +372,8 @@ def classify_aggregation(
         return AggregationValueClass.COUNT
     if aggregation in INTEGER_AGGREGATIONS:
         return AggregationValueClass.COUNT
+    if aggregation in LIST_AGGREGATIONS:
+        return AggregationValueClass.LIST
     if source_type is DataType.BOOLEAN and aggregation == "sum":
         return AggregationValueClass.COUNT
     if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
@@ -426,7 +451,10 @@ _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "median", "weighted_avg", "percentile", "first", "last",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "corr", "covar_samp", "covar_pop",
+    "corr", "covar_samp", "covar_pop", "collect",
+})
+_ORDERED_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max", "collect",
 })
 
 DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
@@ -434,17 +462,13 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     # narrowing is for CAST emission, not for what's aggregable.
     DataType.INT: _NUMERIC_AGGREGATIONS,
     DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
-    DataType.TEXT: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
+    DataType.TEXT: _ORDERED_AGGREGATIONS,
     # A boolean is its integer inside a numeric aggregation.
     DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
-    DataType.DATE: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
-    DataType.TIMESTAMP: frozenset({
-        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
-    }),
+    DataType.DATE: _ORDERED_AGGREGATIONS,
+    DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
+    # A list counts as a whole; its elements aggregate through ``<column>.value``.
+    DataType.ARRAY: frozenset({"count"}),
 }
 
 # A sole primary key is restricted to counting and min/max, regardless of data type.

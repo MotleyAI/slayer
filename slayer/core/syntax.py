@@ -111,6 +111,12 @@ class TupleLit(_BaseNode):
     elements: Tuple[Literal, ...]
 
 
+class ArrayLit(_BaseNode):
+    """A bracketed literal list ``['a', 'b']`` (``[]`` empty)."""
+
+    elements: Tuple[Any, ...] = ()
+
+
 class AggCall(_BaseNode):
     source: Any
     agg: str
@@ -171,7 +177,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit,
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit,
     AggCall, TransformCall, ScalarCall, Cast,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -742,7 +748,8 @@ _KEYWORD_LED = pp.FollowedBy(pp.Regex(
     r"|json_value)(?![A-Za-z0-9_])"
 )) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
       | _JSON_VALUE_RETURNING)
-_ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
+_ARRAY = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: ArrayLit(elements=tuple(toks[0])))
+_ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN | _ARRAY
          | _CALL | _COLON_AGG | _REF)
 
 _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
@@ -1230,9 +1237,7 @@ def _literal_text(name: str, value: Any) -> str:
 
 def _bare_literal_text(name: str, value: Any) -> str:
     if isinstance(value, (list, tuple)):
-        raise ValueError(
-            f"{_LITERAL_VALUES}: variable '{name}' holds a list, which fills only a whole IN list, e.g. x in ({{{name}}})."
-        )
+        return "[" + ", ".join(_literal_text(name, v) for v in value) + "]"
     if isinstance(value, str):
         stripped = value.strip()
         if _NUMBER_TEXT_RE.fullmatch(stripped):
@@ -1777,6 +1782,8 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
+    if isinstance(parsed, ArrayLit):
+        return f"[{', '.join(canonical_measure_text(e) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
         return _canonical_agg_text(parsed)
     if isinstance(parsed, TransformCall):

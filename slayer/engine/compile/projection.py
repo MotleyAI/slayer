@@ -17,6 +17,7 @@ from slayer.engine.elaborate_env import (
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -210,6 +211,7 @@ class ValueRegistry:
         hidden: bool = False,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        element_type: Optional[DataType] = None,
         type_is_explicit: bool = False,
         preserve_native_type: bool = False,
         expression: Optional["BoundExpr"] = None,
@@ -233,6 +235,7 @@ class ValueRegistry:
                 hidden=hidden,
                 label=label,
                 type=type,
+                element_type=element_type,
                 type_is_explicit=type_is_explicit,
                 preserve_native_type=preserve_native_type,
                 format=format,
@@ -270,6 +273,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            element_type=element_type,
             type_is_explicit=type_is_explicit,
             preserve_native_type=preserve_native_type,
             is_dimension=is_dimension,
@@ -292,6 +296,7 @@ class ValueRegistry:
         hidden: bool,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        element_type: Optional[DataType] = None,
         type_is_explicit: bool = False,
         preserve_native_type: bool = False,
         format: Optional[NumberFormat] = None,
@@ -327,6 +332,8 @@ class ValueRegistry:
             format=format,
             description=description,
         )
+        if element_type is not None and slot.element_type is None:
+            updates["element_type"] = element_type
         if type_is_explicit and type is not None and slot.type in (None, type):
             updates["type_is_explicit"] = True
         if preserve_native_type and not slot.preserve_native_type:
@@ -390,7 +397,7 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
         return
-    if isinstance(key, (StarKey, LiteralKey)):
+    if isinstance(key, (StarKey, LiteralKey, ArrayLiteralKey)):
         return  # never slottable on their own
     if isinstance(key, SLOT_COMPOSITE_KINDS):
         # Inlined composites: surface their slot-worthy children.
@@ -469,6 +476,7 @@ class ProjectionPlanner:
                 phase=phase,
                 label=m.label,
                 type=m.type,
+                element_type=m.element_type,
                 type_is_explicit=m.type_is_explicit,
                 preserve_native_type=m.preserve_native_type,
                 format=m.format,

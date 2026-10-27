@@ -121,6 +121,8 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,

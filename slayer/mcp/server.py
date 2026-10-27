@@ -30,6 +30,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.format import list_json_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
@@ -1869,7 +1870,8 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     for row in data:
         values = []
         for c in columns:
-            v = str(row.get(c, ""))
+            cell = row.get(c, "")
+            v = list_json_text(cell) if isinstance(cell, list) else str(cell)
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
             values.append(v)

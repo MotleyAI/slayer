@@ -28,6 +28,7 @@ from slayer.core.keys import (
     DATE_OPERAND_ARGS,
     NULL_SAFE_COMPARISON_OPS,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -40,11 +41,14 @@ from slayer.core.keys import (
     boolean_valued,
     check_scalar_arity,
     integer_valued,
+    is_list_call,
     numeric_boolean_positions,
     temporal_type,
     unit_word,
 )
-from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, cast_target, operand_copy, temporal_type_of
+from slayer.sql.dialects.base import (
+    SqlDialect, TemporalComparisonOp, cast_target, is_list_fn, operand_copy, temporal_type_of,
+)
 from slayer.sql.render.library import json_operands, render_library_call
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 
@@ -304,7 +308,13 @@ def render_scalar_key(
     """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
     if key.name == "mod":
         return render_modulo(key=key, operands=args, dialect=dialect, column_type=column_type)
+    if is_list_fn(key.name) and is_list_call(key, column_type=column_type):
+        return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args)))
     return render_scalar_call(name=key.name, args=args, dialect=dialect)
+
+
+def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expression:
+    return dialect.build_array_literal([_literal(v.value, dialect=dialect) for v in key.values])
 
 
 def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:
@@ -446,6 +456,8 @@ def render_row_expression(
         return render_in_predicate(key=key, column=column, dialect=dialect)
     if isinstance(key, CastKey):
         return render_cast(key=key, part=_part, dialect=dialect)
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )

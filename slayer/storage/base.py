@@ -281,6 +281,30 @@ def _check_not_exact_inverse(
             )
 
 
+def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerModel]) -> None:
+    """A list column ``L`` is the hop ``L`` to its elements, so no other hop from its model may share the name — checked
+    on this model's list columns and on the peers its new edges reach (design D12)."""
+    incident = [(j.name or j.target_model, j.target_model) for j in model.joins] + [
+        (j.name or p.name, p.name) for p in peers.values() for j in p.joins if j.target_model == model.name
+    ]
+    for column in model.columns:
+        hop = next((target for token, target in incident if token == column.name), None)
+        if column.type is DataType.ARRAY and hop is not None:
+            raise ValueError(
+                f"Model '{model.name}': list column '{column.name}' has the name of its hop to '{hop}'; the list's "
+                f"elements are reached as '{column.name}.value', so rename the column or name the edge."
+            )
+    for join in model.joins:
+        peer = peers.get(join.target_model)
+        token = join.name or model.name
+        column = peer.get_column(token) if peer is not None else None
+        if column is not None and column.type is DataType.ARRAY:
+            raise ValueError(
+                f"Model '{model.name}': its join to '{peer.name}' is the hop '{token}' from '{peer.name}', which "
+                f"collides with the list column '{peer.name}.{token}'; name the edge differently."
+            )
+
+
 def _warn_unnamed_parallel_edges(
     *, model: SlayerModel, peers: dict[str, SlayerModel],
 ) -> None:
@@ -488,6 +512,7 @@ class StorageBackend(ABC):
                 f"'{model.data_source}'. Edge names and model names share "
                 f"the path-segment namespace."
             )
+        _check_list_hop_collisions(model=model, peers=peers)
         if not model.joins:
             return
         names = _checked_join_names(model)

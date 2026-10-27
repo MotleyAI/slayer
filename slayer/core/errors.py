@@ -425,6 +425,11 @@ class ScalarOperandTypeError(QueryTypeError):
     a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
 
 
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
+
+
 class ServerVersionError(QueryTypeError):
     """A function the connected server's version does not provide."""
 

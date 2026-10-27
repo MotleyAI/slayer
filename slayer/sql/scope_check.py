@@ -162,9 +162,10 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
     leaks: list[ScopeLeak] = []
     label = _scope_label(scope)
     bound = tuple(scope.sources.keys())
+    array_joined = _array_join_aliases(scope)
     for col in scope.columns:
         qualifier = col.table
-        if not qualifier:
+        if not qualifier or qualifier in array_joined:
             continue  # unverifiable without a schema
         source = _resolve_source(scope=scope, qualifier=qualifier)
         if source is None:
@@ -187,6 +188,14 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
     return leaks
 
 
+def _array_join_aliases(scope: Scope) -> frozenset[str]:
+    """ClickHouse ``ARRAY JOIN … AS a`` aliases: row values the scope reads, unverifiable without a schema."""
+    joins = scope.expression.args.get("joins") or [] if isinstance(scope.expression, exp.Select) else []
+    return frozenset(
+        j.this.alias for j in joins if j.args.get("kind") == "ARRAY" and isinstance(j.this, exp.Alias)
+    )
+
+
 def _resolve_source(scope: Scope, qualifier: str):
     """Look up ``qualifier`` among the scope's sources, case-insensitively."""
     source = scope.sources.get(qualifier)
@@ -200,13 +209,14 @@ def _resolve_source(scope: Scope, qualifier: str):
 
 
 def _resolve_correlated(scope: Scope, qualifier: str):
-    """Resolve ``qualifier`` in ancestor scopes across expression-subquery boundaries only (where SQL
-    permits correlation); a derived table sees nothing of its own parent."""
+    """Resolve ``qualifier`` in ancestor scopes across expression-subquery, table-function (``UNNEST``) and
+    ``LATERAL`` boundaries only (where SQL permits correlation); any other derived table sees nothing of its parent."""
     current = scope
     while current.parent is not None:
         kind = current.scope_type
+        lateral = _is_lateral(current)
         current = current.parent
-        if kind == ScopeType.SUBQUERY:
+        if kind in (ScopeType.SUBQUERY, ScopeType.UDTF) or lateral:
             source = _resolve_source(scope=current, qualifier=qualifier)
             if source is not None:
                 return source
@@ -215,10 +225,24 @@ def _resolve_correlated(scope: Scope, qualifier: str):
     return None
 
 
+def _is_lateral(scope: Scope) -> bool:
+    """A ``LATERAL (…)`` derived table: it reads the FROM items before it."""
+    wrapper = scope.expression.parent
+    return isinstance(wrapper, exp.Subquery) and isinstance(wrapper.parent, exp.Lateral)
+
+
 def _projects(inner: Scope, name: str) -> bool:
     """Whether the inner scope projects ``name``; a star exports every name its ``EXCEPT`` list keeps."""
     folded = name.casefold()
     expr = inner.expression
+    if inner.scope_type == ScopeType.UDTF:
+        # A table function (``UNNEST``, ``LATERAL (…)``): its alias's column list, else its subquery's outputs.
+        alias = expr.args.get("alias")
+        if isinstance(alias, exp.TableAlias) and alias.columns and alias.this is not None:
+            return folded in {c.name.casefold() for c in alias.columns}
+        if not (isinstance(expr, exp.Lateral) and isinstance(expr.this, exp.Subquery)):
+            return True  # unverifiable without the function's signature
+        expr = expr.this.this
     alias = expr.parent.args.get("alias") if isinstance(expr.parent, (exp.CTE, exp.Subquery)) else None
     if isinstance(alias, exp.TableAlias) and alias.columns:
         return folded in {c.name.casefold() for c in alias.columns}  # ``n(k)`` renames the outputs

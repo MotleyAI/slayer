@@ -18,7 +18,8 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.time_spine import is_spine, is_spine_query, names_spine
-from slayer.core.join_walker import resolve_hop, resolved_terminal, walk_terminal
+from slayer.core.join_walker import follow, resolve_hop, resolved_terminal, walk_terminal
+from slayer.sql.dialects import get_dialect
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -72,6 +73,10 @@ from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_date_operands,
+    check_list_dimension,
+    check_list_operands,
+    coerce_list_arguments,
+    ListTyping,
     check_dimension_call_known,
     check_granularity_call_shape,
     check_granularity_known,
@@ -94,7 +99,9 @@ from slayer.engine.elaborate_env import (
 )
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
+    key_element_type,
     measure_key_format_description,
+    scope_column_element,
     measure_key_preserves_native_type,
     measure_key_type,
     scope_column_type,
@@ -508,6 +515,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     column_type = scope_column_type(scope=scope, bundle=bundle)
     zoned = scope_zoned_timestamp(scope=scope, bundle=bundle)
+    lists = _list_typing(scope=scope, bundle=bundle)
+    check_list_operands(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        typing=lists,
+    )
     check_date_operands(
         roots=[
             *(dm.bound.value_key for dm in declared_measures),
@@ -520,7 +536,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     declared_measures, bound_filters, order_specs = _map_bound_keys(
         lambda vk: coerce_zoned_comparisons(
             coerce_text_numbers(
-                resolve_time_points(vk, column_type=column_type, now=bundle.now, units=bundle.granularities),
+                coerce_list_arguments(
+                    resolve_time_points(vk, column_type=column_type, now=bundle.now, units=bundle.granularities),
+                    typing=lists,
+                ),
                 column_type=column_type,
             ),
             zoned=zoned, column_type=column_type,
@@ -747,6 +766,26 @@ def _format_description_for_measure_formula(
     )
 
 
+def _list_typing(*, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> ListTyping:
+    """The list rules' view of ``scope``: column and element types, element access, the database's list support."""
+    def element_access(key: object) -> bool:
+        path = tuple(getattr(key, "path", ()) or ())
+        if not path or not isinstance(scope, ModelScope) or scope.source_model is None:
+            return bool(path) and isinstance(scope, StageSchema)
+        try:
+            chain = follow(root=scope.source_model, path=path, models_by_name=bundle.models_by_name)
+        except AmbiguousJoinPathError:
+            return False
+        return chain is not None and any(e.lateral is not None for e in chain)
+
+    dialect = get_dialect(bundle.dialect)
+    return ListTyping(
+        column_type=scope_column_type(scope=scope, bundle=bundle),
+        column_element=scope_column_element(scope=scope, bundle=bundle),
+        element_access=element_access, native_lists=dialect.native_lists, database=dialect.database_name,
+    )
+
+
 def _type_for_measure_formula(
     *, scope: ModelScope | StageSchema, bound, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
@@ -963,6 +1002,7 @@ def _declared_computed_dimension(
         name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
     )
+    check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle))
     dim_type = _type_for_measure_formula(scope=scope, bound=bound, bundle=bundle)
     return DeclaredMeasure(
         bound=bound,
@@ -970,6 +1010,7 @@ def _declared_computed_dimension(
         public_name=name,
         name_is_explicit=name != computed_dimension_name(d.template),
         type=dim_type,
+        element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
         is_dimension=True,
     )
 
@@ -1019,6 +1060,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 bundle=bundle,
             )
             canonical = bound.routed_dotted or full
+            check_list_dimension(name=canonical, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle))
             # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
             check_opaque_grouping_dim(
                 full_name=canonical,
@@ -1039,6 +1081,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 public_name=flat_name,
                 label=d.label,
                 type=dim_type,
+                element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
                 format=fmt,
                 description=desc,
             ))
@@ -1140,6 +1183,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 canonical_alias=canonical if alias_name or canonical != public_name else None,
                 name_is_explicit=explicit_name is not None,
                 type=m_type,
+                element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
                 type_is_explicit=explicit_type is not None,
                 preserve_native_type=(
                     explicit_type is None

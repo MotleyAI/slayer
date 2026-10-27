@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re as _re
-from typing import TYPE_CHECKING, Any, ClassVar
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
 import sqlalchemy as sa
@@ -15,7 +17,9 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TextFn, anon, case, either, lit
+from slayer.sql.dialects.base import (
+    LIST_VALUE, ExtremumFn, ListRelation, SqlDialect, TextFn, anon, case, either, is_not_null, lit, operand_copy,
+)
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 
@@ -23,6 +27,7 @@ if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
 
 
+_ARRAY_TYPE_CODE = 10
 # ``snowflake.connector.constants.FieldType`` codes → SLayer category.
 _SNOWFLAKE_TYPE_MAP: dict[int, str] = {
     0: "number",   # FIXED (NUMBER / INT / DECIMAL)
@@ -139,6 +144,54 @@ class SnowflakeDialect(SqlDialect):
     }
     regex_flavour: ClassVar[RegexFlavour] = POSIX
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
+    database_name: ClassVar[str] = "Snowflake"
+
+    def list_result_columns(self, description: Sequence[Any]) -> frozenset[int]:
+        """The connector returns an ARRAY (type code 10) as JSON text."""
+        return frozenset(i for i, d in enumerate(description) if d[1] == _ARRAY_TYPE_CODE)
+
+    def list_result_value(self, value: Any) -> Any:
+        return json.loads(value) if isinstance(value, str) else super().list_result_value(value)
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("ARRAY_CONTAINS", exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT")), values)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("ARRAYS_OVERLAP", anon("ARRAY_COMPACT", values), anon("ARRAY_COMPACT", other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        missing = anon("ARRAY_EXCEPT", anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", other)), values)
+        return exp.EQ(this=anon("ARRAY_SIZE", missing), expression=lit(0))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``FLATTEN``'s VARIANT ``value`` read as the element type."""
+        flattened = exp.to_identifier("__slayer_f")
+        value = exp.column(LIST_VALUE, table="__slayer_f")
+        typed = value if element is None or element.is_opaque else exp.Cast(
+            this=value, to=exp.DataType.build(element.value))
+        table = exp.TableFromRows(this=exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=values.copy())),
+                                  alias=exp.TableAlias(this=flattened))
+        rows = exp.select(exp.alias_(typed, LIST_VALUE)).from_(table).where(is_not_null(typed.copy()))
+        rows = rows.distinct() if distinct else rows
+        table_alias = exp.TableAlias(this=alias.copy())
+        if leading:
+            return ListRelation(relation=exp.Subquery(this=rows, alias=table_alias))
+        return ListRelation(relation=exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+
+    def empty_list(self, element: Optional[DataType]) -> Expression:
+        """An untyped ``[]``: a semi-structured ARRAY never meets a structured one."""
+        return exp.Array(expressions=[])
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """Skips NULLs and returns ``[]`` over none."""
+        order = self.distinct_sorted(value)
+        return exp.WithinGroup(this=exp.ArrayAgg(this=order.this), expression=exp.Order(expressions=order.expressions))
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "concat_ws":

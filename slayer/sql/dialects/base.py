@@ -124,6 +124,31 @@ def is_null(value: Expression) -> Expression:
     return exp.Is(this=operand_copy(value), expression=exp.Null())
 
 
+def is_not_null(value: Expression) -> Expression:
+    return exp.Is(this=operand_copy(value), expression=exp.Null(), negate=True)
+
+
+ListFn = Literal["contains", "contains_any", "contains_all", "length"]
+#: The element variable of a list lambda (reserved prefix: never a user name).
+LIST_ELEMENT = "__slayer_e"
+
+
+def is_list_fn(name: str) -> TypeGuard[ListFn]:
+    return name in get_args(ListFn)
+
+
+def is_empty_array(node: Expression) -> bool:
+    return isinstance(node, exp.Array) and not node.expressions
+
+
+def non_null_elements(values: Expression, *, filter_name: str = "FILTER") -> Expression:
+    """``filter_name(values, e -> e IS NOT NULL)`` (a list lambda filter)."""
+    element = exp.to_identifier(LIST_ELEMENT)
+    return exp.Anonymous(this=filter_name, expressions=[
+        values.copy(), exp.Lambda(this=is_not_null(exp.Column(this=element.copy())), expressions=[element]),
+    ])
+
+
 def either(*conditions: Expression) -> Expression:
     """``c1 OR c2 OR …``."""
     out = conditions[0]
@@ -313,6 +338,34 @@ def _digest(secret: str | None) -> str:
     if not secret:
         return ""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
+#: A list child's element column, as every list relation exposes it.
+LIST_VALUE = "value"
+_UNNESTED = "__slayer_u"
+
+
+class ListRelation(BaseModel):
+    """A list child as a relation: ``relation`` exposes ``<alias>.value``; ``join_kind`` attaches it to its parent."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    relation: Expression
+    join_kind: Literal["CROSS", "ARRAY"] = "CROSS"
+
+
+def unnest_elements(values: Expression, *, alias: exp.Identifier) -> exp.Unnest:
+    """``UNNEST(values) AS alias(value)``."""
+    return exp.Unnest(expressions=[values.copy()], alias=exp.TableAlias(
+        this=alias.copy(), columns=[exp.to_identifier(LIST_VALUE)],
+    ))
+
+
+def kept_elements(values: Expression) -> exp.Select:
+    """``SELECT u.value FROM UNNEST(values) AS u(value) WHERE u.value IS NOT NULL``."""
+    unnested = exp.to_identifier(_UNNESTED)
+    value = exp.column(LIST_VALUE, table=_UNNESTED)
+    return exp.select(value).from_(unnest_elements(values, alias=unnested)).where(is_not_null(value))
 
 
 class ServerProfile(BaseModel):
@@ -750,6 +803,89 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         return self.build_try_cast(self.build_json_value(value, path, native), to)
+
+    # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.
+
+    #: Whether the database has native lists; elsewhere every list construct is refused at plan time.
+    native_lists: ClassVar[bool] = True
+    #: The database's name in a refusal.
+    database_name: ClassVar[str] = "Postgres"
+
+    def build_list_call(self, fn: ListFn, args: tuple[Expression, ...]) -> Expression:
+        """A list function, NULL only when an operand is NULL; ``[]`` as the second list is decided here."""
+        values = args[0]
+        if fn == "length":
+            return case((is_null(values), exp.Null()), default=self.list_length(values))
+        other = args[1]
+        if is_empty_array(other):
+            return case((is_null(values), exp.Null()), default=exp.false() if fn == "contains_any" else exp.true())
+        if fn == "contains":
+            core = self.list_contains(values, other)
+        elif fn == "contains_any":
+            core = self.list_overlaps(values, other)
+        else:
+            core = self.list_contains_all(values, other)
+        return case((any_null(values, other), exp.Null()), default=core)
+
+    def list_length(self, values: Expression) -> Expression:
+        return exp.Anonymous(this="CARDINALITY", expressions=[anon("ARRAY_REMOVE", values, exp.Null())])
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        found = exp.EQ(this=operand_copy(value), expression=exp.Any(this=exp.Paren(this=values.copy())))
+        return exp.Coalesce(this=found, expressions=[exp.false()])
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return exp.ArrayOverlaps(this=operand_copy(values), expression=operand_copy(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return exp.ArrayContainsAll(this=operand_copy(values), expression=anon("ARRAY_REMOVE", other, exp.Null()))
+
+    def list_result_columns(self, description: Sequence[Any]) -> frozenset[int]:  # NOSONAR(S1172) — hook default
+        """Positions of result columns the driver returns as list text (default: none)."""
+        return frozenset()
+
+    def list_result_value(self, value: Any) -> Any:
+        """A driver's list value as a Python list (``None`` kept)."""
+        return list(value) if isinstance(value, tuple) else value
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,  # NOSONAR(S1172) — hook parameter read by dialect overrides
+    ) -> ListRelation:
+        """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
+        item (no LATERAL)."""
+        rows = kept_elements(values).distinct() if distinct else kept_elements(values)
+        table_alias = exp.TableAlias(this=alias.copy())
+        subquery = exp.Subquery(this=rows, alias=table_alias) if leading else None
+        return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expression,
+    ) -> Expression:
+        """Whether some non-NULL element of ``values`` (read as ``alias.value``) satisfies ``predicate``."""
+        relation = self.list_relation(values, alias=alias, element=element, leading=True)  # NOSONAR(S1172)
+        return exp.Exists(this=exp.select(exp.Literal.number(1)).from_(relation.relation).where(predicate.copy()))
+
+    def build_array_literal(self, values: Sequence[Expression]) -> Expression:
+        return exp.Array(expressions=[v.copy() for v in values])
+
+    def empty_list(self, element: Optional[DataType]) -> Expression:
+        """``[]`` of ``element`` elements, typed where the type is known."""
+        if element is None or element.is_opaque:
+            return exp.Array(expressions=[])
+        return exp.Cast(this=exp.Array(expressions=[]), to=exp.DataType.build(f"ARRAY<{element.value}>"))
+
+    def distinct_sorted(self, value: Expression) -> exp.Order:
+        """``DISTINCT value ORDER BY value`` (NULLs where the engine puts them, so no NULLS clause is emitted)."""
+        nulls = "first" if self.native_nulls_first(descending=False) else "last"
+        return exp.Order(this=exp.Distinct(expressions=[value.copy()]),
+                         expressions=[self.build_ordered(value.copy(), descending=False, nulls=nulls)])
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """The distinct non-NULL values, sorted ascending; ``[]`` when there are none."""
+        ordered = self.distinct_sorted(value)
+        aggregate = exp.Filter(this=exp.ArrayAgg(this=ordered), expression=exp.Where(this=is_not_null(value)))
+        return exp.Coalesce(this=aggregate, expressions=[self.empty_list(element)])
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

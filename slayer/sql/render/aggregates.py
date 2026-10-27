@@ -78,6 +78,7 @@ AGG_REGISTRY: Dict[str, AggEntry] = {
         _entry(name="corr", dispatch=DISPATCH_STAT),
         _entry(name="covar_samp", dispatch=DISPATCH_STAT),
         _entry(name="covar_pop", dispatch=DISPATCH_STAT),
+        _entry(name="collect", dispatch=DISPATCH_DIALECT_HOOK),
     )
 }
 

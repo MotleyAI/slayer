@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -19,13 +19,17 @@ from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGra
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    LIST_ELEMENT,
+    LIST_VALUE,
     ExtremumFn,
+    ListRelation,
     ServerProfile,
     SqlDialect,
     TextFn,
     anon,
     as_text,
     case,
+    is_not_null,
     iso_text,
     lit,
     pad_fill,
@@ -35,6 +39,13 @@ from slayer.sql.dialects.patterns import RE2, RegexFlavour
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
+
+
+def _compact(values: Expression) -> Expression:
+    """``arrayFilter(e -> e IS NOT NULL, values)`` (the lambda comes first here)."""
+    element = exp.to_identifier(LIST_ELEMENT)
+    keep = exp.Lambda(this=is_not_null(exp.Column(this=element.copy())), expressions=[element])
+    return exp.Anonymous(this="arrayFilter", expressions=[keep, values.copy()])
 
 
 def _utf8(node: Expression) -> Expression:
@@ -144,6 +155,53 @@ class ClickhouseDialect(SqlDialect):
     regex_flavour: ClassVar[RegexFlavour] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
     like_escape_clause: ClassVar[bool] = False
+    database_name: ClassVar[str] = "ClickHouse"
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("length", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("has", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("hasAny", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("hasAll", values, _compact(other))
+
+    def empty_list(self, element: Optional[DataType]) -> Expression:
+        return exp.Array(expressions=[])
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expression,
+    ) -> Expression:
+        """``arrayExists(e -> predicate(e), values)``: no correlated subquery reads the outer row's list."""
+        element_name = exp.to_identifier(LIST_ELEMENT)
+
+        def bind(node: Expression) -> Expression:
+            if isinstance(node, exp.Column) and node.name == LIST_VALUE and node.table == alias.name:
+                return exp.Column(this=element_name.copy())
+            return node
+
+        body = predicate.copy().transform(bind)
+        return anon("arrayExists", exp.Lambda(this=body, expressions=[element_name]), _compact(values))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``ARRAY JOIN`` of one-field named tuples, so the element reads as ``alias.value``."""
+        element_name = exp.to_identifier(LIST_ELEMENT)
+        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {(element or DataType.UNKNOWN).value}>")
+        as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", exp.Column(this=element_name.copy())), to=row_type),
+                            expressions=[element_name])
+        kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)
+        rows = exp.Anonymous(this="arrayMap", expressions=[as_row, kept])
+        return ListRelation(relation=exp.alias_(rows, alias.copy()), join_kind="ARRAY")
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """``groupUniqArray`` skips NULLs and returns ``[]`` over none."""
+        return anon("arraySort", anon("groupUniqArray", value))
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Character, not byte, semantics for substring / lower / upper / position."""

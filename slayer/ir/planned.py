@@ -26,7 +26,7 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.ir.bound import BoundExpr, GranularityConflict
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -132,6 +132,7 @@ class ValueSlot(BaseModel):
     series: Optional[bool] = None
     label: Optional[str] = None
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
     is_dimension: bool = False
@@ -142,7 +143,7 @@ class ValueSlot(BaseModel):
     @property
     def cast_type(self) -> Optional[DataType]:
         """Return only casts that preserve the inferred database value."""
-        if not self.type_is_explicit and (
+        if self.type is DataType.ARRAY or not self.type_is_explicit and (
             self.preserve_native_type
             or (self.type == DataType.INT and self.phase != Phase.ROW)
         ):
@@ -270,6 +271,8 @@ class SemiJoinHop(BaseModel):
     #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
     #: satisfy the predicate); otherwise today's inner correlation.
     null_extended: bool = False
+    #: A list child hop: the parent node's list column, unnested from the parent's row.
+    lateral: Optional[str] = None
 
     @property
     def node_id(self) -> str:
@@ -287,6 +290,11 @@ class SemiJoinFilter(BaseModel):
     conjuncts: List[ValueKey]
     filter_texts: List[Optional[str]] = Field(default_factory=list)
 
+    @property
+    def outer_list_only(self) -> bool:
+        """A filter on the outer row's own list elements: it needs no correlated subquery of its own."""
+        return len(self.hops) == 1 and self.hops[0].lateral is not None
+
 
 class RegroupSubstitution(BaseModel):
     """One consumed aggregate: ``placeholder`` resolves to ``producer_slot_id``'s column,
@@ -297,7 +305,7 @@ class RegroupSubstitution(BaseModel):
     placeholder: ValueKey
     producer_slot_id: SlotId
     original_key: ValueKey
-    empty_value: int | None
+    empty_value: EmptyValue
 
 
 class PlainProducerKernel(BaseModel):
@@ -373,6 +381,9 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
+    #: element combination, with no key to group by.
+    list_rows: bool = False
 
 
 ProducerKernel = Union[
@@ -791,10 +802,11 @@ def plans_read_clock(planned_list) -> bool:
 
 
 def plan_has_semi_join_filters(planned) -> bool:
-    """Whether any (nested) plan carries a pushed semi-join filter."""
+    """Whether any (nested) plan carries a pushed semi-join filter needing a correlated subquery."""
     return any(
-        getattr(plan, "semi_join_filters", None)
+        not group.outer_list_only
         for plan in _iter_plans_with_producers([planned])
+        for group in getattr(plan, "semi_join_filters", None) or ()
     )
 
 
