@@ -2471,7 +2471,20 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
     _print_ingest_drift_and_errors(report, data_source=ds.name)
 
 
+def _ingest_scope_flags(args) -> list[str]:
+    """The ingestion-scope flags given on ``datasources create``."""
+    given = {
+        "--schema": args.schema is not None, "--all-schemas": args.all_schemas,
+        "--include": args.include is not None, "--exclude": args.exclude is not None,
+        "--no-views": not args.include_views, "--surface-internals": args.surface_internals,
+    }
+    return [flag for flag, on in given.items() if on]
+
+
 def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
+    scope = _ingest_scope_flags(args)
+    if scope:
+        _fail(f"{', '.join(scope)} cannot be used with the demo, which always ingests all of its tables.")
     storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
     name = args.name or DEMO_NAME
     db_path = resolve_demo_db_path(storage_path)

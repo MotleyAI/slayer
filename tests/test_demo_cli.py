@@ -10,11 +10,13 @@ import duckdb
 import pytest
 
 from slayer import cli
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 
 
 def _make_args(**overrides):
@@ -375,3 +377,20 @@ class TestBuildJaffleShopIdempotency:
 
         assert jaffle_shop.build_jaffle_shop(db_path=str(db)) is False
         assert len(shift_called) == 1, "reuse path must refresh dates"
+
+
+class TestDemoRejectsIngestScope:
+    """The demo ingests all of its tables, so a scope option is refused before anything is built or saved."""
+
+    @pytest.mark.parametrize("flags", [
+        ["--include", "orders"], ["--exclude", "tweets"], ["--schema", "main"], ["--all-schemas"],
+        ["--no-views"], ["--surface-internals"],
+    ])
+    def test_scope_option_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]) -> None:
+        monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: pytest.fail("the demo must not be built"))
+        store = tmp_path / "store"
+        result = run_cli_in_process(["datasources", "--storage", str(store), "create", "demo", "--ingest", *flags])
+        assert result.returncode == 1
+        assert result.stderr.splitlines() == [result.stderr.strip()]
+        assert flags[0] in result.stderr
+        assert run_sync(YAMLStorage(base_dir=str(store)).list_datasources()) == []
