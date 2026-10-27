@@ -81,10 +81,13 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
+    contractors_model,
+    contractors_statements,
     lib_model,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 
@@ -1922,3 +1925,43 @@ class TestClickHousePortableLibrary:
 
     async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+_TAGGED = ("CREATE TABLE tagged (id Int32, tags Array(LowCardinality(Nullable(String)))) "
+           "ENGINE = MergeTree ORDER BY id")
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_lists(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*contractors_statements(dialect="clickhouse"),
+                             *assignments_statements(dialect="clickhouse"), _TAGGED]:
+                    conn.execute(sa.text(stmt))
+        ds = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_lists")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(contractors_model(data_source=ds.name)))
+        run_sync(storage.save_model(assignments_model(data_source=ds.name)))
+        yield storage, ds
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseLists:
+    async def test_lists(self, _clickhouse_lists) -> None:
+        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse")
+
+    def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
+        (model,) = ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)

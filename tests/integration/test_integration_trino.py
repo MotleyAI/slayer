@@ -46,9 +46,12 @@ from tests._dev1737_fixtures import (
 from tests._dev2120_fixtures import (
     LIB,
     check_library,
+    contractors_model,
+    contractors_statements,
     lib_model,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
@@ -1298,3 +1301,28 @@ def _trino_dev2120_storage(trino_container, tmp_path_factory):
 class TestTrinoPortableLibrary:
     async def test_library(self, _trino_dev2120_storage) -> None:
         await check_library(SlayerQueryEngine(storage=_trino_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_lists(trino_container, tmp_path_factory):
+    statements = [*contractors_statements(dialect="trino"), *assignments_statements(dialect="trino")]
+    with _seeded_schema(trino_container, statements) as schema:
+        ds = _ds_config(trino_container, schema)
+        yield _storage(str(tmp_path_factory.mktemp("trino_lists")), ds,
+                       [contractors_model(data_source=_DS), assignments_model(data_source=_DS)]), ds
+
+
+@pytest.mark.integration
+class TestTrinoLists:
+    async def test_lists(self, _trino_lists) -> None:
+        await check_lists(SlayerQueryEngine(storage=_trino_lists[0]), dialect="trino")
+
+    def test_list_columns_ingested(self, _trino_lists) -> None:
+        model = next(m for m in ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
+        typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
+        assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
