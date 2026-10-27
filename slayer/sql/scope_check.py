@@ -1,36 +1,11 @@
-"""DEV-1705 Stage 1 — mechanical scope-closure validator.
+"""Scope-closure validator for generated SQL.
 
-``assert_scope_closed(sql)`` walks every SELECT scope of a statement and checks
-two closure laws (DEV-1703 Law-2):
-
-* **C1 — binding.** Every table qualifier a column references must bind to that
-  scope's own ``FROM`` / ``JOIN`` sources (a physical table, a CTE, or a derived
-  table). An unbound qualifier is an out-of-scope leak.
-* **C2 — projection.** A reference that resolves into another SELECT scope
-  (a CTE or derived table) must name a column that scope *projects*. A plain
-  star projection (``*`` / ``rel.*``, optionally with ``REPLACE``) exports every
-  name and is allowed; a ``* EXCEPT (c)`` star does not export ``c``.
-
-The validator is deliberately **sound on the generator's corpus**: it only ever
-raises on a *provable* leak. Unqualified / ambiguous references (no schema to
-resolve them) and a physical table's column names (no catalog) are treated as
-unverifiable and never flagged — there are no false positives.
-
-Pre-RLS by default. ``allow_rls_correlation=True`` whitelists the one correlated
-reference the session-policy transform (``slayer/sql/session_policy.py``)
-intentionally injects post-generation: a ``_rls_src``-qualified column inside a
-forced-filter ``EXISTS``. Dialect-aware via sqlglot.
-
-Intended to run on **post-mangle, pre-RLS** generator output (dialect alias
-mangling collapses BigQuery/T-SQL dotted aliases to ``___`` first — pre-mangle
-those dotted refs parse as ``table.column`` and would false-flag; mangling is
-identity for other dialects). DEV-1713 finalised the BigQuery naming/mangling,
-which closed the last dotted-alias shape that made sqlglot raise ``TypeError``
-parsing BigQuery output — the prior ``_SQLGLOT_TYPEERROR_DIALECTS`` carve-out is
-therefore removed, and BigQuery output is now fully validated like every other
-dialect. Setting ``SLAYER_VALIDATE_SCOPES=1`` makes the generator call
-``maybe_validate_scopes`` on every emitted statement (runtime debugging); the
-test harness enables it suite-wide.
+C1 (binding): every column qualifier binds to its own scope's FROM / JOIN sources.
+C2 (projection): a reference into a CTE / derived table names a column it projects.
+Sound on the generator's corpus: raises only on a provable leak (unqualified refs and
+physical-table columns are unverifiable). Runs on post-mangle, pre-RLS output (pre-mangle
+dotted aliases would false-flag); ``allow_rls_correlation`` admits the session policy's
+``_rls_src`` EXISTS reference. ``SLAYER_VALIDATE_SCOPES=1`` checks every emitted statement.
 """
 
 from __future__ import annotations
@@ -45,8 +20,7 @@ from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
 from slayer.sql.naming import assert_unique_cte_names, dialect_folds_case
 
-# The session-policy transform's correlated-EXISTS source alias (see
-# ``session_policy._RLS_SRC``); the only legal correlated ref in post-RLS SQL.
+# ``session_policy._RLS_SRC``: the only legal correlated ref in post-RLS SQL.
 _RLS_SRC = "_rls_src"
 
 _ENV_FLAG = "SLAYER_VALIDATE_SCOPES"
@@ -80,29 +54,15 @@ class ScopeLeakError(AssertionError):
 
 
 class CteOrderError(AssertionError):
-    """A CTE reads a sibling declared LATER in the same ``WITH`` (a forward
-    reference: SQLite tolerates it, DuckDB and others reject it)."""
+    """A CTE reads a sibling declared later in its ``WITH`` (SQLite tolerates it, DuckDB rejects it)."""
 
 
 def assert_dependency_ordered_ctes(sql: str, *, dialect: str = "postgres") -> None:
-    """Raise :class:`CteOrderError` if any CTE reads a sibling declared later in
-    its enclosing ``WITH`` — the emission-order backstop for sql.arc42 P6.
+    """Raise :class:`CteOrderError` if a CTE reads a sibling declared later in its ``WITH`` (python.sql.arc42.md P6).
 
-    A table reference flags only when it carries no catalog/schema qualifier and
-    matches a CTE the NEAREST enclosing ``WITH`` (defining that name) declares
-    strictly AFTER the CTE containing the reference. Name folding matches the
-    allocator (``slayer/sql/naming.py``): ``str.lower()`` on a case-insensitive
-    dialect (BigQuery et al.), identity on a case-sensitive one (ClickHouse keeps
-    ``Foo``/``foo`` distinct); ``casefold`` is avoided (it over-equates ``ß``/``ss``).
-    It validates SLayer's own emitted SQL — unquoted, allocator-folded names — so
-    it does not model per-dialect quoted-identifier case rules.
-    Physical tables, schema-qualified names, derived-table aliases and
-    nested-``WITH`` scopes are left alone; a reference from the main query body is
-    always backward. A self reference (position == containing) is NOT flagged:
-    without full scope resolution it is indistinguishable from a non-recursive CTE
-    shadowing a physical table of the same name (a legal pattern), so — like
-    :func:`assert_scope_closed` — this backstop stays sound on the corpus (no false
-    positives)."""
+    Judges unqualified references against the nearest defining ``WITH``, folding names as the
+    allocator does (``casefold`` would over-equate ``ß``/``ss``). A self reference is not flagged:
+    it is indistinguishable from a CTE shadowing a same-named physical table."""
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if ast is None:
         return
@@ -136,8 +96,7 @@ def _cte_positions(*, with_node: exp.With, fold) -> Dict[str, int]:
 
 
 def _nearest_defining_with(*, tbl: exp.Table, name: str, fold):
-    """The nearest ancestor ``WITH`` that declares a CTE named ``name`` (already
-    ``fold``-normalised), with its position map; ``None`` when none defines it."""
+    """The nearest ancestor ``WITH`` declaring CTE ``name`` (folded) with its position map, else ``None``."""
     node = tbl.parent
     while node is not None:
         if isinstance(node, exp.With):
@@ -149,8 +108,7 @@ def _nearest_defining_with(*, tbl: exp.Table, name: str, fold):
 
 
 def _containing_cte_index(*, tbl: exp.Table, with_node: exp.With) -> Optional[int]:
-    """Index of the ``with_node`` CTE whose body contains ``tbl``, or ``None`` when
-    ``tbl`` sits in the query the WITH decorates rather than in a CTE body."""
+    """Index of the ``with_node`` CTE whose body contains ``tbl``; ``None`` in the main query body."""
     node = tbl.parent
     while node is not None and node is not with_node:
         if isinstance(node, exp.CTE) and node.parent is with_node:
@@ -164,8 +122,7 @@ def _containing_cte_index(*, tbl: exp.Table, with_node: exp.With) -> Optional[in
 def check_scope_closed(
     sql: str, *, dialect: str = "postgres", allow_rls_correlation: bool = False
 ) -> ScopeCheckResult:
-    """Analyse ``sql`` and return a :class:`ScopeCheckResult` (never raises for
-    a leak — inspect ``.leaks``). Parsing is dialect-aware."""
+    """Analyse ``sql`` into a :class:`ScopeCheckResult`; never raises for a leak."""
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if ast is None:
         return ScopeCheckResult(closed=True, skipped=True, skip_reason="empty parse")
@@ -193,26 +150,14 @@ def assert_scope_closed(
 
 
 def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
-    """Validate the emitted ``sql`` iff ``SLAYER_VALIDATE_SCOPES`` is truthy.
-
-    Runs two checks on the final generator output: scope closure
-    (:func:`assert_scope_closed`) and, as the DEV-1692 belt, per-``WITH``-scope
-    CTE-name uniqueness (:func:`slayer.sql.naming.assert_unique_cte_names`). The
-    env flag is read on every call so the test harness (autouse) and runtime
-    debugging can toggle it after import; production pays nothing.
-    """
+    """Run the closure, CTE-name and CTE-order checks iff ``SLAYER_VALIDATE_SCOPES`` is truthy (read per call)."""
     value = os.environ.get(_ENV_FLAG)
     if value is not None and value.strip().lower() in _TRUTHY:
         assert_scope_closed(sql=sql, dialect=dialect)
-        # DEV-1692 belt: per-WITH-scope CTE-name uniqueness on the final output.
         assert_unique_cte_names(sql=sql, dialect=dialect)
-        # DEV-1942 belt: no CTE reads a sibling declared later (sql P6).
         assert_dependency_ordered_ctes(sql=sql, dialect=dialect)
 
 
-# --------------------------------------------------------------------------- #
-# Internals
-# --------------------------------------------------------------------------- #
 def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak]:
     leaks: list[ScopeLeak] = []
     label = _scope_label(scope)
@@ -220,14 +165,9 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
     for col in scope.columns:
         qualifier = col.table
         if not qualifier:
-            # Unqualified / ambiguous — unverifiable without schema. Never a
-            # false positive (J1 = sound-on-corpus).
-            continue
+            continue  # unverifiable without a schema
         source = _resolve_source(scope=scope, qualifier=qualifier)
         if source is None:
-            # An expression subquery (EXISTS / IN / scalar) may legally
-            # correlate to an ancestor scope's sources (DEV-1840); derived
-            # tables and CTEs may not.
             source = _resolve_correlated(scope=scope, qualifier=qualifier)
         if source is None:
             # C1: the qualifier is not bound in this scope.
@@ -244,14 +184,11 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
                     kind="unprojected_column", reference=_ref(col), scope=label,
                     bound_sources=bound,
                 ))
-        # else: a physical ``exp.Table`` — qualifier bound; the column name is
-        # unverifiable without a catalog, so it is not flagged.
     return leaks
 
 
 def _resolve_source(scope: Scope, qualifier: str):
-    """Look up ``qualifier`` among the scope's sources, case-insensitively
-    (so quoted / mixed-case identifiers resolve against sqlglot's own key)."""
+    """Look up ``qualifier`` among the scope's sources, case-insensitively."""
     source = scope.sources.get(qualifier)
     if source is not None:
         return source
@@ -263,10 +200,8 @@ def _resolve_source(scope: Scope, qualifier: str):
 
 
 def _resolve_correlated(scope: Scope, qualifier: str):
-    """Resolve ``qualifier`` against ancestor scopes, crossing only expression-
-    subquery boundaries — the one place SQL permits correlation. A derived table
-    sees nothing of its own parent (sibling FROM items need LATERAL) but, nested
-    in an expression subquery, correlates to that subquery's ancestors."""
+    """Resolve ``qualifier`` in ancestor scopes across expression-subquery boundaries only (where SQL
+    permits correlation); a derived table sees nothing of its own parent."""
     current = scope
     while current.parent is not None:
         kind = current.scope_type
@@ -281,12 +216,7 @@ def _resolve_correlated(scope: Scope, qualifier: str):
 
 
 def _projects(inner: Scope, name: str) -> bool:
-    """Whether the inner SELECT scope projects a column named ``name``.
-
-    Set-operation scopes expose their first leg's output names (positional).
-    A plain / ``REPLACE`` star exports every name; a ``* EXCEPT (name)`` star
-    does not export ``name``.
-    """
+    """Whether the inner scope projects ``name``; a star exports every name its ``EXCEPT`` list keeps."""
     folded = name.casefold()
     expr = inner.expression
     alias = expr.parent.args.get("alias") if isinstance(expr.parent, (exp.CTE, exp.Subquery)) else None
@@ -299,8 +229,6 @@ def _projects(inner: Scope, name: str) -> bool:
     for projection in selects:
         star = _star_of(projection)
         if star is not None:
-            # sqlglot keys the EXCEPT/EXCLUDE list under ``except_``. REPLACE /
-            # RENAME keep every name, so only EXCEPT drops one.
             excepted = {
                 _identifier_name(x).casefold() for x in (star.args.get("except_") or [])
             }
