@@ -123,6 +123,8 @@ from slayer.engine.schema_drift import (
     ApplyDriftResult,
     ApplyError,
     LiveSnapshotCache,
+    REPORT_ONLY_FINDINGS,
+    ListRetypeFinding,
     NarrowedAccessFinding,
     ToDeleteEntry,
     unloadable_model_delete,
@@ -1765,6 +1767,7 @@ class SlayerQueryEngine:
                 sql_clients=self._sql_clients,
                 available_in_ds=available,
                 snapshot=snapshot,
+                report_findings=True,
             )
 
     async def _maybe_raise_schema_drift(
@@ -1788,6 +1791,7 @@ class SlayerQueryEngine:
                     models=sorted({e.model_name for e in filtered}),
                     to_delete=filtered,
                     original=err,
+                    findings=[e.summary for e in filtered if isinstance(e, ListRetypeFinding)],
                 )
         except SchemaDriftError:
             raise
@@ -2335,7 +2339,7 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
-            if isinstance(entry, NarrowedAccessFinding):
+            if isinstance(entry, REPORT_ONLY_FINDINGS):
                 continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
@@ -2382,7 +2386,7 @@ class SlayerQueryEngine:
             try:
                 residual.extend(
                     e for e in await self.validate_models(data_source=ds_name)
-                    if not isinstance(e, NarrowedAccessFinding)
+                    if not isinstance(e, REPORT_ONLY_FINDINGS)
                 )
             except Exception as inner:
                 logger.debug(
@@ -2657,7 +2661,9 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        entries = await validate_datasource(
+            datasource=ds, models=models, sql_clients=self._sql_clients, report_findings=True,
+        )
         findings = [
             NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())

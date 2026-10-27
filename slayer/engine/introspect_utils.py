@@ -282,6 +282,24 @@ def is_json_db_type(db_type: Optional[str]) -> bool:
     return bool(db_type) and db_type.split("(")[0].upper().strip() in _JSON_DB_TYPES
 
 
+def info_schema_list_element(data_type_str: Optional[str]) -> Optional[DataType]:
+    """The element type of a list INFORMATION_SCHEMA type (``T[]``, ``LIST(T)``, ``ARRAY(T)``), else ``None``;
+    a nested list or record has ``UNKNOWN`` elements."""
+    text = (data_type_str or "").strip()
+    upper = text.upper()
+    if upper.endswith("[]"):
+        inner = text[:-2].strip()
+    elif upper.startswith(("LIST(", "ARRAY(", "ARRAY<")) and upper.endswith((")", ">")):
+        inner = text[min(i for i in (text.find("("), text.find("<")) if i >= 0) + 1:-1].strip()
+    else:
+        return None
+    inner_upper = inner.upper()
+    if info_schema_list_element(inner) is not None or inner_upper.startswith(("STRUCT", "MAP", "UNION", "ROW")):
+        return DataType.UNKNOWN
+    element, _ = _info_schema_type(inner)
+    return element
+
+
 def _info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     """Map an INFORMATION_SCHEMA type string to ``(DataType, is_float)``.
 
@@ -336,12 +354,15 @@ def _get_columns_fallback(
         # ClickHouse metadata carries wrapper text (Nullable(...)); unwrap so
         # type mapping and db_type capture see the inner type.
         unwrapped = unwrap_clickhouse_wrapper_str(data_type_str) if data_type_str else data_type_str
-        sa_type, is_float = _info_schema_type(unwrapped)
-        lossy = is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) or (
+        element = info_schema_list_element(unwrapped)
+        sa_type, is_float = (DataType.ARRAY, False) if element is not None else _info_schema_type(unwrapped)
+        lossy = element is not None or is_exact_numeric_db_type(unwrapped) or is_json_db_type(unwrapped) or (
             bool(unwrapped) and unwrapped.upper() in zoned_types
         )
         db_type = unwrapped if lossy else None
-        result.append({"name": col_name, "type": sa_type, "is_float": is_float, "db_type": db_type})
+        result.append({
+            "name": col_name, "type": sa_type, "element_type": element, "is_float": is_float, "db_type": db_type,
+        })
     comments = _get_column_comments_fallback(
         sa_engine=sa_engine, table_name=table_name, ref=ref,
     )

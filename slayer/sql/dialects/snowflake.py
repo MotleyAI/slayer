@@ -28,6 +28,13 @@ if TYPE_CHECKING:
 
 
 _ARRAY_TYPE_CODE = 10
+_TYPEOF_SAMPLE = 20
+#: ``TYPEOF`` of a VARIANT element → its SLayer type (absent: opaque).
+_TYPEOF_TYPES: dict[str, DataType] = {
+    "INTEGER": DataType.INT, "DECIMAL": DataType.DOUBLE, "DOUBLE": DataType.DOUBLE, "VARCHAR": DataType.TEXT,
+    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP, "TIMESTAMP_TZ": DataType.TIMESTAMP,
+}
 # ``snowflake.connector.constants.FieldType`` codes → SLayer category.
 _SNOWFLAKE_TYPE_MAP: dict[int, str] = {
     0: "number",   # FIXED (NUMBER / INT / DECIMAL)
@@ -152,6 +159,27 @@ class SnowflakeDialect(SqlDialect):
 
     def list_result_value(self, value: Any) -> Any:
         return json.loads(value) if isinstance(value, str) else super().list_result_value(value)
+
+    def list_element_types_query(self, *, table: exp.Table, column: exp.Identifier) -> Optional[exp.Select]:
+        """The distinct ``TYPEOF`` of an untyped ARRAY's elements, a few rows."""
+        flattened = exp.TableFromRows(
+            this=exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=exp.column(column.copy()))),
+            alias=exp.TableAlias(this=exp.to_identifier("__slayer_f")),
+        )
+        kind = anon("TYPEOF", exp.column(LIST_VALUE, table="__slayer_f"))
+        return exp.select(kind).distinct().from_(table.copy()).join(
+            exp.Lateral(this=flattened.this, alias=flattened.args["alias"]), join_type="CROSS",
+        ).limit(_TYPEOF_SAMPLE)
+
+    def list_element_type(self, names: Sequence[Any]) -> DataType:
+        """One scalar family maps to its type, mixed scalars to TEXT; objects, nested arrays or no elements are
+        UNKNOWN."""
+        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.UNKNOWN) for n in names if str(n).upper() != "NULL_VALUE"}
+        if not kinds or DataType.UNKNOWN in kinds:
+            return DataType.UNKNOWN
+        if kinds <= {DataType.INT, DataType.DOUBLE}:
+            return DataType.DOUBLE if DataType.DOUBLE in kinds else DataType.INT
+        return kinds.pop() if len(kinds) == 1 else DataType.TEXT
 
     def list_length(self, values: Expression) -> Expression:
         return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", values))

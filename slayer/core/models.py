@@ -16,7 +16,7 @@ from pydantic import (
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
@@ -184,7 +184,7 @@ class Column(BaseModel):
     type: DataType = DataType.TEXT
     element_type: DataType | None = Field(
         default=None,
-        description="The type of a list's elements; set iff ``type`` is ARRAY (UNKNOWN: opaque elements).",
+        description="A list's element type.",
     )
     db_type: str | None = Field(
         default=None,
@@ -289,6 +289,20 @@ class Column(BaseModel):
         out = self.model_copy()
         out._respellings = tuple(respellings)
         return out
+
+
+def list_operations_hint(column: Column) -> str:
+    """One line naming what a list column takes."""
+    n = column.name
+    return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}); "
+            f"its elements are {n}.value")
+
+
+def column_type_text(column: Column) -> str:
+    """``ARRAY<TEXT> (list: …)`` for a list column, else its type."""
+    if column.type is not DataType.ARRAY:
+        return str(column.type)
+    return f"{type_display(column.type, column.element_type)} ({list_operations_hint(column)})"
 
 
 def is_identifier(*, column: Column, columns: list[Column]) -> bool:

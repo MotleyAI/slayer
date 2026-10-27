@@ -19,6 +19,7 @@ cubes:
       - {name: tier, sql: tier, type: string}
       - {name: credit, sql: credit, type: number}
       - {name: discount, sql: discount, type: number}
+      - {name: tags, sql: tags, type: string}
     measures:
       - {name: count, type: count}
       - {name: credit_sum, sql: credit, type: sum}

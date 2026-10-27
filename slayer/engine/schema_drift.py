@@ -46,8 +46,8 @@ from slayer.engine.schema_scope import (
 from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     _safe_get_pk_constraint,
-    _sa_type_is_float,
     _sa_type_to_data_type,
+    list_db_type,
 )
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
@@ -131,6 +131,17 @@ ToDeleteEntry = Annotated[
 ]
 
 
+class ListRetypeFinding(BaseModel):
+    """Report-only: a column stored as TEXT whose live column is a list; re-ingesting re-types it."""
+
+    finding: Literal["list_retype"] = "list_retype"
+    model_name: str
+    data_source: str
+    column: str
+    live_type: str
+    summary: str
+
+
 class NarrowedAccessFinding(BaseModel):
     """Report-only: the model reads tagged models (``narrowed_by``) whose tags do not cover its own."""
 
@@ -138,6 +149,10 @@ class NarrowedAccessFinding(BaseModel):
     model_name: str
     data_source: str
     narrowed_by: list[str]
+
+
+#: Validation entries that report rather than delete.
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, ListRetypeFinding)
 
 
 def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
@@ -234,6 +249,8 @@ class LiveTable(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     columns: dict[str, DataType] = Field(default_factory=dict)
+    # Each live list column's database type (``VARCHAR[]``, ``ARRAY<STRING>``).
+    list_types: dict[str, str] = Field(default_factory=dict)
     pk_columns: set[str] = Field(default_factory=set)
     # Each entry: (local_column, ref_table, ref_column)
     fk_relationships: list[tuple[str, str, str]] = Field(default_factory=list)
@@ -258,12 +275,33 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does)."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); TEXT over a live list is a re-type finding, never a conflict."""
+    if persisted is DataType.TEXT and live is DataType.ARRAY:
+        return False
     if live.is_opaque:
         return not persisted.is_opaque
     if persisted.is_opaque:
         return False
     return data_type_bucket(persisted) != data_type_bucket(live)
+
+
+def list_retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list[ListRetypeFinding]:
+    """One finding per stored TEXT base column whose live column is a list."""
+    if live_table is None:
+        return []
+    out: list[ListRetypeFinding] = []
+    for col in model.columns:
+        if col.type is not DataType.TEXT or not _column_is_base(col.sql):
+            continue
+        live = physical_column_sql(sql=col.sql, name=col.name)
+        if live_table.columns.get(live) is DataType.ARRAY:
+            live_type = live_table.list_types.get(live, "ARRAY")
+            out.append(ListRetypeFinding(
+                model_name=model.name, data_source=model.data_source, column=col.name, live_type=live_type,
+                summary=f"Column '{model.name}.{col.name}' is stored as TEXT but its live column is the list "
+                f"{live_type}; re-ingest datasource '{model.data_source}' to re-type it.",
+            ))
+    return out
 
 
 def _is_bare_identifier(s: str | None) -> bool:
@@ -1889,14 +1927,17 @@ def _introspect_one_table(
     pk_columns = set(pk.get("constrained_columns", []) or [])
 
     columns: dict[str, DataType] = {}
+    list_types: dict[str, str] = {}
     for col in cols_meta:
         col_type = col["type"]
         if isinstance(col_type, DataType):
             columns[col["name"]] = col_type
+            if col_type is DataType.ARRAY:
+                list_types[col["name"]] = col.get("db_type") or "ARRAY"
         else:
             columns[col["name"]] = _sa_type_to_data_type(col_type)
-            # is_float irrelevant for bucket comparison (INT/FLOAT → NUMBER).
-            _ = _sa_type_is_float(col_type)
+            if columns[col["name"]] is DataType.ARRAY:
+                list_types[col["name"]] = list_db_type(col_type, sa_dialect=sa_engine.dialect)
 
     fks: list[tuple[str, str, str]] = []
     try:
@@ -1912,7 +1953,7 @@ def _introspect_one_table(
         # are still validated by name.
         pass
 
-    return LiveTable(columns=columns, pk_columns=pk_columns, fk_relationships=fks)
+    return LiveTable(columns=columns, list_types=list_types, pk_columns=pk_columns, fk_relationships=fks)
 
 
 # Cursor type-category strings → DataType buckets.
@@ -1921,6 +1962,7 @@ _CURSOR_CATEGORY_TO_DATATYPE = {
     "string": DataType.TEXT,
     "boolean": DataType.BOOLEAN,
     "time": DataType.TIMESTAMP,
+    "list": DataType.ARRAY,
 }
 
 
@@ -2351,8 +2393,9 @@ async def _collect_sql_table_diffs(
     sql_table_models: list[SlayerModel],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
+    findings: list[ListRetypeFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Introspect live (off the event loop) and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff."""
+    """Introspect live (off the event loop) and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff. Re-type findings append to ``findings``."""
     if not sql_table_models:
         return {}
     # Cover every own-catalog schema (a model may be qualified to another own
@@ -2385,6 +2428,10 @@ async def _collect_sql_table_diffs(
         datasource=datasource,
         sql_table_models=sql_table_models,
     )
+    if findings is not None:
+        for m in sql_table_models:
+            live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
+            findings.extend(list_retype_findings(model=m, live_table=live if live is not None and live.readable else None))
     return {
         m.name: _diff_one_sql_table_model(
             model=m,
@@ -2475,11 +2522,13 @@ async def validate_datasource(
     sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-) -> list[ToDeleteEntry]:
+    report_findings: bool = False,
+) -> list[ToDeleteEntry | ListRetypeFinding]:
     """Validate ``models`` (all one DS) against the live schema. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
-    ``snapshot`` scopes introspection to ``models``' objects and reuses its facts.
+    ``snapshot`` scopes introspection to ``models``' objects and reuses its facts;
+    ``report_findings`` appends the report-only re-type findings.
     """
     if not models:
         return []
@@ -2488,11 +2537,13 @@ async def validate_datasource(
 
     if available_in_ds is None:
         available_in_ds = {m.name for m in models}
+    findings: list[ListRetypeFinding] = []
     sql_table_diffs = await _collect_sql_table_diffs(
         datasource=datasource,
         sql_table_models=[m for m in models if m.sql_table],
         available_in_ds=available_in_ds,
         snapshot=snapshot,
+        findings=findings if report_findings else None,
     )
     sql_diffs = await _collect_sql_diffs(
         datasource=datasource,
@@ -2500,8 +2551,9 @@ async def validate_datasource(
         sql_clients=sql_clients,
         snapshot=snapshot,
     )
-    return compute_datasource_drops(
+    drops: list[ToDeleteEntry | ListRetypeFinding] = list(compute_datasource_drops(
         models=models,
         sql_table_diffs=sql_table_diffs,
         sql_diffs=sql_diffs,
-    )
+    ))
+    return [*drops, *findings]

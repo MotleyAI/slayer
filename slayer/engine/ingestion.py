@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TextIO
 import sqlalchemy as sa
 import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
+from sqlglot import exp
 
 from slayer.core.enums import DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -71,6 +72,7 @@ class IntrospectedColumn(BaseModel):
 
     name: str
     type: DataType
+    element_type: DataType | None = None
     primary_key: bool = False
     is_float: bool = False
     db_type: str | None = None
@@ -195,8 +197,58 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
     return current
 
 
+#: Element types that are records or containers: a list of them has opaque elements.
+_OPAQUE_ELEMENT_TYPE_NAMES = frozenset({"STRUCT", "RECORD", "TUPLE", "MAP", "OBJECT", "VARIANT", "ROW", "JSON"})
+
+
+def _sa_list_item(sa_type: sa.types.TypeEngine) -> tuple[bool, sa.types.TypeEngine | None]:
+    """``(is a list, its item type)``; the item is ``None`` for an untyped (Snowflake semi-structured) list."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    if isinstance(sa_type, sa.ARRAY):
+        dimensions = getattr(sa_type, "dimensions", None)
+        return True, None if dimensions is not None and dimensions > 1 else sa_type.item_type
+    if type(sa_type).__name__.upper() != "ARRAY":
+        return False, None
+    if hasattr(sa_type, "item_type"):  # ClickHouse Array(T)
+        return True, sa_type.item_type
+    return True, getattr(sa_type, "value_type", None)  # Snowflake ARRAY / ARRAY(T)
+
+
+def _sa_element_type(item: sa.types.TypeEngine | None) -> DataType:
+    """A list item's SLayer type: a scalar's own, ``UNKNOWN`` for a nested list, a record or no item type."""
+    if item is None or _sa_list_item(item)[0]:
+        return DataType.UNKNOWN
+    if type(_unwrap_clickhouse_wrappers(item)).__name__.upper() in _OPAQUE_ELEMENT_TYPE_NAMES:
+        return DataType.UNKNOWN
+    return _sa_type_to_data_type(item)
+
+
+def sa_data_types(sa_type: sa.types.TypeEngine) -> tuple[DataType, DataType | None]:
+    """``(type, element type)`` of a SQLAlchemy type; the element type is set only for a list."""
+    is_list, item = _sa_list_item(sa_type)
+    if is_list:
+        return DataType.ARRAY, _sa_element_type(item)
+    return _sa_type_to_data_type(sa_type), None
+
+
+def list_db_type(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str:
+    """A list's raw database type with its element (``INTEGER[]``, ``ARRAY<STRING>``)."""
+    unwrapped = _unwrap_clickhouse_wrappers(sa_type)
+    if sa_dialect is not None:
+        try:
+            return unwrapped.compile(dialect=sa_dialect)
+        except Exception:  # noqa: BLE001 — a type its dialect cannot spell keeps the generic form
+            logger.debug("list type %r does not compile on %s", unwrapped, sa_dialect.name)
+    item = _sa_list_item(unwrapped)[1]
+    if item is None:
+        return _raw_db_type_str(unwrapped) or "ARRAY"
+    return f"{type(_unwrap_clickhouse_wrappers(item)).__name__.upper()}[]"
+
+
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    if _sa_list_item(sa_type)[0]:
+        return DataType.ARRAY
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
     if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
         return DataType.TEXT
@@ -217,9 +269,8 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Most unmapped types (bytea, arrays) "
-            "are comparable and work as TEXT; add genuinely non-comparable "
-            "ones to _OPAQUE_SA_TYPE_NAMES and the rest to _SA_TYPE_MAP.",
+            "DataType.TEXT. Add a non-comparable type to _OPAQUE_SA_TYPE_NAMES "
+            "and a mappable one to _SA_TYPE_MAP.",
             type_name,
             str(sa_type),
         )
@@ -642,24 +693,29 @@ def _sa_type_is_json(sa_type: sa.types.TypeEngine) -> bool:
 
 def _introspected_column(
     col: dict[str, Any], *, name: str, primary_key: bool, zoned_types: frozenset[str] = frozenset(),
+    sa_dialect: Any = None,
 ) -> IntrospectedColumn:
-    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL, JSON,
-    a zoned timestamp in ``zoned_types``)."""
+    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL,
+    JSON, a zoned timestamp in ``zoned_types``)."""
     col_type = col["type"]
     db_type: str | None = None
+    element_type: DataType | None = None
     if isinstance(col_type, DataType):
         data_type = col_type
+        element_type = col.get("element_type")
         is_float = col.get("is_float", False)
         db_type = col.get("db_type")
     else:
-        data_type = _sa_type_to_data_type(col_type)
+        data_type, element_type = sa_data_types(col_type)
         is_float = _sa_type_is_float(col_type)
-        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type) or (
+        if data_type is DataType.ARRAY:
+            db_type = list_db_type(col_type, sa_dialect=sa_dialect)
+        elif data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type) or (
             type(col_type).__name__.upper() in zoned_types
         ):
             db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
     return IntrospectedColumn(
-        name=name, type=data_type, primary_key=primary_key, is_float=is_float,
+        name=name, type=data_type, element_type=element_type, primary_key=primary_key, is_float=is_float,
         db_type=db_type, comment=_clean_comment(col.get("comment")),
     )
 
@@ -673,13 +729,37 @@ def _introspect_query_columns_via_inspector(
     """Introspect the table's own columns."""
     pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
-    zoned_types = dialect_for_ds_type(sa_engine.dialect.name).zoned_timestamp_db_types
+    dialect = dialect_for_ds_type(sa_engine.dialect.name)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
-    return [
-        _introspected_column(col, name=col["name"], primary_key=col["name"] in pk_columns, zoned_types=zoned_types)
+    columns = [
+        _introspected_column(
+            col, name=col["name"], primary_key=col["name"] in pk_columns,
+            zoned_types=dialect.zoned_timestamp_db_types, sa_dialect=sa_engine.dialect,
+        )
         for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
         if "." not in col["name"]
     ]
+    return [_inferred_elements(c, sa_engine=sa_engine, table_name=table_name, ref=ref) for c in columns]
+
+
+def _inferred_elements(
+    column: IntrospectedColumn, *, sa_engine: sa.Engine, table_name: str, ref: SchemaRef | None,
+) -> IntrospectedColumn:
+    """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
+    if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
+        return column
+    dialect = dialect_for_ds_type(sa_engine.dialect.name)
+    table = exp.Table(this=exp.to_identifier(table_name), db=exp.to_identifier(ref.name) if ref and ref.name else None)
+    query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
+    if query is None:
+        return column
+    try:
+        with sa_engine.connect() as conn:
+            names = [row[0] for row in conn.exec_driver_sql(query.sql(dialect=dialect.sqlglot_name)).fetchall()]
+    except Exception:  # noqa: BLE001 — an unreadable table keeps its elements opaque
+        logger.warning("Could not infer the element type of %s.%s", table_name, column.name, exc_info=True)
+        return column
+    return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
 # --- Model generation from introspected columns ---
@@ -719,6 +799,7 @@ def _columns_to_model(
                 name=column_name,
                 sql=col.name,
                 type=col.type,
+                element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
                 primary_key=col.primary_key,
                 unique=(col.name in unique_set),
@@ -1427,6 +1508,21 @@ class AdditiveMergeResult(BaseModel):
         )
 
 
+def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
+    """A stored TEXT column whose live column is a list, re-typed to it (system P14's exception); a stored list's
+    UNKNOWN elements filled from the live element type. ``None`` when nothing changes."""
+    if fresh.type is not DataType.ARRAY:
+        return None
+    if persisted.type is DataType.TEXT:
+        return persisted.model_copy(update={
+            "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
+        })
+    known = fresh.element_type is not None and not fresh.element_type.is_opaque
+    if persisted.type is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and known:
+        return persisted.model_copy(update={"element_type": fresh.element_type})
+    return None
+
+
 def _merge_one_column(
     *,
     persisted_col: Column,
@@ -1444,6 +1540,9 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
+        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col)
+        if retyped is not None:
+            merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique:
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
@@ -1463,8 +1562,8 @@ def _additive_merge_existing(
 ) -> AdditiveMergeResult:
     """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
-    non-None ``source_kind`` refresh.
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, a TEXT column re-typed to its live list, empty-field
+    gap-fills, and a non-None ``source_kind`` refresh.
     """
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
     persisted_names = {c.name for c in persisted.columns}

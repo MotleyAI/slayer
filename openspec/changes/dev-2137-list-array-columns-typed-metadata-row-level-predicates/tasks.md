@@ -11,60 +11,60 @@
 
 ## 2. Types and metadata
 
-- [ ] 2.1 Add `DataType.ARRAY` and `Column.element_type` with validation (D1), and extend `TestDataTypeValuesMatchSqlglot`; verify the metadata tests in 1.1 pass
+- [x] 2.1 Add `DataType.ARRAY` and `Column.element_type` with validation (D1), and extend `TestDataTypeValuesMatchSqlglot`; verify the metadata tests in 1.1 pass
 - [ ] 2.2 Thread `element_type` through `StageColumn`, `ValueSlot`, bound key metadata, `aggregation_result_type` and the other type-inference functions (D1); verify 1.7 passes
 
 ## 3. Ingestion and migration
 
 - [ ] 3.1 Map native list types per dialect, with `db_type` kept and the DuckDB INFORMATION_SCHEMA fallback parsing `T[]` (D10); verify the ingestion tests in 1.1 pass
-- [ ] 3.2 Snowflake untyped `ARRAY` element inference at ingest, re-inferred only while `UNKNOWN` (D10); verify its tests pass
-- [ ] 3.3 Re-ingest re-types `TEXT` list columns, keeping metadata (D11); verify the re-type tests in 1.1 pass
-- [ ] 3.4 Schema drift: re-type finding kind in validation and `SchemaDriftError`, and list-aware sql-model live typing (D11); verify 1.6 drift tests pass
-- [ ] 3.5 Replace the unmapped-type fallback warning text (D10); verify ruff passes
+- [x] 3.2 Snowflake untyped `ARRAY` element inference at ingest, re-inferred only while `UNKNOWN` (D10); verify its tests pass
+- [x] 3.3 Re-ingest re-types `TEXT` list columns, keeping metadata (D11); verify the re-type tests in 1.1 pass
+- [x] 3.4 Schema drift: re-type finding kind in validation and `SchemaDriftError`, and list-aware sql-model live typing (D11); verify 1.6 drift tests pass
+- [x] 3.5 Replace the unmapped-type fallback warning text (D10); verify ruff passes
 
 ## 4. Eligibility and dialect support
 
-- [ ] 4.1 List-type checks in the checker: not a dimension, not comparable, `IS NULL` allowed, one list-type gate on every aggregation node's typed source, every error naming its remedy (D8); verify the eligibility tests pass
-- [ ] 4.2 Save-time `allowed_aggregations` check on list columns; verify its test passes
-- [ ] 4.3 `SqlDialect` list support flag and one plan-time refusal for every list construct on SQLite, MySQL and SQL Server (D15); verify the refusal tests pass
+- [x] 4.1 List-type checks in the checker: not a dimension, not comparable, `IS NULL` allowed, one list-type gate on every aggregation node's typed source, every error naming its remedy (D8); verify the eligibility tests pass
+- [x] 4.2 Save-time `allowed_aggregations` check on list columns; verify its test passes
+- [x] 4.3 `SqlDialect` list support flag and one plan-time refusal for every list construct on SQLite, MySQL and SQL Server (D15); verify the refusal tests pass
 
 ## 5. List functions and the array literal
 
-- [ ] 5.1 Grammar and the array-literal key kind with `children()` / `map_children()`, `[]` typed by context, list variables (D4); verify the literal tests pass
-- [ ] 5.2 Overloaded `contains` / `length` and new `contains_any` / `contains_all` in the library, typing and coercion of arguments (D3); verify the typing tests pass
+- [x] 5.1 Grammar and the array-literal key kind with `children()` / `map_children()`, `[]` typed by context, list variables (D4); verify the literal tests pass
+- [x] 5.2 Overloaded `contains` / `length` and new `contains_any` / `contains_all` in the library, typing and coercion of arguments (D3); verify the typing tests pass
 - [ ] 5.3 `ArrayFn` dialect hooks with explicit lowerings per Tier-1 native-list dialect, NULL elements ignored (D2, D3); verify the library matrix (1.2) passes
 
 ## 6. List children
 
-- [ ] 6.1 Lateral keyless edge kind in the join walker, `L.value` resolution, `count(L.*)`, opaque elements refused (D5); verify the resolution tests in 1.3 pass
+- [x] 6.1 Lateral keyless edge kind in the join walker, `L.value` resolution, `count(L.*)`, opaque elements refused (D5); verify the resolution tests in 1.3 pass
 - [ ] 6.2 Emission: lateral unnest hop, correlated EXISTS (ClickHouse `arrayExists`), producers rooted at the child with no join back, one AST dialect hook per native-list dialect (D5); verify the filter, dimension, no-fan-out and no-self-join tests pass
-- [ ] 6.3 Keyless association across list hops, key requirement kept for other to-many hops (D6); verify the association tests pass
+- [x] 6.3 Keyless association across list hops, key requirement kept for other to-many hops (D6); verify the association tests pass
 - [ ] 6.4 Composition through to-one chains, derived lists and stage lists; verify those tests pass
-- [ ] 6.5 Save-time collision check from both sides (D12); verify the collision tests pass
-- [ ] 6.6 Flip `semantics.arc42.md` Axiom 3.2 `[target: DEV-2137]` → `[enforced: test:tests/test_dev2137_list_children.py]` (approved); verify `poetry run la-arch-check` passes
+- [x] 6.5 Save-time collision check from both sides (D12); verify the collision tests pass
+- [x] 6.6 Flip `semantics.arc42.md` Axiom 3.2 `[target: DEV-2137]` → `[enforced: test:tests/test_dev2137_list_children.py]` (approved); verify `poetry run la-arch-check` passes
 
 ## 7. collect
 
-- [ ] 7.1 `collect` built-in with the list value class, the `build_collect` hook with explicit NULL filtering per dialect, empty value NULL (D7); verify 1.4 passes
+- [x] 7.1 `collect` built-in with the list value class, the `build_collect` hook with explicit NULL filtering per dialect, empty value NULL (D7); verify 1.4 passes
 
 ## 8. Results, facades, profiling and the MCP surface
 
-- [ ] 8.1 Normalise driver arrays to lists at result fetch; JSON text in CSV / markdown (D9); verify the MCP JSON scenario passes
-- [ ] 8.2 Facade catalogs map `ARRAY` to text; one shared JSON serialiser for pg wire, Flight and JDBC (D9); verify 1.5 passes
-- [ ] 8.3 Element profiling through the child (D13); verify the profiling tests pass
-- [ ] 8.4 Rendering in `inspect`, `search` and `models_summary` with `element_type`, element samples and the operation hint (D14); verify the rendering test passes
-- [ ] 8.5 One clause each in the `filters` and `to_many_handling` field descriptions; verify `tests/test_mcp_surface_budget.py` passes
+- [x] 8.1 Normalise driver arrays to lists at result fetch; JSON text in CSV / markdown (D9); verify the MCP JSON scenario passes
+- [x] 8.2 Facade catalogs map `ARRAY` to text; one shared JSON serialiser for pg wire, Flight and JDBC (D9); verify 1.5 passes
+- [x] 8.3 Element profiling through the child (D13); verify the profiling tests pass
+- [x] 8.4 Rendering in `inspect`, `search` and `models_summary` with `element_type`, element samples and the operation hint (D14); verify the rendering test passes
+- [x] 8.5 One clause each in the `filters` and `to_many_handling` field descriptions; verify `tests/test_mcp_surface_budget.py` passes
 
 ## 9. Docs and help
 
-- [ ] 9.1 `docs/concepts/models.md` (list type, element type, eligibility, re-ingest), `references.md` / `formulas.md` (list functions, array literal, `collect`), `queries.md` (element access, `associate` histogram, `contains_all` vs single-filter `AND`, `NOT contains` for absence), `docs/database-support.md` (native-list backends, BigQuery NULL lists); verify every touched page is in the `zensical.toml` nav
-- [ ] 9.2 `help.queries` "Functions" and `help.joins` list-child section (D14); verify the help-memory tests pass
+- [x] 9.1 `docs/concepts/models.md` (list type, element type, eligibility, re-ingest), `references.md` / `formulas.md` (list functions, array literal, `collect`), `queries.md` (element access, `associate` histogram, `contains_all` vs single-filter `AND`, `NOT contains` for absence), `docs/database-support.md` (native-list backends, BigQuery NULL lists); verify every touched page is in the `zensical.toml` nav
+- [x] 9.2 `help.queries` "Functions" and `help.joins` list-child section (D14); verify the help-memory tests pass
 
 ## 10. Comparison matrix
 
-- [ ] 10.1 Add `customers.tags VARCHAR[]` with the edge cases to `examples/comparisons/dataset.sql` and each engine's model files; verify every existing probe still matches with `examples/comparisons/run_all.sh`
-- [ ] 10.2 Add the Q27 probes to `probes.yaml` for SLayer, Malloy, Cube and MetricFlow (D16); verify each engine's runner reports the Q27 results
-- [ ] 10.3 Add row Q27 to `matrix.yaml` with verdicts and caveats from the probe results, and regenerate `matrix.json` with `export_matrix.py`; verify the export is current
+- [x] 10.1 Add `customers.tags VARCHAR[]` with the edge cases to `examples/comparisons/dataset.sql` and each engine's model files; verify every existing probe still matches with `examples/comparisons/run_all.sh`
+- [x] 10.2 Add the Q27 probes to `probes.yaml` for SLayer, Malloy, Cube and MetricFlow (D16); verify each engine's runner reports the Q27 results
+- [x] 10.3 Add row Q27 to `matrix.yaml` with verdicts and caveats from the probe results, and regenerate `matrix.json` with `export_matrix.py`; verify the export is current
 
 ## 11. Verification
 

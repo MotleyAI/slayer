@@ -51,7 +51,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import NarrowedAccessFinding
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, ListRetypeFinding, NarrowedAccessFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
@@ -1687,6 +1687,9 @@ def _format_validate_models_output(entries) -> str:
                 f"reads {', '.join(entry.narrowed_by)}"
             )
             continue
+        if isinstance(entry, ListRetypeFinding):
+            lines.append(f"RE-TYPE: {entry.summary}")
+            continue
         if entry.tool == "delete_model":
             lines.append(
                 f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
@@ -1929,7 +1932,7 @@ def _run_validate_models(args):
     _print_drift_section(entries, headed=wants_cardinality)
     _print_join_safety_section(join_safety)
     # Clean first: profiling a model we are about to repair is wasted work.
-    deletes = [e for e in entries if not isinstance(e, NarrowedAccessFinding)]
+    deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
     if bool(getattr(args, "force_clean", False)) and deletes:
         _apply_force_clean(args, engine, deletes)
     report = _collect_cardinality_report(args, engine)

@@ -1,0 +1,16 @@
+# Model-declared workaround: one row per non-NULL tag, joined to customers.
+cubes:
+  - name: customer_tags
+    sql: >-
+      select concat(c.id, ':', t.ord) as id, c.id as customer_id, t.tag
+      from customers c, unnest(c.tags) with ordinality t(tag, ord) where t.tag is not null
+    joins:
+      - name: customers
+        sql: "{CUBE}.customer_id = {customers.id}"
+        relationship: many_to_one
+    dimensions:
+      - {name: id, sql: id, type: string, primary_key: true}
+      - {name: tag, sql: tag, type: string}
+    measures:
+      - {name: count, type: count}
+      - {name: tag_count, sql: tag, type: count_distinct}

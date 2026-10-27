@@ -14,6 +14,7 @@ from slayer.core.keys import (
     OPTIONAL_KEY_FIELDS,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -310,6 +311,8 @@ def key_display(key: ValueKey) -> str:
         return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
     if isinstance(key, SqlFragmentKey):
         return _fragment_display(key)
+    if isinstance(key, ArrayLiteralKey):
+        return f"[{', '.join(key_display(v) for v in key.values)}]"
     raise TypeError(f"key_display has no rule for {type(key).__name__}")
 
 

@@ -2538,15 +2538,16 @@ def _check_attached_params_determined(
 
 
 def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel]) -> bool:
-    """Every row-level leaf of ``key`` (root coordinates) is the root itself or one of its list children."""
-    def leaf_ok(leaf: ValueKey) -> bool:
-        path = tuple(getattr(getattr(leaf, "column", leaf), "path", ()) or ())
-        chain = follow(root=root_model, path=path, models_by_name=models_by_name) if path else []
-        return chain is not None and all(
-            e.lateral is not None and e.cardinality is JoinCardinality.ONE_TO_MANY and i == 0
-            for i, e in enumerate(chain)
-        )
-    return all(leaf_ok(leaf) for leaf in source_row_leaves(key))
+    """``key`` (root coordinates) reads only the root's own list children."""
+    paths = [tuple(k.path) for k in walk_value_keys(key) if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey))]
+    if not paths:
+        return False
+    for path in paths:
+        chain = follow(root=root_model, path=path, models_by_name=models_by_name) if path else None
+        if not chain or len(chain) != 1 or chain[0].lateral is None \
+                or chain[0].cardinality is not JoinCardinality.ONE_TO_MANY:
+            return False
+    return True
 
 
 def _association_arm(
@@ -2576,7 +2577,7 @@ def _association_arm(
         for u in unattributable
     ]
     # A list child's rows are its root row's own elements: association needs no key (design D6).
-    list_rows = all(
+    list_rows = bool(assoc_pairs) and all(
         _reached_by_root_lists(rerooted, root_model=root_model, models_by_name=models_by_name)
         for _key, rerooted in assoc_pairs
     )

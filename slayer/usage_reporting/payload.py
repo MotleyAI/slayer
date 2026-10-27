@@ -61,7 +61,7 @@ TransformToken = Literal[
 AggregationToken = Literal[
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "first", "last", "weighted_avg", "median", "percentile", "stddev_samp", "stddev_pop",
-    "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "custom",
+    "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "collect", "custom",
 ]
 
 DialectToken = Literal[

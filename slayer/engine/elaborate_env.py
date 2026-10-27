@@ -1043,6 +1043,8 @@ def _operand_display(k: object) -> str:
         return f" {k.op} ".join(_operand_display(o) for o in k.operands)
     if isinstance(k, (AggregateKey, TransformKey, ColumnKey, ColumnSqlKey, TimeTruncKey)):
         return _key_display(k)
+    if isinstance(k, ArrayLiteralKey):
+        return f"[{', '.join(_operand_display(v) for v in k.values)}]"
     return str(k)
 
 
@@ -1438,15 +1440,11 @@ def _list_display(key: object) -> str:
     return f"{_operand_display(key)}.value" if isinstance(key, (ColumnKey, ColumnSqlKey)) else _operand_display(key)
 
 
-def _list_error(summary: str, *, suggestion: Optional[str] = None) -> NoReturn:
-    raise ListTypeError(summary=summary, suggestion=suggestion)
-
-
 def _check_native_lists(key: ValueKey, *, typing: ListTyping) -> None:
     construct = _list_construct(key, typing=typing)
     if construct is not None and not typing.native_lists:
-        _list_error(
-            f"{construct} needs a database with native lists; {typing.database} has none.",
+        raise ListTypeError(
+            summary=f"{construct} needs a database with native lists; {typing.database} has none.",
             suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
             "ClickHouse or Trino).",
         )
@@ -1468,12 +1466,16 @@ def _list_construct(key: ValueKey, *, typing: ListTyping) -> Optional[str]:
 def _check_list_literal(key: ArrayLiteralKey) -> None:
     text = f"[{', '.join(_operand_display(v) for v in key.values)}]"
     if any(v.value is None for v in key.values):
-        _list_error(f"The list literal {text} holds a NULL element; a list's elements are its non-NULL elements.",
-                    suggestion="Drop the NULL from the literal.")
+        raise ListTypeError(
+            summary=f"The list literal {text} holds a NULL element; a list's elements are its non-NULL elements.",
+            suggestion="Drop the NULL from the literal.",
+        )
     families = {_TYPE_FAMILIES.get(literal_type(v.value)) for v in key.values}
     if len(families) > 1:
-        _list_error(f"The list literal {text} mixes element types; every element must be of one type.",
-                    suggestion="Write every element as text, or every element as a number.")
+        raise ListTypeError(
+            summary=f"The list literal {text} mixes element types; every element must be of one type.",
+            suggestion="Write every element as text, or every element as a number.",
+        )
 
 
 def _check_list_comparison(key: ArithmeticKey, *, typing: ListTyping) -> None:
@@ -1485,14 +1487,18 @@ def _check_list_comparison(key: ArithmeticKey, *, typing: ListTyping) -> None:
     remedy = _LIST_COMPARISONS[key.op]
     hint = (f"Test membership with {remedy}({_operand_display(offender)}, x), or compare its elements "
             f"through {_list_display(offender)}.") if remedy else f"Compare its elements through {_list_display(offender)}."
-    _list_error(f"`{_operand_display(offender)}` is a list and cannot be compared with {key.op}.", suggestion=hint)
+    raise ListTypeError(
+        summary=f"`{_operand_display(offender)}` is a list and cannot be compared with {key.op}.", suggestion=hint,
+    )
 
 
 def _check_list_in(key: InKey, *, typing: ListTyping) -> None:
     if typing.is_list(key.column):
         column = _operand_display(key.column)
-        _list_error(f"`{column}` is a list and cannot be an IN operand.",
-                    suggestion=f"Use contains_any({column}, [...]), or filter {_list_display(key.column)} IN (...).")
+        raise ListTypeError(
+            summary=f"`{column}` is a list and cannot be an IN operand.",
+            suggestion=f"Use contains_any({column}, [...]), or filter {_list_display(key.column)} IN (...).",
+        )
 
 
 def _same_family(element: Optional[DataType], other: Optional[DataType]) -> bool:
@@ -1507,25 +1513,33 @@ def _check_list_call(key: ScalarCallKey, *, typing: ListTyping) -> None:
     if key.name in LIST_ONLY_FUNCTIONS:
         for arg in key.args:
             if not typing.is_list(arg):
-                _list_error(f"{key.name}() compares two lists; `{_operand_display(arg)}` is not a list.",
-                            suggestion="Use contains(list, value) for one value, or contains(text, substring) on text.")
+                raise ListTypeError(
+                    summary=f"{key.name}() compares two lists; `{_operand_display(arg)}` is not a list.",
+                    suggestion="Use contains(list, value) for one value, or contains(text, substring) on text.",
+                )
     elif not is_list_call(key, column_type=typing.column_type):
         return
     values = key.args[0]
     element = typing.element(values)
     if isinstance(values, ArrayLiteralKey) and not values.values:
-        _list_error(f"{key.name}([]): [] has no element type here.", suggestion="Give the empty list a typed operand.")
+        raise ListTypeError(
+            summary=f"{key.name}([]): [] has no element type here.", suggestion="Give the empty list a typed operand.",
+        )
     if key.name == "length":
         return
     if element is not None and element.is_opaque:
-        _list_error(f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot compare.",
-                    suggestion="Declare the column's element_type.")
+        raise ListTypeError(
+            summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot compare.",
+            suggestion="Declare the column's element_type.",
+        )
     other = key.args[1]
     other_type = typing.element(other) if key.name != "contains" else value_type(other, column_type=typing.column_type)
     if not _same_family(element, other_type):
         assert element is not None and other_type is not None
-        _list_error(f"{key.name}() compares {element.value} elements with {other_type.value}.",
-                    suggestion=f"Pass a {element.value} value.")
+        raise ListTypeError(
+            summary=f"{key.name}() compares {element.value} elements with {other_type.value}.",
+            suggestion=f"Pass a {element.value} value.",
+        )
 
 
 def _check_list_arguments(key: ScalarCallKey, *, typing: ListTyping) -> None:
@@ -1536,8 +1550,10 @@ def _check_list_arguments(key: ScalarCallKey, *, typing: ListTyping) -> None:
     branch = bool(returned) and all(typing.is_list(key.args[i]) for i in returned if not _is_null_literal(key.args[i]))
     for i, arg in enumerate(key.args):
         if typing.is_list(arg) and not (branch and i in returned):
-            _list_error(f"{key.name}() does not take the list `{_operand_display(arg)}`.",
-                        suggestion=f"Read its elements through {_list_display(arg)}, or use contains / length.")
+            raise ListTypeError(
+                summary=f"{key.name}() does not take the list `{_operand_display(arg)}`.",
+                suggestion=f"Read its elements through {_list_display(arg)}, or use contains / length.",
+            )
 
 
 def _is_null_literal(arg: object) -> bool:
@@ -1552,16 +1568,18 @@ def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
         if agg == "count":
             return
         remedy = f"{key.agg}({_list_display(source)})" if isinstance(source, (ColumnKey, ColumnSqlKey)) else None
-        _list_error(
-            f"`{_operand_display(source)}` is a list: an aggregation over a list is only count; {key.agg}() cannot "
-            f"take it.",
+        raise ListTypeError(
+            summary=f"`{_operand_display(source)}` is a list: an aggregation over a list is only count; {key.agg}() "
+            f"cannot take it.",
             suggestion=f"Aggregate its elements: {remedy}." if remedy else "Aggregate the list's elements instead.",
         )
     if agg in LIST_AGGREGATIONS:
         source_type = value_type(source, column_type=typing.column_type)
         if source_type is not None and source_type.is_opaque:
-            _list_error(f"{key.agg}() cannot collect the opaque (UNKNOWN) values of `{_operand_display(source)}`.",
-                        suggestion="Collect a column with a scalar type.")
+            raise ListTypeError(
+                summary=f"{key.agg}() cannot collect the opaque (UNKNOWN) values of `{_operand_display(source)}`.",
+                suggestion="Collect a column with a scalar type.",
+            )
 
 
 def check_list_operands(*, roots: Sequence[ValueKey], typing: ListTyping) -> None:
@@ -1586,8 +1604,10 @@ def check_list_operands(*, roots: Sequence[ValueKey], typing: ListTyping) -> Non
 def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping) -> None:
     """A list is never a dimension: its elements are, through ``L.value``."""
     if typing.is_list(key):
-        _list_error(f"Dimension {name!r} is a list, which cannot be grouped on.",
-                    suggestion=f"Group by its elements: {_list_display(key)}.")
+        raise ListTypeError(
+            summary=f"Dimension {name!r} is a list, which cannot be grouped on.",
+            suggestion=f"Group by its elements: {_list_display(key)}.",
+        )
 
 
 def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:

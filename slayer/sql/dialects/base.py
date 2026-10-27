@@ -866,6 +866,14 @@ class SqlDialect(BaseModel):
         relation = self.list_relation(values, alias=alias, element=element, leading=True)  # NOSONAR(S1172)
         return exp.Exists(this=exp.select(exp.Literal.number(1)).from_(relation.relation).where(predicate.copy()))
 
+    def list_element_types_query(self, *, table: exp.Table, column: exp.Identifier) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook default
+        """The query naming an untyped list column's element types (``None``: every list is typed here)."""
+        return None
+
+    def list_element_type(self, names: Sequence[Any]) -> DataType:  # NOSONAR(S1172) — hook default
+        """The element type the ``list_element_types_query`` rows name."""
+        return DataType.UNKNOWN
+
     def build_array_literal(self, values: Sequence[Expression]) -> Expression:
         return exp.Array(expressions=[v.copy() for v in values])
 

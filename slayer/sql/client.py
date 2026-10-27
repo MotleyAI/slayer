@@ -80,6 +80,8 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
         type_code = str(type_code)
     if isinstance(type_code, str):
         tc = type_code.upper()
+        if tc.endswith("[]") or tc.startswith(("LIST(", "ARRAY(", "ARRAY<")):
+            return "list"
         # Check temporal names before numeric ones: INTERVAL contains "INT".
         if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
             return "time"
@@ -132,6 +134,17 @@ _PG_OID_MAP: dict[int, str] = {
     1114: "time",    # timestamp
     1184: "time",    # timestamptz
     1186: "time",    # interval
+    1000: "list",    # bool[]
+    1005: "list",    # int2[]
+    1007: "list",    # int4[]
+    1009: "list",    # text[]
+    1015: "list",    # varchar[]
+    1016: "list",    # int8[]
+    1021: "list",    # float4[]
+    1022: "list",    # float8[]
+    1182: "list",    # date[]
+    1115: "list",    # timestamp[]
+    1231: "list",    # numeric[]
 }
 
 # MySQL field-type codes (aiomysql wire protocol)

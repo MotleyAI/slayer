@@ -430,6 +430,14 @@ A query filter that reaches the population root only across a fanning (not prova
 
 A negated condition on a joined model does not mean "has none": `not orders.status = 'bad'` keeps a customer with at least one non-bad order, while a customer with no orders fails it (the comparison is NULL) — include those with `or orders.id is null`.
 
+### List columns
+
+A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `to_many_handling: "associate"` turns `count(*)` by `skills.value` into the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+
+```json
+{"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"], "to_many_handling": "associate"}
+```
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:

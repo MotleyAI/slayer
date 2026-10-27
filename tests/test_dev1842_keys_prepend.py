@@ -25,6 +25,7 @@ from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -81,6 +82,7 @@ def _samples() -> dict:
             template="{r0} * 2", refs=(ColumnKey(path=(), leaf="spend"),),
         ),
         CastKey: CastKey(source=ColumnKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INT),
+        ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     }
 
 
