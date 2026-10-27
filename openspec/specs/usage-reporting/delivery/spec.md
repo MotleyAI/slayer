@@ -28,7 +28,7 @@ Each process SHALL keep its counters in memory and write them to its own spool f
 - **THEN** it exits and its counters are written to a spool file
 
 #### Scenario: Signal-stopped server counts as ok
-- **WHEN** a server command is stopped by SIGTERM or SIGINT — during startup, while serving, or forced by a second signal
+- **WHEN** a server command is stopped by SIGTERM or SIGINT — during startup, while serving, or forced by a second signal after usage recording has started
 - **THEN** the report counts that command once as ok, with no error
 
 #### Scenario: Concurrent processes
