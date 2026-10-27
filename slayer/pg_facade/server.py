@@ -100,7 +100,7 @@ async def serve(
     finally:
         # Not ``serve_forever``: on cancel it waits for idle client connections.
         server.close()
-        for task in list(connections):
+        for task in connections:
             task.cancel()
         await asyncio.gather(*connections, return_exceptions=True)
         await server.wait_closed()

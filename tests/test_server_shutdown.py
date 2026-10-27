@@ -12,9 +12,11 @@ from typing import IO
 import psycopg2
 import pytest
 
+from slayer import cli as slayer_cli
 from slayer.usage_reporting.recorder import NOTICE
 from tests._usage_reporting_helpers import (
     build_storage,
+    cli,
     free_port,
     is_posix,
     quiet_config,
@@ -27,6 +29,7 @@ from tests._usage_reporting_helpers import (
 )
 
 pytestmark = pytest.mark.skipif(not is_posix(), reason="POSIX signals")
+_linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
 _REPO = Path(__file__).resolve().parents[1]
 _SIGNALS = [signal.SIGTERM, signal.SIGINT]
@@ -152,6 +155,7 @@ def test_second_signal_forces_exit_from_stuck_stop(quiet: dict[str, str], second
     assert usage(show(), "mcp:query")["ok"] == 1
 
 
+@_linux_only
 @pytest.mark.parametrize("sig", _SIGNALS)
 def test_signal_taken_by_worker_thread_stops_once(quiet: dict[str, str], sig: signal.Signals) -> None:
     proc = _scenario(quiet, "worker_thread_signalled", sig=sig)
@@ -160,6 +164,7 @@ def test_signal_taken_by_worker_thread_stops_once(quiet: dict[str, str], sig: si
     assert proc.out.count("STOP") == 1
 
 
+@_linux_only
 @pytest.mark.parametrize("second", _SIGNALS)
 def test_second_signal_taken_by_stop_thread_forces_exit(quiet: dict[str, str], second: signal.Signals) -> None:
     proc = _scenario(quiet, "stop_thread_signalled", sig=second)
@@ -300,6 +305,32 @@ def test_inherited_ignore_stays_ignored(quiet: dict[str, str]) -> None:
     proc.send(signal.SIGINT)
     returncode = proc.finish()
     _assert_signal_stop(proc, returncode, signal.SIGINT)
+
+
+def _serve_stopped_by_own_signal(_args) -> None:
+    stopped = threading.Event()
+
+    def run() -> None:
+        signal.raise_signal(signal.SIGTERM)
+        stopped.wait()
+
+    slayer_cli._serve_until_terminated(run=run, stop=stopped.set)
+
+
+@pytest.mark.parametrize(("run_serve", "slayer_now", "expected"), [
+    (lambda _args: None, None, 0),
+    (lambda _args: None, "not-a-time", 1),
+    (_serve_stopped_by_own_signal, None, 128 + signal.SIGTERM),
+], ids=["returned", "startup-error", "signal-stop"])
+def test_main_restores_signal_handlers(
+    quiet: dict[str, str], monkeypatch: pytest.MonkeyPatch, run_serve, slayer_now: str | None, expected: int,
+) -> None:
+    monkeypatch.setattr(slayer_cli, "_run_serve", run_serve)
+    if slayer_now is not None:
+        monkeypatch.setenv("SLAYER_NOW", slayer_now)
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    assert cli(["serve"]).returncode == expected
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
 
 
 # --- the real server commands ------------------------------------------------------------------------------

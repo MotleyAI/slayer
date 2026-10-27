@@ -151,7 +151,16 @@ def main():
     args = parser.parse_args()
     token = getattr(args, "usage_token", None)
     guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
+    try:
+        _run_command(parser, args, token=token, guard=guard)
+    finally:
+        if guard is not None:
+            guard.restore()
 
+
+def _run_command(
+    parser: argparse.ArgumentParser, args, *, token: str | None, guard: "_TerminationGuard | None",
+) -> None:
     try:
         host_clock()  # Validates SLAYER_NOW before any command's side effects.
     except SlayerError as exc:
@@ -178,7 +187,7 @@ def main():
 _SIGNAL_POLL_SECONDS = 0.1
 
 
-class _Terminated(SystemExit):
+class _Terminated(SystemExit):  # NOSONAR(S5709) — must pass through the command's `except Exception` handlers
     """A server command stopped by a termination signal; ``code`` is 128 + its number."""
 
 
@@ -191,10 +200,12 @@ class _TerminationGuard:
         self.forcing = False
         self.token = token
         self.prior: dict[int, Callable[[int, FrameType | None], Any]] = {}
+        self.replaced: dict[int, Callable[[int, FrameType | None], Any] | int | signal.Handlers] = {}
         for signum in (signal.SIGTERM, signal.SIGINT):
             previous = signal.getsignal(signum)
-            if previous is signal.SIG_IGN:
+            if previous is signal.SIG_IGN or previous is None:
                 continue
+            self.replaced[signum] = previous
             if callable(previous) and previous is not signal.default_int_handler:
                 self.prior[signum] = previous
             signal.signal(signum, self._handle)
@@ -238,6 +249,11 @@ class _TerminationGuard:
             _exit_now(128 + self.signum)
         sys.exit(128 + self.signum)
 
+    def restore(self) -> None:
+        """Put back the handlers this guard replaced."""
+        for signum, handler in self.replaced.items():
+            signal.signal(signum, handler)
+
 
 def _guarded_dispatch(parser: argparse.ArgumentParser, args, *, guard: _TerminationGuard | None) -> None:
     try:
@@ -266,7 +282,7 @@ def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], obj
     def target() -> None:
         try:
             run()
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
             failure.append(exc)
 
     worker = threading.Thread(target=target, name="slayer-server", daemon=True)
