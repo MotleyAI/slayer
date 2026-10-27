@@ -1,7 +1,7 @@
-"""DEV-1800 plan structure — the planner assigns every value one materialisation
+"""Plan structure — the planner assigns every value one materialisation
 stage (``BASE < PRODUCER < COMBINED < DERIVED(level)``) and a needs-column
 flag, and rejects a plan that references a later stage or leaves a value
-unstaged. This is the harness for engine.arc42 P6 (phase/stage is a property of
+unstaged. This is the harness for python.engine.arc42.md P6 (phase/stage is a property of
 the value, not re-derived from text at render time).
 
 Only transforms stratify (design D10/D11): a value reading a transform sits one
