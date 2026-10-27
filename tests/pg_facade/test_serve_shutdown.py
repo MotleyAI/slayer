@@ -28,9 +28,10 @@ async def test_stop_before_a_handler_runs_still_closes_its_connection(monkeypatc
 
     monkeypatch.setattr(asyncio, "start_server", start_server)
     serving.append(asyncio.create_task(serve(host="127.0.0.1", port=0)))
-    _, client = await asyncio.open_connection("127.0.0.1", await listening)
+    reader, client = await asyncio.open_connection("127.0.0.1", await listening)
     try:
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(serving[0], timeout=5)
+        assert await asyncio.wait_for(reader.read(), timeout=5) == b""  # the server closed its end
     finally:
         client.close()
