@@ -149,18 +149,22 @@ def _add_debug_flags(parser: argparse.ArgumentParser, *, root: bool = True) -> N
             _add_debug_flags(sub, root=False)
 
 
+def _one_line(text: str) -> str:
+    return " ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
 def _error_line(exc: Exception) -> str:
     """One stderr line: a SLayer error's message, else class + message + the ``--debug`` hint."""
     if isinstance(exc, SlayerError):
-        return "Error: " + " ".join(line.strip() for line in str(exc).splitlines() if line.strip())
+        return "Error: " + _one_line(str(exc))
     first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
     detail = f"{type(exc).__name__}: {first}" if first else type(exc).__name__
     return f"Error: {detail} (rerun with --debug for the traceback)"
 
 
 def _fail(message: str) -> NoReturn:
-    """Print ``Error: <message>`` on stderr and exit 1."""
-    print(f"Error: {message}", file=sys.stderr)
+    """Print ``Error: <message>`` on one stderr line and exit 1."""
+    print(f"Error: {_one_line(message)}", file=sys.stderr)
     sys.exit(1)
 
 

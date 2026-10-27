@@ -1196,7 +1196,7 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        if fresh_col.unique and not merged_col.unique:
+        if fresh_col.unique and not merged_col.unique and persisted_col.is_base:
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
         if fresh_col.description and not merged_col.description:
@@ -1236,7 +1236,8 @@ def _merge_persisted_columns(
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
-        key_filled = fill_key and fresh_col is not None and fresh_col.primary_key
+        # Key metadata describes the live column, so only a column that reads it takes it.
+        key_filled = fill_key and persisted_col.is_base and fresh_col is not None and fresh_col.primary_key
         if key_filled:
             merged_col = merged_col.model_copy(update={"primary_key": True})
         out.columns.append(merged_col)

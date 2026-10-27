@@ -65,3 +65,17 @@ def test_renamed_live_column_takes_its_key_and_comment():
     assert column.primary_key
     assert column.description == "Live comment"
     assert result.new_columns == []
+
+
+def test_computed_column_named_like_the_key_takes_no_key_metadata():
+    stored = SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
+        Column(name="id", sql="id + 1", type=DataType.INT),
+    ])
+    fresh = SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
+        Column(name="id", type=DataType.INT, primary_key=True, unique=True),
+    ])
+    column = _additive_merge_existing(persisted=stored, fresh=fresh).merged.get_column("id")
+    assert column is not None
+    assert not column.primary_key
+    assert not column.unique
+    assert column.sql == "id + 1"

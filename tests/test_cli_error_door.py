@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy.exc
 
+from slayer import cli
 from slayer.core.errors import MemoryNotFoundError, UnrelatedDatasetError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._cli_inprocess import CliResult, run_cli_in_process
@@ -115,3 +116,9 @@ class TestProcessBoundary:
         assert proc.returncode == 1
         assert "Traceback (most recent call last)" in proc.stderr
         assert "UnrelatedDatasetError" in proc.stderr
+
+
+def test_fail_prints_a_multiline_message_on_one_line(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli._fail("Failed to set up the Jaffle Shop demo: tweets: disk full\n  at line 3")
+    assert capsys.readouterr().err == "Error: Failed to set up the Jaffle Shop demo: tweets: disk full at line 3\n"
