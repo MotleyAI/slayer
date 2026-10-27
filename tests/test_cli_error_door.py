@@ -118,7 +118,22 @@ class TestProcessBoundary:
         assert "UnrelatedDatasetError" in proc.stderr
 
 
-def test_fail_prints_a_multiline_message_on_one_line(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        cli._fail("Failed to set up the Jaffle Shop demo: tweets: disk full\n  at line 3")
-    assert capsys.readouterr().err == "Error: Failed to set up the Jaffle Shop demo: tweets: disk full at line 3\n"
+def _demo_build_fails(*, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, debug: bool) -> CliResult:
+    def _boom(**kwargs):  # noqa: ANN003, ANN202
+        raise RuntimeError("disk full\n  at line 3")
+
+    monkeypatch.setattr(cli, "build_jaffle_shop", _boom)
+    args = ["datasources", "--storage", str(tmp_path), "create", "demo"]
+    return run_cli_in_process([*args, "--debug"] if debug else args, uncaught_exit=True)
+
+
+def test_command_failure_with_a_multiline_cause_is_one_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    result = _demo_build_fails(monkeypatch=monkeypatch, tmp_path=tmp_path, debug=False)
+    assert _assert_one_error_line(result) == "Error: Failed to build Jaffle Shop demo: disk full at line 3"
+
+
+def test_command_failure_with_debug_shows_the_cause_traceback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    result = _demo_build_fails(monkeypatch=monkeypatch, tmp_path=tmp_path, debug=True)
+    assert result.returncode == 1
+    assert "Traceback (most recent call last)" in result.stderr
+    assert "RuntimeError: disk full" in result.stderr

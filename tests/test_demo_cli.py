@@ -85,7 +85,7 @@ class TestDemoKeywordDispatch:
         monkeypatch.setattr(cli, "_parse_connection_string", fake_parse)
         args = _make_args(connection_string="postgresql://host/db")
         storage = object()
-        with pytest.raises(SystemExit):
+        with pytest.raises(cli._CommandFailed):
             cli._run_datasources_create(args=args, storage=storage)
 
 

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.cli import _run_memory
+from slayer.cli import _CommandFailed, _run_memory
 from tests._cli_inprocess import run_cli_in_process
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -153,7 +153,7 @@ class TestMemorySaveSubcommand:
             memory_command="save",
             learning="x",
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(_CommandFailed):
             _run_memory(args)
 
 

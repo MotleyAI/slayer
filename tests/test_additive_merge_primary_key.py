@@ -79,3 +79,9 @@ def test_computed_column_named_like_the_key_takes_no_key_metadata():
     assert not column.primary_key
     assert not column.unique
     assert column.sql == "id + 1"
+
+
+def test_composite_key_lands_whole_or_not_at_all():
+    stored = _model(keys=set(), columns=(("id", "id || ''"), ("sku", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_model(keys={"id", "sku"}, columns=_LIVE))
+    assert _keys(result.merged) == set()

@@ -1220,13 +1220,24 @@ def _spelling(column: Column) -> str:
     return column.physical_name if column.is_base else column.name
 
 
+def _live_key_lands_whole(*, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str]) -> bool:
+    """Whether a keyless model takes the live primary key: each member is a stored base column reading it, or new."""
+    if any(c.primary_key for c in persisted.columns):
+        return False
+    readers = {live_name[c.name] for c in persisted.columns if c.is_base}
+    matched = {c.name for c in persisted.columns} | set(live_name.values())
+    key = [c for c in fresh.columns if c.primary_key]
+    return bool(key) and all(
+        _spelling(c) in readers or (c.name not in matched and _spelling(c) not in matched) for c in key
+    )
+
+
 def _merge_persisted_columns(
     *, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str], sqlite_widen_enabled: bool,
+    fill_key: bool,
 ) -> _ColumnsMerge:
     """Each persisted column merged with the live column of its spelling."""
     fresh_by_spelling = {_spelling(c): c for c in fresh.columns}
-    # The primary key is gap-filled as a whole: only a model with none takes the live one.
-    fill_key = not any(c.primary_key for c in persisted.columns)
     out = _ColumnsMerge(columns=[])
     for persisted_col in persisted.columns:
         fresh_col = fresh_by_spelling.get(live_name[persisted_col.name])
@@ -1266,15 +1277,17 @@ def _additive_merge_existing(
         c.name: c.physical_name if c.is_base and c.physical_name not in persisted_names - {c.name} else c.name
         for c in persisted.columns
     }
+    # The primary key is gap-filled whole or not at all; a key the model has is never changed.
+    fill_key = _live_key_lands_whole(persisted=persisted, fresh=fresh, live_name=live_name)
     columns = _merge_persisted_columns(
         persisted=persisted, fresh=fresh, live_name=live_name, sqlite_widen_enabled=sqlite_widen_enabled,
+        fill_key=fill_key,
     )
     merged_columns = columns.columns
-    keyed = any(c.primary_key for c in persisted.columns)
 
     matched = persisted_names | set(live_name.values())
     new_cols = [
-        c.model_copy(update={"primary_key": False}) if keyed and c.primary_key else c
+        c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
         for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
     ]
     merged_columns.extend(new_cols)

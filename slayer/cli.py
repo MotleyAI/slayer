@@ -162,10 +162,13 @@ def _error_line(exc: Exception) -> str:
     return f"Error: {detail} (rerun with --debug for the traceback)"
 
 
+class _CommandFailed(SlayerError):
+    """A command's own failure; raised inside an ``except``, it chains the cause for ``--debug``."""
+
+
 def _fail(message: str) -> NoReturn:
-    """Print ``Error: <message>`` on one stderr line and exit 1."""
-    print(f"Error: {_one_line(message)}", file=sys.stderr)
-    sys.exit(1)
+    """Fail the command: the error door prints ``Error: <message>`` on one stderr line and exits 1."""
+    raise _CommandFailed(message)
 
 
 def main():
@@ -2474,9 +2477,12 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
 def _ingest_scope_flags(args) -> list[str]:
     """The ingestion-scope flags given on ``datasources create``."""
     given = {
-        "--schema": args.schema is not None, "--all-schemas": args.all_schemas,
-        "--include": args.include is not None, "--exclude": args.exclude is not None,
-        "--no-views": not args.include_views, "--surface-internals": args.surface_internals,
+        "--schema": getattr(args, "schema", None) is not None,
+        "--all-schemas": getattr(args, "all_schemas", False),
+        "--include": getattr(args, "include", None) is not None,
+        "--exclude": getattr(args, "exclude", None) is not None,
+        "--no-views": not getattr(args, "include_views", True),
+        "--surface-internals": getattr(args, "surface_internals", False),
     }
     return [flag for flag, on in given.items() if on]
 
