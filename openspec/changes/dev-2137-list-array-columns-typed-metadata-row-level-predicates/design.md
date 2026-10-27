@@ -99,8 +99,9 @@ When every unattributable dimension of a `M`-homed aggregate is reached through 
 | ClickHouse | `arraySort(groupUniqArray(x))`, which skips NULLs |
 | Trino | `array_sort(array_agg(DISTINCT x) FILTER (WHERE x IS NOT NULL))` |
 
-- Inputs that are all NULL yield NULL: Snowflake and ClickHouse wrap the result in `NULLIF(…, [])`.
-- The empty value is NULL (Axiom 4).
+- The empty value is the empty list (Axiom 4): a cell with no rows, or whose inputs are all NULL, takes `[]` on every
+  database. Postgres, DuckDB, BigQuery and Trino wrap the aggregate in `COALESCE(…, <empty list of the input type>)`;
+  Snowflake and ClickHouse already return `[]`.
 - It is eligible by default on the six scalar types, and the name is reserved like every built-in.
 
 ### D8. One list-type gate on every aggregation node

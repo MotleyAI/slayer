@@ -118,7 +118,7 @@ is the coercion from coarser to finer.
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
    counting). A cell with no home rows takes the aggregation's **empty value**:
-   0 for the count family, NULL otherwise. A built-in aggregation skips NULL
+   0 for the count family, the empty list for `collect`, NULL otherwise. A built-in aggregation skips NULL
    inputs, so a cell whose inputs are all NULL takes the same empty value —
    wherever the aggregation is evaluated (locally, across a join, in a stage,
    window, partition or association) and whatever its input type.

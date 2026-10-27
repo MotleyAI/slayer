@@ -37,11 +37,11 @@ class TestValues:
     async def test_all_inputs_null(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("collect(city)", "c")],
                                           filters=["team = 'A' AND city IS NULL"]))
-        assert resp.data[0]["contractors.c"] is None
+        assert as_list(resp.data[0]["contractors.c"]) == []
 
-    async def test_a_cell_without_rows_is_null(self, engine) -> None:
+    async def test_a_cell_without_rows_is_empty(self, engine) -> None:
         got = await _collected(engine, "collect(skills.value)", by_key="name")
-        assert got == {"Ann": ["go", "sql"], "Bob": ["sql"], "Cid": None, "Dee": None, "Eve": ["go"]}
+        assert got == {"Ann": ["go", "sql"], "Bob": ["sql"], "Cid": [], "Dee": [], "Eve": ["go"]}
 
     async def test_integers_sorted_numerically(self, engine) -> None:
         assert await _collected(engine, "collect(rate)") == {"A": [10, 20], "B": [30, 40, 50]}
@@ -125,11 +125,13 @@ class TestEmission:
                                      dialect=dialect)
         assert LOWERING[dialect] in sql.upper(), sql
 
-    @pytest.mark.parametrize("dialect", ["snowflake", "clickhouse"])
-    async def test_empty_result_becomes_null(self, dialect: str) -> None:
+    @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
+    async def test_empty_result_is_an_empty_list(self, dialect: str) -> None:
         sql = await emit_contractors(query(dimensions=["team"], measures=[measure("collect(city)", "c")]),
                                      dialect=dialect)
-        assert "NULLIF" in sql.upper(), sql
+        assert "NULLIF" not in sql.upper(), sql
+        if dialect in ("postgres", "duckdb", "bigquery", "trino"):
+            assert "COALESCE" in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "trino"])
     async def test_null_inputs_filtered(self, dialect: str) -> None:

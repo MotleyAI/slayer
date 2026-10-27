@@ -94,9 +94,8 @@ def _element_rows(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], Any]
     return [(r, e) for r in rows for e in elements(r["skills"] or [])]
 
 
-def _collect(values: list[Any]) -> Optional[list[Any]]:
-    present = sorted({v for v in values if v is not None})
-    return present or None
+def _collect(values: list[Any]) -> list[Any]:
+    return sorted({v for v in values if v is not None})
 
 
 class Probe(BaseModel):

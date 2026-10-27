@@ -13,7 +13,7 @@ The examples use `contractors(id, team, city, skills ARRAY<TEXT>)` with these ro
 
 ### Requirement: collect returns the distinct sorted non-NULL values
 
-`collect(x)` SHALL return, per cell, the list of distinct non-NULL values of `x`, sorted ascending. A cell with no rows, or whose inputs are all NULL, SHALL take NULL — never an empty list or a list holding NULL.
+`collect(x)` SHALL return, per cell, the list of distinct non-NULL values of `x`, sorted ascending. A cell with no rows, or whose inputs are all NULL, SHALL take the empty list — never NULL or a list holding NULL.
 
 #### Scenario: Values per team
 - **WHEN** a query on `contractors` has the dimension `team` and the measure `collect(city)`
@@ -25,7 +25,7 @@ The examples use `contractors(id, team, city, skills ARRAY<TEXT>)` with these ro
 
 #### Scenario: All inputs NULL
 - **WHEN** a query filters `team = 'A' AND city IS NULL` and measures `collect(city)`
-- **THEN** it returns NULL
+- **THEN** it returns `[]`
 
 ### Requirement: collect takes scalar inputs only
 
