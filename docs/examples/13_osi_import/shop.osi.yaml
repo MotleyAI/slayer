@@ -1,116 +1,67 @@
-# A worked OSI (Open Semantic Interchange) config for the SLayer import demo.
+# A worked Ossie (OSI) document for the SLayer import demo, in the current
+# core-spec shape: one semantic model at the root, portable `sql` expressions
+# (OSSIE_SQL_2026), declared `datatype`s, and dataset-scoped metrics.
 #
 # It describes a small retail shop over four tables (orders, customers,
-# products, regions) and exercises every OSI feature the importer understands:
-#   * ai_context on the model, fields, joins, and metrics
+# products, regions) and exercises:
+#   * ai_context on the model, datasets, fields, relationships and metrics
 #   * custom_extensions carried into column meta
 #   * relationships that become SLayer joins (incl. a multi-hop chain)
-#   * simple, derived, cross-dataset, and multi-hop metrics
+#   * dataset-scoped metrics, a FILTER metric, and cross-dataset / multi-hop
+#     model-scoped metrics (which reference fields as dataset.field)
 #
-# Sources are BARE table names so the importer's live introspection resolves
-# them directly against the demo DuckDB the notebook builds.
+# Sources are bare table names, resolved against the demo DuckDB.
 version: "0.2.0.dev0"
+name: shop
+description: Retail shop semantic model
+ai_context:
+  instructions: "Use for order, customer, and product analytics."
+  synonyms:
+    - "store"
+    - "retail"
 
-semantic_model:
-  - name: shop
-    description: Retail shop semantic model
+datasets:
+  - name: orders
+    source: orders
+    primary_key: [order_id]
+    description: Order line items
     ai_context:
-      instructions: "Use for order, customer, and product analytics."
+      instructions: "One row per order."
       synonyms:
-        - "store"
-        - "retail"
-
-    datasets:
-      - name: orders
-        source: orders
-        primary_key: [order_id]
-        description: Order line items
+        - "sales"
+        - "purchases"
+    fields:
+      - name: order_id
+        expression: {sql: order_id}
+        datatype: Integer
+        description: Order id
+      - name: customer_id
+        expression: {sql: customer_id}
+        datatype: Integer
+      - name: product_id
+        expression: {sql: product_id}
+        datatype: Integer
+      - name: amount
+        expression: {sql: amount}
+        datatype: Float
+        label: Order amount
         ai_context:
-          instructions: "One row per order."
+          instructions: "Gross order value in USD."
           synonyms:
-            - "sales"
-            - "purchases"
-        fields:
-          - name: order_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}
-            description: Order id
-          - name: customer_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
-          - name: product_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: product_id}]}
-          - name: amount
-            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
-            label: Order amount
-            ai_context:
-              instructions: "Gross order value in USD."
-              synonyms:
-                - "revenue"
-                - "gross"
-            custom_extensions:
-              - vendor_name: SNOWFLAKE
-                data: '{"unit": "usd"}'
-          - name: quantity
-            expression: {dialects: [{dialect: ANSI_SQL, expression: quantity}]}
-          - name: ordered_at
-            expression: {dialects: [{dialect: ANSI_SQL, expression: ordered_at}]}
-            dimension: {is_time: true}
-          - name: status
-            expression: {dialects: [{dialect: ANSI_SQL, expression: status}]}
-
-      - name: customers
-        source: customers
-        primary_key: [customer_id]
-        fields:
-          - name: customer_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
-          - name: region_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: region_id}]}
-          - name: name
-            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
-          - name: segment
-            expression: {dialects: [{dialect: ANSI_SQL, expression: segment}]}
-
-      - name: products
-        source: products
-        primary_key: [product_id]
-        fields:
-          - name: product_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: product_id}]}
-          - name: category
-            expression: {dialects: [{dialect: ANSI_SQL, expression: category}]}
-          - name: price
-            expression: {dialects: [{dialect: ANSI_SQL, expression: price}]}
-
-      - name: regions
-        source: regions
-        primary_key: [region_id]
-        fields:
-          - name: region_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: region_id}]}
-          - name: name
-            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
-          - name: population
-            expression: {dialects: [{dialect: ANSI_SQL, expression: population}]}
-
-    relationships:
-      - name: orders_to_customers
-        from: orders
-        to: customers
-        from_columns: [customer_id]
-        to_columns: [customer_id]
-        ai_context:
-          instructions: "Each order has one customer."
-      - name: orders_to_products
-        from: orders
-        to: products
-        from_columns: [product_id]
-        to_columns: [product_id]
-      - name: customers_to_regions
-        from: customers
-        to: regions
-        from_columns: [region_id]
-        to_columns: [region_id]
-
+            - "revenue"
+            - "gross"
+        custom_extensions:
+          - vendor_name: SNOWFLAKE
+            data: '{"unit": "usd"}'
+      - name: quantity
+        expression: {sql: quantity}
+        datatype: Integer
+      - name: ordered_at
+        expression: {sql: ordered_at}
+        datatype: Date
+      - name: status
+        expression: {sql: status}
+        datatype: String
     metrics:
       - name: total_amount
         description: Total order amount
@@ -118,30 +69,94 @@ semantic_model:
           instructions: "Sum of gross order value."
           synonyms:
             - "gmv"
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(amount)}]}
+        expression: {sql: "SUM(amount)"}
+        datatype: Float
+      - name: completed_amount
+        description: Order amount of completed orders only
+        expression: {sql: "SUM(amount) FILTER (WHERE status = 'completed')"}
+        datatype: Float
       - name: order_count
-        expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(*)}]}
+        expression: {sql: "COUNT(*)"}
+        datatype: Integer
       - name: aov
         description: Average order value
-        expression: {dialects: [{dialect: ANSI_SQL, expression: (SUM(amount)) / (COUNT(*))}]}
+        expression: {sql: "SUM(amount) / COUNT(*)"}
+        datatype: Float
       - name: revenue_line
-        description: Quantity-weighted revenue (materialized operand)
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(quantity * amount)}]}
-      - name: cust_reach
-        description: Amount per distinct customer (cross-dataset, anchor = orders)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount) / COUNT(DISTINCT customers.customer_id)
-      - name: rev_plus_pop
-        description: Amount plus region population (multi-hop orders->customers->regions)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount) + SUM(regions.population)
-      - name: bridge_metric
-        description: References products + customers only; must anchor on orders (bridge)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(products.price) + COUNT(DISTINCT customers.customer_id)
+        description: Quantity-weighted revenue
+        expression: {sql: "SUM(quantity * amount)"}
+        datatype: Float
+
+  - name: customers
+    source: customers
+    primary_key: [customer_id]
+    fields:
+      - name: customer_id
+        expression: {sql: customer_id}
+        datatype: Integer
+      - name: region_id
+        expression: {sql: region_id}
+        datatype: Integer
+      - name: name
+        expression: {sql: name}
+        datatype: String
+      - name: segment
+        expression: {sql: segment}
+        datatype: String
+
+  - name: products
+    source: products
+    primary_key: [product_id]
+    fields:
+      - name: product_id
+        expression: {sql: product_id}
+        datatype: Integer
+      - name: category
+        expression: {sql: category}
+        datatype: String
+      - name: price
+        expression: {sql: price}
+        datatype: Float
+
+  - name: regions
+    source: regions
+    primary_key: [region_id]
+    fields:
+      - name: region_id
+        expression: {sql: region_id}
+        datatype: Integer
+      - name: name
+        expression: {sql: name}
+        datatype: String
+      - name: population
+        expression: {sql: population}
+        datatype: Integer
+
+relationships:
+  - name: orders_to_customers
+    from: orders
+    to: customers
+    from_columns: [customer_id]
+    to_columns: [customer_id]
+    ai_context:
+      instructions: "Each order has one customer."
+  - name: orders_to_products
+    from: orders
+    to: products
+    from_columns: [product_id]
+    to_columns: [product_id]
+  - name: customers_to_regions
+    from: customers
+    to: regions
+    from_columns: [region_id]
+    to_columns: [region_id]
+
+metrics:
+  - name: cust_reach
+    description: Amount per distinct customer (cross-dataset)
+    expression: {sql: "SUM(orders.amount) / COUNT(DISTINCT customers.customer_id)"}
+    datatype: Float
+  - name: rev_plus_pop
+    description: Amount plus region population (multi-hop orders->customers->regions)
+    expression: {sql: "SUM(orders.amount) + SUM(regions.population)"}
+    datatype: Float

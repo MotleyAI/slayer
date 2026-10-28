@@ -28,7 +28,6 @@ from slayer.osi.models import (
     OSIField,
     OSIMetric,
     OSIRelationship,
-    OSISemanticModel,
 )
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -211,8 +210,8 @@ class TestOsiConversion:
         def rel(name: str, src: str, dst: str) -> OSIRelationship:
             return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
                                                    "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
-        doc = OSIDocument(version="0.2.0.dev0", semantic_model=[OSISemanticModel(
-            name="s",
+        doc = OSIDocument(
+            version="0.2.0.dev0", name="s", legacy=True,
             datasets=[
                 OSIDataset(name="orders", source="orders",
                            fields=[OSIField(name="amount", expression=_expr("amount"))]),
@@ -222,7 +221,7 @@ class TestOsiConversion:
             relationships=[rel("o2c", "orders", "customers"), rel("c2o", "customers", "orders")],
             metrics=[OSIMetric(name="cross",
                                expression=_expr("SUM(orders.amount) + SUM(customers.region_id)"))],
-        )])
+        )
         result = OsiToSlayerConverter(documents=[doc], data_source=DS, sa_engine=osi_engine).convert()
         report = [w for w in result.unconverted_metrics if w.category == "no_join_path"]
         assert report, result.unconverted_metrics

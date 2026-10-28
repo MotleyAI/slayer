@@ -45,7 +45,6 @@ from slayer.osi.models import (
     OSIDocument,
     OSIExpression,
     OSIField,
-    OSISemanticModel,
 )
 
 # Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
@@ -83,10 +82,7 @@ def _osi_expr(sql: str) -> OSIExpression:
 
 
 def _osi_doc(datasets: list[OSIDataset]) -> OSIDocument:
-    return OSIDocument(
-        version="0.2.0.dev0",
-        semantic_model=[OSISemanticModel(name="s", datasets=datasets)],
-    )
+    return OSIDocument(version="0.2.0.dev0", name="s", datasets=datasets, legacy=True)
 
 
 # ---------------------------------------------------------------------------
