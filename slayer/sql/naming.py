@@ -182,8 +182,8 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
         path, leaf = key.path, key.leaf
     elif isinstance(key, ColumnSqlKey):
         path, leaf = key.path, key.column_name
-    elif isinstance(key, TimeTruncKey):
-        path, leaf = column_path(key.column), column_leaf(key.column)
+    elif isinstance(key, TimeTruncKey) and isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+        path, leaf = column_path(key.source), column_leaf(key.source)
     else:
         return None
     return (path, leaf) if path else None

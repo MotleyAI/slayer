@@ -38,6 +38,7 @@ from slayer.sql.dialects.base import (
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
+from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -108,6 +109,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     sqlglot_name: str = "bigquery"
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
+    sa_backend_names: frozenset[str] = frozenset({"bigquery"})
+    primary_key_inspector_only: bool = True
     # BigQuery has no SQL-level EXPLAIN.
     explain_prefix: str | None = None
     explain_postfix: str = ""
@@ -179,6 +182,35 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", value, lit(path.text))
+
+    def columns_query(self, location: TableLocation) -> exp.Select:
+        """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""
+        dataset, table = location.schema_name, location.name
+        if "." in table:
+            dataset, table = table.rsplit(".", 1)
+        if not dataset:
+            return super().columns_query(location)
+        return (
+            exp.select(col("column_name"), col("data_type"))
+            .from_(relation("COLUMNS", db="INFORMATION_SCHEMA", catalog=exp.to_identifier(dataset, quoted=True)))
+            .where(eq_literal(col("table_name"), table))
+            .order_by(col("ordinal_position"))
+        )
+
+    def reflect_schema_description(
+        self, *, sa_engine: sa.Engine, schema: str | None, configured_schema: str | None,
+    ) -> str | None:
+        """The dataset's description via the driver's client; ``None`` when unresolvable or failing."""
+        dataset = schema or getattr(sa_engine.dialect, "dataset_id", None) or configured_schema
+        if not dataset:
+            return None
+        try:
+            with sa_engine.connect() as conn:
+                # Private handle sqlalchemy-bigquery itself uses; no public accessor.
+                client = conn.connection._client
+                return clean_comment(client.get_dataset(dataset).description)
+        except Exception:  # noqa: BLE001 — a description is optional
+            return None
 
     def build_date_trunc(
         self,

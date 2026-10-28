@@ -18,6 +18,7 @@ from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TextFn, anon, as_text, case, either, lit
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
+from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -123,6 +124,7 @@ class SnowflakeDialect(SqlDialect):
     sqlglot_name: str = "snowflake"
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
+    sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""
     log10_native: bool = False
@@ -131,6 +133,11 @@ class SnowflakeDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        return info_schema_comments_query(
+            comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,
+        )
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,

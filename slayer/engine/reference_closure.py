@@ -1,4 +1,4 @@
-"""The one dependency closure (engine.arc42 principle 10).
+"""The one dependency closure (python.engine.arc42.md principle 10).
 
 A reference's *dependency closure* is its own join path plus every join path the
 definition of any derived column it names crosses, recursively. Every planner
@@ -8,9 +8,6 @@ closure, so a derived reference behaves exactly like a structural one in every
 position. The closure is tri-state: ``None`` when a definition cannot be
 analysed (no dialect parses it, or the expansion fails), and every consumer
 treats ``None`` as unsafe, never as "crosses nothing".
-
-Absorbs the former ``aggregate_input_paths`` and ``column_filter_paths`` modules
-and the key-tree ``_child_keys`` dispatch that lived in ``filter_reachability``.
 """
 
 from __future__ import annotations
@@ -233,7 +230,7 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
         return []
     if isinstance(node, TimeTruncKey):
-        return [node.column]
+        return [node.source]
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []

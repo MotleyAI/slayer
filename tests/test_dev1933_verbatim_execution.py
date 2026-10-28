@@ -70,7 +70,7 @@ def _helper_spans(tree: ast.Module) -> list[tuple[int, int]]:
 
 
 class TestClientModuleGuard:
-    """arc42 sql §3.13: the client constructs no text clause and issues no
+    """python.sql.arc42.md §3.13: the client constructs no text clause and issues no
     driver-level execute outside the single verbatim helper pair."""
 
     def _tree(self) -> ast.Module:

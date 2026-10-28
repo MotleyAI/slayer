@@ -19,7 +19,6 @@ model {
       metadata {
         package 'slayer.core'
         claims ['slayer.async_utils']
-        arc42 'architecture/core.arc42.md'
       }
       query = node 'Query'
       models = node 'Models'
@@ -28,7 +27,6 @@ model {
     sql = node 'SQL generation' {
       metadata {
         package 'slayer.sql'
-        arc42 'architecture/sql.arc42.md'
         specs ['sql']
       }
       render = node 'Render'
@@ -39,7 +37,6 @@ model {
     engine = node 'Query engine' {
       metadata {
         package 'slayer.engine'
-        arc42 'architecture/engine.arc42.md'
       }
       binding = node 'Binding'
       bind_inputs = node 'Bind inputs'
@@ -51,13 +48,11 @@ model {
     ir = node 'Intermediate representation' {
       metadata {
         package 'slayer.ir'
-        arc42 'architecture/ir.arc42.md'
       }
     }
     storage = node 'Storage backends' {
       metadata {
         package 'slayer.storage'
-        arc42 'architecture/storage.arc42.md'
         specs ['storage']
       }
       migrations = node 'Migrations'
@@ -86,7 +81,6 @@ model {
     usage_reporting = node 'Usage reporting' {
       metadata {
         package 'slayer.usage_reporting'
-        arc42 'architecture/usage_reporting.arc42.md'
         specs ['usage-reporting']
       }
       features = node 'Features'
@@ -94,7 +88,7 @@ model {
     surfaces = bucket 'User-facing surfaces' {
       metadata {
         packages ['slayer.api', 'slayer.mcp', 'slayer.cli', 'slayer.client', 'slayer.inspect', 'slayer.demo', 'slayer.__main__']
-        specs ['mcp']
+        specs ['mcp', 'demo']
       }
     }
 

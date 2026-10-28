@@ -132,7 +132,7 @@ async def _generate(query: SlayerQuery, *, dialect: str = "postgres") -> str:
 
 
 _MONTH = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -211,7 +211,7 @@ class TestOptionalScopeFailsClosed:
             ("column", ColumnKey(leaf="amount")),
             ("derived", ColumnSqlKey(model="orders", column_name="net")),
             ("time_trunc", TimeTruncKey(
-                column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)),
+                source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)),
             ("aggregate", AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")),
             ("nested_in_arithmetic", ArithmeticKey(
                 op="+",
@@ -521,7 +521,7 @@ _SLOTTED_KINDS = {
     "column": ColumnKey(leaf="amount"),
     "derived": ColumnSqlKey(model="orders", column_name="net"),
     "time_trunc": TimeTruncKey(
-        column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH),
+        source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH),
     "aggregate": AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
     "transform": TransformKey(
         op="cumsum",

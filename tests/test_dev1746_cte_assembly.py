@@ -72,7 +72,7 @@ def _windowed_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
@@ -85,7 +85,7 @@ def _mixed_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[

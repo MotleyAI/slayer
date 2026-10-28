@@ -395,7 +395,7 @@ class UnknownGranularityError(QueryTypeError):
 
 
 class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that is not a single column reference ``gran(col)``."""
+    """A datasource-granularity call that does not take one row-level argument ``gran(expr)``."""
 
 
 class TimeSpineError(QueryTypeError):
@@ -899,10 +899,10 @@ class GranularityCallError(SlayerError, ValueError):
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one column reference."""
+        """A granularity callee with any argument shape other than one row-level argument."""
         return cls(
-            f"Granularity call {entry!r} must be a single column reference "
-            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"Granularity call {entry!r} must take one row-level argument "
+            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
             f"{', '.join(g.value for g in TimeGranularity)}."
         )
 

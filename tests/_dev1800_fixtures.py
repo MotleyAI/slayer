@@ -152,7 +152,7 @@ def signup_td() -> List[TimeDimension]:
     """Month time dimension on the customer signup axis (the attributable axis).
     Dotted so it works whether the query is rooted at orders or customers."""
     return [TimeDimension(
-        dimension=ColumnRef(name="customers.signup_at"),
+        dimension="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 

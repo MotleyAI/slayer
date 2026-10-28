@@ -463,7 +463,7 @@ def test_date_trunc_quarter(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.QUARTER,
         )],
         measures=[ModelMeasure(formula="quantity:sum")],
@@ -479,7 +479,7 @@ def test_time_shift_dateadd(sf_storage_with_models) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[

@@ -31,6 +31,7 @@ from slayer.sql.dialects.base import (
     pad_fill,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
+from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
 
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
@@ -234,6 +235,7 @@ class ClickhouseDialect(SqlDialect):
              anon("JSONExtractRaw", document, *keys)),
         )
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
+    sa_backend_names: frozenset[str] = frozenset({"clickhouse"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -245,6 +247,14 @@ class ClickhouseDialect(SqlDialect):
     global_in_subqueries: bool = True
     url_scheme: str | None = "clickhouse+http"
     install_extra: str | None = "clickhouse"
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        database = exp.Literal.string(location.schema_name) if location.schema_name else call("currentDatabase")
+        return (
+            exp.select(col("name"), col("comment"))
+            .from_(relation("columns", db="system"))
+            .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
+        )
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """Per-request HTTP setting: the driver keeps no session, so a ``SET`` never reaches the query."""
@@ -319,6 +329,25 @@ class ClickhouseDialect(SqlDialect):
 
     def attach_correlated_setting(self, statement: Expression) -> None:
         _attach_ch_correlated_setting(statement)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """ORDER BY a projection's expression, not its alias: a dotted alias such as
+        ``orders.created_at`` resolves to the source column of that name.
+
+        A windowed projection keeps its alias.
+        """
+        statement = statement.copy()
+        for select in statement.find_all(exp.Select):
+            order = select.args.get("order")
+            if order is None:
+                continue
+            projections = {p.alias: p.this for p in select.expressions if isinstance(p, exp.Alias)}
+            for term in order.expressions:
+                ref = term.this
+                projected = projections.get(ref.name) if isinstance(ref, exp.Column) and not ref.table else None
+                if projected is not None and projected.find(exp.Window) is None:
+                    ref.replace(projected.copy())
+        return statement
 
     def in_subquery_key(self, key: Expression) -> Expression:
         """``toNullable(key)``: pre-25 ``nullIn`` errors probing a non-Nullable set with a Nullable key."""

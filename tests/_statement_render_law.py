@@ -1,4 +1,4 @@
-"""Harness law (sql.arc42.md §3.1): no statement is rendered to SQL text while it is being composed.
+"""Harness law (python.sql.arc42.md §3.1): no statement is rendered to SQL text while it is being composed.
 
 Every AST statement builder's dynamic extent is marked; sqlglot's single render
 entry (``Dialect.generate``, behind every ``Expression.sql()``) fails while a

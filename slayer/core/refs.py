@@ -84,7 +84,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("column_name", attrgetter("column_name")),
     )),
     TimeTruncKey: ("TimeTruncKey", (
-        ("column", attrgetter("column")),
+        ("column", attrgetter("source")),
         ("granularity", lambda k: str(k.granularity)),
     )),
     StarKey: ("StarKey", (("path", attrgetter("path")),)),
@@ -195,7 +195,7 @@ def agg_signature_suffix(
 
 def _partition_key_display(key: Any) -> str:
     if isinstance(key, TimeTruncKey):
-        key = key.column
+        key = key.source
     if isinstance(key, ColumnKey):
         parts = [*key.path, key.leaf]
     elif isinstance(key, ColumnSqlKey):
@@ -208,7 +208,7 @@ def _partition_key_display(key: Any) -> str:
 def dotted_key_display(pk: ValueKey) -> str:
     """Human-readable dotted path for a key in error messages."""
     if isinstance(pk, TimeTruncKey):
-        return dotted_key_display(pk.column)
+        return dotted_key_display(pk.source)
     return key_display(pk)
 
 
@@ -292,7 +292,7 @@ def key_display(key: ValueKey) -> str:
     if leaf is not None:
         return leaf
     if isinstance(key, TimeTruncKey):
-        return f"{key.granularity}({key_display(key.column)})"
+        return f"{key.granularity}({key_display(key.source)})"
     if isinstance(key, AggregateKey):
         return _aggregate_display(key)
     if isinstance(key, TransformKey):
@@ -357,8 +357,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
-    if isinstance(value, ScalarCallKey):
-        # A FILTER-masked row parameter.
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey)):
+        # A row-level expression parameter (a FILTER-masked one included).
         return auto_name_from_expression(key_display(value))
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "

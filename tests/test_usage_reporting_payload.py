@@ -1,4 +1,4 @@
-"""usage_reporting.arc42.md principle 2: a usage report carries only SLayer-defined vocabulary."""
+"""python.usage_reporting.arc42.md principle 2: a usage report carries only SLayer-defined vocabulary."""
 
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def test_every_cli_command_has_a_vocabulary_token(monkeypatch: pytest.MonkeyPatc
         assert f"cli:{token}" in vocabulary, token
         tokens[path] = token
     assert len(set(tokens.values())) == len(tokens)
-    assert {("search",), ("search", "refresh-samples")} <= set(tokens)
+    assert {("search",), ("datasources", "refresh-samples")} <= set(tokens)
 
 
 def test_every_mcp_tool_has_a_vocabulary_token(tmp_path: Path) -> None:

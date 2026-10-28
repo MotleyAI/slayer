@@ -125,6 +125,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
     })
+    sa_backend_names: frozenset[str] = frozenset({"mssql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True

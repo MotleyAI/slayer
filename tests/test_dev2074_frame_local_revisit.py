@@ -15,7 +15,7 @@ from slayer.core.errors import CircularJoinPathError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.join_walker import follow, resolved_terminal, walk, walk_cancelling
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _build_stage_graph, _stage_referenced_columns_for_base
 from slayer.storage.sqlite_conn import transaction
@@ -412,7 +412,7 @@ class TestComposedOccurrenceMetadata:
             f"SELECT CAST(lo.ordered_at AS VARCHAR), COUNT(*) {_ORDERS_THROUGH_LAST} "
             "GROUP BY lo.ordered_at ORDER BY lo.ordered_at DESC")
         assert [(str(t)[:7], n) for t, n in oracle] == [("2024-03", 1), ("2024-02", 2)]
-        td = TimeDimension(dimension=ColumnRef(name="customer.last_ordered_at"),
+        td = TimeDimension(dimension="customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
             time_dimensions=[td], measures=[{"formula": "count(*)", "name": "n"}],

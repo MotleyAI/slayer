@@ -89,9 +89,10 @@ def mentions_spine(text: str) -> bool:
 def is_spine_query(query: SlayerQuery) -> bool:
     """A query rooted at the spine, or reading it in a time dimension, dimension or filter."""
     dims = [getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []]
+    tds = [td.dimension for td in query.time_dimensions or []]
     return query.source_model_name == TIME_SPINE_MODEL or any(
-        names_spine(td.dimension.full_name) for td in query.time_dimensions or []
-    ) or any(mentions_spine(t) for t in [*dims, *(query.filters or [])])
+        mentions_spine(t) for t in [*dims, *tds, *(query.filters or [])]
+    )
 
 
 def query_host(model: SlayerModel, *, query: SlayerQuery) -> SlayerModel:

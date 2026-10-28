@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.cli import _run_memory
+from slayer.cli import _CommandFailed, _run_memory
 from tests._cli_inprocess import run_cli_in_process
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -148,14 +148,13 @@ class TestMemorySaveSubcommand:
     def test_save_requires_entities_or_query(
         self, seeded_storage_path, capsys
     ):
-        with pytest.raises(SystemExit):
-            _run_memory(
-                _args(
-                    storage_path=seeded_storage_path,
-                    memory_command="save",
-                    learning="x",
-                )
-            )
+        args = _args(
+            storage_path=seeded_storage_path,
+            memory_command="save",
+            learning="x",
+        )
+        with pytest.raises(_CommandFailed):
+            _run_memory(args)
 
 
 class TestMemoryForgetSubcommand:
@@ -180,15 +179,12 @@ class TestMemoryForgetSubcommand:
         out = capsys.readouterr().out
         assert "1" in out
 
-    def test_forget_missing_exits_1(self, seeded_storage_path, capsys):
-        with pytest.raises(SystemExit):
-            _run_memory(
-                _args(
-                    storage_path=seeded_storage_path,
-                    memory_command="forget",
-                    id=999,
-                )
-            )
+    def test_forget_missing_exits_1(self, seeded_storage_path):
+        result = run_cli_in_process(
+            ["memory", "--storage", seeded_storage_path, "forget", "999"]
+        )
+        assert result.returncode == 1
+        assert result.stderr.startswith("Error: ")
 
 
 class TestMemoryArgparsePlumbing:

@@ -88,7 +88,7 @@ def _dimension_texts(query: SlayerQuery) -> Iterator[tuple[FieldKind, str]]:
     for dim in query.dimensions or []:
         yield ("formula", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
     for td in query.time_dimensions or []:
-        yield "ref", td.dimension.full_name
+        yield "formula", td.dimension
 
 
 def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:

@@ -1,4 +1,4 @@
-"""Law (sql.arc42.md §3.1): statements are composed as AST and rendered to text once.
+"""Law (python.sql.arc42.md §3.1): statements are composed as AST and rendered to text once.
 
 The conftest autouse fixture (``tests/_statement_render_law.py``) fails any test
 in which an AST statement builder renders a query node to SQL text; these are

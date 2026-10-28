@@ -377,11 +377,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return _literal(key.value, dialect=ctx.dialect)
 
     if isinstance(key, TimeTruncKey):
-        column = _require_scope(ctx, key).resolve(
-            key.column, consumer=ctx.consumer,
+        source = (
+            _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
+            if isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_bucket(col_expr=column, granularity=key.granularity)
+        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
