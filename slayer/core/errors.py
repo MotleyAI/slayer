@@ -436,6 +436,10 @@ class ServerVersionError(QueryTypeError):
     """A function the connected server's version does not provide."""
 
 
+class UnsupportedServerFunctionError(QueryTypeError):
+    """A library function the connected database cannot yet run with its portable meaning."""
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 

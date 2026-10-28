@@ -6,7 +6,7 @@ import pytest
 from sqlglot import exp, parse_one
 
 from slayer.core.enums import DataType
-from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.errors import SlayerError, UnknownFunctionError, UnsupportedServerFunctionError
 from slayer.core.models import Column
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
@@ -81,6 +81,9 @@ class TestPostgresMeaning:
     ])
     async def test_div_truncates_toward_zero(self, engine: SlayerQueryEngine, expr: str, expected: int) -> None:
         assert int(await _value(engine, expr)) == expected
+
+    async def test_cbrt_of_a_perfect_cube_is_exact(self, engine: SlayerQueryEngine) -> None:
+        assert float(await _value(engine, "cbrt(64)")) == 4.0
 
     async def test_cbrt_of_a_negative_number(self, engine: SlayerQueryEngine) -> None:
         assert float(await _value(engine, "cbrt(x)", row=6)) == pytest.approx(-2.0)
@@ -278,7 +281,8 @@ class TestFloorDivisionHint:
 class TestMySQLDoublePrecision:
     async def test_pi_is_not_display_rounded(self) -> None:
         sql = (await emit_lib(lib_query("pi()"), dialect="mysql")).upper()
-        assert "ACOS(-1)" in sql and "PI()" not in sql, sql
+        assert "ACOS(-1)" in sql, sql
+        assert "PI()" not in sql, sql
 
     async def test_cube_root_exponent_is_double(self) -> None:
         sql = (await emit_lib(lib_query("cbrt(x)"), dialect="mysql")).upper()
@@ -309,14 +313,17 @@ class TestSQLServerCodePoints:
         model = base.model_copy(update={"columns": [*base.columns, Column(
             name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", type=DataType.TEXT)]})
         sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
-        assert "SUBSTRING(lib.s, 1, 2)" in sql and "POWER(lib.a, 2)" in sql, sql
-        assert "COLLATE" not in sql and "FLOAT" not in sql, sql
+        assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
+        assert "POWER(lib.a, 2)" in sql, sql
+        assert "COLLATE" not in sql, sql
+        assert "FLOAT" not in sql, sql
 
     @pytest.mark.parametrize("expr", ["left(s, -2)", "right(s, -1)"])
     async def test_no_negative_literal_substring_length(self, expr: str) -> None:
         sql = await _tsql(expr)
         lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
-        assert lengths and not any(isinstance(n, exp.Neg) for n in lengths), sql
+        assert lengths, sql
+        assert not any(isinstance(n, exp.Neg) for n in lengths), sql
 
 
 class TestSQLServerNumbers:
@@ -336,11 +343,13 @@ class TestSQLServerQuirks:
 
     async def test_replacement_ampersand_is_literal(self) -> None:
         sql = await _tsql("regexp_replace(tag, 'USD', '$ & co')")
-        assert "'$ & co'" in sql and "\\&" not in sql, sql
+        assert "'$ & co'" in sql, sql
+        assert "\\&" not in sql, sql
 
     async def test_returning_timestamp_is_datetime2(self) -> None:
         sql = await _tsql("json_value(payload, '$.t' RETURNING TIMESTAMP)")
-        assert "AS DATETIME2)" in sql and "ROWVERSION" not in sql, sql
+        assert "AS DATETIME2)" in sql, sql
+        assert "ROWVERSION" not in sql, sql
 
 
 async def _clickhouse(expr: str) -> str:
@@ -369,3 +378,18 @@ class TestClickHouseLowering:
         sql = await _clickhouse("split_part(s, '/', 2)")
         assert "splitByString(assumeNotNull('/'), assumeNotNull(lib.s))" in sql, sql
         assert "lib.s IS NULL OR '/' IS NULL" in sql, sql
+
+
+class TestMariaDBRefusesWhatItCannotMean:
+    @pytest.mark.parametrize("expr", [
+        "regexp_like(word, '^a')", "word ~ '^a'", "regexp_extract(word, 'a(d)', 1)", "regexp_replace(word, 'a', 'b')",
+        "TRY_CAST(num_txt AS INT)", "num_txt > 100", "json_value(payload, '$.ok')", "payload ->> 'ok'",
+    ])
+    async def test_refused_at_plan_time(self, expr: str) -> None:
+        query = lib_query(expr)
+        with pytest.raises(UnsupportedServerFunctionError, match="MariaDB"):
+            await emit_lib(query, dialect="mariadb")
+
+    @pytest.mark.parametrize("expr", ["starts_with(word, 'a')", "TRY_CAST(word AS BOOLEAN)", "upper(word)"])
+    async def test_the_rest_renders_as_mysql(self, expr: str) -> None:
+        assert await emit_lib(lib_query(expr), dialect="mariadb") == await emit_lib(lib_query(expr), dialect="mysql")

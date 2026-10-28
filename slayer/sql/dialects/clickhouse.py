@@ -353,7 +353,10 @@ class ClickhouseDialect(SqlDialect):
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """A native input is serialised from the cast's operand: a ``CAST(… AS JSON)`` needs an experimental
         setting before 25.3."""
-        document = anon("toString", value.this if isinstance(value, exp.Cast) else value) if native else value.copy()
+        if native:
+            document = anon("toString", value.this if isinstance(value, exp.Cast) else value)
+        else:
+            document = value.copy()
         keys = [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
         kind = anon("JSONType", document, *keys)
         return case(

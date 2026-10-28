@@ -130,6 +130,7 @@ class TestPathSubset:
         ("a.b", ("$",)),
         ("$['a']", ("[",)),
         ("$.a[1.5]", ("index", "1.5")),
+        ("$.a[²]", ("index", "²")),
         ("$.a[last]", ("last", "index")),
         ("lax $.a", ("lax",)),
         ("$.\"a", ("quote", '"')),

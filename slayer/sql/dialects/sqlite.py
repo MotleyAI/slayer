@@ -501,10 +501,6 @@ def _trunc(x):
     return math.trunc(x) if isinstance(x, int) else float(math.trunc(x))
 
 
-def _cbrt(x: float) -> float:
-    return math.copysign(abs(x) ** (1 / 3), x)
-
-
 _TEXT_UDFS: dict = {
     "slayer_lpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=True))),
     "slayer_rpad": (3, _nulls(lambda s, n, f: _pad(str(s), n, str(f), left=False))),
@@ -522,7 +518,7 @@ _TEXT_UDFS: dict = {
     "slayer_fmod": (2, _fmod),
     "slayer_trunc": (1, _trunc),
     "slayer_pi": (0, lambda: math.pi),
-    "slayer_cbrt": (1, _nulls(_cbrt)),
+    "slayer_cbrt": (1, _nulls(math.cbrt)),  # exact on perfect cubes, unlike abs(x) ** (1 / 3)
     "slayer_atan2": (2, _nulls(math.atan2)),
     **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
 }

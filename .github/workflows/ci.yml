@@ -101,7 +101,7 @@ jobs:
         # .github/workflows/integration-<dialect>.yml. They require Docker
         # + testcontainers + (for SQL Server) the ODBC Driver 18 — provisioned
         # only in those workflows. Exclude them from the always-on integration
-        # job; they run when their respective dialect files change.
+        # job; they run on any change to the slayer package.
         #
         # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
@@ -236,13 +236,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip if Snowflake secret is unset
+      - name: Skip if Snowflake secrets are unset
         id: gate
         env:
           SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
         run: |
-          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" ]]; then
-            echo "Snowflake secret unset — skipping the integration suite."
+          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" || -z "$SNOWFLAKE_PRIVATE_KEY" ]]; then
+            echo "Snowflake secrets unset — skipping the integration suite."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -278,7 +279,7 @@ jobs:
         # `secrets.SNOWFLAKE_CONNECTIONS_TOML`.
         env:
           SLAYER_SNOWFLAKE_CONNECTION: slayer_test
-          # The secret is present (gate above), so an unreachable Snowflake fails rather than skips.
+          # The secrets are present (gate above), so an unreachable Snowflake fails rather than skips.
           SLAYER_SNOWFLAKE_REQUIRED: "1"
         run: poetry run pytest tests/integration/test_integration_snowflake.py -v -rs -m integration --timeout=300
 

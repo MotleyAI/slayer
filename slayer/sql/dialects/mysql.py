@@ -11,12 +11,13 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, NoReturn
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.errors import UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
@@ -303,7 +304,10 @@ class MysqlDialect(SqlDialect):
 
 
 class MariadbDialect(MysqlDialect):
-    """MariaDB renders as MySQL; it names its statement timeout differently."""
+    """MariaDB renders as MySQL; it names its statement timeout differently. Library regex, numeric
+    ``TRY_CAST`` (so text-to-number coercion) and ``json_value`` are refused: MariaDB has no
+    ``REGEXP_LIKE``, shorter ``REGEXP_SUBSTR`` / ``REGEXP_REPLACE``, and reads JSON booleans as 1 / 0
+    (lowerings: DEV-1975)."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
     database_name: ClassVar[str] = "MariaDB"
@@ -311,3 +315,35 @@ class MariadbDialect(MysqlDialect):
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_statement_time = {timeout_seconds}"
+
+    def build_regexp_like(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_like and the ~ operators")
+
+    def build_regexp_extract(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_extract")
+
+    def build_regexp_replace(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_replace")
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        if to.is_type(*exp.DataType.NUMERIC_TYPES):
+            _unsupported("TRY_CAST to a number (and comparing or computing text with numbers)")
+        return super().build_try_cast(value, to)
+
+    def build_json_value(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, path: JsonPath, native: bool,
+    ) -> Expression:
+        _unsupported("json_value and its spellings (->>, json_extract, …)")
+
+
+def _unsupported(what: str) -> NoReturn:
+    raise UnsupportedServerFunctionError(
+        summary=f"{what} is not supported on MariaDB yet.",
+        suggestion="Run it on MySQL, or express it in the model's own SQL (Column.sql).",
+    )

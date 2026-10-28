@@ -175,6 +175,8 @@ treats backslash as an ordinary char; SLayer's entire sqlglot-based MySQL
 emission — not just variable substitution — assumes that mode is off, so
 backslash-bearing string values are not supported on such servers.
 
+**MariaDB** renders as MySQL, except that the portable library's regex functions and `~` operators, `TRY_CAST` to a number (and so comparing or computing text with numbers) and `json_value` with its spellings are refused at plan time.
+
 ### SQL Server (T-SQL) caveats
 
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
@@ -227,9 +229,9 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 - **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers joins like Postgres / MySQL / SQLite.
-- **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
-  canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
-  statistical functions are native.
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `Column.sql` fall
+  through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
+  the math / statistical functions are native.
 
 ### Trino caveats
 
