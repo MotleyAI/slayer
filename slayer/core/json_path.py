@@ -9,7 +9,13 @@ from pydantic import BaseModel, ConfigDict
 
 _KEY_RE = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
 _MODE_WORDS = ("lax", "strict")
+
+
+def _is_index(text: str) -> bool:
+    """ASCII digits only: ``int()`` also reads ``²`` and other Unicode digits."""
+    return text.isascii() and text.isdigit()
 
 
 class JsonPathError(ValueError):
@@ -105,9 +111,9 @@ class _Reader:
             raise JsonPathError("the filter expression '[?…]'")
         if stripped.startswith(("'", '"')):
             raise JsonPathError("the bracket key '[...]' (write .key or .\"key\")")
-        if stripped.startswith("-") and stripped[1:].isdigit():
+        if stripped.startswith("-") and _is_index(stripped[1:]):
             raise JsonPathError(f"the negative index '[{stripped}]'")
-        if end < 0 or not stripped.isdigit():
+        if end < 0 or not _is_index(stripped):
             raise JsonPathError(f"the array index '[{body}]' (an index is a non-negative integer)")
         self.pos = end + 1
         return int(stripped)

@@ -516,7 +516,7 @@ These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have 
 
 The 2-arg `log(B, X)` UDF is registered on **every** SQLite version, including ≥3.35 where it overrides the built-in's silent-NULL behaviour to match Postgres's strict error semantics. `ln`, `log10`, and `log2` also always register; the `log2` UDF overrides SQLite ≥3.35's silent-NULL built-in to keep the same strict semantics.
 
-The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim in emitted SQL on every supported backend (SQLite, Postgres, DuckDB, MySQL, ClickHouse, Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, T-SQL). Backends that lack a native single-arg form fall back to the canonical 2-arg `LOG(base, x)`: Oracle for both, T-SQL for `log2`. Other 2-arg `log(B, X)` calls — including non-literal bases like `log(some_col, x)` — always emit as `LOG(B, X)`.
+The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim where the backend has them natively; elsewhere they emit the canonical 2-arg `LOG(base, x)`: Snowflake and Oracle for both, Postgres, BigQuery, Redshift and T-SQL for `log2`. Other 2-arg `log(B, X)` calls — including non-literal bases like `log(some_col, x)` — always emit as `LOG(B, X)`.
 
 ```python
 # Examples (in Column.sql):

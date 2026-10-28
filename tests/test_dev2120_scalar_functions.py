@@ -82,6 +82,9 @@ class TestPostgresMeaning:
     async def test_div_truncates_toward_zero(self, engine: SlayerQueryEngine, expr: str, expected: int) -> None:
         assert int(await _value(engine, expr)) == expected
 
+    async def test_cbrt_of_a_perfect_cube_is_exact(self, engine: SlayerQueryEngine) -> None:
+        assert float(await _value(engine, "cbrt(64)")) == 4.0
+
     async def test_cbrt_of_a_negative_number(self, engine: SlayerQueryEngine) -> None:
         assert float(await _value(engine, "cbrt(x)", row=6)) == pytest.approx(-2.0)
 

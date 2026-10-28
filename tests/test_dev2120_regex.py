@@ -160,7 +160,7 @@ class TestFunctionArguments:
 
 
 class TestReplacement:
-    @pytest.mark.parametrize("replacement", ["\\q", "\\0", "\\3", "\\", "\\n"])
+    @pytest.mark.parametrize("replacement", ["\\q", "\\0", "\\3", "\\", "\\n", "\\²"])
     async def test_bad_escape_or_group_rejected(self, engine: SlayerQueryEngine, replacement: str) -> None:
         expr = f"regexp_replace(s, '(\\w+) (\\w+)', '{replacement}')"
         await _rejected(engine, "replacement", dimensions=["id", {"expression": expr, "name": "v"}])

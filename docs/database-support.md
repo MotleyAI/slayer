@@ -224,9 +224,9 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 - **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers joins like Postgres / MySQL / SQLite.
-- **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
-  canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
-  statistical functions are native.
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `Column.sql` fall
+  through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
+  the math / statistical functions are native.
 
 ### Trino caveats
 

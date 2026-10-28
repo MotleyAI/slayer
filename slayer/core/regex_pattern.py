@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict
 
 #: The largest repetition count every dialect accepts (Postgres's ``RE_DUP_MAX``).
 MAX_REPEAT = 255
+#: A replacement group reference ``\\1``-``\\9`` (ASCII only: ``int("²")`` raises).
+_GROUP_DIGITS = frozenset("123456789")
 #: Characters a backslash makes literal.
 _PUNCTUATION = frozenset("\\.[](){}*+?^$|/-!\"#%&',:;<=>@_`~")
 _CONTROL_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
@@ -310,12 +312,12 @@ def parse_replacement(text: str, *, groups: int) -> RegexReplacement:
         nxt = text[i + 1] if i + 1 < len(text) else ""
         if nxt == "\\":
             literal.append("\\")
-        elif nxt.isdigit() and nxt != "0" and int(nxt) <= groups:
+        elif nxt in _GROUP_DIGITS and int(nxt) <= groups:
             if literal:
                 parts.append("".join(literal))
                 literal = []
             parts.append(RegexGroupRef(index=int(nxt)))
-        elif nxt.isdigit():
+        elif nxt.isascii() and nxt.isdigit():
             raise RegexPatternError(f"the replacement group reference '\\{nxt}' (the pattern has {groups} groups)")
         else:
             raise RegexPatternError(f"the replacement escape '\\{nxt}' (only \\1-\\9 and \\\\ are)")
