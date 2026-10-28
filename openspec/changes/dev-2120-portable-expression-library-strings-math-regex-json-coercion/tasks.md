@@ -59,4 +59,4 @@
 ## 9. Gates
 
 - [x] 9.1 `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; verify all green
-- [ ] 9.2 pr-review gate: the PR's Snowflake and BigQuery suites executed (not skipped) before C9 = yes is accepted; verify in the PR's check logs
+- [x] 9.2 pr-review gate: the PR's Snowflake and BigQuery suites executed (not skipped) before C9 = yes is accepted; verify in the PR's check logs
