@@ -191,12 +191,10 @@ def test_inline_operand_metric(shop_engine):
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
-    # With bidirectional traversal the
-    # mentioned-model tiebreak anchors on customers (lexicographic), and the
-    # orders operand rides the reverse hop.
-    customers = _by_name(_shop_result(shop_engine))["customers"]
-    m = {meas.name: meas for meas in customers.measures}
-    assert m["cust_reach"].formula == "sum(orders.amount) / count_distinct(customer_id)"
+    # The anchor reaching every referenced dataset without a fanning hop wins.
+    orders = _by_name(_shop_result(shop_engine))["orders"]
+    m = {meas.name: meas for meas in orders.measures}
+    assert m["cust_reach"].formula == "sum(amount) / count_distinct(customers.customer_id)"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
@@ -479,14 +477,12 @@ def test_unique_keys_into_meta(shop_engine):
 # ─────────────── anchoring: bridge model + COUNT(*) fact-root ────────────────
 
 def test_bridge_anchor_metric(shop_engine):
-    # customers reaches products over
-    # the reverse orders hop, so the mentioned-model tiebreak anchors on
-    # customers instead of the unmentioned orders bridge.
-    customers = _by_name(_shop_result(shop_engine))["customers"]
-    m = {meas.name: meas for meas in customers.measures}
+    # Only the unmentioned orders bridge reaches products and customers without a fanning hop.
+    orders = _by_name(_shop_result(shop_engine))["orders"]
+    m = {meas.name: meas for meas in orders.measures}
     assert "bridge_metric" in m
     assert m["bridge_metric"].formula == (
-        "sum(orders.products.price) + count_distinct(customer_id)"
+        "sum(products.price) + count_distinct(customers.customer_id)"
     )
 
 

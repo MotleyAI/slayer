@@ -928,13 +928,14 @@ class OsiToSlayerConverter:
 
     def _min_hops_root(self, *, candidates: list[str], mentioned: set[str], to_one: set[str]) -> str | None:
         """Among ``candidates`` routing to every ``mentioned`` model (``to_one`` ones without
-        fanning), the fewest total hops; ties prefer a mentioned candidate, then the smallest name."""
+        fanning): prefer no fanning hop, then the fewest total hops, a mentioned candidate, the smallest name."""
         keyed = []
         for c in candidates:
             routed = shortest_routes(root=self._models[c], models_by_name=self._models)
             if all(m in routed for m in mentioned) and not any(routed[m].fanning for m in to_one):
-                keyed.append((sum(len(routed[m].edges) for m in mentioned), 0 if c in mentioned else 1, c))
-        return min(keyed)[2] if keyed else None
+                fans = any(routed[m].fanning for m in mentioned)
+                keyed.append((fans, sum(len(routed[m].edges) for m in mentioned), 0 if c in mentioned else 1, c))
+        return min(keyed)[3] if keyed else None
 
     def _make_ref_of(self, anchor: str) -> Callable[[str, str], Optional[str]]:
         def ref_of(model: str, column: str) -> Optional[str]:
