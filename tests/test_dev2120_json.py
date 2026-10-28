@@ -283,7 +283,7 @@ class TestIngestionKeepsJsonDbType:
         assert (_db_type(getattr(sf, name)(), dialect="snowflake") or "").upper().startswith(name)
 
     def test_postgres_array_is_not_json(self) -> None:
-        assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") is None
+        assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") == "INTEGER[]"
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
         duckdb = pytest.importorskip("duckdb")
