@@ -7,11 +7,13 @@ are native. log10 and log2 are native.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Optional
 
+from sqlalchemy.types import NullType
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
@@ -31,17 +33,31 @@ from slayer.sql.dialects.base import (
     case,
     element_lambda,
     is_not_null,
+    is_null,
     iso_text,
     lit,
     pad_fill,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
-from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
+from slayer.sql.dialects.reflection import (
+    CatalogEngine,
+    ReflectedColumn,
+    TableLocation,
+    all_of,
+    call,
+    col,
+    column_from_type_string,
+    eq_literal,
+    fetch,
+    relation,
+)
 
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
+#: Types ClickHouse refuses inside ``Nullable``.
+_NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY, exp.DataType.Type.JSON)
 
 
 def _compact(values: Expression) -> Expression:
@@ -65,6 +81,11 @@ def _utf8(node: Expression) -> Expression:
 def _byte(value: Expression, position: int) -> Expression:
     return exp.Anonymous(this="ascii", expressions=[exp.Anonymous(this="substring", expressions=[
         value.copy(), exp.Literal.number(position), exp.Literal.number(1)])])
+
+
+def _bool_as_int(cast: Expression, to: exp.DataType) -> Expression:
+    """A boolean as 0 / 1, like ClickHouse's own predicates: the HTTP driver returns ``Bool`` as text."""
+    return anon("toUInt8", cast) if to.is_type(exp.DataType.Type.BOOLEAN) else cast
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4)
@@ -214,13 +235,21 @@ class ClickhouseDialect(SqlDialect):
         return tree.transform(_utf8)
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
-        if fn in ("left", "right"):
-            return anon(f"{fn}UTF8", *args)
+        if fn == "left":
+            return anon("leftUTF8", *args)
+        if fn == "right":
+            # rightUTF8 ignores a negative constant length over a column: drop the first |n| as a kept length.
+            s, n = args
+            kept = anon("greatest", exp.Add(this=anon("lengthUTF8", s), expression=n.copy()), lit(0))
+            return anon("rightUTF8", s, case((exp.LT(this=n.copy(), expression=lit(0)), kept), default=n.copy()))
         if fn in ("lpad", "rpad"):
             node = anon("leftPadUTF8" if fn == "lpad" else "rightPadUTF8", args[0], args[1], pad_fill(args))
             return self._non_positive_empty(args[1], node, source=args[0])
         if fn == "reverse":
-            return anon("reverseUTF8", args[0])
+            # reverseUTF8 garbles four-byte characters; RE2 splits by code point.
+            chars = anon("extractAll", anon("assumeNotNull", args[0]), lit("(?s)."))
+            return case((is_null(args[0]), exp.Null()),
+                        default=anon("arrayStringConcat", anon("arrayReverse", chars)))
         if fn == "concat_ws":
             item = exp.to_identifier("_v")
             present = exp.Lambda(this=anon("isNotNull", exp.column(item.copy())), expressions=[item])
@@ -262,8 +291,29 @@ class ClickhouseDialect(SqlDialect):
                     (exp.LT(this=b1.copy(), expression=lit(240)), three), default=four)
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
-        """``splitByString`` indexes from either end; past the end is the empty default."""
-        return anon("arrayElement", anon("splitByString", delimiter, value), lit(index))
+        """``splitByString`` indexes from either end; past the end is the empty default. An array cannot be
+        ``Nullable``, so NULL operands are tested first."""
+        fields = anon("splitByString", anon("assumeNotNull", delimiter), anon("assumeNotNull", value))
+        return case((exp.Or(this=is_null(value), expression=is_null(delimiter)), exp.Null()),
+                    default=anon("arrayElement", fields, lit(index)))
+
+    def cube_root(self, value: Expression) -> Expression:
+        return anon("cbrt", value)
+
+    def natural_log(self, value: Expression) -> Expression:
+        """``ln`` is approximate (~1e-9); ``log2`` is exact."""
+        return exp.Mul(this=anon("log2", value), expression=exp.Literal.number(repr(math.log(2))))
+
+    def build_is_not_distinct_from(self, left: Expression, right: Expression) -> Expression:
+        """``isNotDistinctFrom`` is only allowed in ``JOIN ON``."""
+        return self._expanded_null_safe_eq(left, right)
+
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """A ``Nullable`` target (where ClickHouse allows one), so NULL stays NULL."""
+        target = to.copy()
+        if not target.is_type(*_NEVER_NULLABLE):
+            target.set("nullable", True)
+        return _bool_as_int(exp.Cast(this=value, to=target), to)
 
     def text_repeat(self, value: Expression, count: Expression) -> Expression:
         return anon("repeat", value, count)
@@ -289,7 +339,9 @@ class ClickhouseDialect(SqlDialect):
                     self.replacement_text(replacement))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        document = anon("toJSONString", value) if native else value.copy()
+        """A native input is serialised from the cast's operand: a ``CAST(… AS JSON)`` needs an experimental
+        setting before 25.3."""
+        document = anon("toString", value.this if isinstance(value, exp.Cast) else value) if native else value.copy()
         keys = [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
         kind = anon("JSONType", document, *keys)
         return case(
@@ -312,12 +364,34 @@ class ClickhouseDialect(SqlDialect):
     install_extra: str | None = "clickhouse"
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
+        return self._system_columns(location, field=col("comment"))
+
+    def _system_columns(self, location: TableLocation, *, field: exp.Column) -> exp.Select:
+        """``(name, field)`` of one table's columns from ``system.columns``."""
         database = exp.Literal.string(location.schema_name) if location.schema_name else call("currentDatabase")
         return (
-            exp.select(col("name"), col("comment"))
+            exp.select(col("name"), field)
             .from_(relation("columns", db="system"))
             .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
         )
+
+    def reflect_columns(
+        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+    ) -> list[ReflectedColumn]:
+        """A column the driver cannot type (``JSON``) is read from its ``system.columns`` type."""
+        columns = super().reflect_columns(
+            sa_engine=sa_engine, inspector=inspector, table=table, schema=schema, catalog=catalog)
+        if not any(isinstance(c.type, NullType) for c in columns):
+            return columns
+        location = TableLocation(name=table, schema_name=schema, catalog=catalog)
+        declared = dict(fetch(sa_engine, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
+        return [
+            column_from_type_string(
+                name=c.name, data_type=declared.get(c.name), comment=c.comment,
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+            ) if isinstance(c.type, NullType) else c
+            for c in columns
+        ]
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """Per-request HTTP setting: the driver keeps no session, so a ``SET`` never reaches the query."""
@@ -337,7 +411,8 @@ class ClickhouseDialect(SqlDialect):
         spelled = to.sql(dialect=self.sqlglot_name)
         if spelled.startswith("Nullable(") and spelled.endswith(")"):
             spelled = spelled[len("Nullable("):-1]
-        return exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), exp.Literal.string(spelled)])
+        cast = exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), exp.Literal.string(spelled)])
+        return _bool_as_int(cast, to)
 
     def server_profile_sql(self) -> str | None:
         return "SELECT version(), getSetting('readonly')"

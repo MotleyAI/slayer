@@ -158,3 +158,19 @@ class TestEmission:
     async def test_every_position_coerces(self, filt: str) -> None:
         sql = await emit_lib(lib_query(filters=[filt]), dialect="duckdb")
         assert list(_where(sql, dialect="duckdb").find_all(exp.TryCast)), sql
+
+
+class TestClickHouseCasts:
+    async def test_is_distinct_from_is_two_valued_outside_join_on(self) -> None:
+        sql = " ".join((await emit_lib(lib_query(filters=["num_txt IS DISTINCT FROM 99"]), dialect="clickhouse")).split())
+        assert "IS NOT DISTINCT FROM" not in sql.upper() and "<=>" not in sql, sql
+        assert "IS NULL" in sql.upper(), sql
+
+    async def test_cast_target_is_nullable(self) -> None:
+        sql = await emit_lib(lib_query("qty || '#'"), dialect="clickhouse")
+        assert "CAST(lib.qty AS Nullable(String))" in sql, sql
+
+    @pytest.mark.parametrize("expr", ["CAST(word AS BOOLEAN)", "TRY_CAST(word AS BOOLEAN)"])
+    async def test_boolean_reads_as_zero_or_one(self, expr: str) -> None:
+        sql = await emit_lib(lib_query(expr), dialect="clickhouse")
+        assert "toUInt8(" in sql, sql

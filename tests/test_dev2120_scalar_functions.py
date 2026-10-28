@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from sqlglot import exp, parse_one
 
+from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.models import Column
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ServerProfile
@@ -13,6 +16,7 @@ from tests._dev2120_fixtures import (
     TIER1,
     emit_lib,
     lib_engine,
+    lib_model,
     lib_ids,
     lib_query,
     lib_values,
@@ -133,7 +137,7 @@ class TestSplitPartEmptyDelimiter:
 
     async def test_tsql_space_has_length_one(self) -> None:
         sql = await emit_lib(lib_query("split_part(word, ' ', -1)"), dialect="tsql")
-        assert "LEN(CAST(' ' AS NVARCHAR(MAX)) + 'x') - 1" in " ".join(sql.split()), sql
+        assert "LEN(( CAST(' ' AS NVARCHAR(MAX)) + 'x' ) COLLATE Latin1_General_100_CS_AS_SC) - 1" in " ".join(sql.split()), sql
 
     @pytest.mark.parametrize("dialect", ["tsql", "mysql"])
     async def test_field_count_never_divides_by_zero(self, dialect: str) -> None:
@@ -269,3 +273,99 @@ class TestFloorDivisionHint:
             await engine.execute(query)
         values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
         assert int(values[1]) == 3
+
+
+class TestMySQLDoublePrecision:
+    async def test_pi_is_not_display_rounded(self) -> None:
+        sql = (await emit_lib(lib_query("pi()"), dialect="mysql")).upper()
+        assert "ACOS(-1)" in sql and "PI()" not in sql, sql
+
+    async def test_cube_root_exponent_is_double(self) -> None:
+        sql = (await emit_lib(lib_query("cbrt(x)"), dialect="mysql")).upper()
+        assert "1 / 3E0" in sql, sql
+
+
+async def _tsql(expr: str) -> str:
+    return " ".join((await emit_lib(lib_query(expr), dialect="tsql")).split())
+
+
+class TestSQLServerCodePoints:
+    @pytest.mark.parametrize("expr", ["length(s)", "substr(s, 2)", "reverse(s)", "lpad(s, 4, '*')"])
+    async def test_counting_is_supplementary_aware(self, expr: str) -> None:
+        assert "COLLATE Latin1_General_100_CS_AS_SC" in await _tsql(expr)
+
+    async def test_position_recounts_units_as_characters(self) -> None:
+        sql = await _tsql("strpos(s, p)")
+        assert "LEN( ( CAST(LEFT( lib.s COLLATE Latin1_General_100_BIN2" in sql, sql
+        assert "WHEN DATALENGTH(lib.p) = 0 THEN CASE WHEN NOT lib.s IS NULL THEN 1 END" in sql, sql
+
+    async def test_runtime_negated_length_is_kept(self) -> None:
+        sql = await _tsql("left(s, -n)")
+        lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
+        assert any(isinstance(n, exp.Neg) and isinstance(n.this, exp.Column) for n in lengths), sql
+
+    async def test_author_sql_is_not_rewritten(self) -> None:
+        base = lib_model()
+        model = base.model_copy(update={"columns": [*base.columns, Column(
+            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", type=DataType.TEXT)]})
+        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
+        assert "SUBSTRING(lib.s, 1, 2)" in sql and "POWER(lib.a, 2)" in sql, sql
+        assert "COLLATE" not in sql and "FLOAT" not in sql, sql
+
+    @pytest.mark.parametrize("expr", ["left(s, -2)", "right(s, -1)"])
+    async def test_no_negative_literal_substring_length(self, expr: str) -> None:
+        sql = await _tsql(expr)
+        lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
+        assert lengths and not any(isinstance(n, exp.Neg) for n in lengths), sql
+
+
+class TestSQLServerNumbers:
+    async def test_round_has_digits(self) -> None:
+        assert "ROUND(lib.x + 0.1, 0)" in await _tsql("round(x + 0.1)")
+
+    async def test_power_base_is_float(self) -> None:
+        assert "POWER(CAST(2 AS FLOAT), lib.a)" in await _tsql("power(2, a)")
+
+    async def test_cube_root_exponent_is_float(self) -> None:
+        assert "/ 3E0)" in await _tsql("cbrt(x)")
+
+
+class TestSQLServerQuirks:
+    async def test_split_part_before_the_first_field_is_empty(self) -> None:
+        assert "< 0 THEN ''" in await _tsql("split_part(s, '/', -4)")
+
+    async def test_replacement_ampersand_is_literal(self) -> None:
+        sql = await _tsql("regexp_replace(tag, 'USD', '$ & co')")
+        assert "'$ & co'" in sql and "\\&" not in sql, sql
+
+    async def test_returning_timestamp_is_datetime2(self) -> None:
+        sql = await _tsql("json_value(payload, '$.t' RETURNING TIMESTAMP)")
+        assert "AS DATETIME2)" in sql and "ROWVERSION" not in sql, sql
+
+
+async def _clickhouse(expr: str) -> str:
+    return " ".join((await emit_lib(lib_query(expr), dialect="clickhouse")).split())
+
+
+class TestClickHouseLowering:
+    async def test_cbrt_is_lowercase(self) -> None:
+        assert "cbrt(lib.x)" in await _clickhouse("cbrt(x)")
+
+    async def test_ln_reads_the_exact_log2(self) -> None:
+        sql = await _clickhouse("ln(x)")
+        assert "log2(lib.x) * 0.6931471805599453" in sql, sql
+        assert "LN(" not in sql.upper(), sql
+
+    async def test_negative_right_keeps_a_length(self) -> None:
+        sql = await _clickhouse("right(s, -1)")
+        assert "rightUTF8(lib.s, CASE WHEN -1 < 0 THEN greatest(lengthUTF8(lib.s) + -1, 0) ELSE -1 END)" in sql, sql
+
+    async def test_reverse_splits_by_code_point(self) -> None:
+        sql = await _clickhouse("reverse(s)")
+        assert "arrayReverse(extractAll(assumeNotNull(lib.s), '(?s).'))" in sql, sql
+        assert "reverseUTF8" not in sql, sql
+
+    async def test_split_part_never_splits_a_nullable(self) -> None:
+        sql = await _clickhouse("split_part(s, '/', 2)")
+        assert "splitByString(assumeNotNull('/'), assumeNotNull(lib.s))" in sql, sql
+        assert "lib.s IS NULL OR '/' IS NULL" in sql, sql

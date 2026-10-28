@@ -17,13 +17,14 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.core.json_path import JsonPath
+from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     FALSE_WORDS,
     NUMBER_TEXT_PATTERN,
     TRUE_WORDS,
     ExtremumFn,
+    MathFn,
     SqlDialect,
     TextFn,
     anon,
@@ -101,9 +102,15 @@ class MysqlDialect(SqlDialect):
         beyond = exp.GT(this=lit(abs(index)), expression=self.field_count(value, delimiter))
         return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
 
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "pi":
+            return anon("ACOS", lit(-1))  # PI() reaches the client rounded to 6 places
+        return super().build_math_call(fn, args)
+
     def cube_root(self, value: Expression) -> Expression:
-        root = exp.Pow(this=exp.Abs(this=value.copy()), expression=exp.Div(this=lit(1), expression=exp.Literal.number("3.0")))
-        return exp.Mul(this=exp.Sign(this=value.copy()), expression=root)
+        # A DOUBLE exponent: 1 / 3.0 is a DECIMAL cut to div_precision_increment places.
+        third = exp.Div(this=lit(1), expression=exp.Literal.number("3E0"))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=exp.Pow(this=exp.Abs(this=value.copy()), expression=third))
 
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """``GREATEST`` / ``LEAST`` propagate NULL here."""
@@ -129,7 +136,18 @@ class MysqlDialect(SqlDialect):
                     lit(0), _match_type(case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        return case((anon("JSON_VALID", value), anon("JSON_VALUE", value, lit(path.text))))
+        def json_type(steps: tuple[str | int, ...]) -> Expression:
+            return anon("JSON_TYPE", anon("JSON_EXTRACT", value.copy(), lit(json_path_text(steps))))
+
+        # MySQL reads ``[n]`` on a non-array as the value itself; an index needs an array parent.
+        arrays = [exp.EQ(this=json_type(path.steps[:i]), expression=lit("ARRAY"))
+                  for i, step in enumerate(path.steps) if isinstance(step, int)]
+        readable: Expression = exp.Not(this=exp.In(this=json_type(path.steps),
+                                                   expressions=[lit("OBJECT"), lit("ARRAY"), lit("NULL")]))
+        for array in reversed(arrays):
+            readable = exp.And(this=array, expression=readable)
+        read = case((readable, anon("JSON_VALUE", value.copy(), lit(path.text))))
+        return case((anon("JSON_VALID", value), read))  # a nested CASE: JSON_EXTRACT raises on invalid text
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""

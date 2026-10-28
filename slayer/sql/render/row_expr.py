@@ -52,6 +52,7 @@ from slayer.sql.dialects.base import (
     TemporalComparisonOp,
     bare_comparands,
     cast_target,
+    func,
     is_list_fn,
     operand_copy,
     temporal_type_of,
@@ -261,7 +262,7 @@ def temporal_comparison(key: ArithmeticKey) -> Optional[Tuple[TemporalComparison
 def render_null_safe(*, op: str, operands: List[Expression], dialect: SqlDialect) -> Expression:
     """``a IS [NOT] DISTINCT FROM b`` through the dialect's null-safe equality."""
     left, right = bare_comparands(*(operand_copy(o) for o in operands))
-    same = dialect.build_null_safe_eq(left, right)
+    same = dialect.build_is_not_distinct_from(left, right)
     return same if op == "is not distinct from" else exp.Not(this=exp.Paren(this=same))
 
 
@@ -278,7 +279,7 @@ def render_cast(
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)
-    return dialect.build_try_cast(value, to) if key.try_ else exp.Cast(this=value, to=to)
+    return dialect.build_try_cast(value, to) if key.try_ else dialect.build_cast(value, to)
 
 
 def render_temporal_comparison(
@@ -303,9 +304,11 @@ def render_scalar_call(
         raise RuntimeError(f"Date function {name!r} renders only from its key (render_date_call).")
     library = render_library_call(name=name, args=args, dialect=dialect)
     if library is not None:
-        return dialect.rewrite_target_ast(library)
+        return dialect.rewrite_library_ast(dialect.rewrite_target_ast(library))
     if name == "mod":
         return dialect.build_modulo(args[0], args[1], True)
+    if name == "ln":
+        return dialect.natural_log(args[0])
     if name == "log" and len(args) == 1:
         # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
         return passthrough_call(name="log10", args=args, dialect=dialect)
@@ -336,7 +339,7 @@ def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expres
 def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:
     """``name(args)`` as sqlglot spells it on ``dialect``. The log fix-up is load-bearing:
     ``exp.func("LOG10", x)`` normalises to ``LOG(10, x)``, wrong where ``LOG10`` is native single-arg."""
-    node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
+    node = dialect.rewrite_library_ast(dialect.rewrite_target_ast(func(name.upper(), *args)))
     return rewrite_log_alias(node, dialect=dialect)
 
 
