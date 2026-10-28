@@ -41,7 +41,7 @@ def test_changed_upstream_reports_the_diff(monkeypatch: pytest.MonkeyPatch, caps
     assert drift_check.main() == drift_check.EXIT_DRIFT
     out = capsys.readouterr().out
     assert "abc123" in out
-    assert "+" in out and "new_prop" in out
+    assert any(line.startswith("+") and "new_prop" in line for line in out.splitlines())
 
 
 def test_unreachable_upstream_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:

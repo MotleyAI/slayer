@@ -19,40 +19,40 @@
 
 ## 2. Document models and parser
 
-- [ ] 2.1 Rework `slayer/osi/models.py`: flat document model, open-string dialect, `Expression.sql` + optional `dialects`, `datatype` on fields and metrics, `metrics` on datasets, key presence preserved; tests 1.4 pass
-- [ ] 2.2 Rework `slayer/osi/parser.py`: raw-mapping shape detection, legacy wrapper split into flagged flat documents, corrected version/stability docstrings (`KNOWN_OSI_VERSIONS` unchanged); tests 1.3 pass
+- [x] 2.1 Rework `slayer/osi/models.py`: flat document model, open-string dialect, `Expression.sql` + optional `dialects`, `datatype` on fields and metrics, `metrics` on datasets, key presence preserved; tests 1.4 pass
+- [x] 2.2 Rework `slayer/osi/parser.py`: raw-mapping shape detection, legacy wrapper split into flagged flat documents, corrected version/stability docstrings (`KNOWN_OSI_VERSIONS` unchanged); tests 1.3 pass
 
 ## 3. Expression selection and normalization
 
-- [ ] 3.1 One selection function implementing the dialect order with document-order tie-break and report notes, using `dialect_for_ds_type` for the target; tests 1.5 pass
-- [ ] 3.2 One normalization path: parse once with the dialect's reader (Snowflake reader for `OSSIE_SQL_2026`/`ANSI_SQL`), render raw-SQL surfaces in the target dialect, target-native verbatim; every importer-side raw-SQL parse uses the target dialect; tests 1.6 pass
+- [x] 3.1 One selection function implementing the dialect order with document-order tie-break and report notes, using `dialect_for_ds_type` for the target; tests 1.5 pass
+- [x] 3.2 One normalization path: parse once with the dialect's reader (Snowflake reader for `OSSIE_SQL_2026`/`ANSI_SQL`), render raw-SQL surfaces in the target dialect, target-native verbatim; every importer-side raw-SQL parse uses the target dialect; tests 1.6 pass
 
 ## 4. Resolution and models
 
-- [ ] 4.1 Per-document resolution scope in the converter (relationships, joins, metric anchors); duplicate dataset names across the import set still refused
-- [ ] 4.2 Current-spec field-only visibility with live-source validation of field references; legacy documents keep today's behaviour; tests 1.7 pass
-- [ ] 4.3 Key and relationship resolution against declared fields, computed/filtered key fields reported, PK presence vs emptiness, renamed-PK inheritance; tests 1.8 pass
-- [ ] 4.4 Metric reference resolution (qualification rules, identifier case, ambiguity, canonical emitted names); tests 1.9 pass
+- [x] 4.1 Per-document resolution scope in the converter (relationships, joins, metric anchors); duplicate dataset names across the import set still refused
+- [x] 4.2 Current-spec field-only visibility with live-source validation of field references; legacy documents keep today's behaviour; tests 1.7 pass
+- [x] 4.3 Key and relationship resolution against declared fields, computed/filtered key fields reported, PK presence vs emptiness, renamed-PK inheritance; tests 1.8 pass
+- [x] 4.4 Metric reference resolution (qualification rules, identifier case, ambiguity, canonical emitted names); tests 1.9 pass
 
 ## 5. Metrics
 
-- [ ] 5.1 Dataset-scoped metrics converted onto their dataset's model; tests 1.10 pass
-- [ ] 5.2 SQL-AST → formula renderer for aggregate operands, validated by the canonical formula parser, hidden raw-SQL column (target dialect, probed type) only as fallback; tests 1.12 pass
-- [ ] 5.3 FILTER lowering to `agg(CASE WHEN p THEN x END)` / `count(CASE WHEN p THEN 1 END)` with row-level and same-dataset predicate checks; tests 1.11 pass
+- [x] 5.1 Dataset-scoped metrics converted onto their dataset's model; tests 1.10 pass
+- [x] 5.2 SQL-AST → formula renderer for aggregate operands, validated by the canonical formula parser, hidden raw-SQL column (target dialect, probed type) only as fallback; tests 1.12 pass
+- [x] 5.3 FILTER lowering to `agg(CASE WHEN p THEN x END)` / `count(CASE WHEN p THEN 1 END)` with row-level and same-dataset predicate checks; tests 1.11 pass
 
 ## 6. Datatypes
 
-- [ ] 6.1 Field datatype mapping, precedence, cross-check entry and meta; `is_time` role defaulting without retyping; default time dimension limited to DATE/TIMESTAMP; metric datatype in meta; tests 1.13 pass
+- [x] 6.1 Field datatype mapping, precedence, cross-check entry and meta; `is_time` role defaulting without retyping; default time dimension limited to DATE/TIMESTAMP; metric datatype in meta; tests 1.13 pass
 
 ## 7. CLI, drift workflow, docs
 
-- [ ] 7.1 `import-osi --dialect` defaults to unset, help text updated; tests 1.16 pass
-- [ ] 7.2 Add `.github/workflows/ossie-schema-drift.yml` (weekly + `workflow_dispatch`, never on PRs): fetch upstream `core-spec/ossie-schema.json`, compare canonicalized JSON with the vendored copy, print the upstream SHA, fail distinctly on fetch error vs schema difference; verify the comparison script locally against the vendored copy and a modified copy
-- [ ] 7.3 Rewrite `docs/osi/osi_import.md` (shapes, dialect order, normalization, name resolution, dataset-scoped metrics, FILTER, datatype/is_time incl. the database-type-wins deviation, metric datatype in meta); verify `zensical.toml` nav still links it
-- [ ] 7.4 Rewrite `docs/examples/13_osi_import/shop.osi.yaml` in the flat current shape (top-level `sql`, dataset-scoped metrics, a FILTER metric, `datatype`s, qualified model-scoped metrics); update `docs/examples/13_osi_import/osi_import.md` and `setup_osi.py` if needed; re-execute both notebooks with `jupyter nbconvert --to notebook --execute --inplace` and confirm no unconverted entries in their output; test 1.14 passes for the example
+- [x] 7.1 `import-osi --dialect` defaults to unset, help text updated; tests 1.16 pass
+- [x] 7.2 Add `.github/workflows/ossie-schema-drift.yml` (weekly + `workflow_dispatch`, never on PRs): fetch upstream `core-spec/ossie-schema.json`, compare canonicalized JSON with the vendored copy, print the upstream SHA, fail distinctly on fetch error vs schema difference; verify the comparison script locally against the vendored copy and a modified copy
+- [x] 7.3 Rewrite `docs/osi/osi_import.md` (shapes, dialect order, normalization, name resolution, dataset-scoped metrics, FILTER, datatype/is_time incl. the database-type-wins deviation, metric datatype in meta); verify `zensical.toml` nav still links it
+- [x] 7.4 Rewrite `docs/examples/13_osi_import/shop.osi.yaml` in the flat current shape (top-level `sql`, dataset-scoped metrics, a FILTER metric, `datatype`s, qualified model-scoped metrics); update `docs/examples/13_osi_import/osi_import.md` and `setup_osi.py` if needed; re-execute both notebooks with `jupyter nbconvert --to notebook --execute --inplace` and confirm no unconverted entries in their output; test 1.14 passes for the example
 
 ## 8. Gates
 
-- [ ] 8.1 `poetry run pytest -m "not integration"` passes in full
-- [ ] 8.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) pass
-- [ ] 8.3 `poetry run la-arch-check` passes (incl. the new `specs ['importers']` mapping) and `openspec validate dev-2160-osiossie-importer-catch-up-with-current-ossie-core-spec --strict` passes
+- [x] 8.1 `poetry run pytest -m "not integration"` passes in full
+- [x] 8.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) pass
+- [x] 8.3 `poetry run la-arch-check` passes (incl. the new `specs ['importers']` mapping) and `openspec validate dev-2160-osiossie-importer-catch-up-with-current-ossie-core-spec --strict` passes
