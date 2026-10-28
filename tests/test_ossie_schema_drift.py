@@ -44,6 +44,17 @@ def test_changed_upstream_reports_the_diff(monkeypatch: pytest.MonkeyPatch, caps
     assert any(line.startswith("+") and "new_prop" in line for line in out.splitlines())
 
 
+def test_failed_commit_lookup_still_compares(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def no_commits(url: str) -> Any:
+        if url == drift_check.COMMITS_URL:
+            raise urllib.error.URLError("rate limited")
+        return copy.deepcopy(VENDORED)
+
+    monkeypatch.setattr(drift_check, "_get_json", no_commits)
+    assert drift_check.main() == drift_check.EXIT_SAME
+    assert "unknown" in capsys.readouterr().out
+
+
 def test_unreachable_upstream_is_a_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def unreachable(url: str) -> Any:
         raise urllib.error.URLError("no route to host")

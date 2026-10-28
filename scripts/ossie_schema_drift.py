@@ -38,15 +38,25 @@ def _get_json(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
+_FETCH_ERRORS = (urllib.error.URLError, TimeoutError, json.JSONDecodeError)
+
+
+def _upstream_sha() -> str:
+    """The last commit touching the schema, or ``unknown``; informational only."""
+    try:
+        commits = _get_json(COMMITS_URL)
+    except _FETCH_ERRORS:
+        return "unknown"
+    return commits[0]["sha"] if commits else "unknown"
+
+
 def main() -> int:
     try:
         upstream = _get_json(RAW_URL)
-        commits = _get_json(COMMITS_URL)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except _FETCH_ERRORS as exc:
         print(f"Could not fetch the upstream Ossie schema: {exc}", file=sys.stderr)
         return EXIT_FETCH
-    sha = commits[0]["sha"] if commits else "unknown"
-    print(f"Upstream {REPO}@{sha} {SCHEMA_PATH}")
+    print(f"Upstream {REPO}@{_upstream_sha()} {SCHEMA_PATH}")
     diff = drift(vendored=json.loads(VENDORED.read_text(encoding="utf-8")), upstream=upstream)
     if not diff:
         print("Vendored schema matches upstream.")

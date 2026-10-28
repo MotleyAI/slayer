@@ -72,7 +72,7 @@ def parse_osi_file(path: Path) -> list[OSIDocument]:
     except OSError as exc:
         logger.warning("Failed to read OSI file %s: %s", path, exc)
         return []
-    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+    except (yaml.YAMLError, ValueError) as exc:  # ValueError: bad UTF-8, JSON, or YAML timestamp
         logger.warning("Failed to parse OSI file %s: %s", path, exc)
         return []
 

@@ -133,6 +133,16 @@ def test_malformed_file_warns_and_returns_empty(caplog: pytest.LogCaptureFixture
     assert caplog.records  # a warning was emitted
 
 
+@pytest.mark.parametrize("content", [
+    pytest.param(b"name: \xff\xfe\n", id="not-utf8"),
+    pytest.param(b"version: 0.2.0.dev0\nwhen: 2026-13-45\n", id="invalid-timestamp"),
+])
+def test_undecodable_file_is_skipped_and_the_rest_imports(tmp_path: Path, content: bytes) -> None:
+    (tmp_path / "bad.yaml").write_bytes(content)
+    shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
+    assert [d.name for d in parse_osi_path(tmp_path)] == ["shop"]
+
+
 def test_ai_context_string_and_object_forms() -> None:
     # Object form on shop.yaml.
     shop = parse_osi_path(FIXTURES / "shop.yaml")[0]
