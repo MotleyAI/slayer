@@ -2,6 +2,7 @@
 
 import datetime
 import gc
+import io
 import os
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -20,6 +22,32 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
+
+
+class JaffleGeneratorSpy:
+    """Stands in for jaffle_shop ``generate_data``: returns the shared CSVs, counts builds."""
+
+    def __init__(self, data_dir: str) -> None:
+        self.data_dir = data_dir
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> str:
+        self.calls += 1
+        return self.data_dir
+
+
+@pytest.fixture(scope="session")
+def jafgen_dir(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """One jafgen run (1 year) per session; tests only read it."""
+    out = tmp_path_factory.mktemp("jafgen")
+    return jaffle_shop.generate_data(output_dir=str(out), years=1, stream=io.StringIO())
+
+
+@pytest.fixture
+def jaffle_generator(monkeypatch: pytest.MonkeyPatch, jafgen_dir: str) -> JaffleGeneratorSpy:
+    spy = JaffleGeneratorSpy(jafgen_dir)
+    monkeypatch.setattr(jaffle_shop, "generate_data", spy)
+    return spy
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -44,7 +72,8 @@ class UsageReportingEnv(BaseModel):
         self.monkeypatch.setattr("slayer.usage_reporting.clock.now", lambda: now)
 
     def subprocess_env(self, **overrides: str | None) -> dict[str, str]:
-        env = dict(os.environ)
+        # Embedding channel off, as in-process: no live litellm calls from a dev machine's key.
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "SLAYER_EMBEDDING_MODEL")}
         for key, value in overrides.items():
             if value is None:
                 env.pop(key, None)
@@ -78,7 +107,7 @@ def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
 
 @pytest.fixture(scope="session", autouse=True)
 def _dispose_engines_at_session_end() -> Iterator[None]:
-    """DEV-1943 gate: dispose the factory cache and force a collection at session
+    """Resource-leak gate: dispose the factory cache and force a collection at session
     end, inside the last test's teardown — while pytest's warning filters and
     unraisable hook are still installed in every xdist worker (a
     ``pytest_sessionfinish`` hook can run after they are gone)."""
@@ -87,7 +116,7 @@ def _dispose_engines_at_session_end() -> Iterator[None]:
     gc.collect()
 
 
-# DEV-1943 gate scope: the pyproject `filterwarnings` errors are measured and
+# Resource-leak gate scope: the pyproject `filterwarnings` errors are measured and
 # enforced on the unit suite. The integration suite's async/thread execution plus
 # SQLAlchemy pool teardown has a harder sqlite finalizer edge (same class as the
 # `:memory:`/DuckDB pool-hygiene non-goals), so downgrade the two sqlite gate
@@ -135,13 +164,13 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.fixture(autouse=True)
 def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DEV-1705: validate scope-closure on every generated statement.
+    """Validate scope-closure on every generated statement.
 
     Sets ``SLAYER_VALIDATE_SCOPES=1`` so the generator's post-mangle, pre-RLS
     ``maybe_validate_scopes`` hook (``slayer/sql/scope_check.py``) runs for
     every emitted statement across the suite. A *provable* out-of-scope
     reference raises ``ScopeLeakError`` at generation time — turning
-    DEV-1703's "no gaps" invariant into a failing test. The validator is
+    the "no gaps" invariant into a failing test. The validator is
     sound-on-corpus (no false positives); if a currently-passing statement
     trips it, that is either a genuine latent leak (pin strict-xfail to its
     owning stage) or a validator bug (fix the validator) — never silence it.
@@ -151,7 +180,7 @@ def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_statement_render_during_composition(monkeypatch: pytest.MonkeyPatch) -> None:
-    """sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
+    """python.sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
     statement_render_law.install(monkeypatch)
 
 
@@ -186,9 +215,9 @@ def sample_datasource() -> DatasourceConfig:
 
 @pytest.fixture
 async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
-    """DEV-1428: a YAMLStorage seeded with a single ``mydb`` datasource
+    """A YAMLStorage seeded with a single ``mydb`` datasource
     and a minimal ``orders`` model (id PK + amount column). Shared by
-    every DEV-1428 test that just needs *some* live entity to resolve
+    every memory-reference test that just needs *some* live entity to resolve
     memory references against; centralised here to keep the per-test
     setup blocks from drifting into Sonar duplication-density failures.
     """

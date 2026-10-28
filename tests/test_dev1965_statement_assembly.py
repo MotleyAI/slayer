@@ -109,12 +109,16 @@ class TestOneTopLevelWith:
         assert set(resp.data[0]) == {"orders.created_at", "orders.running"}
 
     async def test_tsql_offset_without_order_gets_a_noop_ordering(self) -> None:
-        sql = await gen(cumsum_chain(limit=2, offset=1), dialect="tsql")
-        order = assert_single_top_level_with(sql, "tsql").args.get("order")
+        # An inner stage: a final stage with dimensions is default-ordered.
+        stages = [cumsum_chain(name="s1", limit=2, offset=1), q(source_model="s1", measures=["running:sum"])]
+        sql = await gen(stages, dialect="tsql")
+        top = assert_single_top_level_with(sql, "tsql")
+        paged = next(s for s in top.find_all(exp.Select) if s.args.get("offset"))
+        order = paged.args.get("order")
         assert order is not None, sql
         assert order.find(exp.Null) is not None, sql
         assert order.find(exp.Column) is None, sql
-        assert re.search(rf"OFFSET 1 ROWS\s+{_FETCH} 2 ROWS ONLY\s*\Z", sql), sql
+        assert re.search(rf"OFFSET 1 ROWS\s+{_FETCH} 2 ROWS ONLY", sql), sql
 
 
     async def test_tsql_composition_failure_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:

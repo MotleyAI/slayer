@@ -16,6 +16,7 @@ import slayer.cli
 from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._fake_uvicorn import fake_uvicorn
 from tests._saved_query_refinement_fixtures import AVG_CUSTOMER_REVENUE, MONTH_TD
 from tests._usage_reporting_helpers import (
     build_storage,
@@ -208,9 +209,7 @@ def _storage_and_connection_calls(args: list[str], monkeypatch: pytest.MonkeyPat
 def test_usage_reporting_makes_no_storage_call_or_connection(
     store: str, monkeypatch: pytest.MonkeyPatch, command: list[str],
 ) -> None:
-    fake_uvicorn = type(sys)("uvicorn")
-    fake_uvicorn.run = lambda **kwargs: None  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn())
     args = [*command[:1], "--storage", store, *command[1:]] if command[0] in ("models", "datasources") \
         else [*command, "--storage", store]
     _storage_and_connection_calls(args, monkeypatch)  # warm-up: the first run seeds help memories

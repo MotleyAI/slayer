@@ -9,7 +9,6 @@ Run with: poetry run pytest tests/integration/test_integration_rls.py -m integra
 
 import pytest
 
-import slayer.engine.query_engine as qe
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import (
@@ -29,6 +28,7 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import SqliteDialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -287,15 +287,15 @@ async def test_get_column_types_blocking_policy_degrades(rls_storage):
 async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
     """A transient introspection failure (-> None -> fail closed) is not
     cached: once introspection recovers, the next query succeeds."""
-    real = qe._safe_get_columns
+    real = SqliteDialect.reflect_columns
     state = {"fail": True}
 
-    def flaky(*args, **kwargs):
+    def flaky(self, **kwargs):
         if state["fail"]:
             raise RuntimeError("transient introspection failure")
-        return real(*args, **kwargs)
+        return real(self, **kwargs)
 
-    monkeypatch.setattr(qe, "_safe_get_columns", flaky)
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", flaky)
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     query = SlayerQuery(
         source_model="orders", measures=[ModelMeasure(formula="*:count")]
@@ -316,13 +316,13 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
 
     calls = {"n": 0}
-    real = qe._safe_get_columns
+    real = SqliteDialect.reflect_columns
 
-    def counting(*args, **kwargs):
+    def counting(self, **kwargs):
         calls["n"] += 1
-        return real(*args, **kwargs)
+        return real(self, **kwargs)
 
-    monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", counting)
 
     query = SlayerQuery(
         source_model="orders", measures=[ModelMeasure(formula="*:count")]

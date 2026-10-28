@@ -1,11 +1,11 @@
 """Unit tests for the engine-side forced-filter wiring: the ``has_column`` provider and
-the policy dispatch. ``_safe_get_columns`` is mocked so no live schema is required.
+the policy dispatch. ``SqliteDialect.reflect_columns`` is mocked so no live schema is required.
 """
 
 
 import pytest
 
-import slayer.engine.query_engine as qe
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import (
     ColumnFilterRuleset,
@@ -14,6 +14,7 @@ from slayer.core.policy import (
     SessionPolicy,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import ReflectedColumn, SqliteDialect
 from slayer.sql.session_policy import ScopedTable
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -31,6 +32,18 @@ def engine(tmp_path):
     )
 
 
+def _cols(*names):
+    return [
+        ReflectedColumn(name=n, type=DataType.TEXT, is_float=False, db_type=None, comment=None)
+        for n in names
+    ]
+
+
+def _patch_columns(monkeypatch, fn):
+    """Replace the probe's column read (the SQLite datasource's ``reflect_columns``)."""
+    monkeypatch.setattr(SqliteDialect, "reflect_columns", fn)
+
+
 def _ds(tmp_path, *, schema_name=None):
     return DatasourceConfig(
         name="ds1",
@@ -44,9 +57,7 @@ def _ds(tmp_path, *, schema_name=None):
 
 
 def test_column_present_true(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        qe, "_safe_get_columns", lambda *a, **k: [{"name": "org"}, {"name": "id"}]
-    )
+    _patch_columns(monkeypatch, lambda self, **k: _cols("org", "id"))
     present = engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
@@ -54,9 +65,7 @@ def test_column_present_true(engine, tmp_path, monkeypatch):
 
 
 def test_column_present_false(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        qe, "_safe_get_columns", lambda *a, **k: [{"name": "id"}, {"name": "amount"}]
-    )
+    _patch_columns(monkeypatch, lambda self, **k: _cols("id", "amount"))
     present = engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
@@ -64,9 +73,7 @@ def test_column_present_false(engine, tmp_path, monkeypatch):
 
 
 def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        qe, "_safe_get_columns", lambda *a, **k: [{"name": "Organization_UUID"}]
-    )
+    _patch_columns(monkeypatch, lambda self, **k: _cols("Organization_UUID"))
     present = engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(name="orders"),
@@ -76,7 +83,7 @@ def test_column_present_case_insensitive(engine, tmp_path, monkeypatch):
 
 
 def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
-    monkeypatch.setattr(qe, "_safe_get_columns", lambda *a, **k: [])
+    _patch_columns(monkeypatch, lambda self, **k: [])
     present = engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
@@ -84,10 +91,10 @@ def test_column_present_none_on_empty(engine, tmp_path, monkeypatch):
 
 
 def test_column_present_none_on_introspection_error(engine, tmp_path, monkeypatch):
-    def boom(*a, **k):
+    def boom(self, **k):
         raise RuntimeError("introspection blew up")
 
-    monkeypatch.setattr(qe, "_safe_get_columns", boom)
+    _patch_columns(monkeypatch, boom)
     present = engine._column_present(
         datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
@@ -97,11 +104,11 @@ def test_column_present_none_on_introspection_error(engine, tmp_path, monkeypatc
 def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
     calls = {"n": 0}
 
-    def counting(*a, **k):
+    def counting(self, **k):
         calls["n"] += 1
-        return [{"name": "org"}]
+        return _cols("org")
 
-    monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    _patch_columns(monkeypatch, counting)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
@@ -110,12 +117,12 @@ def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
 
 
 def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
-    seq = iter([[], [{"name": "org"}]])
+    seq = iter([[], _cols("org")])
 
-    def flaky(*a, **k):
+    def flaky(self, **k):
         return next(seq)
 
-    monkeypatch.setattr(qe, "_safe_get_columns", flaky)
+    _patch_columns(monkeypatch, flaky)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is None
@@ -125,11 +132,11 @@ def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
 def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
     calls = {"n": 0}
 
-    def counting(*a, **k):
+    def counting(self, **k):
         calls["n"] += 1
-        return [{"name": "org"}]
+        return _cols("org")
 
-    monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    _patch_columns(monkeypatch, counting)
     present = engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(catalog="other_project", name="orders"),
@@ -142,12 +149,11 @@ def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
 def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 
-    def capture(inspector, sa_engine, table_name, ref):
-        # The 4th arg is a SchemaRef carrying the parsed schema.
-        seen["schema"] = ref.name if ref else None
-        return [{"name": "org"}]
+    def capture(self, *, sa_engine, inspector, table, schema, catalog):
+        seen["schema"] = schema
+        return _cols("org")
 
-    monkeypatch.setattr(qe, "_safe_get_columns", capture)
+    _patch_columns(monkeypatch, capture)
     engine._column_present(
         datasource=_ds(tmp_path, schema_name="ds_default"),
         scoped_table=ScopedTable(schema_name="ast_schema", name="orders"),

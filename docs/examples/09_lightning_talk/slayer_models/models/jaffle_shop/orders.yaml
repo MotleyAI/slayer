@@ -39,6 +39,7 @@ columns:
 - name: subtotal
   sql: subtotal
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Pre-tax order amount, in dollars.
@@ -51,6 +52,7 @@ columns:
 - name: tax_paid
   sql: tax_paid
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Tax charged on the order, in dollars.
@@ -63,6 +65,7 @@ columns:
 - name: order_total
   sql: order_total
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Final order amount including tax, in dollars.

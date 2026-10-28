@@ -259,3 +259,40 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     assert "'orders.created_at'" not in order_clause, (
         f"sqlglot re-parsed an ANSI-quoted identifier as a string literal:\n{sql}"
     )
+
+
+def _monthly_orders_query() -> SlayerQuery:
+    return SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
+        measures=[ModelMeasure(formula="*:count")],
+        order=[OrderItem.model_validate({"column": "month(created_at)"})],
+    )
+
+
+async def test_mysql_nulls_last_emulation_orders_by_the_alias() -> None:
+    """``ONLY_FULL_GROUP_BY`` fails to match some inlined projections (``DATE_ADD … INTERVAL``)."""
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="created_at", type=DataType.TIMESTAMP)],
+    )
+    sql = await _engine_generate(query=_monthly_orders_query(), model=model, dialect="mysql")
+    order_clause = sql[sql.rindex("ORDER BY"):]
+    assert "CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC" in order_clause
+    assert "STR_TO_DATE" not in order_clause
+
+
+def test_mysql_nulls_first_descending_is_emulated_on_the_term() -> None:
+    statement = exp.select(exp.column("x").as_("a")).from_("t").order_by(
+        exp.Ordered(this=exp.column("a", quoted=True), desc=True, nulls_first=True),
+    )
+    sql = MysqlDialect().rewrite_statement(statement).sql(dialect="mysql")
+    assert sql.endswith("ORDER BY CASE WHEN `a` IS NULL THEN 1 ELSE 0 END DESC, `a` DESC")
+
+
+def test_mysql_native_null_placement_is_left_alone() -> None:
+    statement = exp.select(exp.column("x").as_("a")).from_("t").order_by(
+        exp.Ordered(this=exp.column("a", quoted=True), desc=True, nulls_first=False),
+    )
+    assert MysqlDialect().rewrite_statement(statement).sql(dialect="mysql").endswith("ORDER BY `a` DESC")

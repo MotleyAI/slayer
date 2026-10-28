@@ -76,7 +76,8 @@ async def test_date_operand_gets_a_date_literal(dialect) -> None:
 async def test_one_sided_range_renders_a_single_bound(dialect) -> None:
     sql = await _sql(dialect, date_range=["2024-01-01", None], filters=[])
     assert "2024-01-01" in sql, sql
-    assert "NULL" not in sql.upper(), sql
+    # The default result order's NULL placement is not a bound.
+    assert "NULL" not in sql.upper().rsplit("ORDER BY", 1)[0], sql
 
 
 @pytest.mark.parametrize("dialect", TIER1)

@@ -301,9 +301,9 @@ class TestCli:
         with pytest.raises(SystemExit) as ei:
             cli_main()
         assert ei.value.code == 1
-        out = capsys.readouterr().out
-        assert "orders" in out
-        assert "custom_agg" in out
+        err = capsys.readouterr().err
+        assert "orders" in err
+        assert "custom_agg" in err
         assert run_sync(store.get_model("orders", data_source=_DS)) is None
 
 

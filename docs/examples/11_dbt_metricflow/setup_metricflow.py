@@ -25,6 +25,7 @@ import logging
 import shutil
 import subprocess
 import time
+import warnings
 from pathlib import Path
 from typing import List
 
@@ -244,6 +245,8 @@ def convert_dbt_to_slayer(
     # Quieten the converter's benign "foreign entity '…' has no matching primary
     # entity" notices so the notebook output stays focused on the demo.
     logging.getLogger("slayer.dbt").setLevel(logging.ERROR)
+    # Machine-independent notebook outputs: no paths in warnings (kernel-wide by design).
+    warnings.formatwarning = lambda msg, cat, *a, **k: f"{cat.__name__}: {msg}\n"
 
     if models_dir.exists():
         shutil.rmtree(models_dir)

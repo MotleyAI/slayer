@@ -23,6 +23,7 @@ columns:
 - name: cost
   sql: cost
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: Cost per unit, in dollars.

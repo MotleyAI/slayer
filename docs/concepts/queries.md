@@ -141,7 +141,7 @@ A query with no measures and at least one dimension or time-dimension returns th
 {"source_model": "orders", "dimensions": ["status"], "limit": 100}
 ```
 
-Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
+Emits `SELECT orders.status FROM orders GROUP BY orders.status ORDER BY orders.status LIMIT 100`.
 
 ### Raw rows (`distinct_dimension_values`)
 
@@ -205,6 +205,8 @@ An optional `nulls` (`first` or `last`) places NULL values first or last on ever
 ```
 
 Via MCP: `{"column": "count(*)", "direction": "desc"}`
+
+A query (or the final stage of a query list) with no `order` that projects dimensions is ordered by its dimensions and time dimensions ascending, in result-column order, exactly as if it listed them in `order`; raw-row queries and inner stages are left unordered.
 
 The object form `{"column": {"name": "sum(amount)"}}` with an expression as its only key is the same as the string form `{"column": "sum(amount)"}`.
 

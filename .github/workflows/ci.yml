@@ -118,6 +118,30 @@ jobs:
             --ignore=tests/integration/test_integration_sqlserver.py \
             --ignore=tests/integration/test_integration_trino.py
 
+  # A fresh `pip install` resolves the newest allowed SQLAlchemy / DuckDB, not the lock's.
+  unit-test-latest-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Install jafgen (for the demo tests, not on PyPI)
+        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
+
+      - name: Upgrade SQLAlchemy, duckdb and duckdb-engine to the newest allowed
+        env:
+          POETRY_INSTALLER_ONLY_BINARY: ":all:"
+        run: |
+          poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
+          poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
+
+      - name: Run unit tests
+        timeout-minutes: 20
+        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+
   # The previous `integration-examples` matrix (verify.py-based
   # end-to-end checks for ClickHouse + MySQL) migrated into the per-dialect
   # workflows so each dialect's CI lives in one place and is path-gated.

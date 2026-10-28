@@ -23,7 +23,7 @@ from tests._dev1746_fixtures import (
     outer_statement,
     seed_dev1746_sqlite,
 )
-from tests._dev1965_fixtures import cumsum_chain, gen, parse
+from tests._dev1965_fixtures import cumsum_chain, gen, parse, q
 from tests._engine_helpers import _engine_generate
 
 DIALECTS = ["tsql", "bigquery", "postgres", "snowflake", "sqlite"]
@@ -282,8 +282,11 @@ class TestChainOuterWrapInjectsOrderingForOffset:
     """The chain's outer wrap applies the same OFFSET-needs-ORDER-BY guard."""
 
     async def test_bare_offset_is_ordered_by_a_noop(self) -> None:
-        sql = await gen(cumsum_chain(offset=5), dialect="tsql")
-        order = parse(sql, "tsql").args.get("order")
+        # An inner stage: a final stage with dimensions is default-ordered.
+        stages = [cumsum_chain(name="s1", offset=5), q(source_model="s1", measures=["running:sum"])]
+        sql = await gen(stages, dialect="tsql")
+        paged = next(s for s in parse(sql, "tsql").find_all(exp.Select) if s.args.get("offset"))
+        order = paged.args.get("order")
         assert order is not None, f"tsql outer-wrap emitted OFFSET without ORDER BY:\n{sql}"
         assert re.search(r"SELECT\s+NULL", order.sql(dialect="tsql"), re.IGNORECASE), (
             f"OFFSET ordering is not the synthesized no-op:\n{sql}"

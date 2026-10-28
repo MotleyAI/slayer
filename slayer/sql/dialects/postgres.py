@@ -10,6 +10,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text
+from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
 
 #: The first Postgres major version with ``pg_input_is_valid``.
 _PG_INPUT_IS_VALID_SINCE = (16, 0)
@@ -46,6 +47,7 @@ class PostgresDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ilike_native: ClassVar[bool] = True
+    sa_backend_names: frozenset[str] = frozenset({"postgresql"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -80,6 +82,30 @@ class PostgresDialect(SqlDialect):
             as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
         ])
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=value.copy(), to=to))])
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        scope = (
+            eq_literal(col("nspname", "n"), location.schema_name) if location.schema_name
+            else call("pg_table_is_visible", col("oid", "c"))
+        )
+        return (
+            exp.select(col("attname", "a"), call("col_description", col("oid", "c"), col("attnum", "a")))
+            .from_(relation("pg_class", db="pg_catalog", alias="c"))
+            .join(
+                relation("pg_namespace", db="pg_catalog", alias="n"),
+                on=exp.EQ(this=col("oid", "n"), expression=col("relnamespace", "c")),
+            )
+            .join(
+                relation("pg_attribute", db="pg_catalog", alias="a"),
+                on=exp.EQ(this=col("attrelid", "a"), expression=col("oid", "c")),
+            )
+            .where(all_of([
+                eq_literal(col("relname", "c"), location.name),
+                exp.GT(this=col("attnum", "a"), expression=exp.Literal.number(0)),
+                exp.Not(this=col("attisdropped", "a")),
+                scope,
+            ]))
+        )
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(
