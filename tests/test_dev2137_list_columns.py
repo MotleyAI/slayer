@@ -17,13 +17,18 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import _introspected_column, _retyped_list, ingest_datasource, ingest_datasource_idempotent
+from slayer.engine.ingestion import (
+    IntrospectedColumn, _inferred_elements, _introspected_column, _retyped_list, ingest_datasource,
+    ingest_datasource_idempotent,
+)
+from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.search.render import render_column_text
 from slayer.sql import engine_factory
-from slayer.sql.dialects import ReflectedColumn
+from slayer.sql.dialects import ReflectedColumn, get_dialect
+from slayer.sql.dialects.reflection import column_from_type_string
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
@@ -450,3 +455,42 @@ class TestSnowflakeJson:
         sql = await emit_contractors(query(dimensions=["id", {"expression": "json_value(tags, '$[0]')", "name": "t"}]),
                                      dialect="snowflake", models=[model])
         assert "TRY_PARSE_JSON" not in sql.upper(), sql
+
+
+class TestCatalogFallbackLists:
+    def test_a_bare_array_type_string_is_a_list_with_opaque_elements(self) -> None:
+        col = column_from_type_string(name="tags", data_type="ARRAY")
+        assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.UNKNOWN, "ARRAY")
+
+    def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
+        assert get_dialect("snowflake").map_cursor_type_code(10) == "list"
+
+    def test_snowflake_element_inference_reads_the_table_in_its_own_database(self) -> None:
+        statements: list[str] = []
+
+        class _Rows:
+            def fetchall(self) -> list[tuple[str]]:
+                return [("INTEGER",)]
+
+        class _Conn:
+            def __enter__(self) -> "_Conn":
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+            def exec_driver_sql(self, sql: str) -> _Rows:
+                statements.append(sql)
+                return _Rows()
+
+        class _Engine:
+            dialect = type("D", (), {"name": "snowflake"})()
+
+            def connect(self) -> _Conn:
+                return _Conn()
+
+        column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        typed = _inferred_elements(column, sa_engine=_Engine(), table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal engine double
+                                   ref=SchemaRef(catalog="OTHER_DB", name="RAW"))
+        assert typed.element_type is DataType.INT
+        assert "OTHER_DB.RAW.kinds" in statements[0], statements

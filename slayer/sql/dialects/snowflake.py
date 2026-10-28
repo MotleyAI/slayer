@@ -67,7 +67,7 @@ _SNOWFLAKE_TYPE_MAP: dict[int, str] = {
     7: "time",     # TIMESTAMP_TZ
     8: "time",     # TIMESTAMP_NTZ
     9: "string",   # OBJECT
-    10: "string",  # ARRAY
+    10: "list",    # ARRAY
     11: "string",  # BINARY
     12: "time",    # TIME
     13: "boolean", # BOOLEAN

@@ -531,7 +531,11 @@ def _inferred_elements(
     if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
         return column
     dialect = dialect_for_engine(sa_engine)
-    table = exp.Table(this=exp.to_identifier(table_name), db=exp.to_identifier(ref.name) if ref and ref.name else None)
+    table = exp.Table(
+        this=exp.to_identifier(table_name),
+        db=exp.to_identifier(ref.name) if ref and ref.name else None,
+        catalog=exp.to_identifier(ref.catalog) if ref and ref.catalog else None,
+    )
     query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
     if query is None:
         return column

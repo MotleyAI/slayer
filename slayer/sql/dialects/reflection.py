@@ -152,6 +152,8 @@ def info_schema_list_element(data_type_str: str | None) -> DataType | None:
     or record has ``UNKNOWN`` elements."""
     text = (data_type_str or "").strip()
     upper = text.upper()
+    if upper == "ARRAY":  # an untyped list (Snowflake), or a catalog that names no element type
+        return DataType.UNKNOWN
     if upper.endswith("[]"):
         inner = text[:-2].strip()
     elif upper.startswith(("LIST(", "ARRAY(", "ARRAY<")) and upper.endswith((")", ">")):

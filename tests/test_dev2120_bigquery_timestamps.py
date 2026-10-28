@@ -232,7 +232,7 @@ class TestIngestionRecordsZonedType:
         assert {c.name: c.db_type for c in result} == expected
 
     @pytest.mark.parametrize(("dialect", "expected"), [
-        ("snowflake", {"doc": "VARIANT", "tags": "ARRAY"}), ("postgres", {"doc": None, "tags": None}),
+        ("snowflake", {"doc": "VARIANT", "tags": "ARRAY"}), ("postgres", {"doc": None, "tags": "ARRAY"}),
     ])
     def test_information_schema_fallback_keeps_the_dialects_json_types(
         self, dialect: str, expected: dict[str, str | None],
