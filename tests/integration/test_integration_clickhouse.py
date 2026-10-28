@@ -315,18 +315,8 @@ class TestClickHouseQueries:
     async def test_string_hygiene_functions_execute(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """The typed pipeline emits string functions UPPERCASE
-        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
-        ClickHouse's native lowercase spelling. ClickHouse function names are
-        case-sensitive in general, so this pins that the standard SQL aliases
-        really do resolve on a live server rather than trusting that the
-        emitted SQL merely looks plausible.
-
-        ``substr`` now reaches the server as ``SUBSTRING``: routing every
-        scalar through one dialect-aware policy means sqlglot transpiles the
-        call to the target's own spelling instead of passing the DSL name
-        through verbatim.
-        """
+        """``lower`` / ``substr`` reach ClickHouse as its character-counting ``lowerUTF8`` /
+        ``substringUTF8``; ClickHouse names are case-sensitive, so this pins that they resolve live."""
         lowered = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
@@ -334,7 +324,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=lowered)
         assert result.data[0]["orders._count"] > 0
-        assert "LOWER(" in (result.sql or ""), result.sql
+        assert "lowerUTF8(" in (result.sql or ""), result.sql
 
         subs = SlayerQuery(
             source_model="orders",
@@ -343,7 +333,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=subs)
         assert result.data[0]["orders._count"] > 0
-        assert "SUBSTRING(" in (result.sql or ""), result.sql
+        assert "substringUTF8(" in (result.sql or ""), result.sql
 
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine

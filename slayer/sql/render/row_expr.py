@@ -257,7 +257,7 @@ def temporal_comparison(key: ArithmeticKey) -> Optional[Tuple[TemporalComparison
 def render_null_safe(*, op: str, operands: List[Expression], dialect: SqlDialect) -> Expression:
     """``a IS [NOT] DISTINCT FROM b`` through the dialect's null-safe equality."""
     left, right = bare_comparands(*(operand_copy(o) for o in operands))
-    same = dialect.build_null_safe_eq(left, right)
+    same = dialect.build_is_not_distinct_from(left, right)
     return same if op == "is not distinct from" else exp.Not(this=exp.Paren(this=same))
 
 
@@ -274,7 +274,7 @@ def render_cast(
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)
-    return dialect.build_try_cast(value, to) if key.try_ else exp.Cast(this=value, to=to)
+    return dialect.build_try_cast(value, to) if key.try_ else dialect.build_cast(value, to)
 
 
 def render_temporal_comparison(
@@ -302,6 +302,8 @@ def render_scalar_call(
         return dialect.rewrite_target_ast(library)
     if name == "mod":
         return dialect.build_modulo(args[0], args[1], True)
+    if name == "ln":
+        return dialect.natural_log(args[0])
     if name == "log" and len(args) == 1:
         # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
         return passthrough_call(name="log10", args=args, dialect=dialect)
