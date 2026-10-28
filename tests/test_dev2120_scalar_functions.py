@@ -269,3 +269,13 @@ class TestFloorDivisionHint:
             await engine.execute(query)
         values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
         assert int(values[1]) == 3
+
+
+class TestMySQLDoublePrecision:
+    async def test_pi_is_not_display_rounded(self) -> None:
+        sql = (await emit_lib(lib_query("pi()"), dialect="mysql")).upper()
+        assert "ACOS(-1)" in sql and "PI()" not in sql, sql
+
+    async def test_cube_root_exponent_is_double(self) -> None:
+        sql = (await emit_lib(lib_query("cbrt(x)"), dialect="mysql")).upper()
+        assert "1 / 3E0" in sql, sql

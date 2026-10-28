@@ -304,3 +304,13 @@ class TestIngestionKeepsJsonDbType:
                     engine.close()
             finally:
                 engine_factory.invalidate_engine(ds)
+
+
+class TestMySQLJsonValueScalarsOnly:
+    async def test_object_array_and_null_read_null(self) -> None:
+        sql = " ".join((await emit_lib(lib_query("json_value(payload, '$.a.b')"), dialect="mysql")).split())
+        assert "JSON_TYPE(JSON_EXTRACT(lib.payload, '$.a.b')) IN ('OBJECT', 'ARRAY', 'NULL')" in sql, sql
+
+    async def test_index_needs_an_array_parent(self) -> None:
+        sql = " ".join((await emit_lib(lib_query("payload -> 'a' -> 0 ->> 'b'"), dialect="mysql")).split())
+        assert "JSON_TYPE(JSON_EXTRACT(lib.payload, '$.a')) = 'ARRAY'" in sql, sql
