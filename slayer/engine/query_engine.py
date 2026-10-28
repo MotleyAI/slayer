@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousModelError,
@@ -57,10 +57,15 @@ from slayer.core.models import (
     _check_join_keys,
     join_key_error,
 )
+from slayer.core.granularity import resolve_granularity
 from slayer.core.query import (
+    ComputedDimension,
+    OrderItem,
     QueryRefinement,
     SlayerQuery,
+    computed_dimension_name,
     extract_variable_refs,
+    granularity_call_parts,
     refine_query,
     render_probe_text,
 )
@@ -146,7 +151,7 @@ from slayer.ir.variables import (
     model_needs_substitution_pass,
     substitute_model_sql_surfaces,
 )
-from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.introspect_utils import reflect_columns
 from slayer.engine.schema_scope import SchemaRef
 from slayer.memories.resolver import (
     _all_models_in_datasource,
@@ -310,6 +315,42 @@ def _merge_query_variables(
 ) -> Dict[str, Any]:
     """Merge variable layers per precedence ``runtime > stage > outer``."""
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
+
+
+def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
+    """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
+    if d.name != computed_dimension_name(d.template):
+        return False
+    call = granularity_call_parts(d.expression)
+    return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
+
+
+def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> SlayerQuery:
+    """``query`` ordered by its projected dimensions, ascending, in result-column order, when it has no order.
+
+    Each item is spelled as its dimension is declared, so it binds onto the projected value.
+    """
+    if query.order or query.distinct_dimension_values is False:
+        return query
+    dimensions: List[str] = []
+    # Granularity calls project after the other dimensions, with the time dimensions.
+    granularity_calls: List[str] = []
+    for d in query.dimensions or []:
+        if not isinstance(d, ComputedDimension):
+            dimensions.append(d.full_name)
+        elif _is_granularity_call(d, bundle=bundle):
+            granularity_calls.append(d.expression)
+        else:
+            dimensions.append(d.name or d.expression)
+    time_dimensions = [
+        f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
+        f"({td.dimension})"
+        for td in query.time_dimensions or []
+    ]
+    columns = [*dimensions, *time_dimensions, *granularity_calls]
+    if not columns:
+        return query
+    return query.model_copy(update={"order": [OrderItem.model_validate({"column": c, "implied": True}) for c in columns]})
 
 
 def _sql_safety_reject_reason(safety: str, *, parameterized: bool) -> str | None:
@@ -817,11 +858,10 @@ class SlayerQueryEngine:
         try:
             sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
             inspector = sa.inspect(sa_engine)
-            # Carry the catalog so the DuckDB fallback never unions a same-named twin.
+            # Carry the catalog so a same-named twin in another catalog never unions in.
             ref = SchemaRef(catalog=scoped_table.catalog, name=schema)
-            cols = _safe_get_columns(
-                inspector=inspector, sa_engine=sa_engine,
-                table_name=scoped_table.name, ref=ref,
+            cols = reflect_columns(
+                sa_engine=sa_engine, inspector=inspector, table_name=scoped_table.name, ref=ref,
             )
         except Exception as exc:  # introspection failed -> cannot confirm
             logger.warning(
@@ -835,7 +875,7 @@ class SlayerQueryEngine:
             return None
         if not cols:
             return None  # no columns resolved -> cannot confirm
-        names = {str(c.get("name", "")).lower() for c in cols}
+        names = {c.name.lower() for c in cols}
         present = column.lower() in names
         self._column_presence_cache[key] = present
         return present
@@ -1021,7 +1061,7 @@ class SlayerQueryEngine:
         rendered = await self._plan_and_render(
             query=query, named_queries=named_queries, runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source, override_datasource=override_datasource,
-            splice_chain=splice_chain,
+            splice_chain=splice_chain, result_order=True,
         )
         sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
         assert sql is not None
@@ -1066,10 +1106,12 @@ class SlayerQueryEngine:
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
         as_statement: bool = False,
+        result_order: bool = False,
     ) -> _Rendered:
         """Plan and render one statement, splicing the stored query-backed models it
         reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
-        as its AST for the caller to wrap and render once."""
+        as its AST for the caller to wrap and render once; ``result_order`` marks a
+        request's result (default-ordered)."""
         # Stage names are query-local: mint identities before anything resolves a name.
         localized, stage_displays = localize_stages([*named_queries.values(), query])
         query = localized[-1]
@@ -1187,6 +1229,9 @@ class SlayerQueryEngine:
                     dialect=dialect_for_ds_type(datasource.type),
                 )
         bundle = bundle.model_copy(update={"stage_source_models": stage_sources})
+
+        if result_order:
+            query = _with_default_order(query, bundle=bundle)
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)

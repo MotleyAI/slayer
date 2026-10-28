@@ -85,7 +85,7 @@ def _windowed_query() -> SlayerQuery:
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
@@ -98,7 +98,7 @@ def _windowed_chain_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
@@ -369,7 +369,7 @@ class TestGrainSemantics:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.signup_at"),
+                dimension="customers_v2.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],

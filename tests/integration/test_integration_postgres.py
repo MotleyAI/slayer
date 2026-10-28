@@ -312,7 +312,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -338,7 +338,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(formula="total:sum"),
@@ -362,7 +362,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -381,7 +381,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -401,7 +401,7 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -497,7 +497,7 @@ class TestCrossModelAndMultistage:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -517,7 +517,7 @@ class TestCrossModelAndMultistage:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -530,7 +530,7 @@ class TestCrossModelAndMultistage:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )

@@ -23,6 +23,7 @@ from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.search.render import render_column_text
 from slayer.sql import engine_factory
+from slayer.sql.dialects import ReflectedColumn
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
@@ -75,7 +76,7 @@ class TestTheType:
 # Ingestion
 # --------------------------------------------------------------------------- #
 def _mapped(sa_type: sa.types.TypeEngine) -> tuple[DataType, Optional[DataType], Optional[str]]:
-    col = _introspected_column({"type": sa_type}, name="xs", primary_key=False)
+    col = _introspected_column(ReflectedColumn(name="xs", type=sa_type), name="xs", primary_key=False)
     return col.type, col.element_type, col.db_type
 
 

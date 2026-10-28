@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
-from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
+from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -38,7 +38,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, TEXT_RESULT_SCALARS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, numeric_valued, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -199,49 +199,34 @@ def bind_time_dimension(
     bundle: ResolvedSourceBundle,
     granularity: Optional[Granularity] = None,
 ) -> BoundTimeDimension:
-    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the column facts the checker judges (its type, its recorded bucket granularity — from a ``StageColumn`` or a model ``Column``). The column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``; the temporal / re-bucketing rules are the checker's (P9)."""
-    full = td.dimension.full_name
-    bound_col, column_type, upstream_granularity = _time_dimension_column_facts(
-        full, scope=scope, bundle=bundle,
-    )
+    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the facts the checker judges (a column's type; every bucketed temporal leaf's recorded granularity — from a ``StageColumn`` or a model ``Column``). A column resolves like a Mode-B identifier ref against a ``ModelScope`` (joins) or a flat ``StageSchema``, any other text binds as a Mode-B expression; the row-level / temporal / re-bucketing rules are the checker's (P9)."""
+    text = td.dimension
     resolved = granularity or resolve_granularity(td.granularity, defined=bundle.granularities)
     if resolved is None:
-        raise ValueError(f"time dimension {full!r}: unknown granularity {td.granularity!r}")
-    time_key = TimeTruncKey(column=bound_col, granularity=resolved)
-    routed = _canonical_if_routed(
-        parsed=DottedRef(parts=tuple(full.split("."))) if "." in full else Ref(name=full),
-        value_key=bound_col, scope=scope,
-    )
-    return BoundTimeDimension(
-        bound=BoundExpr(value_key=time_key, routed_dotted=routed),
-        column_type=column_type,
-        upstream_granularity=upstream_granularity,
-    )
-
-
-def _time_dimension_column_facts(
-    full: str,
-    *,
-    scope: ModelScope | StageSchema,
-    bundle: ResolvedSourceBundle,
-) -> Tuple[ColumnKey | ColumnSqlKey, Optional[DataType], Optional[Granularity]]:
-    """Resolve a time dimension's column against ``scope`` and read its facts — (bound column key, column type, recorded bucket granularity). Stage arm reads the flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); model arm walks joins to the terminal ``Column`` and returns its ``granularity``, so a bucketed model column re-buckets under the same rule as a stage column."""
-    if isinstance(scope, StageSchema):
-        if "." in full:
-            bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
-        else:
-            bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
-        assert isinstance(bound_col, ColumnKey)  # a stage ref is always a flat ColumnKey
-        stage_col = scope.get(bound_col.leaf)
-        assert stage_col is not None  # _resolve_ref already validated existence
-        upstream = (
-            None if stage_col.granularity is None
-            else resolve_granularity(stage_col.granularity, defined=bundle.granularities)
+        raise ValueError(f"time dimension {text!r}: unknown granularity {td.granularity!r}")
+    parsed = parse_expr(text)
+    if not isinstance(parsed, (Ref, DottedRef)):
+        source = bind_expr(parsed=parsed, scope=scope, bundle=bundle).value_key
+        return BoundTimeDimension(
+            bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
+            bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
+            is_expression=True,
         )
-        return bound_col, stage_col.type, upstream
+    bound_col = _resolve_column_ref(text, scope=scope, bundle=bundle)
+    column_type, upstream = _column_facts(bound_col, scope=scope, bundle=bundle)
+    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col, scope=scope)
+    return BoundTimeDimension(
+        bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
+        column_type=column_type,
+        bucketed_leaves=() if upstream is None else ((text, upstream),),
+    )
 
-    assert isinstance(scope, ModelScope)
-    if scope.source_model is None:
+
+def _resolve_column_ref(
+    full: str, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> ColumnKey | ColumnSqlKey:
+    """A time dimension's column against ``scope``: a stage ref is a flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); a model ref walks joins."""
+    if isinstance(scope, ModelScope) and scope.source_model is None:
         raise UnknownReferenceError(
             name=full,
             scope_kind="ModelScope",
@@ -258,24 +243,50 @@ def _time_dimension_column_facts(
             f"TimeDimension {full!r} did not resolve to a column "
             f"reference (got {type(bound_col).__name__})."
         )
-    terminal = _terminal_model_for_path(
-        path=column_path(bound_col), scope=scope, bundle=bundle,
-    )
+    return bound_col
+
+
+def _column_facts(
+    col: ColumnKey | ColumnSqlKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> Tuple[Optional[DataType], Optional[Granularity]]:
+    """A column's (type, recorded bucket granularity): a flat ``StageColumn`` on a stage, else the terminal model ``Column`` its path reaches."""
+    if isinstance(scope, StageSchema):
+        stage_col = scope.get(column_leaf(col))
+        assert stage_col is not None  # binding already validated existence
+        upstream = (
+            None if stage_col.granularity is None
+            else resolve_granularity(stage_col.granularity, defined=bundle.granularities)
+        )
+        return stage_col.type, upstream
+    terminal = _terminal_model_for_path(path=column_path(col), scope=scope, bundle=bundle)
     if terminal is None:
         # Defensive: _resolve_ref / _resolve_dotted would already have raised.
+        name = ".".join((*column_path(col), column_leaf(col)))
         raise UnknownReferenceError(
-            name=full,
+            name=name,
             scope_kind="ModelScope",
-            scope_summary=f"could not resolve terminal model for {full!r}",
+            scope_summary=f"could not resolve terminal model for {name!r}",
             suggestion=None,
         )
-    col = next(
-        (c for c in terminal.columns if c.name == column_leaf(bound_col)), None,
-    )
+    found = next((c for c in terminal.columns if c.name == column_leaf(col)), None)
     upstream = None
-    if col is not None and col.granularity is not None:
-        upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
-    return bound_col, (col.type if col is not None else None), upstream
+    if found is not None and found.granularity is not None:
+        upstream = resolve_granularity(found.granularity, defined=bundle.granularities)
+    return (found.type if found is not None else None), upstream
+
+
+def _bucketed_leaves(
+    source: ValueKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> Tuple[Tuple[str, Granularity], ...]:
+    """Every temporal column leaf of ``source`` that carries a recorded bucket granularity, by its dotted name."""
+    out: Dict[str, Granularity] = {}
+    for leaf in walk_value_keys(source):
+        if not isinstance(leaf, (ColumnKey, ColumnSqlKey)):
+            continue
+        column_type, upstream = _column_facts(leaf, scope=scope, bundle=bundle)
+        if upstream is not None and column_type in (DataType.DATE, DataType.TIMESTAMP):
+            out.setdefault(".".join((*column_path(leaf), column_leaf(leaf))), upstream)
+    return tuple(out.items())
 
 
 def _canonical_if_routed(
@@ -288,7 +299,7 @@ def _canonical_if_routed(
     its typed hop path (auto-routed or respelled) — or the canonical name of a
     stale flat ``Ref`` — else ``None``, so every already-canonical ref keeps a
     byte-identical result key."""
-    key = value_key.column if isinstance(value_key, TimeTruncKey) else value_key
+    key = value_key.source if isinstance(value_key, TimeTruncKey) else value_key
     if not isinstance(key, (ColumnKey, ColumnSqlKey)):
         return None  # saved measures canonicalize in bind_inputs._resolve_saved_measure_ref
     if isinstance(parsed, Ref):
@@ -1066,16 +1077,21 @@ def _bind_partition_keys(
             pks.append(dim_alias_map[elem.name])
             continue
         bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
-        # A time bucket must be a query time dimension; the checker judges that.
-        if not isinstance(bound, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+        # Whether a key is a query dimension is the checker's; an aggregate-bearing one must already be one.
+        if _carries_attached_value(bound) and bound not in (dim_alias_map or {}).values():
             raise PartitionKeyError(
-                summary=f"partition_by takes column references; '{key_display(bound)}' is an expression.",
+                summary=f"The partition_by key '{key_display(bound)}' carries an aggregate or transform.",
                 location=f"{label} partition_by",
-                suggestion="Partition by a column: put a time bucket in time_dimensions, or compute "
-                "the expression as a column in an inner stage or an inline ModelExtension.",
+                suggestion="Declare it as a computed dimension of the query and name it in partition_by=.",
             )
         pks.append(bound)
     return Grain.of(pks)
+
+
+def _carries_attached_value(key: ValueKey) -> bool:
+    return isinstance(key, SqlFragmentKey) or any(
+        isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(key)
+    )
 
 
 def _bind_expression_agg_source(
@@ -1280,13 +1296,15 @@ def _bind_granularity_call(
     parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
     granularity: Granularity,
 ) -> TimeTruncKey:
-    """``gran(col)`` as the row-level bucket of ``col``."""
-    if parsed.args or parsed.kwargs or not isinstance(parsed.source, (Ref, DottedRef)):
+    """``gran(expr)`` as the row-level bucket of ``expr``."""
+    if parsed.args or parsed.kwargs or isinstance(parsed.source, StarSource):
         raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    column = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+    source = _bind(parsed.source, scope=scope, bundle=bundle, in_filter=False)
+    if source.phase is not Phase.ROW or isinstance(source, SqlFragmentKey) or any(
+        isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
+    ):
         raise GranularityCallError.wrong_shape(f"{parsed.agg}(...)")
-    return TimeTruncKey(column=column, granularity=granularity)
+    return TimeTruncKey(source=source, granularity=granularity)
 
 
 def _bind_agg_source(
@@ -1376,16 +1394,9 @@ def _bind_agg(
     args, kwargs = _fold_positional_agg_args(
         agg=effective_agg, source=source, bundle=bundle, args=args, kwargs=kwargs,
     )
-    # Expression sources: order-sensitive first/last need a plain
-    # column (the ranked kernel can't rank an expression), and numeric-only
-    # aggregations are rejected when the expression is confidently non-numeric
-    # (per-column gates don't apply).
+    # Numeric-only aggregations over an expression source are rejected when it is
+    # confidently non-numeric (per-column gates don't apply).
     if isinstance(source, EXPRESSION_SOURCE_KINDS):
-        if effective_agg in ("first", "last"):
-            raise ValueError(
-                f"Aggregation {effective_agg!r} is not supported over an "
-                f"expression; use a plain column."
-            )
         _reject_non_numeric_expression_agg(
             source=source, agg=effective_agg, scope=scope, bundle=bundle,
         )
@@ -1481,13 +1492,14 @@ def _fold_positional_agg_args(
             )
         if len(args) != 1:
             raise ValueError(
-                f"Aggregation {agg!r} ranks by at most one column; got "
+                f"Aggregation {agg!r} ranks by at most one column or row-level expression; got "
                 f"{len(args)} positional value(s)."
             )
-        if not isinstance(args[0], (ColumnKey, ColumnSqlKey)):
+        if not _is_row_level_ranking_key(args[0]):
             raise ValueError(
-                f"Aggregation {agg!r} ranks by a column; got "
-                f"{type(args[0]).__name__} as its ranking key."
+                f"Aggregation {agg!r} ranks by a column or a row-level expression of columns; got "
+                f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
+                f"as its ranking key."
             )
         return args, kwargs
     if len(args) > len(names):
@@ -1505,6 +1517,13 @@ def _fold_positional_agg_args(
             )
         folded.append((name, value))
     return (), tuple(folded)
+
+
+def _is_row_level_ranking_key(key: object) -> bool:
+    """A ranking key reads at least one column and no aggregate, transform or attached value."""
+    return isinstance(key, VALUE_KEY_TYPES) and not _carries_attached_value(cast(ValueKey, key)) and any(
+        isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(cast(ValueKey, key))
+    )
 
 
 def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBundle) -> UnknownFunctionError:
@@ -1603,10 +1622,10 @@ def _bind_agg_arg(
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
-    """Bind one aggregation arg: identifiers → ``ColumnKey`` / ``ColumnSqlKey``,
-    a nested aggregate → ``AggregateKey`` (aggregate-valued parameter), a grained
-    transform → ``TransformKey`` at its result grain, literals → inline
-    scalar via ``normalize_scalar`` (stored inline, not as LiteralKey).
+    """Bind one aggregation arg: a nested aggregate → ``AggregateKey`` (aggregate-valued
+    parameter), a grained transform → ``TransformKey`` at its result grain, literals → inline
+    scalar via ``normalize_scalar`` (stored inline, not as LiteralKey), anything else as a
+    Mode-B expression (a column being the one-leaf case).
     ``dim_alias_map`` rides into a nested aggregate / transform so its
     ``partition_by=`` can name a computed dimension (as the outer aggregate's can)."""
     if isinstance(parsed, Literal):
@@ -1621,13 +1640,7 @@ def _bind_agg_arg(
         return _bind_transform(
             parsed=parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
         )
-    if isinstance(parsed, (Ref, DottedRef)):
-        return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
-    raise ValueError(
-        f"Aggregation argument of kind {type(parsed).__name__} is not "
-        f"supported. Pass a column reference, a scalar, a partitioned aggregate, "
-        f"or a grained transform."
-    )
+    return _bind(parsed, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
 
 
 _NOT_SCALAR = object()  # sentinel returned by _fold_to_scalar when the input isn't a literal-resolvable scalar

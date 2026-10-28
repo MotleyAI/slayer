@@ -16,7 +16,7 @@ from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from tests._dev1879_helpers import dry_response
 
 
@@ -67,7 +67,7 @@ def _shape_query(shape: str) -> SlayerQuery:
         measures=[ModelMeasure(formula=_SHAPES[shape])],
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -134,7 +134,7 @@ async def test_bigquery_unnamed_formula_measures() -> None:
         ],
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],

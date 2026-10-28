@@ -457,7 +457,7 @@ def render_row_expression(
     if isinstance(key, ArithmeticKey):
         return _row_arithmetic(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, TimeTruncKey):
-        return dialect.build_bucket(col_expr=_part(key.column), granularity=key.granularity)
+        return dialect.build_bucket(col_expr=_part(key.source), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
         return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type)
     if isinstance(key, InKey):

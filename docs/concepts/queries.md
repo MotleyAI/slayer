@@ -141,7 +141,7 @@ A query with no measures and at least one dimension or time-dimension returns th
 {"source_model": "orders", "dimensions": ["status"], "limit": 100}
 ```
 
-Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
+Emits `SELECT orders.status FROM orders GROUP BY orders.status ORDER BY orders.status LIMIT 100`.
 
 ### Raw rows (`distinct_dimension_values`)
 
@@ -174,6 +174,8 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
 
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension).
+
 ```json
 {
   "dimension": "created_at",
@@ -203,6 +205,8 @@ An optional `nulls` (`first` or `last`) places NULL values first or last on ever
 ```
 
 Via MCP: `{"column": "count(*)", "direction": "desc"}`
+
+A query (or the final stage of a query list) with no `order` that projects dimensions is ordered by its dimensions and time dimensions ascending, in result-column order, exactly as if it listed them in `order`; raw-row queries and inner stages are left unordered.
 
 The object form `{"column": {"name": "sum(amount)"}}` with an expression as its only key is the same as the string form `{"column": "sum(amount)"}`.
 
@@ -455,7 +459,7 @@ Use one of:
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
 
-The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
+The same placeholders work in measure formulas, computed- and time-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and a placeholder naming a time dimension's granularity or standing for its whole dimension is rejected.
 
 ```json
 {

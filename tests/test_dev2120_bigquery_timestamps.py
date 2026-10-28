@@ -11,7 +11,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine import ingestion
-from slayer.engine.introspect_utils import _get_columns_fallback
+from slayer.sql.dialects import base as dialects_base
+from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.reflection import ReflectedColumn
 from tests._dev1840_fixtures import dev1840_models, signup_month_td
 from tests._dev1919_fixtures import WINDOWED_PARAM
 from tests._dev2015_fixtures import JAN_MAR, TWO_FACTS, spine_models, spine_td
@@ -157,6 +159,20 @@ class TestZonedColumnReadsNaive:
         sql = await _engine_generate(query=query, model=a, extra_models=[b], dialect="bigquery")
         assert on in " ".join(sql.split()), sql
 
+    async def test_join_key_type_comes_from_the_named_column(self) -> None:
+        # An earlier column sharing the key's physical spelling must not decide the key's read.
+        a = SlayerModel(name="a", sql_table="a", data_source="test", joins=[
+            ModelJoin(target_model="b", join_pairs=[["at", "bt"]])], columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="at_copy", sql="at_raw", type=DataType.TIMESTAMP),
+            Column(name="at", sql="at_raw", type=DataType.TIMESTAMP, db_type="TIMESTAMP")])
+        b = SlayerModel(name="b", sql_table="b", data_source="test", columns=[
+            Column(name="bt", type=DataType.TIMESTAMP, primary_key=True),
+            Column(name="label", type=DataType.TEXT)])
+        query = SlayerQuery.model_validate({"source_model": "a", "dimensions": ["b.label"]})
+        sql = await _engine_generate(query=query, model=a, extra_models=[b], dialect="bigquery")
+        assert "ON CAST(a.at_raw AS DATETIME) = b.bt" in " ".join(sql.split()), sql
+
     async def test_window_time_reads_naive(self) -> None:
         models = _zoned(dev1840_models(), {("customers", "signup_at")})
         query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": signup_month_td(),
@@ -191,7 +207,8 @@ class TestIngestionRecordsZonedType:
         (sa.TIMESTAMP(), frozenset(), None),
     ])
     def test_inspector_column(self, sa_type: sa.types.TypeEngine, zoned: frozenset[str], db_type: str | None) -> None:
-        col = ingestion._introspected_column({"type": sa_type}, name="ts", primary_key=False, zoned_types=zoned)
+        col = ingestion._introspected_column(
+            ReflectedColumn(name="ts", type=sa_type), name="ts", primary_key=False, zoned_types=zoned)
         assert col.type is DataType.TIMESTAMP
         assert col.db_type == db_type
 
@@ -199,20 +216,30 @@ class TestIngestionRecordsZonedType:
     def test_inspector_path_reads_the_engine_dialect(self, dialect: str, db_type: str | None) -> None:
         engine = MagicMock()
         engine.dialect.name = dialect
-        with patch.object(ingestion, "_safe_get_pk_constraint", return_value={}), \
-                patch.object(ingestion, "_safe_get_columns", return_value=[{"name": "ts", "type": sa.TIMESTAMP()}]):
-            cols = ingestion._introspect_query_columns_via_inspector(engine, MagicMock(), "t", None)
+        with patch.object(ingestion, "reflect_columns", return_value=[ReflectedColumn(name="ts", type=sa.TIMESTAMP())]):
+            cols = ingestion._introspect_query_columns_via_inspector(engine, MagicMock(), "t", None, primary_key=[])
         assert [c.db_type for c in cols] == [db_type]
 
     @pytest.mark.parametrize(("dialect", "expected"), [
-        ("bigquery", {"ts": "TIMESTAMP", "dt": None}), ("postgresql", {"ts": None, "dt": None}),
+        ("bigquery", {"ts": "TIMESTAMP", "dt": None}), ("postgres", {"ts": None, "dt": None}),
     ])
     def test_information_schema_fallback(self, dialect: str, expected: dict[str, str | None]) -> None:
-        engine = MagicMock()
-        engine.dialect.name = dialect
-        conn = MagicMock()
-        engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-        engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-        conn.execute.return_value.fetchall.return_value = [("ts", "TIMESTAMP"), ("dt", "DATETIME")]
-        result = _get_columns_fallback(sa_engine=engine, table_name="t", ref=None)
-        assert {c["name"]: c["db_type"] for c in result} == expected
+        inspector = MagicMock()
+        inspector.get_columns.side_effect = RuntimeError("no inspector")
+        with patch.object(dialects_base, "fetch", return_value=[("ts", "TIMESTAMP"), ("dt", "DATETIME")]):
+            result = get_dialect(dialect).reflect_columns(
+                sa_engine=None, inspector=inspector, table="t", schema="s", catalog=None)
+        assert {c.name: c.db_type for c in result} == expected
+
+    @pytest.mark.parametrize(("dialect", "expected"), [
+        ("snowflake", {"doc": "VARIANT", "tags": "ARRAY"}), ("postgres", {"doc": None, "tags": None}),
+    ])
+    def test_information_schema_fallback_keeps_the_dialects_json_types(
+        self, dialect: str, expected: dict[str, str | None],
+    ) -> None:
+        inspector = MagicMock()
+        inspector.get_columns.side_effect = RuntimeError("no inspector")
+        with patch.object(dialects_base, "fetch", return_value=[("doc", "VARIANT"), ("tags", "ARRAY")]):
+            result = get_dialect(dialect).reflect_columns(
+                sa_engine=None, inspector=inspector, table="t", schema="s", catalog=None)
+        assert {c.name: c.db_type for c in result} == expected

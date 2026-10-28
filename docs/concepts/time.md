@@ -101,6 +101,8 @@ The population is `time_spine × P` (P the population of the remaining dimension
 
 A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
 
+An expression is never an axis: a time dimension whose expression reads `time_spine.timestamp` (`time_spine.timestamp + INTERVAL '1 day'`) is a typed error that names the remedy of bucketing the column itself, while any other expression time dimension is an ordinary dimension of P.
+
 ## Custom granularities
 
 A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

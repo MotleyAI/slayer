@@ -86,7 +86,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `filter` | string | No | — | SQL condition wrapping the column value in `CASE WHEN` — a value mask that fires in every position. See [Filtered columns](#filtered-columns) |
 | `granularity` | string | No | — | Time bucket a temporal column is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed models stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
-| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
+| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer datasources refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal columns |
 
@@ -294,7 +294,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a time/date dimension in that order.
 
 Not to be confused with the [`last()` formula function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 

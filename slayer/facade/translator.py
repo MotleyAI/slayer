@@ -2230,7 +2230,7 @@ def _record_time_grain(
 ) -> None:
     assert item.time_grain is not None and item.time_grain_underlying is not None
     dotted = item.time_grain_underlying.dimension_ref
-    td = TimeDimension.model_validate({"dimension": {"name": dotted}, "granularity": item.time_grain})
+    td = TimeDimension.model_validate({"dimension": dotted, "granularity": item.time_grain})
     plan.time_dims.append(td)
     plan.time_dim_by_name[dotted] = td
     plan.derived_dims.append(item.projected_name)

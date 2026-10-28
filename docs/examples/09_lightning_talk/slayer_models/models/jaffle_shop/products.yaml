@@ -1,4 +1,4 @@
-version: 16
+version: 17
 name: products
 sql_table: products
 source_kind: table
@@ -32,6 +32,7 @@ columns:
 - name: price
   sql: price
   type: DOUBLE
+  db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
   description: List price, in dollars.

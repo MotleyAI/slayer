@@ -88,6 +88,7 @@ from slayer.core.keys import (
     regroup_root_grain,
     temporal_type,
     type_date_values,
+    column_leaf,
     value_arg_positions,
     value_type,
     source_anchor_path,
@@ -181,10 +182,10 @@ def _key_display(k: ValueKey) -> str:
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-        col = k.column if isinstance(k, TimeTruncKey) else k
-        leaf = getattr(col, "leaf", None) or getattr(col, "column_name", "?")
-        return ".".join((*col.path, leaf))
+    if isinstance(k, TimeTruncKey):
+        return _key_display(k.source) if isinstance(k.source, (ColumnKey, ColumnSqlKey)) else key_display(k.source)
+    if isinstance(k, (ColumnKey, ColumnSqlKey)):
+        return ".".join((*k.path, column_leaf(k)))
     return type(k).__name__
 
 
@@ -884,7 +885,7 @@ def check_unrelated_row_read(
     """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
-    ref = key_display(reference.column if isinstance(reference, TimeTruncKey) else reference)
+    ref = key_display(reference.source if isinstance(reference, TimeTruncKey) else reference)
     raise UnrelatedDatasetError(
         summary=f"{ref} reads {dataset}, which no join path reaches from the population "
         f"{population}: it meets {population} as a product, so it is read only through aggregates.",
@@ -945,6 +946,18 @@ def check_spine_plain_use(*, offender: Optional[str], position: str) -> None:
         )
 
 
+def check_spine_time_dimension(*, offender: Optional[str]) -> None:
+    """An expression is never an axis: a time dimension reads the spine column only as the bare column."""
+    if offender is not None:
+        raise TimeSpineError(
+            summary=f"Time dimension `{offender}` reads time_spine.timestamp inside an expression; "
+            f"an expression is never an axis.",
+            location=f"time dimension {offender!r}",
+            suggestion="Bucket time_spine.timestamp itself (time_dimensions=[{dimension: time_spine.timestamp, "
+            "granularity: month, date_range: [...]}]) and compute other date logic from the fact's own column.",
+        )
+
+
 def check_spine_filter(*, offender: Optional[str]) -> None:
     """A filter on the spine column must be a frame bound."""
     if offender is not None:
@@ -977,12 +990,12 @@ def check_granularity_known(
     return granularity
 
 
-def check_granularity_call_shape(*, entry: str, column: Optional[str]) -> None:
-    """A datasource-granularity call must take exactly one column reference."""
-    if column is None:
+def check_granularity_call_shape(*, entry: str, argument: Optional[str]) -> None:
+    """A datasource-granularity call must take exactly one row-level argument."""
+    if argument is None:
         raise GranularityShapeError(
-            summary=f"Granularity call {entry!r} must be a single column reference ``gran(col)``.",
-            suggestion="Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.",
+            summary=f"Granularity call {entry!r} must take one row-level argument ``gran(expr)``.",
+            suggestion="Pass one column or row-level expression, e.g. ``fiscal_year(created_at)``.",
         )
 
 
@@ -999,29 +1012,63 @@ def check_time_dimension_column(
     *,
     name: str,
     column_type: Optional[DataType],
-    upstream_granularity: Optional[Granularity],
     requested_granularity: Granularity,
+    bucketed_leaves: Sequence[Tuple[str, Granularity]] = (),
+    is_expression: bool = False,
 ) -> None:
-    """A time dimension's column must be temporal (DATE / TIMESTAMP); a bucketed column — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
+    """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if column_type not in (DataType.DATE, DataType.TIMESTAMP):
+        kind = "expression" if is_expression else "column"
         raise TimeDimensionColumnError(
-            summary=f"A time dimension must reference a temporal column "
-            f"(DATE / TIMESTAMP); got column type {column_type!r}.",
+            summary=f"A time dimension must reference a temporal {kind} "
+            f"(DATE / TIMESTAMP); got {kind} type {column_type!r}.",
             location=f"time dimension {name!r}",
+            suggestion="Wrap it in CAST(… AS TIMESTAMP) or CAST(… AS DATE)."
+            if is_expression and column_type is None else None,
         )
-    if (
-        upstream_granularity is not None
-        and requested_granularity != upstream_granularity
-        and not nests_into(upstream_granularity, requested_granularity)
-    ):
+    for leaf, upstream in bucketed_leaves:
+        if requested_granularity == upstream or nests_into(upstream, requested_granularity):
+            continue
+        column = "column" if leaf == name else f"column {leaf!r}"
         raise TimeDimensionColumnError(
             summary=f"Cannot re-bucket to '{requested_granularity}': the "
-            f"column is already bucketed at '{upstream_granularity}', which "
+            f"{column} is already bucketed at '{upstream}', which "
             f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
             "bucket the raw column instead.",
         )
+
+
+def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
+    """A time dimension's expression is row-level: no aggregate, transform or attached value."""
+    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)):
+        raise TimeDimensionColumnError(
+            summary="A time dimension is row-level; its expression reads an aggregate or transform.",
+            location=f"time dimension {name!r}",
+            suggestion="Bucket a column or a row-level expression of columns.",
+        )
+
+
+def time_dimension_type(source: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """A time dimension expression's type: DATE / TIMESTAMP when provably temporal, else a provable other type, else ``None``."""
+    return temporal_type(source, column_type=column_type) or _count_type(source, column_type=column_type)
+
+
+def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Optional[str]]], anchor: str) -> None:
+    """A time dimension expression reads every leaf over provably to-one hops from its anchor (Axiom 2.2)."""
+    if crossing is None:
+        return
+    leaf, hop = crossing
+    if hop is None:
+        check_input_dependencies_analyzable(alias=name, column=leaf)
+        return
+    raise UnsafeJoinInputError(
+        summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning join hop "
+        f"to {hop} from {anchor}: no dataset determines every column the expression reads.",
+        location=f"time dimension {name!r}",
+        suggestion=_JOIN_REMEDY,
+    )
 
 
 _NON_NUMERIC_TYPES = frozenset({
@@ -1121,7 +1168,7 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
     keys = [key for root in roots for key in walk_value_keys(root)]
     for key in keys:  # innermost first: a ``gran(col)`` inside a date function names its column
         if isinstance(key, TimeTruncKey):
-            _require_temporal(str(key.granularity), key.column, column_type=column_type)
+            _require_temporal(str(key.granularity), key.source, column_type=column_type)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)
@@ -1152,8 +1199,8 @@ def _time_operand(
     """``(bounded operand, its temporal type, bucket granularity)``: a direct ``gran(col)``
     bounds ``col``; ISO literals in a conditional count as dates when that makes it temporal."""
     if isinstance(operand, TimeTruncKey):
-        t = temporal_type(operand.column, column_type=column_type)
-        return operand.column, t, operand.granularity
+        t = temporal_type(operand.source, column_type=column_type)
+        return operand.source, t, operand.granularity
     t = temporal_type(operand, column_type=column_type)
     if t is None:
         typed = type_date_values(operand)
@@ -1800,12 +1847,13 @@ def check_partition_key_resolves(
         )
     if maps_to_bucket or lenient:
         return
+    is_column = isinstance(pk, (ColumnKey, ColumnSqlKey))
     raise PartitionKeyError(
-        summary=f"The partition_by column '{dotted_key_display(pk)}' is not a "
+        summary=f"The partition_by {'column' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
         f"query dimension.",
         location=label,
-        suggestion=f"Add it to dimensions/time_dimensions, or choose one of: "
-        f"{', '.join(available_dims) or '(none)'}.",
+        suggestion=f"Add it to dimensions/time_dimensions{'' if is_column else ' (as a computed dimension)'}, "
+        f"or choose one of: {', '.join(available_dims) or '(none)'}.",
     )
 
 

@@ -28,7 +28,7 @@ from tests.dialects.conftest import _generate, _norm
 # flags would make the log-alias tests self-fulfilling.
 _LOG10_NATIVE_DIALECTS = frozenset({
     "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
+    "bigquery", "redshift",
     "trino", "presto", "databricks", "spark", "tsql",
 })
 _LOG2_NATIVE_DIALECTS = frozenset({
@@ -97,7 +97,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_model)
         assert "COUNT(" in sql
@@ -128,7 +128,7 @@ class TestMultiDialectGeneration:
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="created_at"), granularity=grain
+                    dimension="created_at", granularity=grain
                 )],
             )
 
@@ -164,7 +164,7 @@ class TestMultiDialectGeneration:
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="ordered_on"),
+                    dimension="ordered_on",
                     granularity=TimeGranularity.WEEK_SUNDAY,
                 )],
             ),
@@ -202,7 +202,7 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="ts"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="ts", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -216,7 +216,7 @@ class TestMultiDialectGeneration:
             SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="*:count")],
-                time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -232,7 +232,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_model)
@@ -264,7 +264,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
@@ -301,7 +301,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='7d')",
@@ -327,7 +327,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='7d')", name="rev_w")],
@@ -345,7 +345,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"),
+                TimeDimension(dimension="created_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')", name="rev_w")],

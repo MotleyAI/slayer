@@ -48,7 +48,7 @@ from tests._engine_helpers import _engine_generate
 
 Case = Callable[[], Tuple[SlayerQuery, List[SlayerModel]]]
 
-_MONTH = [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)]
+_MONTH = [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)]
 _NO_AXIS = "sum(cumsum(amount:sum(partition_by=region)))"
 
 
@@ -174,7 +174,7 @@ FAMILY_CASES = [
     ("time-dimension-column",
      lambda: (SlayerQuery(
          source_model="orders", measures=[_m("amount:sum", "t")],
-         time_dimensions=[TimeDimension(dimension=ColumnRef(name="status"), granularity=TimeGranularity.MONTH)],
+         time_dimensions=[TimeDimension(dimension="status", granularity=TimeGranularity.MONTH)],
      ), [_orders()]),
      TimeDimensionColumnError, "time dimension 'status'", False),
 ]

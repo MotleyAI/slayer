@@ -70,6 +70,8 @@ An attached value — an aggregate or a grained transform
 *parameter* of a row-level aggregation
 (`weighted_avg(amount, weight=sum(amount, partition_by=region))`): it is
 attached into the input relation, so each row is weighted by its cell's value.
+A column-valued parameter also takes a row-level expression, positionally or by name
+(`weighted_avg(price, weight=quantity * 2)`, `corr(amount, quantity + 1)`).
 
 **Gates.** Per-column `allowed_aggregations` / primary-key / type-default
 gates apply to *columns*, not expressions — `sum(price * quantity)` succeeds
@@ -178,7 +180,9 @@ share-of-parent shape (`SUM(revenue) OVER (PARTITION BY region)`):
 sums to 1.0 within each region. `partition_by` takes one query dimension, a list
 (`partition_by=[region, channel]`), a dotted path (`partition_by=customers.region`),
 or `[]` for the grand total (share of total). A time dimension partitions by its
-truncated bucket. The coarser aggregate is computed over the rows passing the
+truncated bucket. A key may also be a row-level expression (`partition_by=upper(city)`) or a
+time dimension's name: an expression equal to a query computed dimension or time dimension
+is that dimension. The coarser aggregate is computed over the rows passing the
 query's row-level filters — `having`-phase filters and pagination change which
 rows you see, never the parent total. NULL-valued partition dimensions keep their
 group.

@@ -15,7 +15,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.refs import auto_name_from_expression
 from tests._dev1879_helpers import dry_response, mart_model
 
@@ -43,7 +43,7 @@ def _q(**kw) -> SlayerQuery:
 def _month_td() -> list[TimeDimension]:
     return [
         TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
     ]

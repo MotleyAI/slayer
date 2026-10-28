@@ -6,7 +6,7 @@ from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.introspect_utils import (
+from slayer.sql.dialects.reflection import (
     is_exact_numeric_db_type,
     unwrap_clickhouse_wrapper_str,
 )

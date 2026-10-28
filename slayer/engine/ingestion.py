@@ -26,21 +26,17 @@ from slayer.core.join_edges import edge_reference
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
-from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
-    _CLICKHOUSE_WRAPPER_MAX_DEPTH,
-    _CLICKHOUSE_WRAPPER_NAMES,
-    _FLOAT_LIKE_INFO_SCHEMA_TYPES,
-    _INFO_SCHEMA_TYPE_MAP,
-    _clean_comment,
-    _get_columns_fallback,
-    _parse_info_schema_is_float,
-    _resolve_fallback_ref,
-    _safe_get_columns,
-    is_exact_numeric_db_type,
-    is_json_db_type,
-)
+from slayer.engine.introspect_utils import dialect_for_engine, reflect_columns, reflect_table_keys
 from slayer.sql import engine_factory, sqlite_introspect
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects.reflection import (
+    CLICKHOUSE_WRAPPER_MAX_DEPTH,
+    CLICKHOUSE_WRAPPER_NAMES,
+    ReflectedColumn,
+    TableKeys,
+    clean_comment,
+    is_exact_numeric_db_type,
+)
 from slayer.engine.schema_scope import (
     SchemaRef,
     SkippedSchema,
@@ -81,9 +77,6 @@ class IntrospectedColumn(BaseModel):
 
 # Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
-
-# Inspectors whose empty PK means "no PK" (not "ask INFORMATION_SCHEMA").
-_PK_AUTHORITATIVE_DIALECTS = frozenset({"sqlite", "bigquery"})
 
 # Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
 # A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
@@ -187,8 +180,8 @@ def _is_id_column(name: str) -> bool:
 def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
     """Peel nested ClickHouse Nullable/LowCardinality wrappers (as-is if no ``nested_type``)."""
     current = sa_type
-    for _ in range(_CLICKHOUSE_WRAPPER_MAX_DEPTH):
-        if type(current).__name__.upper() not in _CLICKHOUSE_WRAPPER_NAMES:
+    for _ in range(CLICKHOUSE_WRAPPER_MAX_DEPTH):
+        if type(current).__name__.upper() not in CLICKHOUSE_WRAPPER_NAMES:
             return current
         inner = getattr(current, "nested_type", None)
         if inner is None:
@@ -320,7 +313,7 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
 
 
 def _is_cross_schema_fk(
-    fk: dict, schema: str | None, default_schema: str | None = None,
+    fk: dict, schema: str | None, default_schema: str | None = None, dialect: Any = None,
 ) -> bool:
     """Does this FK point outside the ingested schema (it would mis-bind by bare name)?"""
     referred_schema = fk.get("referred_schema")
@@ -330,49 +323,36 @@ def _is_cross_schema_fk(
     # Unknown ingested schema: skip rather than risk binding to the wrong table.
     if effective_schema is None:
         return True
-    return referred_schema != effective_schema
+    return _schema_key(referred_schema, dialect) != _schema_key(effective_schema, dialect)
 
 
-def _get_fk_constraint_groups(
-    inspector: sa.engine.Inspector,
+def _schema_key(name: str, dialect: Any) -> str:
+    """A case-folding dialect (Snowflake, Oracle) reports schema names normalised; compare them so."""
+    if dialect is not None and getattr(dialect, "requires_name_normalize", False):
+        return dialect.normalize_name(name)
+    return name
+
+
+def _fk_groups(
+    keys: TableKeys,
+    *,
     table_name: str,
-    schema: str | None,
     table_set: set[str],
-    schema_name: str | None = None,
+    schema: str | None,
+    default_schema: str | None,
+    dialect: Any = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
-    """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per FK constraint; ``[]`` on error."""
-    try:
-        fks = inspector.get_foreign_keys(table_name, schema=schema)
-    except Exception as exc:  # noqa: BLE001 — FK metadata is optional
-        logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
-        return []
+    """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per in-scope FK constraint."""
     result: list[tuple[str, list[tuple[str, str]]]] = []
-    for fk in fks:
-        referred_table = fk["referred_table"]
-        if referred_table not in table_set or referred_table == table_name:
+    for fk in keys.foreign_keys:
+        if fk.referred_table not in table_set or fk.referred_table == table_name:
             continue
-        if _is_cross_schema_fk(
-            fk=fk,
-            schema=schema_name if schema_name is not None else schema,
-            default_schema=getattr(inspector, "default_schema_name", None),
-        ):
+        if _is_cross_schema_fk(fk.model_dump(), schema=schema, default_schema=default_schema, dialect=dialect):
             continue
-        pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
+        pairs = list(zip(fk.columns, fk.referred_columns))
         if pairs:
-            result.append((referred_table, pairs))
+            result.append((fk.referred_table, pairs))
     return result
-
-
-def _safe_introspect(fn) -> list:
-    """Run a best-effort introspection call, yielding ``[]`` on failure."""
-    try:
-        return list(fn())
-    except Exception as exc:  # noqa: BLE001 — degrade to "no evidence"
-        logger.debug(
-            "Constraint/index reflection unavailable (%s); "
-            "treating as no uniqueness evidence.", exc,
-        )
-        return []
 
 
 def _ref_from_token(sa_engine: sa.Engine | None, token: str | None) -> SchemaRef | None:
@@ -383,137 +363,14 @@ def _ref_from_token(sa_engine: sa.Engine | None, token: str | None) -> SchemaRef
     return schema_ref_from_token(token, dialect_name=dialect_name)
 
 
-def _pk_key_sets(
-    inspector: sa.engine.Inspector,
-    table_name: str,
-    schema: str | None,
-    sa_engine: sa.Engine | None,
-) -> list[list[str]]:
-    """The table's primary key as a single key-set (or none)."""
-    try:
-        if sa_engine is not None:
-            pk = _safe_get_pk_constraint(
-                inspector=inspector,
-                sa_engine=sa_engine,
-                table_name=table_name,
-                ref=_ref_from_token(sa_engine, schema),
-            )
-        else:
-            pk = inspector.get_pk_constraint(table_name=table_name, schema=schema)
-            if not isinstance(pk, dict):
-                return []
-    except Exception:
-        return []
-    cols = pk.get("constrained_columns")
-    # A bare string would ``list()`` into characters — a bogus key-set.
-    if not isinstance(cols, list):
-        return []
-    return [list(cols)] if cols else []
+def _key_sets(keys: TableKeys) -> list[list[str]]:
+    """Every key set of a table: its primary key, then its unique keys."""
+    return ([keys.primary_key] if keys.primary_key else []) + keys.unique_key_sets
 
 
-def _unique_constraint_key_sets(
-    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
-) -> list[list[str]]:
-    """Key-sets from declared UNIQUE constraints."""
-    out: list[list[str]] = []
-    for uc in _safe_introspect(
-        lambda: inspector.get_unique_constraints(table_name, schema=schema)
-    ):
-        cols = uc.get("column_names") or []
-        if cols and all(cols):
-            out.append(list(cols))
-    return out
-
-
-def _is_partial_index(idx: dict) -> bool:
-    """Does this index carry a filter predicate (a PARTIAL index)?"""
-    opts = idx.get("dialect_options") or {}
-    for key, value in opts.items():
-        if not key.endswith("_where") or value is None:
-            continue
-        if isinstance(value, str):
-            if value.strip():
-                return True
-            continue
-        # Never bool() a non-string: ColumnElement.__bool__ raises.
-        return True
-    return False
-
-
-def _unique_index_key_sets(
-    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
-) -> list[list[str]]:
-    """Key-sets from unique indexes that constrain the WHOLE table."""
-    out: list[list[str]] = []
-    for idx in _safe_introspect(
-        lambda: inspector.get_indexes(table_name, schema=schema)
-    ):
-        if not idx.get("unique") or _is_partial_index(idx):
-            continue
-        cols = idx.get("column_names") or []
-        # Expression members reflect as None; any falsy member rejects the set.
-        if cols and all(cols):
-            out.append(list(cols))
-    return out
-
-
-def _get_unique_key_sets(
-    inspector: sa.engine.Inspector,
-    table_name: str,
-    schema: str | None,
-    sa_engine: sa.Engine | None = None,
-) -> list[list[str]]:
-    """All PK + UNIQUE key-sets for a table."""
-    return (
-        _pk_key_sets(
-            inspector=inspector, table_name=table_name,
-            schema=schema, sa_engine=sa_engine,
-        )
-        + _unique_constraint_key_sets(
-            inspector=inspector, table_name=table_name, schema=schema,
-        )
-        + _unique_index_key_sets(
-            inspector=inspector, table_name=table_name, schema=schema,
-        )
-    )
-
-
-def _solo_unique_columns_for_table(
-    *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
-    table_name: str,
-    schema: str | None,
-) -> set[str]:
-    """``_get_single_column_unique_names`` with the table's PK resolved for it."""
-    pk = _safe_get_pk_constraint(
-        inspector=inspector, sa_engine=sa_engine,
-        table_name=table_name, ref=_ref_from_token(sa_engine, schema),
-    )
-    return _get_single_column_unique_names(
-        inspector=inspector, table_name=table_name, schema=schema,
-        pk_cols=set(pk.get("constrained_columns", [])),
-    )
-
-
-def _get_single_column_unique_names(
-    inspector: sa.engine.Inspector,
-    table_name: str,
-    schema: str | None,
-    *,
-    pk_cols: set[str],
-) -> set[str]:
-    """Non-PK columns that ALONE form a UNIQUE constraint / unique index."""
-    key_sets = (
-        _unique_constraint_key_sets(
-            inspector=inspector, table_name=table_name, schema=schema,
-        )
-        + _unique_index_key_sets(
-            inspector=inspector, table_name=table_name, schema=schema,
-        )
-    )
-    names = {ks[0] for ks in key_sets if len(ks) == 1}
-    return names - set(pk_cols)
+def _solo_unique_columns(keys: TableKeys) -> set[str]:
+    """Non-PK columns that alone form a unique key."""
+    return {ks[0] for ks in keys.unique_key_sets if len(ks) == 1} - set(keys.primary_key)
 
 
 def _logical_column_name(live_name: str) -> str:
@@ -529,25 +386,31 @@ def _generate_joins(
     sa_engine: sa.Engine | None = None,
     model_name_by_table: dict[str, str] | None = None,
     schema_name: str | None = None,
+    keys_by_table: dict[str, TableKeys] | None = None,
 ) -> list[ModelJoin]:
     """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
 
     Joins name the MODEL (via ``model_name_by_table``); a target with no model is dropped.
+    ``keys_by_table`` memoizes each table's keys across calls.
     """
-    groups = _get_fk_constraint_groups(
-        inspector=inspector,
-        table_name=source_table,
-        schema=schema,
-        table_set=table_set,
-        schema_name=schema_name,
-    )
-    if not groups:
-        return []
-    source_uniques = _get_unique_key_sets(
-        inspector=inspector, table_name=source_table,
-        schema=schema, sa_engine=sa_engine,
-    )
+    engine = sa_engine if sa_engine is not None else getattr(inspector, "bind", None)
+    ref = _ref_from_token(engine, schema)
+    cache = keys_by_table if keys_by_table is not None else {}
 
+    def keys_of(table: str) -> TableKeys:
+        if table not in cache:
+            cache[table] = reflect_table_keys(sa_engine=engine, inspector=inspector, table_name=table, ref=ref)
+        return cache[table]
+
+    source_keys = keys_of(source_table)
+    groups = _fk_groups(
+        source_keys,
+        table_name=source_table,
+        table_set=table_set,
+        schema=schema_name if schema_name is not None else schema,
+        default_schema=getattr(inspector, "default_schema_name", None),
+        dialect=getattr(inspector, "dialect", None),
+    )
     joins = []
     seen_signatures: set[tuple] = set()
     for ref_table, pairs in groups:
@@ -565,16 +428,12 @@ def _generate_joins(
 
         source_cols = [s for s, _ in pairs]
         target_cols = [t for _, t in pairs]
-        target_uniques = _get_unique_key_sets(
-            inspector=inspector, table_name=ref_table,
-            schema=schema, sa_engine=sa_engine,
-        )
         cardinality = infer_structural_cardinality(
             source_unique=is_key_set_unique(
-                key_columns=source_cols, unique_key_sets=source_uniques
+                key_columns=source_cols, unique_key_sets=_key_sets(source_keys)
             ),
             target_verified_unique=is_key_set_unique(
-                key_columns=target_cols, unique_key_sets=target_uniques
+                key_columns=target_cols, unique_key_sets=_key_sets(keys_of(ref_table))
             ),
         )
         joins.append(
@@ -589,87 +448,6 @@ def _generate_joins(
     return joins
 
 
-# --- INFORMATION_SCHEMA fallbacks (e.g. DuckDB) ---
-
-
-def _get_pk_constraint_fallback(
-    sa_engine: sa.Engine,
-    table_name: str,
-    ref: SchemaRef | None,
-) -> dict:
-    """PK constraint via INFORMATION_SCHEMA when the Inspector fails.
-
-    Joins on ``table_catalog`` too: DuckDB reuses constraint names across attached catalogs.
-    """
-    ref = _resolve_fallback_ref(sa_engine, ref)
-    schema = ref.name if ref else None
-    catalog = ref.catalog if ref else None
-    join = (
-        "  ON tc.constraint_name = kcu.constraint_name "
-        "  AND tc.table_schema = kcu.table_schema "
-    )
-    where = (
-        "WHERE tc.table_name = :table_name "
-        "  AND tc.constraint_type = 'PRIMARY KEY'"
-    )
-    params: dict[str, str] = {"table_name": table_name}
-    if catalog:
-        join += "  AND tc.table_catalog = kcu.table_catalog "
-        where += " AND tc.table_catalog = :catalog"
-        params["catalog"] = catalog
-    if schema:
-        where += " AND tc.table_schema = :schema"
-        params["schema"] = schema
-    sql = (
-        "SELECT kcu.column_name "
-        "FROM information_schema.table_constraints tc "
-        "JOIN information_schema.key_column_usage kcu "
-        + join
-        + where
-    )
-    with sa_engine.connect() as conn:
-        rows = conn.execute(sa.text(sql), params).fetchall()
-    return {"constrained_columns": [row[0] for row in rows]}
-
-
-def _normalized_pk(result: object) -> dict | None:
-    """The inspector's mapping if it carries a list of column names, else None."""
-    if not isinstance(result, dict):
-        return None
-    columns = result.get("constrained_columns")
-    if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
-        return result
-    return None
-
-
-def _safe_get_pk_constraint(
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
-    table_name: str,
-    ref: SchemaRef | None,
-) -> dict:
-    """PK constraint with INFORMATION_SCHEMA fallback; ALWAYS a mapping (no columns on failure)."""
-    token = ref.token if ref else None
-    if sa_engine.dialect.name in _PK_AUTHORITATIVE_DIALECTS:
-        try:
-            result = inspector.get_pk_constraint(table_name=table_name, schema=token)
-        except Exception:
-            return {"constrained_columns": []}
-        return _normalized_pk(result) or {"constrained_columns": []}
-    try:
-        normalized = _normalized_pk(inspector.get_pk_constraint(table_name, schema=token))
-        if normalized and normalized["constrained_columns"]:
-            return normalized
-    except Exception:
-        logger.debug("Inspector PK lookup failed for %r", table_name, exc_info=True)
-    # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA.
-    try:
-        return _get_pk_constraint_fallback(sa_engine, table_name, ref)
-    except Exception:
-        logger.debug("PK fallback failed for %r", table_name, exc_info=True)
-        return {"constrained_columns": []}
-
-
 def _safe_get_table_comment(
     inspector: sa.engine.Inspector,
     table_name: str,
@@ -677,47 +455,45 @@ def _safe_get_table_comment(
 ) -> str | None:
     """Table comment via Inspector; None when unsupported or failing."""
     try:
-        return _clean_comment(
+        return clean_comment(
             inspector.get_table_comment(table_name, schema=schema).get("text")
         )
     except Exception:
         return None
 
 
-def _sa_type_is_json(sa_type: sa.types.TypeEngine) -> bool:
-    """A JSON-family type (``json_value`` reads it natively): JSON / JSONB, Snowflake VARIANT / OBJECT / ARRAY."""
+def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]) -> bool:
+    """A type in the dialect's ``json_types`` (``json_value`` reads it natively)."""
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    names = (type(sa_type).__name__, str(sa_type))
-    snowflake_array = type(sa_type).__name__.upper() == "ARRAY" and type(sa_type).__module__.startswith("snowflake")
-    return any(is_json_db_type(n) for n in names) or snowflake_array
+    return any(n.split("(")[0].strip().upper() in json_types for n in (type(sa_type).__name__, str(sa_type)))
 
 
 def _introspected_column(
-    col: dict[str, Any], *, name: str, primary_key: bool, zoned_types: frozenset[str] = frozenset(),
-    sa_dialect: Any = None,
+    col: ReflectedColumn, *, name: str, primary_key: bool,
+    zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(), sa_dialect: Any = None,
 ) -> IntrospectedColumn:
-    """One inspector column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL,
-    JSON, a zoned timestamp in ``zoned_types``)."""
-    col_type = col["type"]
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL,
+    a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
+    col_type = col.type
     db_type: str | None = None
     element_type: DataType | None = None
     if isinstance(col_type, DataType):
         data_type = col_type
-        element_type = col.get("element_type")
-        is_float = col.get("is_float", False)
-        db_type = col.get("db_type")
+        element_type = col.element_type
+        is_float = col.is_float
+        db_type = col.db_type
     else:
         data_type, element_type = sa_data_types(col_type)
         is_float = _sa_type_is_float(col_type)
         if data_type is DataType.ARRAY:
             db_type = list_db_type(col_type, sa_dialect=sa_dialect)
-        elif data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type) or (
+        elif data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type, json_types=json_types) or (
             type(col_type).__name__.upper() in zoned_types
         ):
             db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
     return IntrospectedColumn(
         name=name, type=data_type, element_type=element_type, primary_key=primary_key, is_float=is_float,
-        db_type=db_type, comment=_clean_comment(col.get("comment")),
+        db_type=db_type, comment=col.comment,
     )
 
 
@@ -726,19 +502,24 @@ def _introspect_query_columns_via_inspector(
     inspector: sa.engine.Inspector,
     table_name: str,
     ref: SchemaRef | None,
+    primary_key: list[str] | None = None,
 ) -> list[IntrospectedColumn]:
-    """Introspect the table's own columns."""
-    pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, ref)
-    pk_columns = set(pk_constraint.get("constrained_columns", []))
-    dialect = dialect_for_ds_type(sa_engine.dialect.name)
+    """Introspect the table's own columns; ``primary_key`` defaults to the table's reflected one."""
+    if primary_key is None:
+        primary_key = reflect_table_keys(
+            sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref,
+        ).primary_key
+    pk_columns = set(primary_key)
+    dialect = dialect_for_engine(sa_engine)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
     columns = [
         _introspected_column(
-            col, name=col["name"], primary_key=col["name"] in pk_columns,
-            zoned_types=dialect.zoned_timestamp_db_types, sa_dialect=sa_engine.dialect,
+            col, name=col.name, primary_key=col.name in pk_columns,
+            zoned_types=dialect.zoned_timestamp_db_types, json_types=dialect.json_db_types,
+            sa_dialect=getattr(sa_engine, "dialect", None),
         )
-        for col in _safe_get_columns(inspector, sa_engine, table_name, ref)
-        if "." not in col["name"]
+        for col in reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
+        if "." not in col.name
     ]
     return [_inferred_elements(c, sa_engine=sa_engine, table_name=table_name, ref=ref) for c in columns]
 
@@ -749,7 +530,7 @@ def _inferred_elements(
     """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
     if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
         return column
-    dialect = dialect_for_ds_type(sa_engine.dialect.name)
+    dialect = dialect_for_engine(sa_engine)
     table = exp.Table(this=exp.to_identifier(table_name), db=exp.to_identifier(ref.name) if ref and ref.name else None)
     query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
     if query is None:
@@ -828,11 +609,11 @@ def _sqlite_probe_integer_columns(
     sql_table: str,
     columns: list[IntrospectedColumn],
 ) -> list[IntrospectedColumn]:
-    """SQLite only: widen declared-INT base columns whose stored values aren't integers.
+    """Widen declared-INT base columns whose stored values aren't integers (integer-affinity dialects).
 
     A ``None`` probe verdict keeps the declared INT.
     """
-    if sa_engine.dialect.name != "sqlite":
+    if not dialect_for_engine(sa_engine).probes_integer_affinity:
         return columns
 
     schema, table = _parse_qualified_sql_table(sql_table)
@@ -897,11 +678,13 @@ def introspect_table_to_model(
         if schema
         else default_schema_ref(inspector, sa_engine)
     )
+    keys = reflect_table_keys(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
         inspector=inspector,
         table_name=table_name,
         ref=ref,
+        primary_key=keys.primary_key,
     )
     sql_table = ref.qualify(table_name)
     columns = _sqlite_probe_integer_columns(
@@ -909,16 +692,12 @@ def introspect_table_to_model(
         sql_table=sql_table,
         columns=columns,
     )
-    unique_columns = _solo_unique_columns_for_table(
-        inspector=inspector, sa_engine=sa_engine,
-        table_name=table_name, schema=ref.token,
-    )
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
         data_source=data_source,
         sql_table=sql_table,
-        unique_columns=unique_columns,
+        unique_columns=_solo_unique_columns(keys),
         source_kind=source_kind,
         description=_safe_get_table_comment(inspector, table_name, ref.token),
     )
@@ -1125,13 +904,16 @@ def _build_one_model(
     table_set: set[str],
     model_name_by_table: dict[str, str] | None = None,
     internal_tool: str | None = None,
+    keys_by_table: dict[str, TableKeys] | None = None,
 ) -> SlayerModel:
     """Introspect one live object into a model; raises on failure.
 
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
+    ``keys_by_table`` memoizes each table's keys across the schema's objects.
     """
     schema_token = ref.token
     sql_table = ref.qualify(obj.name)
+    keys_by_table = keys_by_table if keys_by_table is not None else {}
     model_joins = _generate_joins(
         inspector=inspector,
         source_table=obj.name,
@@ -1140,12 +922,15 @@ def _build_one_model(
         sa_engine=sa_engine,
         model_name_by_table=model_name_by_table,
         schema_name=ref.name,
+        keys_by_table=keys_by_table,
     )
+    keys = keys_by_table[obj.name]
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
         inspector=inspector,
         table_name=obj.name,
         ref=ref,
+        primary_key=keys.primary_key,
     )
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
@@ -1159,10 +944,7 @@ def _build_one_model(
         data_source=data_source,
         sql_table=sql_table,
         joins=model_joins,
-        unique_columns=_solo_unique_columns_for_table(
-            inspector=inspector, sa_engine=sa_engine,
-            table_name=obj.name, schema=schema_token,
-        ),
+        unique_columns=_solo_unique_columns(keys),
         source_kind=obj.kind,
         hidden=internal_tool is not None,
         meta=meta,
@@ -1176,22 +958,12 @@ def _fetch_bigquery_dataset_description(
     datasource: DatasourceConfig,
     schema: str | None,
 ) -> str | None:
-    """BigQuery only: the dataset description, or None."""
+    """The schema's own description (a BigQuery dataset's), or None."""
     try:
-        if getattr(sa_engine.dialect, "name", None) != "bigquery":
-            return None
-        dataset = (
-            schema
-            or getattr(sa_engine.dialect, "dataset_id", None)
-            or datasource.schema_name
+        return dialect_for_engine(sa_engine).reflect_schema_description(
+            sa_engine=sa_engine, schema=schema, configured_schema=datasource.schema_name,
         )
-        if not dataset:
-            return None
-        with sa_engine.connect() as conn:
-            # Private handle sqlalchemy-bigquery itself uses; no public accessor.
-            client = conn.connection._client
-            return _clean_comment(client.get_dataset(dataset).description)
-    except Exception:
+    except Exception:  # noqa: BLE001 — a description is optional
         return None
 
 
@@ -1222,6 +994,7 @@ def _scan_one_schema(
     models: list[SlayerModel] = []
     skipped: list[SkippedTable] = []
     internal_tables: list[InternalTable] = []
+    keys_by_table: dict[str, TableKeys] = {}
     for model_name, obj in entries:
         # Classified on the live name; still recorded under ``surface_internals``.
         tool = internal_table_rule(obj.name)
@@ -1237,6 +1010,7 @@ def _scan_one_schema(
                     table_set=table_set,
                     model_name_by_table=name_by_object,
                     internal_tool=None if surface_internals else tool,
+                    keys_by_table=keys_by_table,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — per-object isolation
@@ -1545,7 +1319,7 @@ def _merge_one_column(
         retyped = _retyped_list(persisted=merged_col, fresh=fresh_col)
         if retyped is not None:
             merged_col, did_widen = retyped, True
-        if fresh_col.unique and not merged_col.unique:
+        if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
         if fresh_col.description and not merged_col.description:
@@ -1554,6 +1328,63 @@ def _merge_one_column(
             )
             described = True
     return merged_col, did_widen, unique_filled, described
+
+
+class _ColumnsMerge(BaseModel):
+    """The persisted columns merged with the live columns they read."""
+
+    columns: list[Column]
+    widened: list[str] = Field(default_factory=list)
+    described: list[str] = Field(default_factory=list)
+    metadata_changed: bool = False
+
+
+def _spelling(column: Column) -> str:
+    return column.physical_name if column.is_base else column.name
+
+
+def _reads(persisted_col: Column, fresh_col: Column) -> bool:
+    """Whether ``persisted_col`` reads the live column ``fresh_col``: key metadata describes only that one."""
+    return persisted_col.is_base and persisted_col.physical_name == _spelling(fresh_col)
+
+
+def _live_key_lands_whole(*, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str]) -> bool:
+    """Whether a keyless model takes the live primary key: each member is a stored base column reading it, or new."""
+    if any(c.primary_key for c in persisted.columns):
+        return False
+    readers = {c.physical_name for c in persisted.columns if c.is_base}
+    matched = {c.name for c in persisted.columns} | set(live_name.values())
+    key = [c for c in fresh.columns if c.primary_key]
+    return bool(key) and all(
+        _spelling(c) in readers or (c.name not in matched and _spelling(c) not in matched) for c in key
+    )
+
+
+def _merge_persisted_columns(
+    *, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str], sqlite_widen_enabled: bool,
+    fill_key: bool,
+) -> _ColumnsMerge:
+    """Each persisted column merged with the live column of its spelling."""
+    fresh_by_spelling = {_spelling(c): c for c in fresh.columns}
+    out = _ColumnsMerge(columns=[])
+    for persisted_col in persisted.columns:
+        fresh_col = fresh_by_spelling.get(live_name[persisted_col.name])
+        merged_col, did_widen, unique_filled, described = _merge_one_column(
+            persisted_col=persisted_col,
+            fresh_col=fresh_col,
+            model_name=persisted.name,
+            sqlite_widen_enabled=sqlite_widen_enabled,
+        )
+        key_filled = fill_key and fresh_col is not None and fresh_col.primary_key and _reads(persisted_col, fresh_col)
+        if key_filled:
+            merged_col = merged_col.model_copy(update={"primary_key": True})
+        out.columns.append(merged_col)
+        out.metadata_changed = out.metadata_changed or unique_filled or key_filled
+        if described:
+            out.described.append(persisted_col.name)
+        if did_widen:
+            out.widened.append(persisted_col.name)
+    return out
 
 
 def _additive_merge_existing(
@@ -1567,40 +1398,32 @@ def _additive_merge_existing(
     Exceptions: SQLite INT→DOUBLE/TEXT widening, a TEXT column re-typed to its live list, empty-field
     gap-fills, and a non-None ``source_kind`` refresh.
     """
-    fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
     persisted_names = {c.name for c in persisted.columns}
     # A live column is the persisted column it is the physical spelling of, else the one named like it.
     live_name = {
         c.name: c.physical_name if c.is_base and c.physical_name not in persisted_names - {c.name} else c.name
         for c in persisted.columns
     }
+    # The primary key is gap-filled whole or not at all; a key the model has is never changed.
+    fill_key = _live_key_lands_whole(persisted=persisted, fresh=fresh, live_name=live_name)
+    columns = _merge_persisted_columns(
+        persisted=persisted, fresh=fresh, live_name=live_name, sqlite_widen_enabled=sqlite_widen_enabled,
+        fill_key=fill_key,
+    )
+    merged_columns = columns.columns
 
-    widened_column_names: list[str] = []
-    described_column_names: list[str] = []
-    merged_columns: list[Column] = []
-    metadata_changed = False
-    for persisted_col in persisted.columns:
-        merged_col, did_widen, unique_filled, described = _merge_one_column(
-            persisted_col=persisted_col,
-            fresh_col=fresh_by_name.get(live_name[persisted_col.name]),
-            model_name=persisted.name,
-            sqlite_widen_enabled=sqlite_widen_enabled,
-        )
-        metadata_changed = metadata_changed or unique_filled
-        if described:
-            described_column_names.append(persisted_col.name)
-        merged_columns.append(merged_col)
-        if did_widen:
-            widened_column_names.append(persisted_col.name)
-
-    new_cols = [c for c in fresh.columns if c.name not in persisted_names | set(live_name.values())]
+    matched = persisted_names | set(live_name.values())
+    new_cols = [
+        c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
+        for c in fresh.columns if c.name not in matched and _spelling(c) not in matched
+    ]
     merged_columns.extend(new_cols)
     new_column_names = [c.name for c in new_cols]
 
     merged_joins, joins_metadata_changed = _merge_stored_joins(
         persisted=persisted, fresh=fresh
     )
-    metadata_changed = metadata_changed or joins_metadata_changed
+    metadata_changed = columns.metadata_changed or joins_metadata_changed
 
     kind_changed = (
         fresh.source_kind is not None
@@ -1611,10 +1434,10 @@ def _additive_merge_existing(
 
     if not (
         new_column_names
-        or widened_column_names
+        or columns.widened
         or kind_changed
         or metadata_changed
-        or described_column_names
+        or columns.described
         or model_described
     ):
         return AdditiveMergeResult(merged=persisted)
@@ -1628,10 +1451,10 @@ def _additive_merge_existing(
     return AdditiveMergeResult(
         merged=persisted.model_copy(update=update),
         new_columns=new_column_names,
-        widened_columns=widened_column_names,
+        widened_columns=columns.widened,
         kind_changed=kind_changed,
         metadata_changed=metadata_changed,
-        described_columns=described_column_names,
+        described_columns=columns.described,
         model_described=model_described,
     )
 
@@ -1728,7 +1551,7 @@ def _merge_one_table(
     outcome = _additive_merge_existing(
         persisted=persisted,
         fresh=fresh,
-        sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
+        sqlite_widen_enabled=dialect_for_ds_type(datasource.type).probes_integer_affinity,
     )
     kind_change = None
     if outcome.kind_changed:

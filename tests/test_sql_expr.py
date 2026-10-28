@@ -118,7 +118,7 @@ _LOG_GOLDEN = {
     ('mysql', 2): 'LOG2(revenue)',
     ('clickhouse', 10): 'LOG(revenue, 10)',
     ('clickhouse', 2): 'LOG(revenue, 2)',
-    ('snowflake', 10): 'LOG10(revenue)',
+    ('snowflake', 10): 'LOG(10, revenue)',
     ('snowflake', 2): 'LOG(2, revenue)',
     ('bigquery', 10): 'LOG(10, revenue)',
     ('bigquery', 2): 'LOG(2, revenue)',

@@ -75,7 +75,7 @@ def _windowed_declared_first_query() -> SlayerQuery:
         source_model="orders_x",
         dimensions=[ColumnRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         measures=[
@@ -202,7 +202,7 @@ class TestB7DeclarationOrderProjection:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -355,7 +355,7 @@ class TestProjectionInvariant:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -456,7 +456,7 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -469,7 +469,7 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -484,7 +484,7 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -497,7 +497,7 @@ class TestB8InnerStagePlanOrder:
         return SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -562,7 +562,7 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -585,7 +585,7 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -609,7 +609,7 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -638,7 +638,7 @@ class TestB8InnerStagePlanOrder:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[

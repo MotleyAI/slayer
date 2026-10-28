@@ -117,13 +117,27 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "…",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
-         message="A time dimension must reference a temporal column (DATE / TIMESTAMP); got column type …."
-         + AT + "time dimension …",
+         message="A time dimension must reference a temporal … (DATE / TIMESTAMP); got … type …."
+         + AT + "time dimension …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_time_dimension_column", exc="TimeDimensionColumnError",
-         message="Cannot re-bucket to '…': the column is already bucketed at '…', which does not nest into '…'."
+         message="Cannot re-bucket to '…': the … is already bucketed at '…', which does not nest into '…'."
          + AT + "time dimension …"
          + SUGGEST + "Request the same or a nesting-coarser granularity, or bucket the raw column instead.",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_spine_time_dimension", exc="TimeSpineError",
+         message="Time dimension `…` reads time_spine.timestamp inside an expression; an expression is never an axis."
+         + AT + "time dimension …" + SUGGEST + "Bucket time_spine.timestamp itself (time_dimensions=[{dimension: "
+         "time_spine.timestamp, granularity: month, date_range: [...]}]) and compute other date logic from the "
+         "fact's own column.",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_time_dimension_row_level", exc="TimeDimensionColumnError",
+         message="A time dimension is row-level; its expression reads an aggregate or transform."
+         + AT + "time dimension …" + SUGGEST + "Bucket a column or a row-level expression of columns.",
+         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_time_dimension_home", exc="UnsafeJoinInputError",
+         message="The time dimension reads …, which crosses an unproven or fanning join hop to … from …: no "
+         "dataset determines every column the expression reads." + AT + "time dimension …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
@@ -177,9 +191,9 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Add it to time_dimensions, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
-         message="The partition_by column '…' is not a query dimension."
+         message="The partition_by … '…' is not a query dimension."
          + AT + "…"
-         + SUGGEST + "Add it to dimensions/time_dimensions, or choose one of: ….",
+         + SUGGEST + "Add it to dimensions/time_dimensions…, or choose one of: ….",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_transform_partition_keys_in_operand_grain", exc="PartitionKeyError",
          message="The partition_by column '…' is not a member of the transform's operand grain (…); a rank-family transform partitions its operand's cells."
@@ -381,7 +395,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="Order key …(…) has no matching projected time dimension. Project a time_dimension on … at … granularity (e.g. …(…) in dimensions) to order by its bucket.",
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_BI, function="_assert_equivalent_tds_agree", exc="GranularityCallError",
-         message="Conflicting time dimensions on … at … granularity: equivalent columns must not differ in date range or label.",
+         message="Conflicting time dimensions on … at … granularity: equivalent spellings must not differ in date range, name or label.",
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_EE, function="type_position_conjunct", exc="PositionTypingError",
          message="This … expression is valid as neither a field nor a measure. Field typing failed: it references …, available only after aggregation. Measure typing failed: it references row-level …, not available at the query grain (not among the query dimensions)."
@@ -408,7 +422,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='…\n  suggestion: For a time bucket use ``gran(col)``; a custom aggregation used as a dimension must carry ``partition_by=``.',
          category="checker", family='granularities', user=True, owner="checker"),
     _row(module=_EE, function='check_granularity_call_shape', exc='GranularityShapeError',
-         message='Granularity call … must be a single column reference ``gran(col)``.\n  suggestion: Pass one bare or dotted column, e.g. ``fiscal_year(created_at)``.',
+         message='Granularity call … must take one row-level argument ``gran(expr)``.\n  suggestion: Pass one column or row-level expression, e.g. ``fiscal_year(created_at)``.',
          category="checker", family='granularities', user=True, owner="checker"),
     _row(module=_EE, function='check_granularity_known', exc='UnknownGranularityError',
          message='…',

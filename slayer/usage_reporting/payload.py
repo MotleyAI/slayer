@@ -2,9 +2,9 @@
 
 import datetime
 import uuid
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = 1
 VERSION_PATTERN = r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$"
@@ -21,7 +21,7 @@ UsageKey = Literal[
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
-    "cli:inspect", "cli:search", "cli:search.refresh-samples",
+    "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",
@@ -94,6 +94,14 @@ CLIENTS: frozenset[str] = frozenset(get_args(ClientToken))
 EXTRAS: tuple[ExtraToken, ...] = get_args(ExtraToken)
 
 
+def known_usage_key(*, surface: str, key: str) -> str | None:
+    """``key`` when defined, else ``<surface>:other`` when defined, else ``None``."""
+    if key in USAGE_KEYS:
+        return key
+    other = f"{surface}:other"
+    return other if other in USAGE_KEYS else None
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -142,6 +150,29 @@ class Batch(_Strict):
     dialects: Dialects = Field(default_factory=Dialects)
     context: Context = Field(default_factory=Context)
     mcp_clients: list[McpClientCount] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_usage_keys(cls, data: Any) -> Any:
+        """Count a key this version no longer defines as its surface's ``other`` (or drop it)."""
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
+            return data
+        entries = {
+            key: entry.model_dump() if isinstance(entry, UsageEntry) else entry for key, entry in usage.items()
+        }
+        if not all(isinstance(entry, dict) for entry in entries.values()):
+            return data
+        folded: dict[str, dict] = {}
+        for key, entry in entries.items():
+            target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
+            if target is None:
+                continue
+            merged = folded.setdefault(target, {"ok": 0, "errors": {}})
+            merged["ok"] += entry.get("ok", 0)
+            for token, count in (entry.get("errors") or {}).items():
+                merged["errors"][token] = merged["errors"].get(token, 0) + count
+        return {**data, "usage": folded}
 
 
 class Env(_Strict):

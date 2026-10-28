@@ -24,6 +24,8 @@ from slayer.engine.ingestion import _introspected_column, ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql import engine_factory
+from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.reflection import ReflectedColumn
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     EXEC_BACKENDS,
@@ -221,6 +223,19 @@ class TestInputForms:
             await emit_lib(lib_query(f"json_value(payload, '$.a' RETURNING {target})"), dialect=dialect)
 
 
+class TestSnowflakeTemporalTryCast:
+    @pytest.mark.parametrize("expr", ["json_value(payload, '$.t' RETURNING DATE)",
+                                      "json_value(payload, '$.t' RETURNING TIMESTAMP)", "TRY_CAST(code AS DATE)"])
+    async def test_digits_are_no_time_point(self, expr: str) -> None:
+        # Snowflake reads a digits-only string as epoch seconds.
+        sql = "".join((await emit_lib(lib_query(expr), dialect="snowflake")).split())
+        assert "'[+-]?[0-9]+')THENNULL" in sql, sql
+
+    async def test_numeric_target_is_untouched(self) -> None:
+        sql = await emit_lib(lib_query("TRY_CAST(code AS INT)"), dialect="snowflake")
+        assert "REGEXP_LIKE" not in sql.upper(), sql
+
+
 class TestPostgresVersion:
     async def test_postgres_16_guards_malformed_text(self, monkeypatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))
@@ -247,21 +262,28 @@ class TestPostgresVersion:
         assert calls == [1]
 
 
-def _db_type(sa_type: sa.types.TypeEngine) -> Optional[str]:
-    return _introspected_column({"type": sa_type}, name="payload", primary_key=False).db_type
+def _db_type(sa_type: sa.types.TypeEngine, *, dialect: str) -> Optional[str]:
+    return _introspected_column(
+        ReflectedColumn(name="payload", type=sa_type), name="payload", primary_key=False,
+        json_types=get_dialect(dialect).json_db_types,
+    ).db_type
 
 
 class TestIngestionKeepsJsonDbType:
-    @pytest.mark.parametrize(("sa_type", "expected"), [
-        (postgresql.JSONB(), "JSONB"), (postgresql.JSON(), "JSON"), (mysql.JSON(), "JSON"), (sa.JSON(), "JSON"),
+    @pytest.mark.parametrize(("sa_type", "dialect", "expected"), [
+        (postgresql.JSONB(), "postgres", "JSONB"), (postgresql.JSON(), "postgres", "JSON"),
+        (mysql.JSON(), "mysql", "JSON"), (sa.JSON(), "duckdb", "JSON"),
     ])
-    def test_sqlalchemy_json_types(self, sa_type: sa.types.TypeEngine, expected: str) -> None:
-        assert (_db_type(sa_type) or "").upper() == expected
+    def test_sqlalchemy_json_types(self, sa_type: sa.types.TypeEngine, dialect: str, expected: str) -> None:
+        assert (_db_type(sa_type, dialect=dialect) or "").upper() == expected
 
     @pytest.mark.parametrize("name", ["VARIANT", "OBJECT", "ARRAY"])
     def test_snowflake_semi_structured_types(self, name: str) -> None:
         sf = pytest.importorskip("snowflake.sqlalchemy")
-        assert (_db_type(getattr(sf, name)()) or "").upper().startswith(name)
+        assert (_db_type(getattr(sf, name)(), dialect="snowflake") or "").upper().startswith(name)
+
+    def test_postgres_array_is_not_json(self) -> None:
+        assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") is None
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
         duckdb = pytest.importorskip("duckdb")

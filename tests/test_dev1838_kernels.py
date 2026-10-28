@@ -14,7 +14,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import ColumnKey, TimeTruncKey
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import (
     PlainProducerKernel,
     RankedProducerKernel,
@@ -114,7 +114,7 @@ class TestKernelSynthesis:
         planned = _plan(q(
             dimensions=["customers.tier"],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.signup_at"),
+                dimension="customers.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(

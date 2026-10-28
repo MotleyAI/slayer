@@ -171,6 +171,7 @@ def _trino_path(path: JsonPath) -> str:
 class TrinoDialect(PrestoFamilyDialect):
     sqlglot_name: str = "trino"
     ds_type_aliases: frozenset[str] = frozenset({"trino"})
+    sa_backend_names: frozenset[str] = frozenset({"trino"})
     url_scheme: str | None = "trino"
     install_extra: str | None = "trino"
     regex_flavour: ClassVar[RegexFlavour] = JAVA

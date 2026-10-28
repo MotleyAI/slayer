@@ -360,14 +360,13 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
 
 
 class TimeTruncKey(_FrozenKey, frozen=True):
-    """Row-level reference to a time-truncated column, keyed by (column, granularity).
+    """A row-level value truncated to a granularity, keyed by (source, granularity).
 
-    ``column`` is a ``ColumnKey`` (base temporal column) or ``ColumnSqlKey``
-    (derived). ``granularity`` is resolved: built-in, or a datasource definition.
-    Different granularities on the same column are distinct slots.
+    ``source`` is any row-level key, a column being the one-leaf case.
+    ``granularity`` is resolved: built-in, or a datasource definition.
     """
 
-    column: ColumnKey | ColumnSqlKey
+    source: "ValueKey"
     granularity: Granularity
 
     @property
@@ -375,23 +374,23 @@ class TimeTruncKey(_FrozenKey, frozen=True):
         return Phase.ROW
 
     def children(self) -> Tuple["ValueKey", ...]:
-        return (self.column,)
+        return (self.source,)
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
     ) -> "TimeTruncKey":
         m = _ChildMapper(fn)
-        column = m(self.column)
-        return self.model_copy(update={"column": column}) if m.changed else self
+        source = m(self.source)
+        return self.model_copy(update={"source": source}) if m.changed else self
 
 
 def column_leaf(col: ColumnKey | ColumnSqlKey) -> str:
-    """Leaf column name of a ``TimeTruncKey.column`` regardless of kind."""
+    """Leaf column name of a ``TimeTruncKey.source`` regardless of kind."""
     return getattr(col, "leaf", None) or getattr(col, "column_name")
 
 
 def column_path(col: ColumnKey | ColumnSqlKey) -> Tuple[str, ...]:
-    """Join path of a ``TimeTruncKey.column`` regardless of kind."""
+    """Join path of a ``TimeTruncKey.source`` regardless of kind."""
     return col.path
 
 
@@ -449,15 +448,14 @@ AggregateSource = Union[
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
     "InKey", "TimePointCmpKey", "CastKey",
 ]
-# Positional and kwarg arg values share one union: `last(created_at)` binds an
-# identifier column, `weighted_avg(weight=qty)` a column,
+# Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
+# ranking column, `weighted_avg(weight=qty * 2)` a row-level expression,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
 # `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
-    # A FILTER-masked row parameter.
-    "ScalarCallKey",
+    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey",
     Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
@@ -1255,7 +1253,7 @@ def substitute_value_keys(
     Pre-order match-before-recurse: a key equal to a ``mapping`` entry is
     replaced atomically (children never traversed, replacements never
     re-substituted); everything else routes through ``map_children`` (a
-    protocol-less kind raises). ``TimeTruncKey.column`` IS traversed.
+    protocol-less kind raises). ``TimeTruncKey.source`` IS traversed.
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
@@ -1351,7 +1349,7 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
         t = column_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
-        return temporal_type(key.column, column_type=column_type)
+        return temporal_type(key.source, column_type=column_type)
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
@@ -1931,7 +1929,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
+        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
             out.append(k)
             return
         for c in k.children():
@@ -1949,13 +1947,6 @@ def parameter_row_leaves(value) -> List[ValueKey]:
     return source_row_leaves(cast(ValueKey, value))
 
 
-def _leaf_join_path(k: ValueKey) -> Tuple[str, ...]:
-    """Join path of a row-level leaf key regardless of kind."""
-    if isinstance(k, TimeTruncKey):
-        return column_path(k.column)
-    return getattr(k, "path", ())
-
-
 def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     """Join paths of the row-level column/star leaves of an aggregation source.
 
@@ -1967,8 +1958,8 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey)):
-            out.append(_leaf_join_path(k))
+        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
+            out.append(k.path)
             return
         for c in k.children():
             _walk(c)

@@ -47,7 +47,7 @@ import inspect
 _CHAIN_QUERY = SlayerQuery(
     source_model="orders",
     time_dimensions=[TimeDimension(
-        dimension=ColumnRef(name="created_at"),
+        dimension="created_at",
         granularity=TimeGranularity.MONTH,
     )],
     measures=[
@@ -61,7 +61,7 @@ _CHAIN_QUERY = SlayerQuery(
 _MULTI_STEP_QUERY = SlayerQuery(
     source_model="orders",
     time_dimensions=[TimeDimension(
-        dimension=ColumnRef(name="created_at"),
+        dimension="created_at",
         granularity=TimeGranularity.MONTH,
     )],
     measures=[
@@ -136,7 +136,7 @@ class TestWithChainAssembly:
         sql = await _sql(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
@@ -235,7 +235,7 @@ class TestChainSemanticsPreserved:
         sql = await _sql(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
@@ -247,7 +247,7 @@ class TestChainSemanticsPreserved:
         sql = await _sql(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],

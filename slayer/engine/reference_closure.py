@@ -231,7 +231,7 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
         return []
     if isinstance(node, TimeTruncKey):
-        return [node.column]
+        return [node.source]
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []

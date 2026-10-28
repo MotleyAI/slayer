@@ -185,7 +185,7 @@ search(
 |---|---|
 | MCP | `search(entities=[...], question="...")` tool |
 | REST | `POST /search` with `SearchRequest` body |
-| CLI  | `slayer search --entity <e> --question "..." [--format json] [--verbose]` |
+| CLI  | `slayer search "..." --entity <e> [--format json] [--verbose]` |
 | Python client | `await client.search(entities=[...], question="...")` |
 
 ### `compact=True` default (0.7.3)
@@ -391,7 +391,7 @@ Every column carries three optional sample-value fields for richer results:
 
 Profiling is lazy, never run at ingest (a per-column full scan would dominate
 ingest wall-clock). Samples populate on first `inspect` of a column, and also on:
-`slayer search refresh-samples`, `edit_model` (edited column, or every column on a
+`slayer datasources refresh-samples`, `edit_model` (edited column, or every column on a
 model-level change), `inspect_model` (missing values), `search()` column hits
 (stale values — one profiling call per model, models concurrently; no-op without
 an engine), and single-entity `inspect` at `compact=False`. Legacy models carrying

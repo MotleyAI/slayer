@@ -51,6 +51,7 @@ __all__ = [
     "list_child_name",
     "with_list_children",
     "model_column_element",
+    "join_key_columns",
     "matching_edges",
     "neighbors",
     "observe_traversals",
@@ -375,23 +376,30 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
     return out
 
 
-def physical_join_pairs(
+def join_key_columns(
     *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
-) -> list[tuple[str, str]]:
-    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+) -> list[tuple[Column, Column]]:
+    """``edge``'s key pairs as their declared columns; raises ``JoinKeyError`` on a non-base key."""
     declared_target = (edge.target_model if edge.declaring_model == edge.source_model
                        else edge.source_model)
 
-    def physical(key: str, model: SlayerModel) -> str:
+    def column(key: str, model: SlayerModel) -> Column:
         err = join_key_error(model=edge.declaring_model, target=declared_target, key=key,
                              side=model.name, columns=model.columns)
         if err is not None:
             raise err
         col = model.get_column(key)
         assert col is not None
-        return col.physical_name
+        return col
 
-    return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
+    return [(column(src, source), column(tgt, target)) for src, tgt in edge.join_pairs]
+
+
+def physical_join_pairs(
+    *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
+) -> list[tuple[str, str]]:
+    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+    return [(s.physical_name, t.physical_name) for s, t in join_key_columns(edge=edge, source=source, target=target)]
 
 
 def _virtual_spine_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:

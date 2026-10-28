@@ -129,14 +129,14 @@ with that transform's own error.
 #### Scenario: Row-grain composite keeps the aggregation reading
 - **WHEN** a measure is written `first(quantity * avg(unit_price, partition_by=product))`
   or `first(1)`
-- **THEN** it is the `first` aggregation, which rejects the expression source with
-  the existing "not supported over an expression" error
+- **THEN** it is the `first` aggregation, picking the row-level value at the ranked
+  row, by executed values — never the transform reading
 
 #### Scenario: Dispatch does not pre-empt transform-input validation
 - **WHEN** a measure is written `first(cumsum(weight))` with `weight` an unprojected
   row-level column
 - **THEN** it fails at plan time with the grain-refining row-level-leaf error naming
-  `cumsum` — never the aggregation's "not supported over an expression" error
+  `cumsum` — never the aggregation reading
 
 ### Requirement: Functional input is first-class — no rewriting, no warning
 The system SHALL NOT emit a normalization warning for functional aggregations,
@@ -212,8 +212,9 @@ spelling. Passing a parameter both positionally and by name, or more positional
 values than declared parameters — any positional value at all on an aggregation
 that declares none — SHALL fail with a clear error naming the rule. Ranked
 `first`/`last` declare no parameters — they take at most one positional value,
-their ranking column (the time axis when omitted), which, when given, SHALL be a
-column reference, never a literal or an attached value. After binding an
+their ranking key (resolved per › Default ranking key when omitted), which, when
+given, SHALL be a row-level expression — a column being the one-leaf case — never a
+literal-only expression or one carrying an aggregate, transform or attached value. After binding an
 attached (aggregate- or transform-valued) parameter is therefore always a named
 parameter.
 
@@ -244,7 +245,12 @@ parameter.
 #### Scenario: Invalid first/last ranking key errors
 - **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
   `last(amount, id, amount)` is submitted
-- **THEN** each fails at bind with a clear error naming the ranking-column rule
+- **THEN** each fails at bind with a clear error naming the ranking-key rule
+
+#### Scenario: Expression ranking key
+- **WHEN** a measure is written `last(balance, coalesce(updated_at, created_at))`
+- **THEN** it is the `balance` of the row latest by the coalesced timestamp, by
+  executed values on SQLite and DuckDB
 
 #### Scenario: Positional transform parameter equals named
 - **WHEN** a measure is written
@@ -368,3 +374,45 @@ function or a transform-only name.
 #### Scenario: With partition_by
 - **WHEN** a query by `region, city` has measure `sum(amount, partition_by=region) FILTER (WHERE status = 'paid')`
 - **THEN** each row carries its region's paid total
+
+### Requirement: Default ranking key
+A ranked `first` / `last` aggregation without an explicit ranking key SHALL rank by,
+in order: the first entry of the query's `dimensions` (in projection order) that is
+row-level and types DATE or TIMESTAMP — a column or a computed dimension, never a
+granularity bucket, which ties every row of a cell; else the first time dimension's un-truncated source, column or
+expression; else the model's default time dimension; else it SHALL fail with the
+existing ranking-key resolution error.
+
+#### Scenario: A temporal computed dimension is the default ranking key
+- **WHEN** a query groups by the computed dimension `coalesce(shipped_at, created_at)`
+  (typed TIMESTAMP) and a month time dimension on `created_at`, and selects
+  `last(amount)`
+- **THEN** each cell's value is the `amount` of its row latest by the coalesced
+  timestamp, by executed values on SQLite and DuckDB
+
+#### Scenario: An expression time dimension's source is the default ranking key
+- **WHEN** a query's only temporal dimension is the time dimension
+  `coalesce(shipped_at, created_at)` at `month` and it selects `last(amount)`
+- **THEN** each month's value is the `amount` of its row latest by the un-truncated
+  coalesced timestamp
+
+### Requirement: An expression ranking key is judged by its leaves
+An explicit or defaulted ranking key SHALL be determined by the aggregation's home
+and never widen it (semantics Axiom 2.4), judged over every leaf the expression reads
+and every dependency of a derived column it names, for local and cross-model
+(target-rooted) producers alike: a key reading a leaf across a fanning or unproven
+hop from the home SHALL fail with the existing ranked-input safety error naming that
+leaf and the hop. Two ranked aggregations differing only in their ranking key SHALL
+stay separate producers; equal keys, however spelled, SHALL share one.
+
+#### Scenario: Fanning leaf inside an expression ranking key
+- **WHEN** a query rooted at `customers` selects
+  `last(spend, coalesce(orders.created_at, signup_ts))`, `customers → orders`
+  one-to-many
+- **THEN** it fails at plan time with the ranked-input safety error naming
+  `orders.created_at` and the hop, never a value
+
+#### Scenario: Cross-model ranked aggregate with an expression key
+- **WHEN** a query rooted at `orders` selects
+  `last(customers.spend, coalesce(customers.updated_at, customers.signup_ts), partition_by=region)`
+- **THEN** it executes ranked inside the `customers`-rooted producer, by executed values
