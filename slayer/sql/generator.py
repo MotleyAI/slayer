@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -435,7 +435,6 @@ def _lower_positions(planned_query) -> _LoweredPositions:
     order = _lower_order_entries(
         planned_query=planned_query,
         slots_by_id=slots_by_id,
-        slot_id_by_key=slot_id_by_key,
         combined_attached=combined_attached,
     )
     return _LoweredPositions(
@@ -447,10 +446,10 @@ def _lower_order_entries(
     planned_query,
     *,
     slots_by_id: Dict[str, ValueSlot],
-    slot_id_by_key: Dict[Any, str],
     combined_attached: Set[str],
 ) -> List[ScopedOrder]:
     order: List[ScopedOrder] = []
+    outer_composite_ids = staged_plan.combined_composite_slot_ids(planned_query)
     for entry in planned_query.order:
         slot = slots_by_id.get(entry.slot_id)
         if slot is None:
@@ -464,9 +463,8 @@ def _lower_order_entries(
             direction=entry.direction,
             scope=_classify_order_scope(
                 slot=slot,
-                slots_by_id=slots_by_id,
-                slot_by_key=slot_id_by_key,
                 combined_attached=combined_attached,
+                outer_composite_ids=outer_composite_ids,
                 public_projection=list(planned_query.projection),
             ),
             nulls=entry.nulls,
@@ -474,42 +472,15 @@ def _lower_order_entries(
     return order
 
 
-def _composite_operand_in_isolated_cte(
-    slot: ValueSlot,
-    *,
-    slots_by_id: Dict[str, ValueSlot],
-    slot_by_key: Dict[Any, str],
-    combined_attached: Set[str],
-    ranked_slot_ids: "AbstractSet[str]",
-) -> bool:
-    for dep in walk_value_keys(slot.key):
-        dep_sid = slot_by_key.get(dep)
-        if dep_sid is None or dep_sid == slot.id:
-            continue
-        dep_stage = slots_by_id[dep_sid].stage
-        if (
-            dep_sid in ranked_slot_ids
-            or dep_sid in combined_attached
-            or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
-        ):
-            return True
-    return False
-
-
 def _classify_order_scope(
     *,
     slot: ValueSlot,
-    slots_by_id: Dict[str, ValueSlot],
-    slot_by_key: Dict[Any, str],
     combined_attached: Set[str],
+    outer_composite_ids: Set[str],
     public_projection: List[str],
-    ranked_slot_ids: "AbstractSet[str]" = frozenset(),
 ) -> OrderScope:
-    """Name the scope that PRODUCES ``slot``'s value, from its planner stage
-    plus the attach facts (ranked kernel, combined-attached dual-role values);
-    a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE."""
-    if slot.id in ranked_slot_ids:
-        return OrderScope.RANKED_CTE
+    """Name the scope that PRODUCES ``slot``'s value, from its planner stage plus the
+    attach facts; a composite is OUTER_COMPOSITE exactly where the planner places it."""
     if slot.id in combined_attached:
         return OrderScope.CROSS_MODEL_CTE
     stage_kind = slot.stage.kind if slot.stage is not None else None
@@ -521,13 +492,7 @@ def _classify_order_scope(
         return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, SLOT_COMPOSITE_KINDS) and _composite_operand_in_isolated_cte(
-        slot,
-        slots_by_id=slots_by_id,
-        slot_by_key=slot_by_key,
-        combined_attached=combined_attached,
-        ranked_slot_ids=ranked_slot_ids,
-    ):
+    if slot.id in outer_composite_ids:
         return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN
@@ -599,7 +564,11 @@ def _conjunction(parts: Sequence[Expression]) -> Optional[Expression]:  # pyrigh
     return out
 
 # Parameter values rendered through a scope; scalars render as literals, markers never.
-_ROW_PARAM_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey, ScalarCallKey)
+def _is_row_param(value: object) -> bool:
+    """A row-valued aggregation parameter: a row-level key carrying no aggregate or transform."""
+    return isinstance(value, VALUE_KEY_TYPES) and not any(
+        isinstance(k, (AggregateKey, TransformKey, StarKey)) for k in walk_value_keys(cast(ValueKey, value))
+    )
 
 # Shift units whose whole-unit offsets map each bucket start onto another, making the outer re-trunc a per-row no-op.
 _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
@@ -2100,7 +2069,7 @@ class SQLGenerator:
         resolved = {
             kname: ResolvedAggKwarg(value=scope.resolve(kval))
             for kname, kval in getattr(key, "kwargs", ())
-            if isinstance(kval, _ROW_PARAM_KINDS)
+            if _is_row_param(kval)
         }
         return resolved or None
 
@@ -2215,8 +2184,8 @@ class SQLGenerator:
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
-                    col_expr = self._raw_time_col_expr_for_planned(
-                        time_column=key.column,
+                    col_expr = derived_expr_by_sid.get(sid) or self._raw_time_col_expr_for_planned(
+                        time_column=key.source,
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
@@ -2456,9 +2425,8 @@ class SQLGenerator:
             tslot = slots_by_id.get(sid)
             assert tslot is not None
             base_alias = _alias_of(sid)
-            src_scope.resolve(tslot.key.column)
-            raw = self._raw_time_col_expr_for_planned(
-                time_column=tslot.key.column, source_model=source_model,
+            raw = self._bucket_source_expr(
+                source=tslot.key.source, scope=src_scope, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
             trunc = self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity)
@@ -2471,9 +2439,8 @@ class SQLGenerator:
         wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
         assert wtd_slot is not None
         wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
-        src_scope.resolve(wtd_slot.key.column)
-        raw_time = self._raw_time_col_expr_for_planned(
-            time_column=wtd_slot.key.column, source_model=source_model,
+        raw_time = self._bucket_source_expr(
+            source=wtd_slot.key.source, scope=src_scope, source_model=source_model,
             source_relation=source_relation, bundle=bundle,
         )
         src_cols.append(raw_time.copy().as_("_w_time"))
@@ -2588,7 +2555,7 @@ class SQLGenerator:
         # exclusive upper edge.
         # Calendar parts apply one by one in written order, clamping like date_add.
         assert wtd_slot is not None
-        time_type = src_scope.column_type(wtd_slot.key.column)
+        time_type = temporal_type(wtd_slot.key.source, column_type=src_scope.column_type)
         operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
         unit, step, _ = granularity_parts(plan.window_granularity)
         bucket_end = self._date_offset(_base_col(wtd_alias), count=step, unit=unit, operand=operand)
@@ -2715,48 +2682,72 @@ class SQLGenerator:
         cast_derived: bool = True,
     ) -> Expression:
         """One value expression anchored in a ranked CTE's own scope."""
-
-        def _register(expr: Expression, path: Tuple[str, ...]) -> None:
-            if path:
-                scope.join_paths.add(path)
-            for p in self._joined_paths_in_sql(
-                sql_expr=expr, source_relation=root_relation,
-                source_model=root_model, bundle=bundle,
-            ):
-                scope.join_paths.add(p)
-
         if isinstance(key, TimeTruncKey):
-            raw = self._raw_time_col_expr_for_planned(
-                time_column=key.column, source_model=root_model,
-                source_relation=root_relation, bundle=bundle,
-            )
-            _register(raw, column_path(key.column))
+            if isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+                raw = self._raw_time_col_expr_for_planned(
+                    time_column=key.source, source_model=root_model,
+                    source_relation=root_relation, bundle=bundle,
+                )
+                self._register_ranked_paths(
+                    raw, column_path(key.source), root_model=root_model, root_relation=root_relation,
+                    bundle=bundle, scope=scope,
+                )
+            else:
+                raw = self._ranked_scope_expr(
+                    key=key.source, root_model=root_model, root_relation=root_relation,
+                    bundle=bundle, scope=scope, cast_derived=False,
+                )
             return self._build_date_trunc(col_expr=raw, granularity=key.granularity)
         if isinstance(key, ColumnKey):
             expr = self._joined_or_local_dim_expr(
                 path=key.path, leaf=key.leaf, source_model=root_model,
                 source_relation=root_relation, bundle=bundle,
             )
-            _register(expr, key.path)
+            self._register_ranked_paths(
+                expr, key.path, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+            )
             return expr
         if isinstance(key, ColumnSqlKey):
-            expr = self._derived_column_expr(
-                key=key, source_model=root_model,
-                source_relation=root_relation, bundle=bundle,
+            return self._ranked_derived_column_expr(
+                key=key, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+                cast_derived=cast_derived,
             )
-            if expr is None:
-                raise ValueError(
-                    f"Derived column {key.column_name!r} on model "
-                    f"{key.path[-1] if key.path else root_model.name!r} is not "
-                    f"in the resolved source bundle.",
-                )
-            _register(expr, key.path)
-            return expr if cast_derived else _strip_declared_cast(expr)
+        if isinstance(key, (*SLOT_COMPOSITE_KINDS, LiteralKey)):
+            return render_value_key(key=key, ctx=RenderContext(scope=scope, dialect=self._dialect))
         raise NotImplementedError(
             f"Ranked CTE cannot anchor a {type(key).__name__} — the grain and "
-            f"the ranking column are columns, truncated time columns, or "
-            f"derived columns.",
+            f"the ranking key are row-level values.",
         )
+
+    def _ranked_derived_column_expr(
+        self, *, key: ColumnSqlKey, root_model, root_relation: str, bundle, scope: ScopeFrame, cast_derived: bool,
+    ) -> Expression:
+        expr = self._derived_column_expr(
+            key=key, source_model=root_model,
+            source_relation=root_relation, bundle=bundle,
+        )
+        if expr is None:
+            raise ValueError(
+                f"Derived column {key.column_name!r} on model "
+                f"{key.path[-1] if key.path else root_model.name!r} is not "
+                f"in the resolved source bundle.",
+            )
+        self._register_ranked_paths(
+            expr, key.path, root_model=root_model, root_relation=root_relation, bundle=bundle, scope=scope,
+        )
+        return expr if cast_derived else _strip_declared_cast(expr)
+
+    def _register_ranked_paths(
+        self, expr: Expression, path: Tuple[str, ...], *, root_model, root_relation: str, bundle, scope: ScopeFrame,
+    ) -> None:
+        """Record the join paths ``expr`` reads (``path`` included) in the ranked CTE's scope."""
+        if path:
+            scope.join_paths.add(path)
+        for p in self._joined_paths_in_sql(
+            sql_expr=expr, source_relation=root_relation,
+            source_model=root_model, bundle=bundle,
+        ):
+            scope.join_paths.add(p)
 
     def _ranked_value_expr(
         self, *, key, root_model, root_relation: str, bundle, scope: ScopeFrame,
@@ -2770,9 +2761,8 @@ class SQLGenerator:
                 f"'*' — use 'count(*)' for COUNT(*)."
             )
         if not isinstance(source, (ColumnKey, ColumnSqlKey)):
-            raise NotImplementedError(
-                f"AggregateKey source {type(source).__name__} not supported.",
-            )
+            # An expression (a mixed one's attached values row-attached in ``scope``).
+            return render_value_key(key=source, ctx=RenderContext(scope=scope, dialect=self._dialect))
         leaf = (
             source.leaf if isinstance(source, ColumnKey) else source.column_name
         )
@@ -3360,9 +3350,8 @@ class SQLGenerator:
         for sid in (*plan.other_time_dimension_slot_ids,
                     plan.window_time_dimension_slot_id):
             tslot = slots_by_id[sid]
-            scope.resolve(tslot.key.column)
-            raw = self._raw_time_col_expr_for_planned(
-                time_column=tslot.key.column, source_model=source_model,
+            raw = self._bucket_source_expr(
+                source=tslot.key.source, scope=scope, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
             _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
@@ -4360,8 +4349,8 @@ class SQLGenerator:
             key = slot.key
             if isinstance(key, ColumnKey):
                 _add(key.path)
-            elif isinstance(key, TimeTruncKey):
-                _add(key.column.path)
+            elif isinstance(key, TimeTruncKey) and isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+                _add(column_path(key.source))
 
         for sid in base_render_order:
             _add_row_slot(sid)
@@ -4519,7 +4508,7 @@ class SQLGenerator:
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
         """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's column."""
-        axis_column = axis.column if isinstance(axis, TimeTruncKey) else None
+        axis_column = axis.source if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
             for plan in planned_query.regroup_attach_plans
@@ -4538,7 +4527,7 @@ class SQLGenerator:
         """A row slot's grain membership: a dimension, or a time dimension off the axis's column."""
         key = slot.key
         if isinstance(key, TimeTruncKey):
-            return axis_column is not None and key.column != axis_column
+            return axis_column is not None and key.source != axis_column
         return isinstance(key, (ColumnKey, ColumnSqlKey)) or slot.is_dimension
 
     def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved measure / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
@@ -5215,12 +5204,18 @@ class SQLGenerator:
             if slot is None or slot.phase != Phase.ROW:
                 continue
             key = slot.key
-            if isinstance(key, TimeTruncKey) and isinstance(key.column, ColumnSqlKey):
+            if isinstance(key, TimeTruncKey) and not isinstance(key.source, (ColumnKey, ColumnSqlKey)):
+                # The bucket's untruncated value, its joins registered before the FROM is built.
+                derived_expr_by_sid[sid] = render_value_key(
+                    key=key.source, ctx=RenderContext(scope=scope, dialect=self._dialect),
+                )
+                continue
+            if isinstance(key, TimeTruncKey) and isinstance(key.source, ColumnSqlKey):
                 raw = self._raw_time_col_expr_for_planned(
-                    time_column=key.column, source_model=source_model,
+                    time_column=key.source, source_model=source_model,
                     source_relation=source_relation, bundle=bundle,
                 )
-                _add(key.column.path)
+                _add(column_path(key.source))
                 for p in self._joined_paths_in_sql(
                     sql_expr=raw, source_relation=source_relation,
                     source_model=source_model, bundle=bundle,
@@ -5370,10 +5365,22 @@ class SQLGenerator:
             type=col.type,
         )
 
+    def _bucket_source_expr(
+        self, *, source: ValueKey, scope, source_model, source_relation: str, bundle,
+    ) -> Expression:
+        """Untruncated value of a bucket's ``source`` in ``scope``, registering the joins it reads."""
+        if not isinstance(source, (ColumnKey, ColumnSqlKey)):
+            return render_value_key(key=source, ctx=RenderContext(scope=scope, dialect=self._dialect))
+        scope.resolve(source)
+        return self._raw_time_col_expr_for_planned(
+            time_column=source, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        )
+
     def _raw_time_col_expr_for_planned(
         self, *, time_column, source_model, source_relation: str, bundle,
     ) -> Expression:
-        """Untruncated time expression for a ``TimeTruncKey.column``"""
+        """Untruncated value of a column bucket source."""
 
         if isinstance(time_column, ColumnKey):
             return self._joined_or_local_dim_expr(
@@ -5628,7 +5635,7 @@ class SQLGenerator:
                         f"Aggregation {key.agg!r} parameter {name!r} is unbound text "
                         f"{value!r}; a parameter binds at query binding, never as SQL text."
                     )
-            elif isinstance(value, _ROW_PARAM_KINDS):
+            elif _is_row_param(value):
                 out[name] = ResolvedAggKwarg(value=scope.resolve(value))
             elif isinstance(value, VALUE_KEY_TYPES):
                 raise RuntimeError(
@@ -6267,7 +6274,7 @@ class SQLGenerator:
         # A hidden ROW column ordered in an UNGROUPED query emits a split <relation>.<column> reference (the row is the
         # grain, so the bare ref is legal and Law 1 pulls the join in).
         key = slot.key
-        row_key = key.column if isinstance(key, TimeTruncKey) else key
+        row_key = key.source if isinstance(key, TimeTruncKey) else key
         if source_model is not None and isinstance(row_key, ColumnKey):
             return self._joined_or_local_dim_expr(
                 path=row_key.path, leaf=row_key.leaf,

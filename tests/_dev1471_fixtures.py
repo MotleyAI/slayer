@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -85,7 +85,7 @@ MONTHLY_ROWS = [
 # Inner stage: monthly revenue over ``orders.created_at`` (shared stage-axis fixture).
 MONTHLY_INNER = SlayerQuery.model_validate({
     "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+    "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
     "measures": [{"formula": "amount:sum", "name": "rev"}],
 })
 

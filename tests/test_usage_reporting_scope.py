@@ -62,6 +62,14 @@ def test_library_use_records_nothing(store: str, usage_reporting_env) -> None:
     assert usage_reporting_env.capture.arrivals == 0
 
 
+def test_subprocess_env_drops_embedding_config(usage_reporting_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("SLAYER_EMBEDDING_MODEL", "openai/test-model")
+    env = usage_reporting_env.subprocess_env()
+    assert "OPENAI_API_KEY" not in env
+    assert "SLAYER_EMBEDDING_MODEL" not in env
+
+
 def test_record_without_start_is_a_no_op(usage_reporting_env) -> None:
     usage_reporting.record(surface="mcp", token="query")
     usage_reporting.flush()

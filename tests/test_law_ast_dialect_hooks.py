@@ -1,4 +1,4 @@
-"""Law (sql.arc42.md §3.1): an AST-returning dialect hook takes only typed, non-str, non-callable operands."""
+"""Law (python.sql.arc42.md §3.1): an AST-returning dialect hook takes only typed, non-str, non-callable operands."""
 
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import AggregateKey, ColumnKey, reroot_value_key, walk_value_keys
 from slayer.core.keys import Grain
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import ModelMeasure, SlayerQuery, TimeDimension
 from slayer.sql.naming import canonical_aggregate_alias
 
 from tests._dev1739_fixtures import gen, month_td
@@ -38,9 +38,9 @@ class TestGrainGuards:
     async def test_ambiguous_time_granularity_raises(self) -> None:
         q = _q(
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.DAY),
             ],
             measures=[ModelMeasure(formula="amount:sum(partition_by=ordered_at)")],

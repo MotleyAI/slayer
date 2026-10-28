@@ -1,7 +1,7 @@
 """Re-aggregation over ranked (first/last) and windowed operands.
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Re-aggregation over ranked
-and windowed operands"; sql.arc42 P10 (own ordering / own frame → own producer).
+and windowed operands"; python.sql.arc42.md P10 (own ordering / own frame → own producer).
 """
 
 from __future__ import annotations
@@ -324,7 +324,7 @@ class TestAssociatedRankedPickStaysTyped:
         query = f1841.assoc_q(
             dimensions=["status"],
             time_dimensions=[f1841.TimeDimension(
-                dimension=f1841.ColumnRef(name="customers.signup_at"),
+                dimension="customers.signup_at",
                 granularity=f1841.TimeGranularity.MONTH,
             )],
             measures=[f1841.ModelMeasure(formula="customers.spend:last", name="l")],

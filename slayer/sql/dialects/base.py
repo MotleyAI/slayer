@@ -28,6 +28,26 @@ from slayer.sql._identifier_fit import (
     quoted_identifiers,
     substitute_quoted,
 )
+from slayer.sql.dialects.reflection import (
+    CatalogEngine,
+    ReflectedColumn,
+    TableKeys,
+    TableLocation,
+    all_of,
+    best_effort,
+    clean_comment,
+    col,
+    column_from_type_string,
+    eq_literal,
+    fetch,
+    inspector_column_names,
+    inspector_foreign_keys,
+    inspector_unique_constraints,
+    inspector_unique_indexes,
+    relation,
+    schema_token,
+    without_primary_key,
+)
 from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
@@ -339,6 +359,15 @@ class SqlDialect(BaseModel):
     url_backend_aliases: frozenset[str] = frozenset()
     async_driver: str | None = None
     install_extra: str | None = None
+
+    # SQLAlchemy backend names (``engine.dialect.name``) whose structure this dialect reflects.
+    sa_backend_names: frozenset[str] = frozenset()
+
+    # Declared-INT columns may store non-integers (SQLite affinity): ingestion probes them.
+    probes_integer_affinity: bool = False
+
+    # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
+    primary_key_inspector_only: bool = False
 
     @property
     def sync_driver(self) -> str | None:
@@ -1023,6 +1052,123 @@ class SqlDialect(BaseModel):
 
     def map_cursor_type_code(self, type_code: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: cursor type code → SLayer category, or ``None`` for the Postgres OID map."""
+        return None
+
+    # Structure reflection: the one reader of a live table's columns and keys.
+
+    def reflect_columns(
+        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+    ) -> list[ReflectedColumn]:
+        """Inspector columns; when it raises, ``columns_query`` plus ``column_comments_query``."""
+        try:
+            return [
+                ReflectedColumn(name=c["name"], type=c["type"], comment=clean_comment(c.get("comment")))
+                for c in inspector.get_columns(table, schema=schema_token(schema=schema, catalog=catalog))
+            ]
+        except Exception:  # noqa: BLE001 — catalog fallback below
+            pass
+        location = TableLocation(name=table, schema_name=schema, catalog=catalog)
+        rows = fetch(sa_engine, self.columns_query(location), dialect=self.sqlglot_name)
+        comments = self._column_comments(sa_engine=sa_engine, location=location)
+        return [column_from_type_string(name=name, data_type=dtype, comment=comments.get(name)) for name, dtype in rows]
+
+    def columns_query(self, location: TableLocation) -> exp.Select:
+        """``(column_name, data_type)`` of one table from INFORMATION_SCHEMA, in column order."""
+        conditions = [eq_literal(col("table_name"), location.name)]
+        if location.schema_name:
+            conditions.append(eq_literal(col("table_schema"), location.schema_name))
+        if location.catalog:
+            conditions.append(eq_literal(col("table_catalog"), location.catalog))
+        return (
+            exp.select(col("column_name"), col("data_type"))
+            .from_(relation("columns", db="information_schema"))
+            .where(all_of(conditions))
+            .order_by(col("ordinal_position"))
+        )
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``(column_name, comment)`` of one table, or ``None`` when comments have no catalog source."""
+        return None
+
+    def _column_comments(self, *, sa_engine: CatalogEngine | None, location: TableLocation) -> dict[str, str]:
+        query = self.column_comments_query(location)
+        if query is None:
+            return {}
+        try:
+            rows = fetch(sa_engine, query, dialect=self.sqlglot_name)
+        except Exception:  # noqa: BLE001 — comments are optional
+            return {}
+        return {name: comment for name, raw in rows if (comment := clean_comment(raw))}
+
+    def reflect_table_keys(
+        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+    ) -> TableKeys:
+        """PK, FKs and whole-table unique key sets; each read best-effort, a failure logged at WARNING."""
+        token = schema_token(schema=schema, catalog=catalog)
+        pk = best_effort(
+            lambda: self._primary_key(
+                sa_engine=sa_engine, inspector=inspector, table=table, schema=schema, catalog=catalog,
+            ),
+            default=[], table=table, what="primary key",
+        )
+        fks = best_effort(
+            lambda: inspector_foreign_keys(inspector, table=table, token=token),
+            default=[], table=table, what="foreign keys",
+        )
+        uniques = best_effort(
+            lambda: inspector_unique_constraints(inspector, table=table, token=token),
+            default=[], table=table, what="unique constraints",
+        )
+        indexes = best_effort(
+            lambda: inspector_unique_indexes(inspector, table=table, token=token),
+            default=[], table=table, what="unique indexes",
+        )
+        return TableKeys(
+            primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
+        )
+
+    def _primary_key(
+        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+    ) -> list[str]:
+        """The Inspector's PK; when it yields none, ``primary_key_query`` (unless the Inspector is final)."""
+        try:
+            result = inspector.get_pk_constraint(table, schema=schema_token(schema=schema, catalog=catalog))
+            found = inspector_column_names(result.get("constrained_columns")) if isinstance(result, dict) else None
+        except Exception:
+            if self.primary_key_inspector_only:
+                raise
+            found = None
+        if found or self.primary_key_inspector_only:
+            return found or []
+        query = self.primary_key_query(TableLocation(name=table, schema_name=schema, catalog=catalog))
+        return [row[0] for row in fetch(sa_engine, query, dialect=self.sqlglot_name)]
+
+    def primary_key_query(self, location: TableLocation) -> exp.Select:
+        """PK column names from INFORMATION_SCHEMA; joined on the catalog too (DuckDB reuses constraint names)."""
+        on = [
+            exp.EQ(this=col("constraint_name", "tc"), expression=col("constraint_name", "kcu")),
+            exp.EQ(this=col("table_schema", "tc"), expression=col("table_schema", "kcu")),
+        ]
+        where = [
+            eq_literal(col("table_name", "tc"), location.name),
+            eq_literal(col("constraint_type", "tc"), "PRIMARY KEY"),
+        ]
+        if location.catalog:
+            on.append(exp.EQ(this=col("table_catalog", "tc"), expression=col("table_catalog", "kcu")))
+            where.append(eq_literal(col("table_catalog", "tc"), location.catalog))
+        if location.schema_name:
+            where.append(eq_literal(col("table_schema", "tc"), location.schema_name))
+        return (
+            exp.select(col("column_name", "kcu"))
+            .from_(relation("table_constraints", db="information_schema", alias="tc"))
+            .join(relation("key_column_usage", db="information_schema", alias="kcu"), on=all_of(on))
+            .where(all_of(where))
+        )
+
+    def reflect_schema_description(
+        self, *, sa_engine: "sa.Engine", schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
+    ) -> str | None:
+        """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
         return None
 
 

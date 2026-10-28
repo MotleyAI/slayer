@@ -556,7 +556,7 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     q = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],

@@ -16,7 +16,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import TimeDimensionColumnError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
@@ -172,27 +172,27 @@ class TestBinderAndChecker:
     def test_bare_column_returns_handset_granularity(self) -> None:
         orders, customers = self._orders_customers(gran_o=TG.DAY)
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.DAY),
+            TimeDimension(dimension="created_at", granularity=TG.DAY),
             scope=ModelScope(source_model=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
-        assert bound.upstream_granularity == TG.DAY
+        assert bound.bucketed_leaves == (("created_at", TG.DAY),)
         assert bound.column_type == DataType.TIMESTAMP
 
     def test_dotted_join_path_returns_handset_granularity(self) -> None:
         orders, customers = self._orders_customers(gran_c=TG.MONTH)
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="customers.signup_at"), granularity=TG.YEAR),
+            TimeDimension(dimension="customers.signup_at", granularity=TG.YEAR),
             scope=ModelScope(source_model=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
-        assert bound.upstream_granularity == TG.MONTH
+        assert bound.bucketed_leaves == (("customers.signup_at", TG.MONTH),)
 
     def test_rebucket_message_is_generalised(self) -> None:
         with pytest.raises(TimeDimensionColumnError) as exc:
             check_time_dimension_column(
                 name="monthly.created_at", column_type=DataType.TIMESTAMP,
-                upstream_granularity=TG.MONTH, requested_granularity=TG.DAY,
+                bucketed_leaves=(("monthly.created_at", TG.MONTH),), requested_granularity=TG.DAY,
             )
         msg = str(exc.value)
         assert "month" in msg
@@ -423,18 +423,18 @@ class TestSiblingStandIns:
         )
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[sibling])
         bound = bind_time_dimension(
-            TimeDimension(dimension=ColumnRef(name="s1.created_at"), granularity=TG.DAY),
+            TimeDimension(dimension="s1.created_at", granularity=TG.DAY),
             scope=ModelScope(source_model=host), bundle=bundle,
         )
-        assert bound.upstream_granularity == TG.MONTH
+        assert bound.bucketed_leaves == (("s1.created_at", TG.MONTH),)
         with pytest.raises(TimeDimensionColumnError):
             check_time_dimension_column(
                 name="s1.created_at", column_type=bound.column_type,
-                upstream_granularity=bound.upstream_granularity, requested_granularity=TG.DAY,
+                bucketed_leaves=bound.bucketed_leaves, requested_granularity=TG.DAY,
             )
         check_time_dimension_column(  # month re-binds
             name="s1.created_at", column_type=bound.column_type,
-            upstream_granularity=bound.upstream_granularity, requested_granularity=TG.MONTH,
+            bucketed_leaves=bound.bucketed_leaves, requested_granularity=TG.MONTH,
         )
 
     async def test_model_extension_over_bucketed_sibling(self) -> None:

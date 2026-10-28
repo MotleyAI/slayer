@@ -1,4 +1,4 @@
-"""usage_reporting.arc42.md principle 1: fail-silent — usage reporting never affects the host process."""
+"""python.usage_reporting.arc42.md principle 1: fail-silent — usage reporting never affects the host process."""
 
 from __future__ import annotations
 

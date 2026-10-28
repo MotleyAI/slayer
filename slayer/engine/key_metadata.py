@@ -34,7 +34,7 @@ from slayer.core.join_walker import model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
-from slayer.engine.introspect_utils import is_exact_numeric_db_type
+from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
 from slayer.sql.naming import expression_source_leaf
@@ -254,11 +254,11 @@ def dimension_key_metadata(
     """
     if isinstance(key, CastKey):
         return key.data_type, None, None
-    if not isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    inner = key.source if isinstance(key, TimeTruncKey) else key
+    if not isinstance(inner, (ColumnKey, ColumnSqlKey)):
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:
             return date_type, None, None
-    inner = key.column if isinstance(key, TimeTruncKey) else key
     path = tuple(getattr(inner, "path", ()) or ())
     leaf = getattr(inner, "leaf", None) or getattr(inner, "column_name", None)
     if leaf is None:

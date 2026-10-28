@@ -443,6 +443,9 @@ class SqliteDialect(SqlDialect):
     # Any type name is a column affinity on SQLite.
     vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
+    sa_backend_names: frozenset[str] = frozenset({"sqlite"})
+    probes_integer_affinity: bool = True
+    primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""
     log10_native: bool = True

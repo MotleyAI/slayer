@@ -146,7 +146,7 @@ class TestTraversal:
         keyed = key.model_copy(update={
             "partition_keys": Grain.of([ColumnKey(path=(), leaf="store")]),
             "time_key": TimeTruncKey(
-                column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH),
+                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH),
         })
         check_transform_inputs(roots=[keyed], projected_grain_keys=frozenset())
 

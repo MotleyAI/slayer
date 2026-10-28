@@ -25,6 +25,7 @@ from slayer.sql.dialects.base import (
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -39,9 +40,26 @@ _MYSQL_PART_FUNCTIONS = {
 }
 
 
+def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
+    """``term`` as sort keys in MySQL's native NULL order (NULLs low), led by an ``IS NULL`` key when it asks otherwise."""
+    descending = bool(term.args.get("desc"))
+    nulls_first = bool(term.args.get("nulls_first"))
+    if nulls_first != descending or term.this.is_int or isinstance(term.this, exp.Rand):
+        return [term]
+    is_null = exp.Case(
+        ifs=[exp.If(this=exp.Is(this=term.this.copy(), expression=exp.Null()), true=exp.Literal.number(1))],
+        default=exp.Literal.number(0),
+    )
+    return [
+        exp.Ordered(this=is_null, desc=nulls_first, nulls_first=not nulls_first),
+        exp.Ordered(this=term.this, desc=descending, nulls_first=not descending),
+    ]
+
+
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
+    sa_backend_names: frozenset[str] = frozenset({"mysql"})
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""
@@ -71,6 +89,11 @@ class MysqlDialect(SqlDialect):
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_execution_time = {timeout_seconds * 1000}"
 
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        return info_schema_comments_query(
+            comment_column="column_comment", default_schema=call("DATABASE"), location=location,
+        )
+
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
         a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
@@ -79,6 +102,18 @@ class MysqlDialect(SqlDialect):
                 node.set("decimals", exp.Literal.number(0))
             return node
         return tree.transform(_fix)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Emulate NULL placement on each ORDER BY term as written, so an alias stays an alias.
+
+        sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
+        """
+        statement = statement.copy()
+        for select in statement.find_all(exp.Select):
+            order = select.args.get("order")
+            if order is not None:
+                order.set("expressions", [key for term in order.expressions for key in _native_null_keys(term)])
+        return statement
 
     def natural_div(self, value: Expression, *, divisor: Expression) -> Expression:
         """``FLOOR``: an integer ``CAST`` rounds here."""
@@ -183,6 +218,7 @@ class MariadbDialect(MysqlDialect):
     """MariaDB renders as MySQL; it names its statement timeout differently."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+    sa_backend_names: frozenset[str] = frozenset({"mariadb"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_statement_time = {timeout_seconds}"

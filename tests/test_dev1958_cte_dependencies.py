@@ -1,4 +1,4 @@
-"""Shifted producer CTE dependencies (sql.arc42.md P6, design D7) and the
+"""Shifted producer CTE dependencies (python.sql.arc42.md P6, design D7) and the
 identity-deduplicated nested-plan traversal (design D8)."""
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
 from tests._dev1832_fixtures import (
-    ColumnRef,
     ModelMeasure,
     TimeDimension,
     TimeGranularity,
@@ -34,7 +33,7 @@ DEGENERATE_SHARE = "amount:sum / max(amount:sum(partition_by=[region]), partitio
 
 
 def _q(formula: str, *, date_range: bool = False):
-    td = ([TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    td = ([TimeDimension(dimension="ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())

@@ -1,4 +1,5 @@
 # Config for the la-* tools (github.com/MotleyAI/living-architecture).
+format: 0.4.0
 architecture: true
 reviewers:
   sonar:

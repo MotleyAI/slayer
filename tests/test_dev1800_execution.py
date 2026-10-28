@@ -325,7 +325,7 @@ class TestTermAloneExecutionParity:
 
     @staticmethod
     def _month_orders_td():
-        return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+        return [TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH)]
 
     async def test_surviving_rows_identical_with_and_without_projection(self, attr_engine) -> None:

@@ -687,7 +687,7 @@ class TestTsqlDialect:
             source_model="orders",
             measures=[ModelMeasure(formula="revenue:sum")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
         )
@@ -703,7 +703,7 @@ class TestTsqlDialect:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[

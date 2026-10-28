@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, NoReturn
 from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
 import sqlalchemy as sa
+import sqlglot
+from sqlglot import exp
 
 import slayer.engine.ingestion as ingestion_mod
 from slayer.async_utils import run_sync
@@ -35,14 +41,10 @@ from slayer.engine.ingestion import (
     ingest_datasource_report,
     introspect_table_to_model,
 )
-from slayer.engine.introspect_utils import (
-    _clean_comment,
-    _get_column_comments_fallback,
-    _get_columns_fallback,
-)
-from slayer.engine.schema_scope import SchemaRef
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
 from slayer.mcp.server import _render_ingest_result
+from slayer.sql.dialects import dialect_for_sa_backend
+from slayer.sql.dialects.reflection import clean_comment
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -62,17 +64,76 @@ def _mock_engine(dialect_name: str = "postgresql") -> MagicMock:
     return engine
 
 
-def _mock_conn_engine(dialect_name: str, execute_side_effect) -> tuple[MagicMock, MagicMock]:
-    """Engine whose ``connect()`` context yields a conn with stubbed execute."""
-    engine = _mock_engine(dialect_name)
-    conn = MagicMock()
-    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    if callable(execute_side_effect):
-        conn.execute.side_effect = execute_side_effect
-    else:
-        conn.execute.return_value.fetchall.return_value = execute_side_effect
-    return engine, conn
+class _Rows:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._rows)
+
+    def all(self) -> list[tuple]:
+        return list(self._rows)
+
+    def __iter__(self) -> Iterator[tuple]:
+        return iter(self._rows)
+
+
+class _CommentEngine:
+    """Answers the INFORMATION_SCHEMA columns query with ``columns``, every other query with ``comments``."""
+
+    def __init__(
+        self, *, backend: str, columns: list[tuple], comments: list[tuple] | Exception,
+    ) -> None:
+        self.dialect = SimpleNamespace(name=backend)
+        self.statements: list[str] = []
+        self._columns = columns
+        self._comments = comments
+
+    def _respond(self, statement: str) -> list[tuple]:
+        if "data_type" in statement.lower():
+            return self._columns
+        if isinstance(self._comments, Exception):
+            raise self._comments
+        return self._comments
+
+    @contextmanager
+    def connect(self) -> Iterator[SimpleNamespace]:
+        def _exec(statement: str, *args: Any, **kwargs: Any) -> _Rows:
+            assert not args, "catalog queries carry no bind parameters"
+            assert not kwargs, "catalog queries carry no bind parameters"
+            self.statements.append(statement)
+            return _Rows(self._respond(statement))
+
+        yield SimpleNamespace(exec_driver_sql=_exec)
+
+    def comment_queries(self) -> list[str]:
+        return [s for s in self.statements if "data_type" not in s.lower()]
+
+
+class _ColumnsRaisingInspector:
+    default_schema_name: str | None = None
+
+    def get_columns(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise RuntimeError("pg_collation does not exist")
+
+
+_ID_X = [("id", "INTEGER"), ("x", "VARCHAR")]
+
+
+def _fallback_comments(
+    *, backend: str, comments: list[tuple] | Exception, columns: list[tuple] = _ID_X,
+    table: str = "orders", schema: str | None = None,
+) -> tuple[dict[str, str | None], _CommentEngine]:
+    """Column name → comment from the dialect's ``reflect_columns`` with the Inspector failing."""
+    engine = _CommentEngine(backend=backend, columns=columns, comments=comments)
+    cols = dialect_for_sa_backend(backend).reflect_columns(
+        sa_engine=engine, inspector=_ColumnsRaisingInspector(),
+        table=table, schema=schema, catalog=None,
+    )
+    return {c.name: c.comment for c in cols}, engine
+
+
+_BIND = re.compile(r"(?<![:\w]):[A-Za-z_]\w*")
 
 
 def _mock_inspector(
@@ -127,16 +188,16 @@ def _col(model: SlayerModel, name: str) -> Column:
 
 class TestCleanComment:
     def test_strips_whitespace(self) -> None:
-        assert _clean_comment("  order id  ") == "order id"
+        assert clean_comment("  order id  ") == "order id"
 
     def test_empty_string_is_none(self) -> None:
-        assert _clean_comment("") is None
+        assert clean_comment("") is None
 
     def test_whitespace_only_is_none(self) -> None:
-        assert _clean_comment("   \n\t ") is None
+        assert clean_comment("   \n\t ") is None
 
     def test_none_passthrough(self) -> None:
-        assert _clean_comment(None) is None
+        assert clean_comment(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -219,11 +280,12 @@ class TestSafeGetTableComment:
 
 
 class TestSqliteProbePreservesComments:
-    def test_non_sqlite_engine_keeps_comments(self) -> None:
+    def test_non_affinity_engine_keeps_comments(self) -> None:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
-        out = _sqlite_probe_integer_columns(
-            sa_engine=_mock_engine("postgresql"), sql_table="t", columns=cols
-        )
+        with disposable_engine("duckdb:///:memory:") as engine:
+            with patch("slayer.sql.sqlite_introspect.probe_sqlite_integer_column") as probe:
+                out = _sqlite_probe_integer_columns(sa_engine=engine, sql_table="t", columns=cols)
+        probe.assert_not_called()
         assert out[0].comment == "kept"
 
     def test_widened_column_keeps_comment(self) -> None:
@@ -245,111 +307,83 @@ class TestSqliteProbePreservesComments:
 
 class TestColumnCommentsFallback:
     @pytest.mark.parametrize(
-        ("dialect", "source_marker"),
+        ("backend", "source_marker"),
         [
             ("mysql", "column_comment"),
             ("mariadb", "column_comment"),
             ("snowflake", "information_schema"),
             ("clickhouse", "system.columns"),
-            ("duckdb", "duckdb_columns"),
             ("postgresql", "col_description"),
         ],
     )
-    def test_dialect_query_shape(self, dialect: str, source_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id"), ("x", None)])
-        result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", ref=None
+    def test_dialect_query_shape(self, backend: str, source_marker: str) -> None:
+        comments, engine = _fallback_comments(
+            backend=backend, comments=[("id", "row id"), ("x", None)],
         )
-        assert result == {"id": "row id"}
-        args, kwargs = conn.execute.call_args
-        sql_str = str(args[0]).lower()
-        assert source_marker in sql_str
-        params = args[1] if len(args) > 1 else kwargs
-        assert "orders" in params.values()
-        assert "orders" not in sql_str
+        assert comments == {"id": "row id", "x": None}
+        (sql,) = engine.comment_queries()
+        assert source_marker in sql.lower()
+        assert "'orders'" in sql
+        assert not _BIND.search(sql)
 
-    @pytest.mark.parametrize(
-        "dialect", ["mysql", "snowflake", "clickhouse", "duckdb", "postgresql"]
-    )
-    def test_schema_is_bound_not_interpolated(self, dialect: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "row id")])
-        result = _get_column_comments_fallback(
-            sa_engine=engine, table_name="orders", ref=SchemaRef(name="s1")
+    @pytest.mark.parametrize("backend", ["mysql", "snowflake", "clickhouse", "postgresql"])
+    def test_schema_is_an_escaped_literal(self, backend: str) -> None:
+        comments, engine = _fallback_comments(
+            backend=backend, comments=[("id", "row id")], schema="s1",
         )
-        assert result == {"id": "row id"}
-        args, kwargs = conn.execute.call_args
-        sql_str = str(args[0])
-        params = args[1] if len(args) > 1 else kwargs
-        assert "s1" in params.values()
-        assert "s1" not in sql_str
+        assert comments["id"] == "row id"
+        (sql,) = engine.comment_queries()
+        assert "'s1'" in sql
+        assert not _BIND.search(sql)
 
     def test_clickhouse_defaults_to_current_database(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="clickhouse", execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
-        sql_str = str(conn.execute.call_args[0][0]).lower()
-        assert "currentdatabase()" in sql_str
+        _, engine = _fallback_comments(backend="clickhouse", comments=[("id", "c")], table="t")
+        (sql,) = engine.comment_queries()
+        assert "currentdatabase()" in sql.lower()
 
     @pytest.mark.parametrize(
-        ("dialect", "default_marker"),
+        ("backend", "default_marker"),
         [
             ("mysql", "database()"),
-            ("snowflake", "current_schema()"),
-            ("duckdb", "current_schema()"),
+            ("snowflake", "current_schema"),
             ("postgresql", "pg_table_is_visible"),
         ],
     )
-    def test_no_schema_scopes_to_default(self, dialect: str, default_marker: str) -> None:
-        engine, conn = _mock_conn_engine(dialect_name=dialect, execute_side_effect=[("id", "c")])
-        _get_column_comments_fallback(sa_engine=engine, table_name="t", ref=None)
-        sql_str = str(conn.execute.call_args[0][0]).lower()
-        assert default_marker in sql_str
+    def test_no_schema_scopes_to_default(self, backend: str, default_marker: str) -> None:
+        _, engine = _fallback_comments(backend=backend, comments=[("id", "c")], table="t")
+        (sql,) = engine.comment_queries()
+        assert default_marker in sql.lower()
 
-    def test_no_literal_interpolation(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[])
-        _get_column_comments_fallback(
-            sa_engine=engine,
-            table_name="'; DROP TABLE users;--",
-            ref=SchemaRef(name="'; DROP TABLE users;--"),
+    def test_hostile_names_stay_escaped_literals(self) -> None:
+        payload = "'; DROP TABLE users;--"
+        _, engine = _fallback_comments(backend="mysql", comments=[], table=payload, schema=payload)
+        (sql,) = engine.comment_queries()
+        (tree,) = sqlglot.parse(sql, read="mysql")
+        assert tree is not None
+        values = {lit.this for lit in tree.find_all(exp.Literal) if lit.is_string}
+        assert payload in values
+
+    def test_dialect_without_comment_query_reads_none(self) -> None:
+        comments, engine = _fallback_comments(backend="mssql", comments=[("id", "x")], table="t")
+        assert comments == {"id": None, "x": None}
+        assert engine.comment_queries() == []
+
+    def test_comment_query_error_keeps_columns(self) -> None:
+        comments, _ = _fallback_comments(
+            backend="mysql", comments=RuntimeError("no such view"), table="t",
         )
-        args, _ = conn.execute.call_args
-        assert "DROP TABLE" not in str(args[0])
-
-    def test_unknown_dialect_returns_empty(self) -> None:
-        engine, conn = _mock_conn_engine(dialect_name="mssql", execute_side_effect=[("id", "x")])
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {}
-        conn.execute.assert_not_called()
-
-    def test_query_error_returns_empty(self) -> None:
-        def _boom(*args, **kwargs):
-            raise RuntimeError("no such view")
-
-        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_boom)
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {}
+        assert comments == {"id": None, "x": None}
 
     def test_blank_comments_filtered(self) -> None:
-        engine, _ = _mock_conn_engine(dialect_name="mysql", execute_side_effect=[("a", ""), ("b", "  "), ("c", "ok")])
-        assert _get_column_comments_fallback(
-            sa_engine=engine, table_name="t", ref=None
-        ) == {"c": "ok"}
+        comments, _ = _fallback_comments(
+            backend="mysql", comments=[("a", ""), ("b", "  "), ("c", "ok")],
+            columns=[("a", "INTEGER"), ("b", "INTEGER"), ("c", "INTEGER")], table="t",
+        )
+        assert comments == {"a": None, "b": None, "c": "ok"}
 
     def test_generic_fallback_merges_comments(self) -> None:
-        def _dispatch(clause, params=None):
-            res = MagicMock()
-            if "duckdb_columns" in str(clause):
-                res.fetchall.return_value = [("id", "row id")]
-            else:
-                res.fetchall.return_value = [("id", "INTEGER"), ("x", "VARCHAR")]
-            return res
-
-        engine, _ = _mock_conn_engine(dialect_name="duckdb", execute_side_effect=_dispatch)
-        cols = _get_columns_fallback(sa_engine=engine, table_name="t", ref=None)
-        by_name = {c["name"]: c for c in cols}
-        assert by_name["id"]["comment"] == "row id"
-        assert by_name["x"].get("comment") is None
+        comments, _ = _fallback_comments(backend="postgresql", comments=[("id", "row id")], table="t")
+        assert comments == {"id": "row id", "x": None}
 
 
 # ---------------------------------------------------------------------------

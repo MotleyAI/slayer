@@ -997,7 +997,7 @@ def test_month_wrapper_creates_time_dimension(dialect) -> None:
     assert len(result.query.time_dimensions) == 1
     td = result.query.time_dimensions[0]
     assert td.granularity == TimeGranularity.MONTH
-    assert td.dimension.full_name == "ordered_at"
+    assert td.dimension == "ordered_at"
 
 
 def test_date_trunc_creates_time_dimension(dialect) -> None:
@@ -1022,7 +1022,7 @@ def test_cast_wrapped_time_trunc_creates_time_dimension(dialect) -> None:
     assert len(result.query.time_dimensions) == 1
     td = result.query.time_dimensions[0]
     assert td.granularity == TimeGranularity.MONTH
-    assert td.dimension.full_name == "ordered_at"
+    assert td.dimension == "ordered_at"
 
 
 def test_metabase_aliased_cast_time_trunc_group_by_validates(dialect) -> None:
@@ -1073,7 +1073,7 @@ def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
     assert result.query.time_dimensions is not None
     assert len(result.query.time_dimensions) == 1
     assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK_SUNDAY
-    assert result.query.time_dimensions[0].dimension.full_name == "ordered_at"
+    assert result.query.time_dimensions[0].dimension == "ordered_at"
 
 
 def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:

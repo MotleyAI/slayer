@@ -197,7 +197,7 @@ class TestConstructionAccepts:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -208,7 +208,7 @@ class TestConstructionAccepts:
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -557,7 +557,7 @@ class TestSQLGeneration:
         q = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity="day"),
+                TimeDimension(dimension="created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )

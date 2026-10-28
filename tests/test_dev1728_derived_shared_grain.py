@@ -55,7 +55,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -312,7 +312,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
         )
@@ -512,7 +512,7 @@ class TestUnchangedBehaviourGuards:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
         )

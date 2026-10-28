@@ -224,11 +224,16 @@ is the coercion from coarser to finer.
 13. **Positions**: every query expression is a field or a measure; dimensions
     and measures return the value, filters mask on it, order sorts by it — the
     expression evaluates identically in every position, compiled by
-    construction as a hidden field/measure where not projected.
+    construction as a hidden field/measure where not projected. A column
+    reference is the one-leaf row-level expression: every position that takes
+    a column takes any row-level expression of its type, homed by Axiom 2.2.
     [enforced: test:tests/test_dev1865_value_parity.py]
     [enforced: test:tests/test_dev1865_stratification.py]
     [enforced: test:tests/test_dev1865_order.py]
     [enforced: test:tests/test_dev1976_dimension_values.py]
+    [enforced: test:tests/test_dev2119_expression_time_dimensions.py]
+    [enforced: test:tests/test_dev2119_partition_keys.py]
+    [enforced: test:tests/test_dev2119_ranked_expressions.py]
 14. **Filters**: a field-typed filter masks population rows before any
     aggregation; a measure-typed filter masks result cells after all values
     are computed, never changing a surviving cell's values; valid-as-both
@@ -243,13 +248,15 @@ is the coercion from coarser to finer.
     [enforced: test:tests/test_dev1935_boolean_lowering.py]
 15. **Time spine**: the spine is the dataset of all instants, keyed by its
     instant. A dataset's axis — its declared default time column, else its
-    sole one — joins it to-one; a dataset reaches the spine by its nearest
+    sole one — joins it to-one; an expression is never an axis, so a spine
+    dimension over one is a type error; a dataset reaches the spine by its nearest
     axis on a to-one chain, equal distances failing loudly, and a path may
     begin or end at the spine but never cross it. The spine has no countable
     rows. A query with spine dimensions has population `spine × P`, P
     inferred per Axiom 12 from its other dimensions and field filters, and
     must bound the spine from below.
     [enforced: test:tests/test_dev2015_time_spine.py]
+    [enforced: test:tests/test_dev2119_time_spine.py]
 
 ## 3. Laws
 

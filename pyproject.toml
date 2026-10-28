@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "1.4.0"
+version = "1.4.1"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -52,8 +52,8 @@ clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
 pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
-# works after a single `pip install motley-slayer`.
-duckdb = ">=0.9"
+# works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
@@ -112,7 +112,7 @@ ruff = ">=0.4"
 pytest-postgresql = "^8.0.0"
 psycopg2-binary = "^2.9.11"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=0.9"
+duckdb = ">=1.1"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
@@ -133,7 +133,7 @@ jpype1 = "^1.5.0"
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
-living-architecture = "0.3.1"
+living-architecture = "0.4.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

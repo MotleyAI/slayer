@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import JoinCardinality, TimeGranularity
 from slayer.core.models import SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS,
@@ -95,7 +95,7 @@ def mode_q(mode: Optional[str], **kw) -> SlayerQuery:
 
 
 def ordered_month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return [TimeDimension(dimension="ordered_at",
                           granularity=TimeGranularity.MONTH)]
 
 
