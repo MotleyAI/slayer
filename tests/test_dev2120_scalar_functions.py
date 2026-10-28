@@ -278,7 +278,8 @@ class TestFloorDivisionHint:
 class TestMySQLDoublePrecision:
     async def test_pi_is_not_display_rounded(self) -> None:
         sql = (await emit_lib(lib_query("pi()"), dialect="mysql")).upper()
-        assert "ACOS(-1)" in sql and "PI()" not in sql, sql
+        assert "ACOS(-1)" in sql, sql
+        assert "PI()" not in sql, sql
 
     async def test_cube_root_exponent_is_double(self) -> None:
         sql = (await emit_lib(lib_query("cbrt(x)"), dialect="mysql")).upper()
@@ -309,14 +310,17 @@ class TestSQLServerCodePoints:
         model = base.model_copy(update={"columns": [*base.columns, Column(
             name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", type=DataType.TEXT)]})
         sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
-        assert "SUBSTRING(lib.s, 1, 2)" in sql and "POWER(lib.a, 2)" in sql, sql
-        assert "COLLATE" not in sql and "FLOAT" not in sql, sql
+        assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
+        assert "POWER(lib.a, 2)" in sql, sql
+        assert "COLLATE" not in sql, sql
+        assert "FLOAT" not in sql, sql
 
     @pytest.mark.parametrize("expr", ["left(s, -2)", "right(s, -1)"])
     async def test_no_negative_literal_substring_length(self, expr: str) -> None:
         sql = await _tsql(expr)
         lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
-        assert lengths and not any(isinstance(n, exp.Neg) for n in lengths), sql
+        assert lengths, sql
+        assert not any(isinstance(n, exp.Neg) for n in lengths), sql
 
 
 class TestSQLServerNumbers:
@@ -336,11 +340,13 @@ class TestSQLServerQuirks:
 
     async def test_replacement_ampersand_is_literal(self) -> None:
         sql = await _tsql("regexp_replace(tag, 'USD', '$ & co')")
-        assert "'$ & co'" in sql and "\\&" not in sql, sql
+        assert "'$ & co'" in sql, sql
+        assert "\\&" not in sql, sql
 
     async def test_returning_timestamp_is_datetime2(self) -> None:
         sql = await _tsql("json_value(payload, '$.t' RETURNING TIMESTAMP)")
-        assert "AS DATETIME2)" in sql and "ROWVERSION" not in sql, sql
+        assert "AS DATETIME2)" in sql, sql
+        assert "ROWVERSION" not in sql, sql
 
 
 async def _clickhouse(expr: str) -> str:

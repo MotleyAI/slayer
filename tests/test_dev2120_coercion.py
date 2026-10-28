@@ -163,7 +163,8 @@ class TestEmission:
 class TestClickHouseCasts:
     async def test_is_distinct_from_is_two_valued_outside_join_on(self) -> None:
         sql = " ".join((await emit_lib(lib_query(filters=["num_txt IS DISTINCT FROM 99"]), dialect="clickhouse")).split())
-        assert "IS NOT DISTINCT FROM" not in sql.upper() and "<=>" not in sql, sql
+        assert "IS NOT DISTINCT FROM" not in sql.upper(), sql
+        assert "<=>" not in sql, sql
         assert "IS NULL" in sql.upper(), sql
 
     async def test_cast_target_is_nullable(self) -> None:
