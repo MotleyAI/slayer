@@ -206,8 +206,8 @@ class TestGreatestLeastLowering:
 class TestLogLowering:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_one_argument_log_is_base_ten(self, dialect: str) -> None:
-        sql = (await emit_lib(lib_query("log(x)"), dialect=dialect)).upper()
-        assert "LOG10(" in sql, sql
+        sql = " ".join((await emit_lib(lib_query("log(x)"), dialect=dialect)).upper().split())
+        assert "LOG10(" in sql or "LOG(10, " in sql, sql
         assert "LN(" not in sql, sql
 
     async def test_bigquery_log2_takes_the_base_argument(self) -> None:

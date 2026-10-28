@@ -28,7 +28,7 @@ from tests.dialects.conftest import _generate, _norm
 # flags would make the log-alias tests self-fulfilling.
 _LOG10_NATIVE_DIALECTS = frozenset({
     "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
+    "bigquery", "redshift",
     "trino", "presto", "databricks", "spark", "tsql",
 })
 _LOG2_NATIVE_DIALECTS = frozenset({

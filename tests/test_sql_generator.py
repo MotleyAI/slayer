@@ -8339,7 +8339,7 @@ class TestGetColumnTypesSql:
 # Per-alias allowlists for "natively supports single-arg log10/log2" rendering. Outside these sets the current 2-arg LOG(base, x) form is kept. Mirrored in slayer/sql/generator.py — keep in sync.
 _LOG10_NATIVE_DIALECTS = frozenset({
     "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
+    "bigquery", "redshift",
     "trino", "presto", "databricks", "spark", "tsql",
 })
 _LOG2_NATIVE_DIALECTS = frozenset({

@@ -15,7 +15,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TextFn, anon, case, either, lit
+from slayer.sql.dialects.base import ExtremumFn, SqlDialect, TextFn, anon, as_text, case, either, lit
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 
@@ -125,7 +125,7 @@ class SnowflakeDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""
-    log10_native: bool = True
+    log10_native: bool = False
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
@@ -147,6 +147,14 @@ class SnowflakeDialect(SqlDialect):
 
     def first_code_point(self, s: Expression) -> Expression:
         return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("UNICODE", s))
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """A digits-only string is no time point (Snowflake would read it as epoch seconds)."""
+        converted = super().build_try_cast(value, to)
+        if to.this not in exp.DataType.TEMPORAL_TYPES:
+            return converted
+        digits = anon("REGEXP_LIKE", anon("TRIM", as_text(value)), lit("[+-]?[0-9]+"))
+        return case((digits, exp.Null()), default=converted)
 
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         return anon(f"{fn.upper()}_IGNORE_NULLS", *args)

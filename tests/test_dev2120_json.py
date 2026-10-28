@@ -221,6 +221,19 @@ class TestInputForms:
             await emit_lib(lib_query(f"json_value(payload, '$.a' RETURNING {target})"), dialect=dialect)
 
 
+class TestSnowflakeTemporalTryCast:
+    @pytest.mark.parametrize("expr", ["json_value(payload, '$.t' RETURNING DATE)",
+                                      "json_value(payload, '$.t' RETURNING TIMESTAMP)", "TRY_CAST(code AS DATE)"])
+    async def test_digits_are_no_time_point(self, expr: str) -> None:
+        # Snowflake reads a digits-only string as epoch seconds.
+        sql = "".join((await emit_lib(lib_query(expr), dialect="snowflake")).split())
+        assert "'[+-]?[0-9]+')THENNULL" in sql, sql
+
+    async def test_numeric_target_is_untouched(self) -> None:
+        sql = await emit_lib(lib_query("TRY_CAST(code AS INT)"), dialect="snowflake")
+        assert "REGEXP_LIKE" not in sql.upper(), sql
+
+
 class TestPostgresVersion:
     async def test_postgres_16_guards_malformed_text(self, monkeypatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))
