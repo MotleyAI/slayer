@@ -10,8 +10,8 @@ Everything generated lives under a gitignored ``.cache/`` next to this file, so
 nothing generated is committed and re-runs rebuild it cheaply.
 
 The OSI importer takes column *types* from **live introspection** of the
-datasource (OSI carries no type hints), so the datasource must be saved and
-reachable *before* :func:`convert_osi_to_slayer` runs.
+datasource (a declared ``datatype`` is only the fallback), so the datasource
+must be saved and reachable *before* :func:`convert_osi_to_slayer` runs.
 
 Gold-query helper note: SLayer opens the DuckDB file through SQLAlchemy with a
 read-write engine that DuckDB will not let a second raw connection share under a
@@ -140,7 +140,6 @@ def convert_osi_to_slayer(
         documents=documents,
         data_source=DATASOURCE_NAME,
         sa_engine=sa_engine,
-        dialect="ANSI_SQL",
         target_dialect="duckdb",
     ).convert()
 

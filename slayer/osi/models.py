@@ -1,33 +1,14 @@
-"""Pydantic v2 models for OSI (Open Semantic Interchange) documents.
+"""Pydantic v2 models for Ossie (OSI) semantic-model documents.
 
-Ported from the OSI reference package (``open-semantic-interchange/OSI``,
-``python/src/osi/models.py``, Apache-2.0). The schema is stable across OSI spec
-versions 1.0 / 0.1.0 / 0.1.1 / 0.2.0.dev0 — the only differences are the version
-string and two optional document-level enum arrays, both absorbed by
-``extra="ignore"``.
-
-Deviations from the reference package:
-- ``extra="ignore"`` everywhere (forward/back-compat across spec versions).
-- ``vendor_name`` is a free string (0.2.0 widened it from an enum).
-- Models are not frozen (the importer does not mutate them, but leaving them
-  mutable avoids friction with Pydantic ``model_validate`` round-trips in tests).
+Mirrors the upstream core spec (``core-spec/ossie-schema.json``); every model
+uses ``extra="ignore"`` for forward compatibility. One ``OSIDocument`` holds one
+semantic model; ``legacy`` marks a model split out of a ``semantic_model``
+wrapper by the parser.
 """
 
-from enum import Enum
 from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-
-class OSIDialect(str, Enum):
-    """Supported SQL and expression language dialects."""
-
-    ANSI_SQL = "ANSI_SQL"
-    SNOWFLAKE = "SNOWFLAKE"
-    MDX = "MDX"
-    MAQL = "MAQL"
-    TABLEAU = "TABLEAU"
-    DATABRICKS = "DATABRICKS"
 
 
 class OSIAIContextObject(BaseModel):
@@ -54,20 +35,28 @@ class OSICustomExtension(BaseModel):
 
 
 class OSIDialectExpression(BaseModel):
-    """Expression in a specific dialect."""
+    """Expression in one dialect; ``dialect`` is any non-blank token."""
 
     model_config = ConfigDict(extra="ignore")
 
-    dialect: OSIDialect
+    dialect: str
     expression: str
+
+    @field_validator("dialect")
+    @classmethod
+    def _non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("dialect must be a non-blank string")
+        return v
 
 
 class OSIExpression(BaseModel):
-    """Expression definition with multi-dialect support."""
+    """Portable ``sql`` (OSSIE_SQL_2026) and/or per-dialect entries."""
 
     model_config = ConfigDict(extra="ignore")
 
-    dialects: list[OSIDialectExpression]
+    sql: Optional[str] = None
+    dialects: list[OSIDialectExpression] = []
 
 
 class OSIDimension(BaseModel):
@@ -88,6 +77,20 @@ class OSIField(BaseModel):
     dimension: Optional[OSIDimension] = None
     label: Optional[str] = None
     description: Optional[str] = None
+    datatype: Optional[str] = None
+    ai_context: Optional[OSIAIContext] = None
+    custom_extensions: Optional[list[OSICustomExtension]] = None
+
+
+class OSIMetric(BaseModel):
+    """Quantitative measure defined on business data (raw SQL aggregation)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    expression: OSIExpression
+    description: Optional[str] = None
+    datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
     custom_extensions: Optional[list[OSICustomExtension]] = None
 
@@ -104,6 +107,7 @@ class OSIDataset(BaseModel):
     description: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
     fields: Optional[list[OSIField]] = None
+    metrics: Optional[list[OSIMetric]] = None
     custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
@@ -121,23 +125,12 @@ class OSIRelationship(BaseModel):
     custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIMetric(BaseModel):
-    """Quantitative measure defined on business data (raw SQL aggregation)."""
+class OSIDocument(BaseModel):
+    """One semantic model; ``legacy`` is set by the parser for wrapper-split models."""
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
-    expression: OSIExpression
-    description: Optional[str] = None
-    ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
-
-
-class OSISemanticModel(BaseModel):
-    """Top-level container representing a complete semantic model."""
-
-    model_config = ConfigDict(extra="ignore")
-
+    version: str = "0.2.0.dev0"
     name: str
     description: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
@@ -145,22 +138,12 @@ class OSISemanticModel(BaseModel):
     relationships: Optional[list[OSIRelationship]] = None
     metrics: Optional[list[OSIMetric]] = None
     custom_extensions: Optional[list[OSICustomExtension]] = None
-
-
-class OSIDocument(BaseModel):
-    """Root OSI document."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    version: str = "0.2.0.dev0"
-    semantic_model: list[OSISemanticModel]
+    legacy: bool = False
 
     @field_validator("version", mode="before")
     @classmethod
     def _coerce_version_to_str(cls, v: Any) -> Any:
-        # YAML parses an unquoted ``version: 1.0`` as a float and ``version: 1``
-        # as an int; OSI spec versions are strings. Coerce numeric scalars so a
-        # valid-but-unquoted version doesn't fail validation (and get skipped).
+        # YAML reads an unquoted ``version: 1.0`` as a float.
         if isinstance(v, (int, float)):
             return str(v)
         return v

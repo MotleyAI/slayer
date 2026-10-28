@@ -60,6 +60,7 @@ model {
     importers = bucket 'Importers' {
       metadata {
         packages ['slayer.dbt', 'slayer.cube', 'slayer.osi', 'slayer.ingest_report']
+        specs ['importers']
       }
     }
     search = bucket 'Search & embeddings' {

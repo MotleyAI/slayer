@@ -133,6 +133,7 @@ testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = 
 basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
 living-architecture = "0.4.0"
+jsonschema = "^4.23"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

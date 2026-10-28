@@ -1,8 +1,7 @@
-"""End-to-end CLI test for `slayer import-osi`.
+"""End-to-end CLI tests for `slayer import-osi`.
 
-Registers a file-backed SQLite datasource, runs the importer over the crafted
-shop.yaml fixture, and asserts models (with overlaid measures/joins) are saved
-and the conversion report is printed.
+Run the importer over the legacy shop.yaml fixture (SQLite) and the current-spec
+current_shop.yaml fixture (DuckDB), asserting saved models, queries and the report.
 """
 
 from pathlib import Path
@@ -12,13 +11,14 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.async_utils import run_sync
-from slayer.cli import _CommandFailed, _run_import_osi
+from slayer.cli import _build_parser, _CommandFailed, _run_import_osi
 from slayer.core.models import DatasourceConfig
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
-
-FIXTURES = Path(__file__).parent / "fixtures" / "osi"
+from tests._osi_helpers import DATASOURCE, FIXTURES, ds, f, f_dialects, flat, seed_db, write_yaml
 
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
@@ -117,3 +117,76 @@ def test_import_osi_duplicate_datasets_exits_cleanly(
     args = _args(store, osi)
     with pytest.raises(_CommandFailed, match="Duplicate dataset names"):
         _run_import_osi(args)
+
+
+# ─────────────────── current-spec document into DuckDB ─────────────────────
+
+@pytest.fixture
+def duck_store(tmp_path: Path) -> tuple[Path, Path]:
+    db = seed_db(directory=tmp_path)
+    store = tmp_path / "store"
+    storage = YAMLStorage(base_dir=str(store))
+    run_sync(storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db))))
+    return store, db
+
+
+def _duck_args(store: Path, path: Path, *, dialect: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(osi_path=str(path), datasource=DATASOURCE, dialect=dialect, storage=str(store),
+                           models_dir=None)
+
+
+async def _rows(store: Path, db: Path, payload: dict) -> list[dict]:
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(store)))
+    try:
+        return (await engine.execute(payload)).data
+    finally:
+        engine.close()
+        engine_factory.invalidate_engine(DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db)))
+
+
+def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
+    store, db = duck_store
+    _run_import_osi(_duck_args(store, FIXTURES / "current_shop.yaml"))
+    assert "0 unconverted" in capsys.readouterr().out
+
+    storage = YAMLStorage(base_dir=str(store))
+    orders = run_sync(storage.get_model("orders", data_source=DATASOURCE))
+    assert orders is not None
+    assert {c.name for c in orders.columns if not c.hidden} == {
+        "order_id", "customer_id", "amount", "quantity", "status", "ordered_on", "tip_or_zero"}
+    assert [j.join_pairs for j in orders.joins] == [[["customer_id", "id"]]]
+
+    rows = run_sync(_rows(store, db, {"source_model": "orders",
+                                      "measures": ["total_amount", "completed_amount", "order_count"]}))
+    assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
+    assert float(rows[0]["orders.completed_amount"]) == pytest.approx(17)
+    assert rows[0]["orders.order_count"] == 3
+
+    rows = run_sync(_rows(store, db, {"source_model": "orders", "dimensions": ["customers.segment"],
+                                      "measures": ["total_amount"]}))
+    assert {r["orders.customers.segment"]: float(r["orders.total_amount"]) for r in rows} == {"b2b": 15, "b2c": 7}
+
+    loaded = {name: run_sync(storage.get_model(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
+    [home] = [name for name, model in loaded.items()
+              if model is not None and any(x.name == "net_amount" for x in model.measures)]
+    rows = run_sync(_rows(store, db, {"source_model": home, "measures": ["net_amount", "amount_per_customer"]}))
+    assert float(rows[0][f"{home}.net_amount"]) == pytest.approx(19.5)
+    assert float(rows[0][f"{home}.amount_per_customer"]) == pytest.approx(11)
+
+
+def test_dialect_option_defaults_to_unset() -> None:
+    args = _build_parser().parse_args(["import-osi", "shop.yaml", "--datasource", "ds"])
+    assert args.dialect is None
+
+
+def test_explicit_dialect_is_honoured_first(duck_store, tmp_path: Path) -> None:
+    store, _ = duck_store
+    doc = flat([ds("orders", fields=[f("order_id", "o_orderkey"),
+                                     f_dialects("pick", ("SNOWFLAKE", "amount * 2"), sql="amount * 1")])])
+    path = write_yaml(tmp_path / "doc.yaml", doc)
+    _run_import_osi(_duck_args(store, path, dialect="SNOWFLAKE"))
+    orders = run_sync(YAMLStorage(base_dir=str(store)).get_model("orders", data_source=DATASOURCE))
+    assert orders is not None
+    pick = orders.get_column("pick")
+    assert pick is not None
+    assert pick.sql == "amount * 2"
