@@ -23,7 +23,6 @@ from slayer.osi.models import (
     OSIField,
     OSIMetric,
     OSIRelationship,
-    OSISemanticModel,
 )
 from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
@@ -184,17 +183,11 @@ def test_simple_and_ratio_measures(shop_engine):
     assert m["aov"].formula == "sum(amount) / count(*)"
 
 
-def test_materialized_derived_column_metric(shop_engine):
+def test_inline_operand_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     measure = {meas.name: meas for meas in orders.measures}["revenue_line"]
-    # A hidden derived column was created for quantity*amount.
-    hidden = [c for c in orders.columns if c.hidden and c.sql]
-    assert any(
-        {"quantity", "amount"}.issubset(c.sql.replace("*", " ").split()) for c in hidden
-    )
-    agg, derived_name = _single_agg(measure.formula)
-    assert any(c.name == derived_name and c.hidden for c in orders.columns)
-    assert agg == "sum"
+    assert not [c for c in orders.columns if c.hidden]
+    assert parse_expr(measure.formula) == parse_expr("sum(quantity * amount)")
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
@@ -216,36 +209,19 @@ def test_multihop_metric_anchor_relative_path(shop_engine):
 
 def _mini_doc(datasets, relationships=None, metrics=None, name="s"):
     return OSIDocument(
-        version="0.2.0.dev0",
-        semantic_model=[
-            OSISemanticModel(
-                name=name,
-                datasets=datasets,
-                relationships=relationships,
-                metrics=metrics,
-            )
-        ],
+        version="0.2.0.dev0", name=name, datasets=datasets,
+        relationships=relationships, metrics=metrics, legacy=True,
     )
 
 
 def test_duplicate_dataset_names_raise(shop_engine):
-    doc = OSIDocument(
-        version="0.2.0.dev0",
-        semantic_model=[
-            OSISemanticModel(
-                name="a",
-                datasets=[OSIDataset(name="orders", source="orders",
-                                     fields=[OSIField(name="amount", expression=_expr("amount"))])],
-            ),
-            OSISemanticModel(
-                name="b",
-                datasets=[OSIDataset(name="orders", source="orders",
-                                     fields=[OSIField(name="amount", expression=_expr("amount"))])],
-            ),
-        ],
-    )
+    docs = [
+        _mini_doc(datasets=[OSIDataset(name="orders", source="orders",
+                                       fields=[OSIField(name="amount", expression=_expr("amount"))])], name=name)
+        for name in ("a", "b")
+    ]
     with pytest.raises(OsiConversionError):
-        _convert(shop_engine, doc)
+        OsiToSlayerConverter(documents=docs, data_source="testds", sa_engine=shop_engine).convert()
 
 
 def test_illegal_dataset_name_clean_fails(shop_engine):
@@ -992,7 +968,7 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
         )],
         metrics=[
             OSIMetric(name="_rev_0", expression=_expr("SUM(amount)")),
-            OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)")),
+            OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))")),
         ],
     )
     result = _convert(shop_engine, doc)
@@ -1045,7 +1021,7 @@ def test_materialized_name_avoids_existing_column(shop_engine):
                 OSIField(name="_rev_0", expression=_expr("amount")),  # occupies name
             ],
         )],
-        metrics=[OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)"))],
+        metrics=[OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))"))],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]

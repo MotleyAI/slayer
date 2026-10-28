@@ -2,7 +2,8 @@
 
 Covers: YAML + JSON, single file + directory, the ``from`` alias, version
 acceptance (all four known versions) + unknown-version warning, malformed-file
-skip, and ai_context in both string and object form.
+skip, ai_context in both string and object form, and the flat / legacy-wrapper
+document shapes.
 """
 
 import logging
@@ -13,8 +14,7 @@ import pytest
 
 from slayer.osi.models import OSIAIContextObject, OSIDocument
 from slayer.osi.parser import KNOWN_OSI_VERSIONS, parse_osi_path
-
-FIXTURES = Path(__file__).parent / "fixtures" / "osi"
+from tests._osi_helpers import FIXTURES, ds, f, flat, legacy, write_yaml
 
 
 def test_parse_yaml_file_structure() -> None:
@@ -23,11 +23,9 @@ def test_parse_yaml_file_structure() -> None:
     doc = docs[0]
     assert isinstance(doc, OSIDocument)
     assert doc.version == "0.2.0.dev0"
-    assert len(doc.semantic_model) == 1
-    sm = doc.semantic_model[0]
-    assert sm.name == "shop"
-    assert {d.name for d in sm.datasets} == {"orders", "customers", "products", "regions"}
-    orders = next(d for d in sm.datasets if d.name == "orders")
+    assert doc.name == "shop"
+    assert {d.name for d in doc.datasets} == {"orders", "customers", "products", "regions"}
+    orders = next(d for d in doc.datasets if d.name == "orders")
     assert orders.source == "orders"
     assert orders.primary_key == ["order_id"]
     assert {f.name for f in orders.fields} == {
@@ -37,14 +35,13 @@ def test_parse_yaml_file_structure() -> None:
     ordered_at = next(f for f in orders.fields if f.name == "ordered_at")
     assert ordered_at.dimension is not None and ordered_at.dimension.is_time is True
     amount = next(f for f in orders.fields if f.name == "amount")
-    assert amount.expression.dialects[0].dialect.value == "ANSI_SQL"
+    assert amount.expression.dialects[0].dialect == "ANSI_SQL"
     assert amount.expression.dialects[0].expression == "amount"
 
 
 def test_relationship_from_alias() -> None:
     doc = parse_osi_path(FIXTURES / "shop.yaml")[0]
-    sm = doc.semantic_model[0]
-    rels = {r.name: r for r in sm.relationships}
+    rels = {r.name: r for r in doc.relationships or []}
     r = rels["orders_to_customers"]
     # `from` is a reserved word; it must be exposed as `from_dataset`.
     assert r.from_dataset == "orders"
@@ -55,7 +52,7 @@ def test_relationship_from_alias() -> None:
 
 def test_metrics_parsed() -> None:
     doc = parse_osi_path(FIXTURES / "shop.yaml")[0]
-    metrics = {m.name: m for m in doc.semantic_model[0].metrics}
+    metrics = {m.name: m for m in doc.metrics or []}
     assert set(metrics) == {
         "total_amount", "order_count", "aov",
         "revenue_line", "cust_reach", "rev_plus_pop", "bridge_metric",
@@ -75,7 +72,7 @@ def test_parse_directory_collects_and_skips_malformed(tmp_path: Path) -> None:
     docs = parse_osi_path(tmp_path)
     # malformed.yaml is skipped; only the valid doc is returned.
     assert len(docs) == 1
-    assert docs[0].semantic_model[0].name == "shop"
+    assert docs[0].name == "shop"
 
 
 def test_known_versions_constant() -> None:
@@ -134,11 +131,67 @@ def test_malformed_file_warns_and_returns_empty(caplog: pytest.LogCaptureFixture
 
 def test_ai_context_string_and_object_forms() -> None:
     # Object form on shop.yaml.
-    shop = parse_osi_path(FIXTURES / "shop.yaml")[0].semantic_model[0]
+    shop = parse_osi_path(FIXTURES / "shop.yaml")[0]
     assert isinstance(shop.ai_context, OSIAIContextObject)
     assert shop.ai_context.instructions == "Use for order, customer, and product analytics."
     assert shop.ai_context.synonyms == ["store", "retail"]
     # String form.
-    strdoc = parse_osi_path(FIXTURES / "aicontext_string.yaml")[0].semantic_model[0]
+    strdoc = parse_osi_path(FIXTURES / "aicontext_string.yaml")[0]
     assert strdoc.ai_context == "plain string context"
     assert strdoc.datasets[0].ai_context == "dataset string ctx"
+
+
+# ─────────────────────────── document shapes ───────────────────────────────
+
+def _legacy_model(name: str) -> dict:
+    return {"name": name, "datasets": [ds(f"{name}_t", fields=[f("c")])]}
+
+
+def test_flat_document_imports_as_one_current_spec_model() -> None:
+    docs = parse_osi_path(FIXTURES / "current_shop.yaml")
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.legacy is False
+    assert doc.name == "shop"
+    assert doc.version == "0.2.0.dev0"
+    assert [d.name for d in doc.datasets] == ["orders", "customers"]
+    orders = doc.datasets[0]
+    assert [x.name for x in orders.metrics or []] == ["total_amount", "completed_amount", "order_count"]
+    assert [x.name for x in doc.metrics or []] == ["net_amount", "amount_per_customer"]
+
+
+def test_legacy_array_splits_into_one_document_per_model(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "two.yaml", legacy(_legacy_model("a"), _legacy_model("b")))
+    docs = parse_osi_path(path)
+    assert [(d.name, d.legacy, d.version) for d in docs] == [("a", True, "0.2.0.dev0"), ("b", True, "0.2.0.dev0")]
+    assert [[x.name for x in d.datasets] for d in docs] == [["a_t"], ["b_t"]]
+
+
+def test_legacy_object_wrapper(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "one.yaml", {"version": "0.1.1", "semantic_model": _legacy_model("a")})
+    docs = parse_osi_path(path)
+    assert [(d.name, d.legacy, d.version) for d in docs] == [("a", True, "0.1.1")]
+
+
+@pytest.mark.parametrize("mapping", [
+    pytest.param({**legacy(_legacy_model("a")), "datasets": [ds("t", fields=[f("c")])]}, id="mixed"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": []}, id="empty-array"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": {}}, id="empty-object"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": None}, id="null"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": "shop"}, id="scalar"),
+    pytest.param({"version": "0.2.0.dev0", "name": "shop"}, id="neither"),
+])
+def test_invalid_shape_is_skipped_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, mapping: dict
+) -> None:
+    write_yaml(tmp_path / "bad.yaml", mapping)
+    shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
+    with caplog.at_level(logging.WARNING):
+        docs = parse_osi_path(tmp_path)
+    assert [d.name for d in docs] == ["shop"]
+    assert any("bad.yaml" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+def test_legacy_flag_is_not_read_from_the_document(tmp_path: Path) -> None:
+    path = write_yaml(tmp_path / "flat.yaml", {**flat([ds("t", fields=[f("c")])]), "legacy": True})
+    assert [d.legacy for d in parse_osi_path(path)] == [False]

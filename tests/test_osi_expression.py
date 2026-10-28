@@ -9,11 +9,13 @@ Callbacks (so the transform is model-agnostic and unit-testable in isolation):
 - ``ref_of(model, column) -> anchor-relative dotted ref | None``  (None = unreachable)
 """
 
+import pytest
 import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.engine.syntax import parse_expr
 from slayer.osi.expression import convert_expression
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
@@ -84,35 +86,31 @@ def test_constant_times_agg():
 
 # ───────────────────── derived-column materialization ───────────────────────
 
-def test_materialize_arithmetic_operand():
-    r = _run("SUM(quantity * amount)", entity_name="revenue_line")
+@pytest.mark.parametrize(("expr", "inline"), [
+    ("SUM(quantity * amount)", "sum(quantity * amount)"),
+    ("SUM(COALESCE(amount, 0))", "sum(coalesce(amount, 0))"),
+    ("COUNT(CASE WHEN status = 'paid' THEN 1 END)", "count(CASE WHEN status = 'paid' THEN 1 END)"),
+])
+def test_expressible_operand_is_inline(expr, inline):
+    r = _run(expr, entity_name="m")
     assert r.ok
-    assert len(r.materialized) == 1
-    mc = r.materialized[0]
+    assert r.materialized == []
+    assert r.formula is not None
+    assert parse_expr(r.formula) == parse_expr(inline)
+
+
+def test_materialize_operand_outside_the_formula_language():
+    r = _run("SUM(LENGTH(LPAD(status, 12, 'x')))", entity_name="pad")
+    assert r.ok
+    [mc] = r.materialized
     assert mc.owning_model == "orders"
-    assert mc.name.startswith("_revenue_line")
-    assert _norm(mc.sql) == _norm("quantity * amount")
+    assert mc.name.startswith("_pad")
+    assert _norm(mc.sql) == _norm("LENGTH(LPAD(status, 12, 'x'))")
     assert r.formula == f"sum({mc.name})"
 
 
-def test_materialize_scalar_operand():
-    r = _run("SUM(COALESCE(amount, 0))", entity_name="safe_rev")
-    assert r.ok
-    assert len(r.materialized) == 1
-    assert _norm(r.materialized[0].sql) == _norm("COALESCE(amount, 0)")
-    assert r.formula == f"sum({r.materialized[0].name})"
-
-
-def test_materialize_case_filtered_count():
-    r = _run("COUNT(CASE WHEN status = 'paid' THEN 1 END)", entity_name="paid_ct")
-    assert r.ok
-    assert len(r.materialized) == 1
-    assert "CASE" in r.materialized[0].sql.upper()
-    assert r.formula == f"count({r.materialized[0].name})"
-
-
 def test_materialize_dedups_identical_operand():
-    r = _run("SUM(quantity * amount) - MIN(quantity * amount)", entity_name="x")
+    r = _run("SUM(LENGTH(LPAD(status, 12, 'x'))) - MIN(LENGTH(LPAD(status, 12, 'x')))", entity_name="x")
     assert r.ok
     # The identical operand is materialized once and reused.
     assert len(r.materialized) == 1
@@ -120,10 +118,19 @@ def test_materialize_dedups_identical_operand():
     assert r.formula == f"sum({nm}) - min({nm})"
 
 
-def test_cross_dataset_operand_clean_fails():
-    # quantity belongs to orders, price to products -> operand spans datasets.
+def test_cross_dataset_operand_is_inline():
     owner = lambda q, c: "orders" if c == "quantity" else "products"  # noqa: E731
-    r = _run("SUM(quantity * price)", owner_of=owner)
+    ref = lambda m, c: c if m == "orders" else f"products.{c}"  # noqa: E731
+    r = _run("SUM(quantity * products.price)", owner_of=owner, ref_of=ref)
+    assert r.ok
+    assert r.materialized == []
+    assert r.formula is not None
+    assert parse_expr(r.formula) == parse_expr("sum(quantity * products.price)")
+
+
+def test_cross_dataset_operand_outside_the_formula_language_clean_fails():
+    owner = lambda q, c: "orders" if c == "status" else "products"  # noqa: E731
+    r = _run("SUM(LENGTH(LPAD(status, 12, products.category)))", owner_of=owner)
     assert not r.ok
     assert r.formula is None
     assert r.reason
