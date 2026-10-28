@@ -1635,6 +1635,20 @@ def is_list_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
     return key.name in LIST_FUNCTIONS and bool(key.args) and list_valued(key.args[0], column_type=column_type)
 
 
+def elements_as_numbers(values: "ValueKey", *, text: bool) -> CastKey:
+    """``values``' elements read one at a time as numbers (``text``: TEXT elements, through ``TRY_CAST``)."""
+    return CastKey(source=values, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=text)
+
+
+def numbers_read_list(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[CastKey]:
+    """The second list of a ``contains_any`` / ``contains_all`` built by ``elements_as_numbers``, else ``None``."""
+    other = key.args[1] if key.name in LIST_ONLY_FUNCTIONS and len(key.args) == 2 else None
+    if isinstance(other, CastKey) and other.data_type is DataType.DOUBLE and list_valued(
+            other.source, column_type=column_type):
+        return other
+    return None
+
+
 def literal_type(value: object) -> Optional[DataType]:
     """The type of a scalar literal value (``None`` for NULL)."""
     if isinstance(value, bool):

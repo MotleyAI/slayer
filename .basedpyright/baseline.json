@@ -2804,26 +2804,10 @@
         ],
         "./slayer/sql/stage_wrapper.py": [
             {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 14,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAssignmentType",
                 "range": {
                     "startColumn": 19,
                     "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 41,
-                    "endColumn": 51,
                     "lineCount": 1
                 }
             }

@@ -10,7 +10,7 @@ import json
 import math
 from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import pytest
@@ -792,19 +792,19 @@ NO_LIST_DATABASES = {"sqlite": "SQLite", "mysql": "MySQL", "tsql": "SQL Server"}
 #: ``(name, kind)``; ``T[]`` is a list of ``T``.
 CONTRACTOR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("id", "INT"), ("name", "TEXT"), ("team", "TEXT"), ("rate", "INT"), ("city", "TEXT"), ("pick", "TEXT"),
-    ("skills", "TEXT[]"), ("required", "TEXT[]"), ("scores", "INT[]"),
+    ("skills", "TEXT[]"), ("required", "TEXT[]"), ("scores", "INT[]"), ("codes", "TEXT[]"),
 )
 CONTRACTORS: tuple[dict[str, Any], ...] = (
     {"id": 1, "name": "Ann", "team": "A", "rate": 10, "city": "Oslo", "pick": "sql",
-     "skills": ["go", "sql", "go"], "required": ["rust", "sql"], "scores": [3, 9]},
+     "skills": ["go", "sql", "go"], "required": ["rust", "sql"], "scores": [3, 9], "codes": ["3", "x"]},
     {"id": 2, "name": "Bob", "team": "A", "rate": 20, "city": None, "pick": None,
-     "skills": ["sql", None], "required": ["go"], "scores": [1]},
+     "skills": ["sql", None], "required": ["go"], "scores": [1], "codes": ["1", "4"]},
     {"id": 3, "name": "Cid", "team": "B", "rate": 30, "city": "Rome", "pick": "go",
-     "skills": [], "required": [], "scores": []},
+     "skills": [], "required": [], "scores": [], "codes": []},
     {"id": 4, "name": "Dee", "team": "B", "rate": 40, "city": "Oslo", "pick": "go",
-     "skills": None, "required": ["go"], "scores": None},
+     "skills": None, "required": ["go"], "scores": None, "codes": ["2"]},
     {"id": 5, "name": "Eve", "team": "B", "rate": 50, "city": "Oslo", "pick": "rust",
-     "skills": ["go"], "required": None, "scores": [5, None]},
+     "skills": ["go"], "required": None, "scores": [5, None], "codes": ["6", None]},
 )
 LIST_COLUMNS = tuple(c for c, k in CONTRACTOR_COLUMNS if k.endswith("[]"))
 
@@ -868,6 +868,15 @@ def list_length(value: Optional[list[Any]]) -> Optional[int]:
     return None if value is None else len(elements(value))
 
 
+def as_numbers(value: Optional[list[Any]]) -> Optional[list[Any]]:
+    """A TEXT list read as numbers: an element that is not a number is not an element."""
+    def number(text: str) -> Optional[Decimal]:
+        with contextlib.suppress(InvalidOperation):
+            return Decimal(text)
+        return None
+    return None if value is None else [n for e in elements(value) if (n := number(e)) is not None]
+
+
 def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
     """The list-function cases over ``contractors`` as ``storage`` holds it."""
     rows = {r["id"]: r for r in stored_contractors(storage)}
@@ -901,6 +910,10 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
           lambda r: list_contains_any(r["scores"], [1, 9])),
         v("contains_any-list-column", ["contains_any"], "contains_any(skills, required)",
           lambda r: list_contains_any(r["skills"], r["required"])),
+        v("contains_any-mixed-numbers", ["contains_any"], "contains_any(scores, [2.5, 9])",
+          lambda r: list_contains_any(r["scores"], [Decimal("2.5"), 9])),
+        v("contains_any-text-list-on-numbers", ["contains_any"], "contains_any(scores, codes)",
+          lambda r: list_contains_any(r["scores"], as_numbers(r["codes"]))),
         v("contains_any-empty", ["contains_any"], "contains_any(skills, [])",
           lambda r: list_contains_any(r["skills"], [])),
         f("contains_any-variable", ["contains_any"], "contains_any(skills, {wanted})",
@@ -913,6 +926,10 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
           lambda r: list_contains_all(r["skills"], ["sql"])),
         v("contains_all-list-column", ["contains_all"], "contains_all(skills, required)",
           lambda r: list_contains_all(r["skills"], r["required"])),
+        v("contains_all-mixed-numbers", ["contains_all"], "contains_all(scores, [3, 2.5])",
+          lambda r: list_contains_all(r["scores"], [3, Decimal("2.5")])),
+        v("contains_all-text-list-on-numbers", ["contains_all"], "contains_all(scores, codes)",
+          lambda r: list_contains_all(r["scores"], as_numbers(r["codes"]))),
         v("contains_all-empty", ["contains_all"], "contains_all(skills, [])",
           lambda r: list_contains_all(r["skills"], [])),
         f("contains_all-variable", ["contains_all"], "contains_all(skills, {wanted})",

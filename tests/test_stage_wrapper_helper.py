@@ -185,6 +185,14 @@ def test_unmangle_keeps_spine_correlation_to_outer_root() -> None:
     assert tree.sql(dialect="sqlite") == sql
 
 
+def test_unmangle_keeps_an_unnest_element_reference() -> None:
+    """A BigQuery ``UNNEST(…) AS skills`` is a source named by its element alias: ``skills.value`` stays."""
+    sql = "SELECT skills.value AS v FROM contractors AS c CROSS JOIN UNNEST(c.skills) AS skills"
+    tree = sqlglot.parse_one(sql, dialect="bigquery")
+    unmangle_dotted_table_refs(tree)  # pyright: ignore[reportArgumentType] — parse_one Expr/Expression stub gap
+    assert tree.sql(dialect="bigquery") == sql
+
+
 def test_unmangle_folds_inside_derived_table_of_root() -> None:
     """A derived table in the root sees no outer source: a re-parsed dotted key
     there still folds back into one column name."""

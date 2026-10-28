@@ -382,6 +382,7 @@ def _digest(secret: str | None) -> str:
 #: A list child's element column, as every list relation exposes it.
 LIST_VALUE = "value"
 _UNNESTED = "__slayer_u"
+_EACH = "__slayer_each"
 
 
 class ListRelation(BaseModel):
@@ -882,21 +883,39 @@ class SqlDialect(BaseModel):
     #: The database's name in a refusal.
     database_name: ClassVar[str] = "Postgres"
 
-    def build_list_call(self, fn: ListFn, args: tuple[Expression, ...]) -> Expression:
-        """A list function, NULL only when an operand is NULL; ``[]`` as the second list is decided here."""
+    def build_list_call(
+        self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,
+    ) -> Expression:
+        """A list function, NULL only when an operand is NULL; ``[]`` as the second list is decided here. ``each``:
+        the second list's element type, unlike the first's, so compared one element at a time."""
         values = args[0]
         if fn == "length":
             return case((is_null(values), exp.Null()), default=self.list_length(values))
         other = args[1]
         if is_empty_array(other):
             return case((is_null(values), exp.Null()), default=exp.false() if fn == "contains_any" else exp.true())
-        if fn == "contains":
+        if each is not None:
+            core = self.list_each(fn, values, other, element=each)
+        elif fn == "contains":
             core = self.list_contains(values, other)
         elif fn == "contains_any":
             core = self.list_overlaps(values, other)
         else:
             core = self.list_contains_all(values, other)
         return case((any_null(values, other), exp.Null()), default=core)
+
+    def list_each(self, fn: ListFn, values: Expression, other: Expression, *, element: DataType) -> Expression:
+        """``contains_any`` / ``contains_all`` as ``contains(values, e)`` over each element ``e`` of ``other``, a TEXT
+        ``e`` read as a number (unconvertible: not an element)."""
+        alias = exp.to_identifier(_EACH)
+        wanted: Expression = exp.column(LIST_VALUE, table=_EACH)
+        if element is DataType.TEXT:
+            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.DOUBLE))
+        found = self.list_contains(values, wanted)
+        if fn == "contains_any":
+            return self.list_exists(other, alias=alias, element=element, predicate=found)
+        missing = exp.and_(is_not_null(wanted), exp.Not(this=found))
+        return exp.Not(this=self.list_exists(other, alias=alias, element=element, predicate=missing))
 
     def list_length(self, values: Expression) -> Expression:
         return exp.Anonymous(this="CARDINALITY", expressions=[anon("ARRAY_REMOVE", values, exp.Null())])
@@ -916,8 +935,9 @@ class SqlDialect(BaseModel):
         return {}
 
     def list_relation(
-        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        self, values: Expression, *, alias: exp.Identifier,
+        element: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        leading: bool, distinct: bool = False,
     ) -> ListRelation:
         """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
         item (no LATERAL)."""

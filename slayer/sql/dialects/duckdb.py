@@ -17,7 +17,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import SqlDialect, TextFn, anon, case, lit, non_null_elements, pad_fill
+from slayer.sql.dialects.base import LIST_ELEMENT, SqlDialect, TextFn, anon, case, is_not_null, lit, pad_fill
 from slayer.sql.dialects.patterns import RE2, RegexFlavour, emit_replacement
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
@@ -40,7 +40,11 @@ _NON_SCALAR_JSON = ("OBJECT", "ARRAY", "NULL")
 
 
 def _compact(values: Expression) -> Expression:
-    return non_null_elements(values, filter_name="LIST_FILTER")
+    """``[e FOR e IN values IF e IS NOT NULL]``: DuckDB 2 rejects the ``->`` lambda, 1.1–1.2 lack ``lambda e:``."""
+    element = exp.column(LIST_ELEMENT)
+    return exp.Array(expressions=[exp.Comprehension(
+        this=element, expression=element.copy(), iterator=values.copy(), condition=is_not_null(element.copy()),
+    )])
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:

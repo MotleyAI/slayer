@@ -853,8 +853,10 @@ def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
             inner = ops.join(inner=inner, hop=hop, eqs=eqs)
             continue
         table, kind = ops.table(hop, not first_seen)
-        inner = _apply_joins(select=inner, joins=[(table, None, kind if hop.lateral else "CROSS")]) if first_seen \
-            else inner.from_(table)
+        if first_seen:
+            inner = _apply_joins(select=inner, joins=[(table, None, kind if hop.lateral else "CROSS")])
+        else:
+            inner = inner.from_(table)
         first_seen = True
         correlation.extend(eqs)
     for eq in correlation:

@@ -432,7 +432,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
             )
-        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx))
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+                                 part=lambda a: render_value_key(key=a, ctx=ctx))
 
     if isinstance(key, InKey):
         (column,) = numeric_parts(

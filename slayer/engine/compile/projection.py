@@ -306,20 +306,7 @@ class ValueRegistry:
         slot = self._slots[existing_sid]
         updates: Dict = {}
         if public_name is not None and public_name not in slot.public_aliases:
-            owner = self._declared_names.get(public_name)
-            if owner is not None and owner != existing_sid:
-                check_duplicate_measure_name(
-                    name=public_name,
-                    occurrences=[
-                        self._slots[owner].declared_name,
-                        declared_name,
-                    ],
-                )
-            updates["public_aliases"] = list(slot.public_aliases) + [public_name]
-            if slot.hidden:
-                updates["hidden"] = False
-                updates["public_name"] = public_name
-            self._declared_names[public_name] = existing_sid
+            updates = self._publish(existing_sid=existing_sid, public_name=public_name, declared_name=declared_name)
         elif not hidden and slot.hidden and public_name is None:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
@@ -343,6 +330,25 @@ class ValueRegistry:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
         return existing_sid
+
+    def _publish(self, *, existing_sid: SlotId, public_name: str, declared_name: str) -> Dict:
+        """The updates adding ``public_name`` to a slot (a hidden slot turns public under it)."""
+        slot = self._slots[existing_sid]
+        owner = self._declared_names.get(public_name)
+        if owner is not None and owner != existing_sid:
+            check_duplicate_measure_name(
+                name=public_name,
+                occurrences=[
+                    self._slots[owner].declared_name,
+                    declared_name,
+                ],
+            )
+        updates: Dict = {"public_aliases": list(slot.public_aliases) + [public_name]}
+        if slot.hidden:
+            updates["hidden"] = False
+            updates["public_name"] = public_name
+        self._declared_names[public_name] = existing_sid
+        return updates
 
     def mark_explicit(self, slot_id: SlotId, alias: str) -> None:
         """Record ``alias`` as user-chosen (never respelled downstream)."""

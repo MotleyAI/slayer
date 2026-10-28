@@ -184,8 +184,9 @@ class TestArrayLiteralKey:
         assert literal.map_children(lambda k: k) is literal
 
     def test_equal_literals_share_one_key(self) -> None:
-        assert self._literal() == self._literal()
-        assert hash(self._literal()) == hash(self._literal())
+        first, second = self._literal(), self._literal()
+        assert first == second
+        assert hash(first) == hash(second)
 
 
 class TestEmission:
@@ -196,6 +197,12 @@ class TestEmission:
         sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect=dialect)
         assert "&&" not in sql, sql
         assert "@>" not in sql, sql
+
+    @pytest.mark.parametrize("expr", ["contains(skills, 'go')", "contains_any(skills, required)",
+                                      "contains_all(skills, required)", "length(skills)"])
+    async def test_no_lambda_arrow_on_duckdb(self, expr: str) -> None:
+        sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect="duckdb")
+        assert "->" not in sql, sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:

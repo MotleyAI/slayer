@@ -10,6 +10,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
+from slayer.core.join_walker import with_list_children
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.sql.client import SlayerSQLClient
@@ -52,6 +53,14 @@ class TestTheChild:
         got = {(r["contractors.skills.value"], r["contractors.name"]): num(r["contractors.n"]) for r in resp.data}
         assert got == {("go", "Ann"): 2, ("sql", "Ann"): 1, ("sql", "Bob"): 1, ("go", "Eve"): 1}
 
+    def test_double_underscore_names_keep_distinct_children(self) -> None:
+        def listed(name: str, column: str) -> SlayerModel:
+            return SlayerModel(name=name, sql_table=name, data_source="test", columns=[
+                Column(name=column, type=DataType.ARRAY, element_type=DataType.TEXT)])
+
+        models = with_list_children({"a__b": listed("a__b", "c"), "a": listed("a", "b__c")})
+        assert {m.list_of for m in models.values() if m.list_of} == {("a__b", "c"), ("a", "b__c")}
+
     async def test_element_type_is_the_columns(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "contractors", "dimensions": ["scores.value"],
@@ -81,25 +90,27 @@ class TestElementDimension:
         assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
     async def test_default_broadcast_of_a_parent_measure(self, engine) -> None:
+        q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")])
         with pytest.warns(UserWarning):
-            resp = await engine.execute(query(dimensions=["skills.value"], measures=[measure("count(*)", "n")]))
+            resp = await engine.execute(q)
         assert _per(resp, "skills.value") == {"go": 5, "sql": 5}
         assert broadcast_warnings(resp)
 
 
 class TestKeylessAssociation:
     async def test_contractors_per_skill(self, keyless) -> None:
+        q = query(dimensions=["skills.value"], measures=[measure("count(*)", "n")], to_many_handling="associate")
         with pytest.warns(UserWarning):
-            resp = await keyless.execute(query(dimensions=["skills.value"], measures=[measure("count(*)", "n")],
-                                               to_many_handling="associate"))
+            resp = await keyless.execute(q)
         assert _per(resp, "skills.value") == {"go": 2, "sql": 2}
         assert associated_warnings(resp)
 
     async def test_identical_parent_rows_stay_distinct(self, keyless) -> None:
+        q = SlayerQuery.model_validate({
+            "source_model": "twins", "dimensions": ["skills.value"], "measures": [measure("count(*)", "n")],
+            "to_many_handling": "associate"})
         with pytest.warns(UserWarning):
-            resp = await keyless.execute(SlayerQuery.model_validate({
-                "source_model": "twins", "dimensions": ["skills.value"], "measures": [measure("count(*)", "n")],
-                "to_many_handling": "associate"}))
+            resp = await keyless.execute(q)
         assert _per(resp, "skills.value", model="twins") == {"go": 2}
 
     async def test_another_to_many_hop_keeps_the_key_requirement(self) -> None:

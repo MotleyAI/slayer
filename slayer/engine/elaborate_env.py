@@ -52,6 +52,7 @@ from slayer.core.keys import (
     DATE_OPERAND_ARGS,
     LIST_FUNCTIONS,
     LIST_ONLY_FUNCTIONS,
+    NULL_SAFE_COMPARISON_OPS,
     NUMERIC_ARG_SCALARS,
     AggregateKey,
     ArrayLiteralKey,
@@ -66,6 +67,7 @@ from slayer.core.keys import (
     is_local_partitioned_agg,
     is_reaggregation_key,
     boolean_valued,
+    elements_as_numbers,
     list_element_type,
     list_valued,
     literal_type,
@@ -1303,9 +1305,7 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
 
 
 # Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
-_COERCED_OPS = frozenset({
-    "==", "!=", "<", "<=", ">", ">=", "is distinct from", "is not distinct from", "+", "-", "*", "/", "%",
-})
+_COERCED_OPS = frozenset({"==", "!=", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS, "+", "-", "*", "/", "%"})
 _TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 
 
@@ -1372,9 +1372,7 @@ def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey
     return rebuilt
 
 
-_ZONED_COMPARED_OPS = frozenset({
-    "==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from",
-})
+_ZONED_COMPARED_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS})
 
 
 def coerce_zoned_comparisons(
@@ -1476,7 +1474,7 @@ def _coerce_scalar_args(
 #: Comparisons a list never takes, each with the list function meaning what the comparison would.
 _LIST_COMPARISONS: Mapping[str, Optional[str]] = MappingProxyType({
     "==": "contains", "!=": "contains", "<": None, "<=": None, ">": None, ">=": None,
-    "is distinct from": None, "is not distinct from": None,
+    **dict.fromkeys(NULL_SAFE_COMPARISON_OPS),
 })
 _TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
     DataType.TEXT: "text", DataType.INT: "number", DataType.DOUBLE: "number", DataType.BOOLEAN: "boolean",
@@ -1680,7 +1678,8 @@ def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping) -> Non
 
 
 def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
-    """TEXT meeting a list of numbers reads as a number: literals convert, a column is read with TRY_CAST."""
+    """TEXT meeting a list of numbers reads as a number: literals convert, a column is read with TRY_CAST; a second
+    list of another element type is compared one element at a time."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_list_arguments(c, typing=typing)))
     if not (isinstance(rebuilt, ScalarCallKey) and rebuilt.name in ("contains", "contains_any", "contains_all")
             and is_list_call(rebuilt, column_type=typing.column_type)):
@@ -1690,16 +1689,25 @@ def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
         return rebuilt
     values, other = rebuilt.args
     beside = cast(ValueKey, values)
+    coerced = other
     if isinstance(other, ArrayLiteralKey):
-        coerced: object = other.model_copy(update={"values": tuple(
+        coerced = other.model_copy(update={"values": tuple(
             LiteralKey(value=_number_literal(v.value, beside=beside)) if isinstance(v.value, str) else v
             for v in other.values
         )})
     elif rebuilt.name == "contains" and _text_valued(other, column_type=typing.column_type):
         coerced = _as_number(cast(ValueKey, other), beside=beside)
-    else:
-        return rebuilt
-    return rebuilt.model_copy(update={"args": (values, coerced)})
+    if rebuilt.name != "contains" and _other_elements(coerced, typing=typing) - {element}:
+        coerced = elements_as_numbers(cast(ValueKey, coerced), text=typing.element(coerced) is DataType.TEXT)
+    return rebuilt if coerced is other else rebuilt.model_copy(update={"args": (values, coerced)})
+
+
+def _other_elements(key: object, *, typing: ListTyping) -> set[DataType]:
+    """The known element types of a list function's second list."""
+    if isinstance(key, ArrayLiteralKey):
+        return {t for v in key.values if (t := literal_type(v.value)) is not None}
+    element = typing.element(key)
+    return set() if element is None else {element}
 
 
 def _time_search_children(key: ValueKey) -> List[ValueKey]:

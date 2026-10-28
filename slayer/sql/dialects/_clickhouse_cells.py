@@ -47,28 +47,33 @@ def _tokens(text: str) -> list[Optional[str]]:
     out: list[Optional[str]] = []
     i, n = 1, len(text) - 1
     while i < n:
-        ch = text[i]
-        if ch in ", ":
+        if text[i] in ", ":
             i += 1
-        elif ch == "'":
-            buf, i = [], i + 1
-            while text[i] != "'":
-                if text[i] == "\\":
-                    i += 1
-                    buf.append(_ESCAPES.get(text[i], text[i]))
-                else:
-                    buf.append(text[i])
-                i += 1
-            out.append("".join(buf))
-            i += 1
-        else:
-            end = i
-            while end < n and text[end] != ",":
-                end += 1
-            token = text[i:end].strip()
-            out.append(None if token == "NULL" else token)
-            i = end
+            continue
+        token, i = _quoted(text, i) if text[i] == "'" else _bare(text, i, n)
+        out.append(token)
     return out
+
+
+def _quoted(text: str, i: int) -> tuple[str, int]:
+    """The quoted string opening at ``text[i]`` and the index after its closing quote."""
+    buf, i = [], i + 1
+    while text[i] != "'":
+        if text[i] == "\\":
+            i += 1
+            buf.append(_ESCAPES.get(text[i], text[i]))
+        else:
+            buf.append(text[i])
+        i += 1
+    return "".join(buf), i + 1
+
+
+def _bare(text: str, i: int, n: int) -> tuple[Optional[str], int]:
+    """The unquoted token starting at ``text[i]`` (``NULL`` as ``None``) and the index of its delimiter."""
+    end = text.find(",", i, n)
+    end = n if end < 0 else end
+    token = text[i:end].strip()
+    return (None if token == "NULL" else token), end
 
 
 def array_reader(type_code: str) -> Optional[Callable[[Any], Any]]:

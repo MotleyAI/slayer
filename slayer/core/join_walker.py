@@ -272,8 +272,8 @@ LIST_CHILD_PREFIX = "__slayer_list__"
 
 
 def list_child_name(*, parent: str, column: str) -> str:
-    """A list child's minted model identity."""
-    return f"{LIST_CHILD_PREFIX}{parent}__{column}"
+    """A list child's minted model identity; the length prefix keeps ``__`` in names unambiguous."""
+    return f"{LIST_CHILD_PREFIX}{len(parent)}_{parent}__{column}"
 
 
 def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
@@ -294,10 +294,8 @@ def with_list_children(models_by_name: Dict[str, SlayerModel]) -> Dict[str, Slay
     for model in models_by_name.values():
         for column in model.list_columns():
             name = list_child_name(parent=model.name, column=column.name)
-            known = out.get(name)
-            if known is not None and known.list_of != (model.name, column.name):
-                raise ValueError(f"List child identity {name!r} is ambiguous.")
-            out[name] = known or list_child(parent=model, column=column)
+            if name not in out:
+                out[name] = list_child(parent=model, column=column)
     return out
 
 

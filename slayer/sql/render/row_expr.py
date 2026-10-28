@@ -42,6 +42,7 @@ from slayer.core.keys import (
     check_scalar_arity,
     integer_valued,
     is_list_call,
+    numbers_read_list,
     numeric_boolean_positions,
     temporal_type,
     unit_word,
@@ -313,11 +314,17 @@ def render_scalar_call(
 
 def render_scalar_key(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    part: Callable[[Any], Expression],
 ) -> Expression:
     """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
     if key.name == "mod":
         return render_modulo(key=key, operands=args, dialect=dialect, column_type=column_type)
     if is_list_fn(key.name) and is_list_call(key, column_type=column_type):
+        numbers = numbers_read_list(key, column_type=column_type)
+        if numbers is not None:
+            each = DataType.TEXT if numbers.try_ else DataType.DOUBLE
+            return dialect.rewrite_target_ast(
+                dialect.build_list_call(key.name, (args[0], part(numbers.source)), each=each))
         return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args)))
     return render_scalar_call(name=key.name, args=args, dialect=dialect)
 
@@ -504,4 +511,4 @@ def _row_scalar_call(
     args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
     if key.name in DATE_FUNCTIONS:
         return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type)
+    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type, part=part)
