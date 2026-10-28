@@ -9,6 +9,7 @@ document shapes.
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -187,6 +188,17 @@ def test_invalid_legacy_model_keeps_its_valid_siblings(tmp_path: Path, caplog: p
         docs = parse_osi_path(path)
     assert [d.name for d in docs] == ["b"]
     assert any("broken" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+@pytest.mark.parametrize("entry", [pytest.param({}, id="empty-object"), pytest.param("shop", id="scalar")])
+def test_malformed_legacy_entry_keeps_its_valid_siblings(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, entry: Any
+) -> None:
+    path = write_yaml(tmp_path / "two.yaml", legacy(_legacy_model("a"), entry))
+    with caplog.at_level(logging.WARNING):
+        docs = parse_osi_path(path)
+    assert [d.name for d in docs] == ["a"]
+    assert any("two.yaml" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
 def test_legacy_object_wrapper(tmp_path: Path) -> None:

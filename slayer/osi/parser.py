@@ -59,11 +59,15 @@ def _flat_mappings(path: Path, data: dict[str, Any]) -> list[dict[str, Any]] | N
         return None
     wrapped = data[_WRAPPER]
     models = [wrapped] if isinstance(wrapped, dict) else wrapped
-    if not isinstance(models, list) or not models or not all(isinstance(m, dict) and m for m in models):
+    if not isinstance(models, list) or not models:
         logger.warning("OSI file %s has an empty or malformed %r value; skipping", path, _WRAPPER)
         return None
+    kept = [m for m in models if isinstance(m, dict) and m]
+    if len(kept) < len(models):
+        logger.warning("OSI file %s has %d empty or non-object %r entries; skipping them",
+                       path, len(models) - len(kept), _WRAPPER)
     version = {"version": data["version"]} if "version" in data else {}
-    return [{**model, **version, "legacy": True} for model in models]
+    return [{**model, **version, "legacy": True} for model in kept]
 
 
 def parse_osi_file(path: Path) -> list[OSIDocument]:

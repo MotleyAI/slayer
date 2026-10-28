@@ -511,7 +511,7 @@ class OsiToSlayerConverter:
         model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
             or model.description
         extra: dict[str, Any] = {}
-        unique_keys = self._unique_keys(model, ds, legacy=doc.legacy)
+        unique_keys = self._unique_keys(model, ds)
         if unique_keys:
             extra["osi_unique_keys"] = unique_keys
         doc_ctx = ai_context_to_dict(doc.ai_context)
@@ -527,16 +527,16 @@ class OsiToSlayerConverter:
         if meta:
             model.meta = {**(model.meta or {}), **meta}
 
-    def _unique_keys(self, model: SlayerModel, ds: OSIDataset, *, legacy: bool) -> list[list[str]]:
-        """Non-empty entries; current-spec entries must also name declared fields."""
-        declared = {c.name for c in model.columns}
+    def _unique_keys(self, model: SlayerModel, ds: OSIDataset) -> list[list[str]]:
+        """Non-empty entries naming only the model's columns (declared fields; legacy: plus source columns)."""
+        names = {c.name for c in model.columns}
         kept: list[list[str]] = []
         for key in ds.unique_keys or []:
-            missing = [] if legacy else [k for k in key if k not in declared]
+            missing = [k for k in key if k not in names]
             if not key or missing:
                 self._warn(
                     f"Dataset {ds.name!r} unique_keys entry {key} is empty or names "
-                    f"{missing}, which are not declared fields; ignoring it.",
+                    f"{missing}, which are not columns of the model; ignoring it.",
                     model_name=ds.name, category="unique_keys",
                 )
                 continue

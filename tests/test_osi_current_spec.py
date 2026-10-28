@@ -292,6 +292,13 @@ def test_legacy_relationship_on_a_source_column(db: Path, tmp_path: Path) -> Non
     assert [j.join_pairs for j in by_name(result)["orders"].joins] == [[["o_custkey", "c_custkey"]]]
 
 
+def test_legacy_unique_keys_resolve_against_source_columns_and_fields(db: Path, tmp_path: Path) -> None:
+    model = {"name": "s", "datasets": [_customers(unique_keys=[["email"], ["segment"], ["nope"]])]}
+    result = convert(db=db, docs=_legacy_docs(tmp_path, model))
+    assert (by_name(result)["customers"].meta or {})["osi_unique_keys"] == [["email"], ["segment"]]
+    assert mentions(result, "nope")
+
+
 def test_legacy_dataset_scoped_metric(db: Path, tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [_orders(metrics=[m("total_amount", "SUM(amount)")])]}
     result = convert(db=db, docs=_legacy_docs(tmp_path, model))
