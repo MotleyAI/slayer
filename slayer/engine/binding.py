@@ -40,6 +40,7 @@ from slayer.core.granularity import CustomGranularity, Granularity, resolve_gran
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, TEXT_RESULT_SCALARS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, numeric_valued, prepend_value_key, temporal_type, walk_value_keys
 from slayer.core.join_walker import (
+    LIST_ELEMENT_COLUMN,
     resolved_terminal,
     aggregation_owner,
     canonical_path,
@@ -828,14 +829,7 @@ def _resolve_dotted(
             return alias_map[dotted_text]
 
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -871,6 +865,23 @@ def _resolve_dotted(
         original_parts=original_parts, scope=scope, bundle=bundle,
         measure_ctx=measure_ctx,
     )
+
+
+def _stage_list_scope(
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str,
+) -> ModelScope:
+    """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
+    head = scope.resolve_flat_name(parts[0]) if len(parts) == 2 and parts[1] == leaf else None
+    if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
+        raise IllegalScopeReferenceError(
+            name=".".join(parts),
+            scope_kind="StageSchema",
+            reason=(
+                "downstream stages see a flat schema — dotted refs are not legal "
+                "bar a list column's elements (L.value, L.*). Use the flat column name."
+            ),
+        )
+    return ModelScope(source_model=bundle.source_model)
 
 
 def _resolve_terminal_leaf(
@@ -1018,14 +1029,7 @@ def _resolve_dotted_star(
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
     assert isinstance(scope, ModelScope)
     host = scope.source_model
     if host is None:
@@ -1299,7 +1303,7 @@ def _bind_agg_source(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
             dim_alias_map=dim_alias_map,
         )
-        if isinstance(bound, SqlFragmentKey):
+        if isinstance(bound, (SqlFragmentKey, ArrayLiteralKey)):
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):

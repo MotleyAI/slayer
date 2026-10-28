@@ -80,10 +80,10 @@ class TestStages:
 
 class TestReRootedProducers:
     async def test_collect_across_a_to_one_join(self, engine) -> None:
-        query = {"source_model": "assignments", "dimensions": ["contractor_id"],
+        query = {"source_model": "assignments", "dimensions": ["contractors.id"],
                  "measures": [measure("collect(contractors.skills.value)", "s")]}
         resp = await engine.execute(query)
-        got = {int(r["assignments.contractor_id"]): as_list(r["assignments.s"]) for r in resp.data}
-        assert got == {1: ["go", "sql"], 2: ["sql"], 3: None, 5: ["go"]}
+        got = {int(r["assignments.contractors.id"]): as_list(r["assignments.s"]) for r in resp.data}
+        assert got == {1: ["go", "sql"], 2: ["sql"], 3: [], 5: ["go"]}
         model = await engine.create_model_from_query(query=query, name="per_contractor")
         assert _typed(model, "s") == (DataType.ARRAY, DataType.TEXT)

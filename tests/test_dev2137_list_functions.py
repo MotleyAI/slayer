@@ -113,7 +113,8 @@ class TestArrayLiterals:
         with pytest.raises(SlayerError) as info:
             await _count(engine, "contains_any(skills, ['go', 1])")
         msg = str(info.value)
-        assert "'go'" in msg and "1" in msg, msg
+        assert "'go'" in msg, msg
+        assert "1" in msg, msg
 
     async def test_a_literal_as_a_dimension(self, engine) -> None:
         with pytest.raises(SlayerError) as info:
@@ -193,7 +194,8 @@ class TestEmission:
                                       "contains_any(skills, required)", "contains_all(skills, required)"])
     async def test_no_postgres_only_operators(self, dialect: str, expr: str) -> None:
         sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect=dialect)
-        assert "&&" not in sql and "@>" not in sql, sql
+        assert "&&" not in sql, sql
+        assert "@>" not in sql, sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:

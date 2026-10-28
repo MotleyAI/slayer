@@ -25,7 +25,6 @@ from sqlalchemy.dialects.mssql import (
     TINYINT,
     UNIQUEIDENTIFIER,
 )
-from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSON as PG_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -664,9 +663,8 @@ class TestUnmappedTypeBecomesOpaque:
         "sa_type",
         [
             sa.LargeBinary(),  # bytea
-            PG_ARRAY(sa.Text()),
         ],
-        ids=["bytea", "array"],
+        ids=["bytea"],
     )
     def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
         """Regression: these are groupable/joinable and must not be marked

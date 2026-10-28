@@ -83,12 +83,11 @@ def test_arrow_to_datatype_returns_none_for_unmappable(arrow_type: pa.DataType) 
 def test_forward_then_reverse_round_trip() -> None:
     """For every operable SLayer DataType, forward-map to Arrow then back.
 
-    ``UNKNOWN`` is excluded by design: opaque columns travel as Arrow strings,
-    so the reverse map lands on TEXT. Arrow has no "we could not classify
-    this" type to round-trip through.
+    ``UNKNOWN`` and ``ARRAY`` are excluded by design: opaque columns and lists
+    (as JSON text) travel as Arrow strings, so the reverse map lands on TEXT.
     """
     for dt in DataType:
-        if dt.is_opaque:
+        if dt.is_opaque or dt is DataType.ARRAY:
             continue
         round_tripped = arrow_to_datatype(datatype_to_arrow(dt))
         assert round_tripped == dt, f"{dt} did not round-trip cleanly"
@@ -144,8 +143,9 @@ def test_pa_table_from_pylist_rejects_decimal_into_double() -> None:
     column-by-column). Without that shim, the Arrow build raises
     ``ArrowInvalid``."""
     schema = pa.schema([pa.field("v", datatype_to_arrow(DataType.DOUBLE))])
+    decimal_rows = [{"v": decimal.Decimal("3.14")}]
     with pytest.raises(pa.ArrowInvalid):
-        pa.Table.from_pylist([{"v": decimal.Decimal("3.14")}], schema=schema)
+        pa.Table.from_pylist(decimal_rows, schema=schema)
     # And the documented shim — pre-coerce Decimal → float — works:
     rows = [{"v": float(decimal.Decimal("3.14"))}]
     table = pa.Table.from_pylist(rows, schema=schema)

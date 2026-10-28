@@ -12,11 +12,11 @@
 ## 2. Types and metadata
 
 - [x] 2.1 Add `DataType.ARRAY` and `Column.element_type` with validation (D1), and extend `TestDataTypeValuesMatchSqlglot`; verify the metadata tests in 1.1 pass
-- [ ] 2.2 Thread `element_type` through `StageColumn`, `ValueSlot`, bound key metadata, `aggregation_result_type` and the other type-inference functions (D1); verify 1.7 passes
+- [x] 2.2 Thread `element_type` through `StageColumn`, `ValueSlot`, bound key metadata, `aggregation_result_type` and the other type-inference functions (D1); verify 1.7 passes
 
 ## 3. Ingestion and migration
 
-- [ ] 3.1 Map native list types per dialect, with `db_type` kept and the DuckDB INFORMATION_SCHEMA fallback parsing `T[]` (D10); verify the ingestion tests in 1.1 pass
+- [x] 3.1 Map native list types per dialect, with `db_type` kept and the DuckDB INFORMATION_SCHEMA fallback parsing `T[]` (D10); verify the ingestion tests in 1.1 pass
 - [x] 3.2 Snowflake untyped `ARRAY` element inference at ingest, re-inferred only while `UNKNOWN` (D10); verify its tests pass
 - [x] 3.3 Re-ingest re-types `TEXT` list columns, keeping metadata (D11); verify the re-type tests in 1.1 pass
 - [x] 3.4 Schema drift: re-type finding kind in validation and `SchemaDriftError`, and list-aware sql-model live typing (D11); verify 1.6 drift tests pass
@@ -32,20 +32,20 @@
 
 - [x] 5.1 Grammar and the array-literal key kind with `children()` / `map_children()`, `[]` typed by context, list variables (D4); verify the literal tests pass
 - [x] 5.2 Overloaded `contains` / `length` and new `contains_any` / `contains_all` in the library, typing and coercion of arguments (D3); verify the typing tests pass
-- [ ] 5.3 `ArrayFn` dialect hooks with explicit lowerings per Tier-1 native-list dialect, NULL elements ignored (D2, D3); verify the library matrix (1.2) passes
+- [x] 5.3 `ArrayFn` dialect hooks with explicit lowerings per Tier-1 native-list dialect, NULL elements ignored (D2, D3); verify the library matrix (1.2) passes
 
 ## 6. List children
 
 - [x] 6.1 Lateral keyless edge kind in the join walker, `L.value` resolution, `count(L.*)`, opaque elements refused (D5); verify the resolution tests in 1.3 pass
-- [ ] 6.2 Emission: lateral unnest hop, correlated EXISTS (ClickHouse `arrayExists`), producers rooted at the child with no join back, one AST dialect hook per native-list dialect (D5); verify the filter, dimension, no-fan-out and no-self-join tests pass
+- [x] 6.2 Emission: lateral unnest hop, correlated EXISTS (ClickHouse `arrayExists`), producers rooted at the child with no join back, one AST dialect hook per native-list dialect (D5); verify the filter, dimension, no-fan-out and no-self-join tests pass
 - [x] 6.3 Keyless association across list hops, key requirement kept for other to-many hops (D6); verify the association tests pass
-- [ ] 6.4 Composition through to-one chains, derived lists and stage lists; verify those tests pass
+- [x] 6.4 Composition through to-one chains, derived lists and stage lists; verify those tests pass
 - [x] 6.5 Save-time collision check from both sides (D12); verify the collision tests pass
 - [x] 6.6 Flip `semantics.arc42.md` Axiom 3.2 `[target: DEV-2137]` → `[enforced: test:tests/test_dev2137_list_children.py]` (approved); verify `poetry run la-arch-check` passes
 
 ## 7. collect
 
-- [x] 7.1 `collect` built-in with the list value class, the `build_collect` hook with explicit NULL filtering per dialect, empty value NULL (D7); verify 1.4 passes
+- [x] 7.1 `collect` built-in with the list value class, the `build_collect` hook with explicit NULL filtering per dialect, empty value the empty list (D7); verify 1.4 passes
 
 ## 8. Results, facades, profiling and the MCP surface
 
@@ -68,4 +68,4 @@
 
 ## 11. Verification
 
-- [ ] 11.1 Run the full unit suite (`poetry run pytest -m "not integration"`), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all green
+- [x] 11.1 Run the full unit suite (`poetry run pytest -m "not integration"`), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all green

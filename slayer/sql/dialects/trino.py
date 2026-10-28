@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL, make_url
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import SlayerError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    ExtremumFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, is_not_null, lit, non_null_elements,
+    ExtremumFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit, non_null_elements,
     unnest_elements,
 )
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
@@ -75,6 +75,13 @@ class PrestoFamilyDialect(SqlDialect):
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return anon("CONTAINS", non_null_elements(values), value)
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """``any_match(values, e -> predicate(e))``: Trino rejects a correlated subquery over ``UNNEST``."""
+        matched = anon("any_match", non_null_elements(values), element_lambda(predicate, alias=alias))
+        return exp.Coalesce(this=matched, expressions=[exp.false()])
 
     def list_overlaps(self, values: Expression, other: Expression) -> Expression:
         return anon("ARRAYS_OVERLAP", non_null_elements(values), non_null_elements(other))

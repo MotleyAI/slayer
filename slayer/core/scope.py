@@ -99,7 +99,8 @@ class StageSchema(BaseModel):
 
     Downstream stages bind against this as a flat namespace (P5). They
     never re-walk the upstream join graph through a StageSchema — the
-    only legal refs are entries in ``columns``.
+    only legal refs are entries in ``columns`` and a list column's
+    elements (``L.value`` / ``L.*``).
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).

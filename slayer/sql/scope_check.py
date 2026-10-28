@@ -162,10 +162,9 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
     leaks: list[ScopeLeak] = []
     label = _scope_label(scope)
     bound = tuple(scope.sources.keys())
-    array_joined = _array_join_aliases(scope)
     for col in scope.columns:
         qualifier = col.table
-        if not qualifier or qualifier in array_joined:
+        if not qualifier or _array_joined(col, qualifier):
             continue  # unverifiable without a schema
         source = _resolve_source(scope=scope, qualifier=qualifier)
         if source is None:
@@ -188,12 +187,16 @@ def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak
     return leaks
 
 
-def _array_join_aliases(scope: Scope) -> frozenset[str]:
-    """ClickHouse ``ARRAY JOIN … AS a`` aliases: row values the scope reads, unverifiable without a schema."""
-    joins = scope.expression.args.get("joins") or [] if isinstance(scope.expression, exp.Select) else []
-    return frozenset(
-        j.this.alias for j in joins if j.args.get("kind") == "ARRAY" and isinstance(j.this, exp.Alias)
-    )
+def _array_joined(col: exp.Column, qualifier: str) -> bool:
+    """Whether a SELECT enclosing ``col`` ClickHouse-``ARRAY JOIN``s ``… AS qualifier`` (unverifiable without a schema)."""
+    select = col.find_ancestor(exp.Select)
+    while select is not None:
+        joins = select.args.get("joins") or []
+        if any(j.args.get("kind") == "ARRAY" and isinstance(j.this, exp.Alias) and j.this.alias == qualifier
+               for j in joins):
+            return True
+        select = select.find_ancestor(exp.Select)
+    return False
 
 
 def _resolve_source(scope: Scope, qualifier: str):

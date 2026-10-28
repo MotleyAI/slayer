@@ -1936,29 +1936,47 @@ _TAGGED = ("CREATE TABLE tagged (id Int32, tags Array(LowCardinality(Nullable(St
            "ENGINE = MergeTree ORDER BY id")
 
 
-@pytest.fixture(scope="module")
-def _clickhouse_lists(clickhouse_container, tmp_path_factory):
-    db_name = _create_module_db(clickhouse_container)
+@contextlib.contextmanager
+def _seeded_lists(container, base_dir: str):
+    db_name = _create_module_db(container)
     try:
-        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+        with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
             with engine.begin() as conn:
                 for stmt in [*contractors_statements(dialect="clickhouse"),
                              *assignments_statements(dialect="clickhouse"), _TAGGED]:
                     conn.execute(sa.text(stmt))
-        ds = _ds_config(clickhouse_container, db_name)
-        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_lists")))
+        ds = _ds_config(container, db_name)
+        storage = YAMLStorage(base_dir=base_dir)
         run_sync(storage.save_datasource(ds))
         run_sync(storage.save_model(contractors_model(data_source=ds.name)))
         run_sync(storage.save_model(assignments_model(data_source=ds.name)))
         yield storage, ds
     finally:
-        _drop_module_db(clickhouse_container, db_name)
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_lists(clickhouse_container, tmp_path_factory):
+    with _seeded_lists(clickhouse_container, str(tmp_path_factory.mktemp("clickhouse_lists"))) as seeded:
+        yield seeded
+
+
+@pytest.fixture(scope="module")
+def _versioned_clickhouse_lists(versioned_clickhouse, tmp_path_factory):
+    _, container, _ = versioned_clickhouse
+    with _seeded_lists(container, str(tmp_path_factory.mktemp("clickhouse_lists_versioned"))) as seeded:
+        yield seeded
 
 
 @pytest.mark.integration
 class TestClickHouseLists:
     async def test_lists(self, _clickhouse_lists) -> None:
-        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse")
+        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
+        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
+                          refused={"through-to-one": "25.4"})
+
+    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists) -> None:
+        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse")
 
     def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
         (model,) = ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])

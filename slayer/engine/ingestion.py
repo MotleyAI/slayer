@@ -209,8 +209,9 @@ def _sa_list_item(sa_type: sa.types.TypeEngine) -> tuple[bool, sa.types.TypeEngi
         return True, None if dimensions is not None and dimensions > 1 else sa_type.item_type
     if type(sa_type).__name__.upper() != "ARRAY":
         return False, None
-    if hasattr(sa_type, "item_type"):  # ClickHouse Array(T)
-        return True, sa_type.item_type
+    item = getattr(sa_type, "item_type", None)
+    if item is not None:  # ClickHouse Array(T)
+        return True, item
     return True, getattr(sa_type, "value_type", None)  # Snowflake ARRAY / ARRAY(T)
 
 

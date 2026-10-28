@@ -40,7 +40,7 @@ class TestRegistry:
 
     @pytest.mark.parametrize("name", sorted(required_names()))
     def test_every_function_and_operator_has_cases(self, name: str) -> None:
-        assert any(name in c.covers for c in CASES), f"no matrix case covers {name!r}"
+        assert any(name in c.covers for c in [*CASES, *LIST_CASES]), f"no matrix case covers {name!r}"
 
     def test_every_registered_scalar_has_cases(self) -> None:
         covered = {n for c in [*CASES, *LIST_CASES] for n in c.covers}
@@ -103,8 +103,9 @@ LIST_CONSTRUCTS = [c for c in LIST_CASES if _is_list_construct(c)]
 
 @pytest.mark.parametrize("case", LIST_CONSTRUCTS, ids=[c.case_id for c in LIST_CONSTRUCTS])
 async def test_list_case_refused_on_sqlite(sqlite_lists, case: Case) -> None:
+    q = case.query()
     with pytest.raises(SlayerError) as info:
-        await sqlite_lists.execute(case.query())
+        await sqlite_lists.execute(q)
     msg = str(info.value)
     assert "SQLite" in msg, msg
     assert any(name in msg for name in LIST_FUNCTIONS & set(case.covers)), msg
@@ -122,6 +123,7 @@ async def test_list_case_emits(case: Case, dialect: str) -> None:
     if dialect in NATIVE_LIST_DIALECTS or not _is_list_construct(case):
         await emit_contractors(case.query(), dialect=dialect)
         return
+    q = case.query()
     with pytest.raises(SlayerError) as info:
-        await emit_contractors(case.query(), dialect=dialect)
+        await emit_contractors(q, dialect=dialect)
     assert NO_LIST_DATABASES[dialect] in str(info.value), str(info.value)

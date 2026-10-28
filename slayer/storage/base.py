@@ -300,8 +300,9 @@ def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerMod
         column = peer.get_column(token) if peer is not None else None
         if column is not None and column.type is DataType.ARRAY:
             raise ValueError(
-                f"Model '{model.name}': its join to '{peer.name}' is the hop '{token}' from '{peer.name}', which "
-                f"collides with the list column '{peer.name}.{token}'; name the edge differently."
+                f"Model '{model.name}': its join to '{join.target_model}' is the hop '{token}' from "
+                f"'{join.target_model}', which collides with the list column '{join.target_model}.{token}'; "
+                "name the edge differently."
             )
 
 

@@ -843,6 +843,29 @@ def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
     return inner
 
 
+def _leaf_list_predicates(
+    *, group, conjuncts: List[Expression], alias,
+) -> Tuple[List[Tuple[Any, List[Expression]]], List[Expression]]:
+    """The group's leaf list hops, each with the conjuncts that read its elements, and the other conjuncts.
+
+    A conjunct reading two leaf lists keeps every list hop in the subquery's FROM."""
+    parents = {tuple(h.node_path[:-1]) for h in group.hops}
+    leaves = [h for h in group.hops
+              if h.lateral is not None and not h.null_extended and tuple(h.node_path) not in parents]
+    names = {alias(h.node_path): h for h in leaves}
+    by_hop: Dict[Tuple[str, ...], List[Expression]] = {tuple(h.node_path): [] for h in leaves}
+    plain: List[Expression] = []
+    for conjunct in conjuncts:
+        read = {tuple(names[c.table].node_path) for c in conjunct.find_all(exp.Column) if c.table in names}
+        if len(read) > 1:
+            return [], conjuncts
+        if read:
+            by_hop[next(iter(read))].append(conjunct)
+        else:
+            plain.append(conjunct)
+    return [(h, by_hop[tuple(h.node_path)]) for h in leaves], plain
+
+
 def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
     """Flat shape: FROM the first attached hop, further attached hops CROSS-joined
     with their correlations in WHERE, deeper hops ON their parent."""
@@ -5930,7 +5953,7 @@ class SQLGenerator:
 
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
-    ) -> exp.Exists:
+    ) -> Expression:
         """Build one correlated EXISTS lowering the group's join product:
         outer-attached hops (parent outside the group) correlate to the outer
         body — the flat shape when none is null-extended, else the spine shape (a
@@ -5958,27 +5981,6 @@ class SQLGenerator:
             )
             return relation.relation, relation.join_kind
 
-        ops = _SemiJoinOps(
-            alias=_alias,
-            col=lambda table, name: exp.Column(
-                this=self._to_ident(name), table=exp.to_identifier(table)),
-            table=_table,
-            attached={
-                tuple(h.node_path) for h in group.hops
-                if tuple(h.node_path[:-1]) not in in_group
-            },
-        )
-        if group.outer_list_only:
-            return self._list_element_exists(
-                group=group, hop=group.hops[0], parent=source_model, source_relation=source_relation,
-                bundle=bundle, allocator=allocator, alias=_alias,
-            )
-        inner = exp.select(exp.Literal.number(1))
-        if any(h.null_extended for h in group.hops if ops.is_attached(h)):
-            inner = _semi_join_spine(
-                ops=ops, hops=group.hops, inner=inner, ident=self._to_ident)
-        else:
-            inner = _semi_join_flat(ops=ops, hops=group.hops, inner=inner)
         # Conjunct refs carry tree-node paths, so the same allocator resolves
         # them to the hop aliases; root-local refs correlate to the outer body.
         ctx = RenderContext(
@@ -5991,31 +5993,57 @@ class SQLGenerator:
                 cast_column_sql=True, paren_comparison_operands=True,
             ),
         )
+        conjuncts = []
         for key in group.conjuncts:
             rendered = render_value_key(key=key, ctx=ctx)
-            if isinstance(rendered, (exp.And, exp.Or)):
-                rendered = exp.Paren(this=rendered)
-            inner = inner.where(rendered)
+            conjuncts.append(exp.Paren(this=rendered) if isinstance(rendered, (exp.And, exp.Or)) else rendered)
+        leaves, plain = _leaf_list_predicates(group=group, conjuncts=conjuncts, alias=_alias)
+        conditions = [*plain, *(
+            self._element_test(hop=hop, predicates=predicates, node_models=node_models,
+                               source_relation=source_relation, bundle=bundle, alias=_alias)
+            for hop, predicates in leaves
+        )]
+        rest = [h for h in group.hops if all(h is not hop for hop, _ in leaves)]
+        if not rest:
+            combined = conditions[0]
+            for condition in conditions[1:]:
+                combined = exp.And(this=combined, expression=condition)
+            return combined
+        ops = _SemiJoinOps(
+            alias=_alias,
+            col=lambda table, name: exp.Column(
+                this=self._to_ident(name), table=exp.to_identifier(table)),
+            table=_table,
+            attached={
+                tuple(h.node_path) for h in rest
+                if tuple(h.node_path[:-1]) not in in_group
+            },
+        )
+        inner = exp.select(exp.Literal.number(1))
+        if any(h.null_extended for h in rest if ops.is_attached(h)):
+            inner = _semi_join_spine(
+                ops=ops, hops=rest, inner=inner, ident=self._to_ident)
+        else:
+            inner = _semi_join_flat(ops=ops, hops=rest, inner=inner)
+        for condition in conditions:
+            inner = inner.where(condition)
         return exp.Exists(this=inner)
 
-    def _list_element_exists(
-        self, *, group, hop, parent, source_relation: str, bundle, allocator, alias,
+    def _element_test(
+        self, *, hop, predicates: List[Expression], node_models, source_relation: str, bundle, alias,
     ) -> Expression:
-        """An element filter on the outer row's own list: some non-NULL element satisfies every conjunct."""
-        ctx = RenderContext(
-            scope=self._scope_frame(model=parent, relation=source_relation, bundle=bundle, allocator=allocator),
-            dialect=self._dialect,
-            filters=FilterFacilities(cast_column_sql=True, paren_comparison_operands=True),
-        )
-        conjuncts = [render_value_key(key=key, ctx=ctx) for key in group.conjuncts]
-        predicate = exp.and_(*[exp.Paren(this=c) if isinstance(c, (exp.And, exp.Or)) else c for c in conjuncts])
+        """Some non-NULL element of the leaf list hop satisfies every predicate (read on its parent's row)."""
+        parent_path = tuple(hop.node_path[:-1])
+        parent = bundle.models_by_name[node_models[parent_path]]
         col = parent.get_column(hop.lateral)
         assert col is not None
-        values = self._throwaway_frame(model=parent, relation=source_relation, bundle=bundle).resolve(
+        relation = alias(parent_path) if parent_path else source_relation
+        values = self._throwaway_frame(model=parent, relation=relation, bundle=bundle).resolve(
             ColumnSqlKey(model=parent.name, column_name=hop.lateral) if col.needs_expansion else ColumnKey(leaf=hop.lateral),
         )
         return self._dialect.list_exists(
-            values, alias=exp.to_identifier(alias(hop.node_path)), element=col.element_type, predicate=predicate,
+            values, alias=exp.to_identifier(alias(hop.node_path)), element=col.element_type,
+            predicate=exp.and_(*predicates) if predicates else exp.true(),
         )
 
     def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over the lowered entries routing each to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering inline. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.

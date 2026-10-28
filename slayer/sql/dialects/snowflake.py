@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re as _re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 
 
 _ARRAY_TYPE_CODE = 10
+
+
+def _json_list(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
 _TYPEOF_SAMPLE = 20
 #: ``TYPEOF`` of a VARIANT element → its SLayer type (absent: opaque).
 _TYPEOF_TYPES: dict[str, DataType] = {
@@ -153,12 +157,9 @@ class SnowflakeDialect(SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
     database_name: ClassVar[str] = "Snowflake"
 
-    def list_result_columns(self, description: Sequence[Any]) -> frozenset[int]:
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
         """The connector returns an ARRAY (type code 10) as JSON text."""
-        return frozenset(i for i, d in enumerate(description) if d[1] == _ARRAY_TYPE_CODE)
-
-    def list_result_value(self, value: Any) -> Any:
-        return json.loads(value) if isinstance(value, str) else super().list_result_value(value)
+        return {i: _json_list for i, d in enumerate(description) if d[1] == _ARRAY_TYPE_CODE}
 
     def list_element_types_query(self, *, table: exp.Table, column: exp.Identifier) -> Optional[exp.Select]:
         """The distinct ``TYPEOF`` of an untyped ARRAY's elements, a few rows."""

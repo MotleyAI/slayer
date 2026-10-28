@@ -47,8 +47,9 @@ class TestTheType:
                                         "columns": [{"name": "team", "type": "TEXT", "element_type": "INT"}]})
 
     def test_nested_element_type_rejected(self) -> None:
+        raw = {"name": "grid", **_array("ARRAY")}
         with pytest.raises(ValueError, match="grid"):
-            Column.model_validate({"name": "grid", **_array("ARRAY")})
+            Column.model_validate(raw)
 
     @pytest.mark.parametrize("element", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN"])
     def test_scalar_and_opaque_elements_accepted(self, element: str) -> None:
@@ -152,7 +153,7 @@ class TestDuckDBIngestion:
             col = model.get_column(name)
             assert col is not None
             assert (col.type, col.element_type) == (DataType.ARRAY, element), name
-            assert (col.db_type or "").upper() == db_type, name
+            assert (col.db_type or "").upper() == db_type.upper(), name
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +166,9 @@ async def engine():
 
 
 async def _refused(engine: SlayerQueryEngine, *, names: tuple[str, ...], **body: Any) -> str:
+    q = query(**body)
     with pytest.raises(SlayerError) as info:
-        await engine.execute(query(**body))
+        await engine.execute(q)
     msg = str(info.value)
     for name in names:
         assert name in msg, msg
@@ -226,9 +228,10 @@ class TestEligibility:
         assert _names_the_list_type(msg), msg
 
     def test_save_time_allowed_aggregations(self) -> None:
+        raw = {"name": "c", "sql_table": "c", "data_source": "test", "columns": [
+            {"name": "skills", "type": "ARRAY", "element_type": "TEXT", "allowed_aggregations": ["sum"]}]}
         with pytest.raises(ValueError, match="skills"):
-            SlayerModel(name="c", sql_table="c", data_source="test", columns=[
-                Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT, allowed_aggregations=["sum"])])
+            SlayerModel.model_validate(raw)
 
     def test_count_is_an_allowed_aggregation(self) -> None:
         SlayerModel(name="c", sql_table="c", data_source="test", columns=[
@@ -287,31 +290,34 @@ class TestOpaqueElements:
 class TestNoNativeLists:
     async def test_list_function_on_sqlite(self) -> None:
         async with contractors_engine("sqlite") as e:
+            q = query(measures=[measure("count(*)", "n")], filters=["contains(skills, 'go')"])
             with pytest.raises(SlayerError) as info:
-                await e.execute(query(measures=[measure("count(*)", "n")], filters=["contains(skills, 'go')"]))
-        assert "contains" in str(info.value) and "SQLite" in str(info.value), str(info.value)
+                await e.execute(q)
+        assert "contains" in str(info.value), str(info.value)
+        assert "SQLite" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
                                                        ("sqlite", "SQLite")])
     async def test_collect(self, dialect: str, database: str) -> None:
+        q = query(dimensions=["city"], measures=[measure("collect(team)", "c")])
         with pytest.raises(SlayerError) as info:
-            await emit_contractors(query(dimensions=["city"], measures=[measure("collect(team)", "c")]),
-                                   dialect=dialect)
-        assert "collect" in str(info.value) and database in str(info.value), str(info.value)
+            await emit_contractors(q, dialect=dialect)
+        assert "collect" in str(info.value), str(info.value)
+        assert database in str(info.value), str(info.value)
 
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
                                                        ("sqlite", "SQLite")])
     async def test_element_access(self, dialect: str, database: str) -> None:
+        q = query(measures=[measure("count(*)", "n")], filters=["skills.value = 'go'"])
         with pytest.raises(SlayerError) as info:
-            await emit_contractors(query(measures=[measure("count(*)", "n")], filters=["skills.value = 'go'"]),
-                                   dialect=dialect)
+            await emit_contractors(q, dialect=dialect)
         assert database in str(info.value), str(info.value)
 
     @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server")])
     async def test_array_literal(self, dialect: str, database: str) -> None:
+        q = query(measures=[measure("count(*)", "n")], filters=["contains_any(skills, ['go'])"])
         with pytest.raises(SlayerError) as info:
-            await emit_contractors(query(measures=[measure("count(*)", "n")],
-                                         filters=["contains_any(skills, ['go'])"]), dialect=dialect)
+            await emit_contractors(q, dialect=dialect)
         assert database in str(info.value), str(info.value)
 
 
@@ -406,12 +412,15 @@ class TestRendering:
         skills = model.get_column("skills")
         assert skills is not None
         text = render_column_text(model=model, column=skills)
-        assert "ARRAY<TEXT>" in text and "skills.value" in text and "contains" in text, text
+        assert "ARRAY<TEXT>" in text, text
+        assert "skills.value" in text, text
+        assert "contains" in text, text
 
     def test_models_summary(self) -> None:
         models = [contractors_model()]
         markdown = render_models_summary(datasource_name="test", models=models, fmt="markdown", compact=False)
-        assert "ARRAY<TEXT>" in markdown and "ARRAY<INT>" in markdown, markdown
+        assert "ARRAY<TEXT>" in markdown, markdown
+        assert "ARRAY<INT>" in markdown, markdown
         skills = _find_column(json.loads(render_models_summary(datasource_name="test", models=models, fmt="json",
                                                                compact=False)), "skills")
         assert skills is not None

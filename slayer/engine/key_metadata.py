@@ -33,7 +33,7 @@ from slayer.core.keys import (
     list_valued,
     temporal_type,
 )
-from slayer.core.join_walker import model_column_element, model_column_lookup, model_column_type
+from slayer.core.join_walker import LIST_ELEMENT_COLUMN, model_column_element, model_column_lookup, model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
@@ -148,11 +148,19 @@ def _model_types(*, model: SlayerModel, bundle) -> ColumnTypeFn:
     )
 
 
+def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
+    """The element type for ``L.value`` over a stage's list column ``L``."""
+    if not (isinstance(key, ColumnKey) and len(key.path) == 1 and key.leaf == LIST_ELEMENT_COLUMN):
+        return None
+    col = schema.get(key.path[0])
+    return (col.element_type or DataType.UNKNOWN) if col is not None and col.type is DataType.ARRAY else None
+
+
 def stage_column_type(schema: StageSchema) -> ColumnTypeFn:
-    """Types of a stage's flat columns."""
+    """Types of a stage's flat columns and of its lists' elements."""
     def column_type(key: ValueKey) -> Optional[DataType]:
         col = schema.get(key.leaf) if isinstance(key, ColumnKey) and not key.path else None
-        return col.type if col is not None else None
+        return col.type if col is not None else _stage_element(schema, key)
     return column_type
 
 

@@ -369,6 +369,8 @@ def test_repeated_field_ingested(bq_lists) -> None:
 
 async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
     engine = SlayerQueryEngine(storage=bq_lists[0])
+    stale = SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]})
     with pytest.raises(SchemaDriftError) as info:
-        await engine.execute(SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]}))
-    assert "skills" in str(info.value) and "ingest" in str(info.value).lower(), str(info.value)
+        await engine.execute(stale)
+    assert "skills" in str(info.value), str(info.value)
+    assert "ingest" in str(info.value).lower(), str(info.value)

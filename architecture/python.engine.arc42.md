@@ -134,8 +134,8 @@ elaborate→compile and `query_engine.py` orchestrates.
    precedence. [enforced: test:tests/test_dev1964_dual_phase_consumption.py]
 5. **Stages compose only through schemas**: every stage emits an explicit flat
    `StageSchema` downstream stages bind against; the two scope kinds
-   (`ModelScope`: dots walk joins; `StageSchema`: flat names only) are distinct
-   types, never a flag. [review]
+   (`ModelScope`: dots walk joins; `StageSchema`: flat names, plus a list
+   column's elements `L.value` / `L.*`) are distinct types, never a flag. [review]
 6. **Phase and stage are properties of the value**: phase (ROW / AGGREGATE /
    POST — when the value exists relative to aggregation) is intrinsic to the
    term; stage (the relation of the emitted statement that computes the value)

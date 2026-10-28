@@ -67,7 +67,7 @@ The grammar admits a bracketed literal list as a primary expression. It binds to
 
 The join walker exposes each list column `L` of `M` as an oriented hop `L` of a new lateral kind: one-to-many forward, and to-one back, by construction. Home, attributability, population and filter disposition read only cardinalities, so the planner is unchanged (reduction to Axiom 3.2). Only the places that build correlations from `join_pairs` gain a lateral branch, and it fails closed on any edge kind it does not handle:
 - **Hop in FROM:** the lateral unnest of `M.L` into the alias the walker assigns, with NULL elements filtered.
-- **EXISTS:** a correlated unnest subquery over the outer `M` row. ClickHouse, which lacks correlated subqueries, lowers the element predicate to `arrayExists(e -> …, M.L)`.
+- **EXISTS:** a correlated unnest subquery over the outer `M` row. ClickHouse, which lacks correlated subqueries, lowers the element predicate to `arrayExists(e -> …, M.L)`, and Trino, which rejects a correlated subquery over `UNNEST`, to `any_match(M.L, e -> …)`.
 - **Producers rooted at the child:** `FROM M <lateral unnest>`. The hop back to `M` is the same row, so no join is emitted. The producer attaches back on its grain as any producer does.
 - **Per-dialect relation:**
 

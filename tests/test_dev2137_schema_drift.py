@@ -100,4 +100,5 @@ class TestQueryTime:
         err = info.value
         assert "contractors" in err.models
         assert not any(_deletes_skills(e) for e in _dumps(err.to_delete)), err.to_delete
-        assert "skills" in str(err) and "ingest" in str(err).lower(), str(err)
+        assert "skills" in str(err), str(err)
+        assert "ingest" in str(err).lower(), str(err)

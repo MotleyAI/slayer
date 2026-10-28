@@ -14,7 +14,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
@@ -359,6 +359,18 @@ def unnest_elements(values: Expression, *, alias: exp.Identifier) -> exp.Unnest:
     return exp.Unnest(expressions=[values.copy()], alias=exp.TableAlias(
         this=alias.copy(), columns=[exp.to_identifier(LIST_VALUE)],
     ))
+
+
+def element_lambda(predicate: Expr, *, alias: exp.Identifier) -> exp.Lambda:
+    """``e -> predicate`` with each ``alias.value`` read as the lambda's element ``e``."""
+    element_name = exp.to_identifier(LIST_ELEMENT)
+
+    def bind(node: Expression) -> Expression:
+        if isinstance(node, exp.Column) and node.name == LIST_VALUE and node.table == alias.name:
+            return exp.Column(this=element_name.copy())
+        return node
+
+    return exp.Lambda(this=predicate.copy().transform(bind), expressions=[element_name])
 
 
 def kept_elements(values: Expression) -> exp.Select:
@@ -840,13 +852,9 @@ class SqlDialect(BaseModel):
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         return exp.ArrayContainsAll(this=operand_copy(values), expression=anon("ARRAY_REMOVE", other, exp.Null()))
 
-    def list_result_columns(self, description: Sequence[Any]) -> frozenset[int]:  # NOSONAR(S1172) — hook default
-        """Positions of result columns the driver returns as list text (default: none)."""
-        return frozenset()
-
-    def list_result_value(self, value: Any) -> Any:
-        """A driver's list value as a Python list (``None`` kept)."""
-        return list(value) if isinstance(value, tuple) else value
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:  # NOSONAR(S1172) — hook default
+        """Per result-column position, how to read a non-NULL cell the driver returns as text (default: none)."""
+        return {}
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
@@ -860,7 +868,7 @@ class SqlDialect(BaseModel):
         return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
 
     def list_exists(
-        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expression,
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
     ) -> Expression:
         """Whether some non-NULL element of ``values`` (read as ``alias.value``) satisfies ``predicate``."""
         relation = self.list_relation(values, alias=alias, element=element, leading=True)  # NOSONAR(S1172)

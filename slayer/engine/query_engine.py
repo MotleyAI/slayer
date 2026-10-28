@@ -1751,6 +1751,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
+        findings_out: "Optional[List[ListRetypeFinding]]" = None,
     ) -> "List[ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
@@ -1767,7 +1768,7 @@ class SlayerQueryEngine:
                 sql_clients=self._sql_clients,
                 available_in_ds=available,
                 snapshot=snapshot,
-                report_findings=True,
+                findings_out=findings_out,
             )
 
     async def _maybe_raise_schema_drift(
@@ -1780,18 +1781,21 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
         models; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            entries = await self._validate_read_set(datasource=datasource, read_set=read_set)
+            findings: List[ListRetypeFinding] = []
+            entries = await self._validate_read_set(
+                datasource=datasource, read_set=read_set, findings_out=findings,
+            )
             # An "invalid_sql" entry is not drift evidence — it restates the
             # query failure itself, so the original error must propagate.
             filtered = [
                 e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
-            if filtered:
+            if filtered or findings:
                 raise SchemaDriftError(
-                    models=sorted({e.model_name for e in filtered}),
+                    models=sorted({e.model_name for e in [*filtered, *findings]}),
                     to_delete=filtered,
                     original=err,
-                    findings=[e.summary for e in filtered if isinstance(e, ListRetypeFinding)],
+                    findings=[f.summary for f in findings],
                 )
         except SchemaDriftError:
             raise
@@ -2661,15 +2665,16 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
+        retypes: List[ListRetypeFinding] = []
         entries = await validate_datasource(
-            datasource=ds, models=models, sql_clients=self._sql_clients, report_findings=True,
+            datasource=ds, models=models, sql_clients=self._sql_clients, findings_out=retypes,
         )
         findings = [
             NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *retypes, *findings]
 
     def create_model_from_query_sync(
         self,

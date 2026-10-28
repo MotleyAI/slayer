@@ -71,13 +71,15 @@ class TestEligibility:
                                dialect="duckdb", models=[_typed_model(DataType(type_))])
 
     async def test_collect_of_a_list(self, engine) -> None:
+        q = query(dimensions=["team"], measures=[measure("collect(skills)", "c")])
         with pytest.raises(SlayerError, match=r"collect\(skills\.value\)"):
-            await engine.execute(query(dimensions=["team"], measures=[measure("collect(skills)", "c")]))
+            await engine.execute(q)
 
     async def test_collect_of_an_opaque_column(self) -> None:
+        q = query(dimensions=["team"], measures=[measure("collect(x)", "c")])
+        models = [_typed_model(DataType.UNKNOWN)]
         with pytest.raises(SlayerError):
-            await emit_contractors(query(dimensions=["team"], measures=[measure("collect(x)", "c")]),
-                                   dialect="duckdb", models=[_typed_model(DataType.UNKNOWN)])
+            await emit_contractors(q, dialect="duckdb", models=models)
 
 
 class TestListResults:
@@ -91,8 +93,9 @@ class TestListResults:
         assert {r["contractors.team"]: int(r["contractors.n"]) for r in resp.data} == {"A": 2, "B": 1}
 
     async def test_collect_as_a_dimension(self, engine) -> None:
+        q = query(dimensions=[{"expression": "collect(city, partition_by=team)", "name": "c"}])
         with pytest.raises(SlayerError) as info:
-            await engine.execute(query(dimensions=[{"expression": "collect(city, partition_by=team)", "name": "c"}]))
+            await engine.execute(q)
         msg = str(info.value)
         assert "list" in msg.lower() or "ARRAY" in msg, msg
 

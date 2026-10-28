@@ -1050,12 +1050,14 @@ def _execute_sql_sync(
 
 
 def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
-    """Result rows, each driver list value (a tuple, a JSON-text array) as a Python list."""
+    """Result rows, each cell read by its dialect reader and each driver tuple as a Python list."""
     columns = list(result.keys())
     description = getattr(getattr(result, "cursor", None), "description", None)
-    lists = dialect.list_result_columns(description) if description else frozenset()
-    return [
-        {c: dialect.list_result_value(v) if i in lists or isinstance(v, tuple) else v
-         for i, (c, v) in enumerate(zip(columns, row))}
-        for row in result.fetchall()
-    ]
+    readers = dialect.result_readers(description) if description else {}
+
+    def cell(i: int, v: Any) -> Any:
+        if v is not None and i in readers:
+            v = readers[i](v)
+        return list(v) if isinstance(v, tuple) else v
+
+    return [{c: cell(i, v) for i, (c, v) in enumerate(zip(columns, row))} for row in result.fetchall()]

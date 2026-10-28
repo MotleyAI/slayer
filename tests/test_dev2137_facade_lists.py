@@ -76,7 +76,8 @@ class TestPgWireValues:
     def test_escaping(self) -> None:
         raw = value_to_text(['a "b" \\c'], proto.OID_TEXT)
         assert raw is not None
-        assert '\\"b\\"' in raw.decode() and "\\\\c" in raw.decode(), raw
+        assert '\\"b\\"' in raw.decode(), raw
+        assert "\\\\c" in raw.decode(), raw
 
     def test_booleans_are_json_literals(self) -> None:
         raw = value_to_text([True, False], proto.OID_TEXT)

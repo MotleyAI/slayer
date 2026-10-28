@@ -12,6 +12,8 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1836_fixtures import broadcast_warnings
 from tests._dev1841_fixtures import associated_warnings
@@ -107,9 +109,10 @@ class TestKeylessAssociation:
         assignments = SlayerModel(name="assignments", sql_table="assignments", data_source="test", columns=[
             Column(name="id", type=DataType.INT, primary_key=True), Column(name="contractor_id", type=DataType.INT)])
         async with list_engine(models=[contractors, assignments, twins_model()]) as e:
+            q = query(dimensions=["skills.value", "assignments.id"],
+                      measures=[measure("count(*)", "n")], to_many_handling="associate")
             with pytest.raises(SlayerError, match="primary or unique key"):
-                await e.execute(query(dimensions=["skills.value", "assignments.id"],
-                                      measures=[measure("count(*)", "n")], to_many_handling="associate"))
+                await e.execute(q)
 
 
 class TestNoFanOut:
@@ -191,15 +194,16 @@ class TestNameCollisions:
 
     async def test_the_collision_created_from_the_other_side(self, storage) -> None:
         await storage.save_model(contractors_model())
+        skills = _plain("skills", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]])])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
-            await storage.save_model(_plain("skills", joins=[ModelJoin(target_model="contractors",
-                                                                        join_pairs=[["id", "id"]])]))
+            await storage.save_model(skills)
 
     async def test_a_named_edge_created_from_the_other_side(self, storage) -> None:
         await storage.save_model(contractors_model())
+        people = _plain("people", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]],
+                                                    name="skills")])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
-            await storage.save_model(_plain("people", joins=[ModelJoin(target_model="contractors",
-                                                                        join_pairs=[["id", "id"]], name="skills")]))
+            await storage.save_model(people)
 
     async def test_no_collision_saves(self, storage) -> None:
         await storage.save_model(_plain("people"))
@@ -217,7 +221,10 @@ EMITTED = {
 
 
 def _contractors_scans(sql: str, *, dialect: str) -> int:
-    return sum(1 for t in sqlglot.parse_one(sql, read=dialect).find_all(exp.Table) if t.name == "contractors")
+    """The most scans of ``contractors`` within any one SELECT (2+ is a self-join)."""
+    tree = sqlglot.parse_one(sql, read=dialect)
+    return max(sum(1 for t in tree.find_all(exp.Table) if t.name == "contractors" and t.find_ancestor(exp.Select) is s)
+               for s in tree.find_all(exp.Select))
 
 
 @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
@@ -225,3 +232,34 @@ def _contractors_scans(sql: str, *, dialect: str) -> int:
 async def test_no_self_join(name: str, dialect: str) -> None:
     sql = await emit_contractors(EMITTED[name], dialect=dialect)
     assert _contractors_scans(sql, dialect=dialect) == 1, sql
+
+
+ELEMENT_FILTERS = ["skills.value = 'go'", "skills.value IN ('go', 'sql')", "NOT (skills.value = 'go')"]
+
+
+@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS")])
+@pytest.mark.parametrize("condition", ELEMENT_FILTERS)
+async def test_element_filter_is_a_lambda_without_a_correlated_subquery(
+    dialect: str, function: str, condition: str,
+) -> None:
+    sql = await emit_contractors(query(measures=[measure("count(*)", "n")], filters=[condition]), dialect=dialect)
+    tree = sqlglot.parse_one(sql, read=dialect)
+    assert not list(tree.find_all(exp.Exists)), sql
+    assert function in sql.upper(), sql
+
+
+@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS")])
+async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
+    dialect: str, function: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def correlating(_self: Any) -> ServerProfile:
+        return ServerProfile(version=(25, 8), readonly=0, correlated_subqueries=True)
+
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", correlating)
+    q = SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
+                                    "filters": ["contractors.skills.value = 'sql'"]})
+    sql = await emit_contractors(q, dialect=dialect, models=all_models())
+    tree = sqlglot.parse_one(sql, read=dialect)
+    assert not list(tree.find_all(exp.Unnest)), sql
+    assert not [j for j in tree.find_all(exp.Join) if j.args.get("kind") == "ARRAY"], sql
+    assert function in sql.upper(), sql

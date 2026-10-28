@@ -2522,13 +2522,13 @@ async def validate_datasource(
     sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-    report_findings: bool = False,
-) -> list[ToDeleteEntry | ListRetypeFinding]:
+    findings_out: list[ListRetypeFinding] | None = None,
+) -> list[ToDeleteEntry]:
     """Validate ``models`` (all one DS) against the live schema. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
     ``snapshot`` scopes introspection to ``models``' objects and reuses its facts;
-    ``report_findings`` appends the report-only re-type findings.
+    ``findings_out`` collects the report-only re-type findings.
     """
     if not models:
         return []
@@ -2537,13 +2537,12 @@ async def validate_datasource(
 
     if available_in_ds is None:
         available_in_ds = {m.name for m in models}
-    findings: list[ListRetypeFinding] = []
     sql_table_diffs = await _collect_sql_table_diffs(
         datasource=datasource,
         sql_table_models=[m for m in models if m.sql_table],
         available_in_ds=available_in_ds,
         snapshot=snapshot,
-        findings=findings if report_findings else None,
+        findings=findings_out,
     )
     sql_diffs = await _collect_sql_diffs(
         datasource=datasource,
@@ -2551,9 +2550,8 @@ async def validate_datasource(
         sql_clients=sql_clients,
         snapshot=snapshot,
     )
-    drops: list[ToDeleteEntry | ListRetypeFinding] = list(compute_datasource_drops(
+    return list(compute_datasource_drops(
         models=models,
         sql_table_diffs=sql_table_diffs,
         sql_diffs=sql_diffs,
     ))
-    return [*drops, *findings]

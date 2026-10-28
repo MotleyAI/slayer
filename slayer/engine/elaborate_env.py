@@ -1470,7 +1470,8 @@ def _check_list_literal(key: ArrayLiteralKey) -> None:
             summary=f"The list literal {text} holds a NULL element; a list's elements are its non-NULL elements.",
             suggestion="Drop the NULL from the literal.",
         )
-    families = {_TYPE_FAMILIES.get(literal_type(v.value)) for v in key.values}
+    types = [literal_type(v.value) for v in key.values]
+    families = {_TYPE_FAMILIES.get(t) if t is not None else None for t in types}
     if len(families) > 1:
         raise ListTypeError(
             summary=f"The list literal {text} mixes element types; every element must be of one type.",

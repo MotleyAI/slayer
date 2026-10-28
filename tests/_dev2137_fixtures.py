@@ -11,6 +11,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -173,12 +174,25 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
     ]
 
 
-async def check_lists(engine: SlayerQueryEngine, *, dialect: str) -> None:
-    """Every list-function case and list probe on a live engine; failures are collected and reported together."""
+async def check_lists(
+    engine: SlayerQueryEngine, *, dialect: str, refused: Optional[dict[str, str]] = None,
+) -> None:
+    """Every list-function case and list probe on a live engine; failures are collected and reported together.
+
+    ``refused`` maps a probe name to a text its typed refusal must contain on this server."""
     storage = LIST_STORAGE.get(dialect, ListStorage())
     await check_library(engine, cases=list_cases(storage))
     failures: list[str] = []
     for probe in list_probes(storage):
+        expected_refusal = (refused or {}).get(probe.name)
+        if expected_refusal is not None:
+            try:
+                await engine.execute(probe.query)
+                failures.append(f"{probe.name}: ran, expected a refusal naming {expected_refusal!r}")
+            except SlayerError as exc:
+                if expected_refusal not in str(exc):
+                    failures.append(f"{probe.name}: refused without {expected_refusal!r}: {exc}")
+            continue
         try:
             resp = await engine.execute(probe.query)
             got = probe.read(resp)

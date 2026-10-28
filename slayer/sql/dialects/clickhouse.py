@@ -8,12 +8,12 @@ are native. log10 and log2 are native.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
@@ -29,11 +29,13 @@ from slayer.sql.dialects.base import (
     anon,
     as_text,
     case,
+    element_lambda,
     is_not_null,
     iso_text,
     lit,
     pad_fill,
 )
+from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 
 #: Byte-based string functions and their character (UTF-8) counterparts.
@@ -69,6 +71,7 @@ _CORRELATED_DEFAULT_ON_VERSION = (25, 8)
 _TIMEOUT_SETTING = "max_execution_time"
 _ABSENT = object()
 _BOOL_SETTING_VALUES = {"1": True, "true": True, "0": False, "false": False}
+_BOOL_TYPES = frozenset({"Bool", "Nullable(Bool)"})
 
 
 def _parse_clickhouse_version(raw: Any) -> tuple[int, int] | None:
@@ -172,19 +175,21 @@ class ClickhouseDialect(SqlDialect):
     def empty_list(self, element: Optional[DataType]) -> Expression:
         return exp.Array(expressions=[])
 
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
+        """The HTTP driver returns ``Bool`` and ``Array(T)`` cells as their text."""
+        readers: dict[int, Callable[[Any], Any]] = {}
+        for i, d in enumerate(description):
+            type_code = d[1] if isinstance(d[1], str) else ""
+            reader = read_bool if type_code in _BOOL_TYPES else array_reader(type_code)
+            if reader is not None:
+                readers[i] = reader
+        return readers
+
     def list_exists(
-        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expression,
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
     ) -> Expression:
         """``arrayExists(e -> predicate(e), values)``: no correlated subquery reads the outer row's list."""
-        element_name = exp.to_identifier(LIST_ELEMENT)
-
-        def bind(node: Expression) -> Expression:
-            if isinstance(node, exp.Column) and node.name == LIST_VALUE and node.table == alias.name:
-                return exp.Column(this=element_name.copy())
-            return node
-
-        body = predicate.copy().transform(bind)
-        return anon("arrayExists", exp.Lambda(this=body, expressions=[element_name]), _compact(values))
+        return anon("arrayExists", element_lambda(predicate, alias=alias), _compact(values))
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
@@ -197,7 +202,7 @@ class ClickhouseDialect(SqlDialect):
                             expressions=[element_name])
         kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)
         rows = exp.Anonymous(this="arrayMap", expressions=[as_row, kept])
-        return ListRelation(relation=exp.alias_(rows, alias.copy()), join_kind="ARRAY")
+        return ListRelation(relation=exp.Alias(this=rows, alias=alias.copy()), join_kind="ARRAY")
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
         """``groupUniqArray`` skips NULLs and returns ``[]`` over none."""
