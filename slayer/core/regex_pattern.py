@@ -309,22 +309,29 @@ def parse_replacement(text: str, *, groups: int) -> RegexReplacement:
             literal.append(ch)
             i += 1
             continue
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        if nxt == "\\":
-            literal.append("\\")
-        elif nxt in _GROUP_DIGITS and int(nxt) <= groups:
+        part = _replacement_escape(text[i + 1] if i + 1 < len(text) else "", groups=groups)
+        if isinstance(part, str):
+            literal.append(part)
+        else:
             if literal:
                 parts.append("".join(literal))
                 literal = []
-            parts.append(RegexGroupRef(index=int(nxt)))
-        elif nxt.isascii() and nxt.isdigit():
-            raise RegexPatternError(f"the replacement group reference '\\{nxt}' (the pattern has {groups} groups)")
-        else:
-            raise RegexPatternError(f"the replacement escape '\\{nxt}' (only \\1-\\9 and \\\\ are)")
+            parts.append(part)
         i += 2
     if literal:
         parts.append("".join(literal))
     return RegexReplacement(parts=tuple(parts))
+
+
+def _replacement_escape(nxt: str, *, groups: int) -> str | RegexGroupRef:
+    """What ``\\`` + ``nxt`` means in a replacement: a literal backslash or a group reference."""
+    if nxt == "\\":
+        return "\\"
+    if nxt in _GROUP_DIGITS and int(nxt) <= groups:
+        return RegexGroupRef(index=int(nxt))
+    if nxt.isascii() and nxt.isdigit():
+        raise RegexPatternError(f"the replacement group reference '\\{nxt}' (the pattern has {groups} groups)")
+    raise RegexPatternError(f"the replacement escape '\\{nxt}' (only \\1-\\9 and \\\\ are)")
 
 
 __all__ = [

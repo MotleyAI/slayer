@@ -386,8 +386,9 @@ class TestMariaDBRefusesWhatItCannotMean:
         "TRY_CAST(num_txt AS INT)", "num_txt > 100", "json_value(payload, '$.ok')", "payload ->> 'ok'",
     ])
     async def test_refused_at_plan_time(self, expr: str) -> None:
+        query = lib_query(expr)
         with pytest.raises(UnsupportedServerFunctionError, match="MariaDB"):
-            await emit_lib(lib_query(expr), dialect="mariadb")
+            await emit_lib(query, dialect="mariadb")
 
     @pytest.mark.parametrize("expr", ["starts_with(word, 'a')", "TRY_CAST(word AS BOOLEAN)", "upper(word)"])
     async def test_the_rest_renders_as_mysql(self, expr: str) -> None:
