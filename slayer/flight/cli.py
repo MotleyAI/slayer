@@ -1,4 +1,4 @@
-"""`slayer flight-serve` CLI subcommand (DEV-1390 §7.1).
+"""`slayer flight-serve` CLI subcommand.
 
 Mounted from ``slayer/cli.py``'s argparse dispatch. Handles bind-address
 defaults, the ``--demo`` interplay with loopback fallback, and TLS pair
@@ -10,6 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
+
+from slayer.engine.query_engine import SlayerQueryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +66,16 @@ examples:
     )
 
 
-def run_flight_serve(args, *, resolve_storage, prepare_demo) -> None:
-    """Construct the storage, engine, handlers, server; block on serve().
+def run_flight_serve(
+    args, *, resolve_storage, prepare_demo, serve_until_terminated: Callable[..., None],
+) -> None:
+    """Construct the storage, engine, handlers, server; serve until terminated.
 
-    ``resolve_storage`` and ``prepare_demo`` are passed in by ``slayer/cli.py``
-    so this module doesn't import the CLI's argparse-side helpers
-    (which would close a circular dep).
+    The helpers are passed in by ``slayer/cli.py`` so this module doesn't
+    import the CLI (which would close a circular dep).
     """
     try:
-        import pyarrow.flight  # noqa: F401 — import-side check
+        import pyarrow.flight  # noqa: F401  # ALLOW(import-not-top): optional flight extra — slayer/cli.py imports this module on every command
     except ImportError as exc:
         print(
             "slayer flight-serve requires pyarrow with Flight support. "
@@ -80,9 +84,8 @@ def run_flight_serve(args, *, resolve_storage, prepare_demo) -> None:
         )
         raise SystemExit(2) from exc
 
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.flight.handlers import FlightHandlers
-    from slayer.flight.server import build_server
+    from slayer.flight.handlers import FlightHandlers  # ALLOW(import-not-top): optional flight extra — slayer/cli.py imports this module on every command
+    from slayer.flight.server import build_server  # ALLOW(import-not-top): optional flight extra — slayer/cli.py imports this module on every command
 
     storage = resolve_storage(args)
     if getattr(args, "demo", False):
@@ -108,11 +111,11 @@ def run_flight_serve(args, *, resolve_storage, prepare_demo) -> None:
         f"SLayer Flight SQL serving at {scheme}://{host}:{args.port}",
         flush=True,
     )
-    server.serve()
+    serve_until_terminated(run=server.wait, stop=server.shutdown)
 
 
 def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:
-    """Apply the §7.1 demo-loopback default.
+    """Apply the demo-loopback default.
 
     If --host is not explicitly given AND --demo is set AND no token is
     configured, default to 127.0.0.1 so the no-token-on-loopback

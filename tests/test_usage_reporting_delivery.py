@@ -6,7 +6,6 @@ import datetime
 import json
 import os
 import signal
-import socket
 import stat
 import subprocess
 import sys
@@ -24,6 +23,7 @@ from tests._usage_reporting_helpers import (
     build_storage,
     cli,
     end_process,
+    free_port,
     is_posix,
     make_due,
     now_utc,
@@ -35,6 +35,7 @@ from tests._usage_reporting_helpers import (
     spool_files,
     total,
     usage,
+    wait_for_port,
     wait_until,
     write_config,
 )
@@ -85,15 +86,26 @@ def _mcp_with_one_call(store: str, env: dict[str, str], *, argv: list[str] | Non
     return session
 
 
+def _assert_clean_stop(session: McpStdio, *, returncode: int, expected: int) -> None:
+    stderr = session.stderr_text()
+    assert returncode == expected, stderr
+    assert "Traceback" not in stderr
+    assert "unhandled exception" not in stderr.lower()
+    report = show()
+    assert usage(report, "mcp:list_datasources")["ok"] == 1
+    assert usage(report, "cli:mcp") == {"ok": 1, "errors": {}}
+
+
 @posix_only
-def test_stdio_mcp_sigterm_spools(store: str, usage_reporting_env) -> None:
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_stdio_mcp_signal_spools(store: str, usage_reporting_env, sig: signal.Signals) -> None:
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
-        session.proc.send_signal(signal.SIGTERM)
-        session.wait()
+        session.proc.send_signal(sig)
+        returncode = session.wait()
     finally:
         session.kill()
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
+    _assert_clean_stop(session, returncode=returncode, expected=128 + sig)
 
 
 _CHAINED_HANDLER_SCRIPT = """
@@ -114,21 +126,11 @@ def test_stdio_mcp_sigterm_chains_existing_handler(store: str, usage_reporting_e
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env(), argv=argv)
     try:
         session.proc.send_signal(signal.SIGTERM)
-        session.wait()
+        returncode = session.wait()
     finally:
         session.kill()
+    assert returncode == 128 + signal.SIGTERM, session.stderr_text()
     assert marker.read_text() == "called"
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
-
-
-@posix_only
-def test_stdio_mcp_sigint_spools(store: str, usage_reporting_env) -> None:
-    session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
-    try:
-        session.proc.send_signal(signal.SIGINT)
-        session.wait()
-    finally:
-        session.kill()
     assert usage(show(), "mcp:list_datasources")["ok"] == 1
 
 
@@ -136,10 +138,13 @@ def test_stdio_mcp_end_of_input_spools(store: str, usage_reporting_env) -> None:
     session = _mcp_with_one_call(store, usage_reporting_env.subprocess_env())
     try:
         session.close_stdin()
-        session.wait()
+        returncode = session.wait()
     finally:
         session.kill()
-    assert usage(show(), "mcp:list_datasources")["ok"] == 1
+    assert returncode == 0, session.stderr_text()
+    report = show()
+    assert usage(report, "mcp:list_datasources")["ok"] == 1
+    assert usage(report, "cli:mcp") == {"ok": 1, "errors": {}}
 
 
 @posix_only
@@ -166,61 +171,55 @@ def test_stdio_mcp_broken_pipe_spools(store: str, usage_reporting_env) -> None:
         stdout.close()
         send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
         stdin.close()
-        proc.wait(timeout=30)
+        returncode = proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-    assert total(usage(show(), "mcp:list_datasources")) >= 1
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_for_port(port: int, *, timeout: float = 60.0) -> bool:
-    def listening() -> bool:
-        with socket.socket() as sock:
-            return sock.connect_ex(("127.0.0.1", port)) == 0
-    return wait_until(listening, timeout=timeout)
+    assert returncode not in (128 + signal.SIGTERM, 128 + signal.SIGINT)
+    report = show()
+    assert total(usage(report, "mcp:list_datasources")) >= 1
+    cli_mcp = usage(report, "cli:mcp")
+    assert cli_mcp["ok"] == 0
+    assert total(cli_mcp) == 1
 
 
 @posix_only
-@pytest.mark.parametrize(("command", "sig"), [
-    ("serve", signal.SIGTERM),
-    ("serve", signal.SIGINT),
-    ("pg-serve", signal.SIGINT),
-    ("flight-serve", signal.SIGINT),
-])
-def test_server_shutdown_spools(store: str, usage_reporting_env, command: str, sig: signal.Signals) -> None:
-    port = _free_port()
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "slayer", command, "--host", "127.0.0.1", "--port", str(port), "--storage", store],
-        env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+@pytest.mark.parametrize("command", ["serve", "pg-serve", "flight-serve"])
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_server_shutdown_spools(
+    store: str, usage_reporting_env, tmp_path: Path, command: str, sig: signal.Signals,
+) -> None:
+    port = free_port()
+    stderr_path = tmp_path / "stderr"
+    with stderr_path.open("wb") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "slayer", command, "--host", "127.0.0.1", "--port", str(port), "--storage", store],
+            env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=stderr,
+        )
     try:
-        assert _wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
+        assert wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
         proc.send_signal(sig)
-        proc.wait(timeout=30)
+        returncode = proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-    cli_key = f"cli:{command}"
-    assert total(usage(show(), cli_key)) == 1
+    stderr_text = stderr_path.read_text(errors="replace")
+    assert returncode == 128 + sig, stderr_text
+    assert "Traceback" not in stderr_text
+    assert usage(show(), f"cli:{command}") == {"ok": 1, "errors": {}}
 
 
 @posix_only
 def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> None:
-    port = _free_port()
+    port = free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "slayer", "serve", "--host", "127.0.0.1", "--port", str(port), "--storage", store],
         env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        assert _wait_for_port(port)
+        assert wait_for_port(port)
         result = run_python(
             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/health').read()",
             env=usage_reporting_env.subprocess_env(),
@@ -477,8 +476,7 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
-    # Wide enough to outlast the disable subprocess on a loaded CI runner.
-    usage_reporting_env.capture.behaviour.delay = 10.0
+    usage_reporting_env.capture.hold.clear()
     quiet_config()
     _spool_one()
     make_due()
@@ -487,6 +485,7 @@ def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting
     disabled = run_slayer(["usage-reporting", "disable"], env=usage_reporting_env.subprocess_env())
     assert disabled.returncode == 0, disabled.stderr
     assert not usage_reporting_env.capture.requests
+    usage_reporting_env.capture.hold.set()
     assert usage_reporting_env.capture.wait_for(count=1, timeout=15)
     usage_reporting.shutdown()
     end_process()

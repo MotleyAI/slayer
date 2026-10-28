@@ -1196,7 +1196,7 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        if fresh_col.unique and not merged_col.unique and persisted_col.is_base:
+        if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
         if fresh_col.description and not merged_col.description:
@@ -1220,11 +1220,16 @@ def _spelling(column: Column) -> str:
     return column.physical_name if column.is_base else column.name
 
 
+def _reads(persisted_col: Column, fresh_col: Column) -> bool:
+    """Whether ``persisted_col`` reads the live column ``fresh_col``: key metadata describes only that one."""
+    return persisted_col.is_base and persisted_col.physical_name == _spelling(fresh_col)
+
+
 def _live_key_lands_whole(*, persisted: SlayerModel, fresh: SlayerModel, live_name: dict[str, str]) -> bool:
     """Whether a keyless model takes the live primary key: each member is a stored base column reading it, or new."""
     if any(c.primary_key for c in persisted.columns):
         return False
-    readers = {live_name[c.name] for c in persisted.columns if c.is_base}
+    readers = {c.physical_name for c in persisted.columns if c.is_base}
     matched = {c.name for c in persisted.columns} | set(live_name.values())
     key = [c for c in fresh.columns if c.primary_key]
     return bool(key) and all(
@@ -1247,8 +1252,7 @@ def _merge_persisted_columns(
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
-        # Key metadata describes the live column, so only a column that reads it takes it.
-        key_filled = fill_key and persisted_col.is_base and fresh_col is not None and fresh_col.primary_key
+        key_filled = fill_key and fresh_col is not None and fresh_col.primary_key and _reads(persisted_col, fresh_col)
         if key_filled:
             merged_col = merged_col.model_copy(update={"primary_key": True})
         out.columns.append(merged_col)

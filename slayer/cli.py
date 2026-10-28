@@ -2,13 +2,17 @@
 
 import argparse
 import asyncio
+import contextlib
 import copy
 import json
 import os
 import signal
 import sys
+import threading
+from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, NoReturn
+from types import FrameType
+from typing import Any, ClassVar, Literal, NoReturn
 from urllib.parse import parse_qs, urlparse
 
 import sqlalchemy as sa
@@ -176,44 +180,202 @@ def main():
     _assign_usage_tokens(parser)
     _add_debug_flags(parser)
     args = parser.parse_args()
+    token = getattr(args, "usage_token", None)
+    guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
     try:
-        _run_command(parser, args)
+        _run_command(parser, args, token=token, guard=guard)
     except Exception as exc:
         if args.debug:
             raise
         print(_error_line(exc), file=sys.stderr)
         sys.exit(1)
+    finally:
+        if guard is not None:
+            guard.restore()
 
 
-def _run_command(parser: argparse.ArgumentParser, args) -> None:
+def _run_command(
+    parser: argparse.ArgumentParser, args, *, token: str | None, guard: "_TerminationGuard | None",
+) -> None:
     host_clock()  # Validates SLAYER_NOW before any command's side effects.
     if args.command == "usage-reporting":
         _run_usage_reporting(args)
         return
-    token = getattr(args, "usage_token", None)
     if token is not None:
         usage_reporting.start()
     try:
         with usage_reporting.counting(surface="cli", token=token):
-            _dispatch(parser, args)
-    except (SystemExit, KeyboardInterrupt) as exc:
-        if args.command == "mcp":
-            _exit_stdio_now(exc)
-        raise
+            try:
+                _guarded_dispatch(parser, args, guard=guard)
+            except _Terminated:
+                pass
     finally:
         usage_reporting.flush()
+    if guard is not None:
+        guard.finish(stdio=args.command == "mcp")
 
 
-def _exit_stdio_now(stop: SystemExit | KeyboardInterrupt) -> NoReturn:
-    """Spool, then exit hard: stdio MCP's blocked stdin reader thread would hold up a normal exit."""
-    code = stop.code if isinstance(stop, SystemExit) else 128 + signal.SIGINT
-    if code is None:
-        code = 0
+_SIGNAL_POLL_SECONDS = 0.1
+
+
+class _Terminated(SystemExit):  # NOSONAR(S5709) — must pass through the command's `except Exception` handlers
+    """A server command stopped by a termination signal; ``code`` is 128 + its number."""
+
+
+class _TerminationGuard:
+    """SIGTERM / SIGINT handling for a server command, through phases before → armed (⇄ serving) → closing → after."""
+
+    active: ClassVar["_TerminationGuard | None"] = None  # the guard whose handlers are installed
+
+    def __init__(self, *, token: str | None) -> None:
+        self.phase: Literal["before", "armed", "serving", "closing", "after"] = "before"
+        self.signum: int | None = None
+        self.signalled = threading.Event()
+        self.forcing = False
+        self.token = token
+        self.prior: dict[int, Callable[[int, FrameType | None], Any]] = {}
+        self.replaced: dict[int, Callable[[int, FrameType | None], Any] | int | signal.Handlers] = {}
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous = signal.getsignal(signum)
+            if previous is signal.SIG_IGN or previous is None:
+                continue
+            self.replaced[signum] = previous
+            if callable(previous) and previous is not signal.default_int_handler:
+                self.prior[signum] = previous
+            signal.signal(signum, self._handle)
+        _TerminationGuard.active = self
+
+    def _handle(self, signum: int, frame: FrameType | None) -> None:
+        if self.forcing:
+            os._exit(128 + signum)
+        if self.signum is not None:
+            if self.phase != "closing":
+                self._force(signum)
+            return
+        self.signum = signum
+        prior = self.prior.get(signum)
+        if prior is not None:
+            with contextlib.suppress(BaseException):  # a failing prior handler must not skip spool or exit
+                prior(signum, frame)
+        self.signalled.set()
+        if self.phase == "armed":
+            raise _Terminated(128 + signum)
+
+    def _force(self, signum: int) -> NoReturn:
+        self.forcing = True
+        if self.phase in ("before", "armed", "serving"):
+            usage_reporting.record(surface="cli", token=self.token)
+        _exit_now(128 + signum)
+
+    def arm(self) -> None:
+        """Signals raise from here on; one already recorded raises now."""
+        self.phase = "armed"
+        if self.signum is not None:
+            raise _Terminated(128 + self.signum)
+
+    def serve(self) -> threading.Event:
+        """While a server runs, a signal only sets the returned Event: the main thread reacts, never interrupted."""
+        self.phase = "serving"
+        return self.signalled
+
+    def close(self) -> None:
+        self.phase = "closing"
+
+    def finish(self, *, stdio: bool) -> None:
+        """Turn a normal end into exit 128 + signal number if a signal arrived."""
+        self.phase = "after"
+        if self.signum is None:
+            self.restore()  # later signals go to the original handlers; re-check one that came first
+            if self.signum is None:
+                return
+            for signum in self.replaced:  # it raced the restore: keep forcing on further signals
+                signal.signal(signum, self._handle)
+        if stdio:  # stdio MCP's stdin reader thread cannot be stopped
+            self.forcing = True
+            _exit_now(128 + self.signum)
+        sys.exit(128 + self.signum)
+
+    def restore(self) -> None:
+        """Put back the handlers this guard replaced."""
+        for signum, handler in self.replaced.items():
+            signal.signal(signum, handler)
+        if _TerminationGuard.active is self:
+            _TerminationGuard.active = None
+
+
+def _guarded_dispatch(parser: argparse.ArgumentParser, args, *, guard: _TerminationGuard | None) -> None:
+    try:
+        if guard is not None:
+            guard.arm()
+        _dispatch(parser, args)
+    finally:
+        if guard is not None:
+            guard.close()
+
+
+def _exit_now(code: int) -> NoReturn:
+    """Spool, wait (bounded) for an in-flight send, then exit without interpreter teardown."""
     usage_reporting.flush()
     usage_reporting.shutdown()
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(code if isinstance(code, int) else 1)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(code)
+
+
+def _serve_until_terminated(*, run: Callable[[], object], stop: Callable[[], object] | None) -> None:
+    """Run a server's blocking ``run`` in a worker thread until it returns or a termination signal ``stop``s it."""
+    guard = _TerminationGuard.active
+    failure: list[BaseException] = []
+    done = threading.Event()
+
+    def target() -> None:
+        try:
+            run()
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
+            failure.append(exc)
+        finally:
+            done.set()
+
+    signalled = guard.serve() if guard is not None else threading.Event()
+    try:
+        threading.Thread(target=target, name="slayer-server", daemon=True).start()
+        _wait_for(done, interrupt=signalled)
+        if signalled.is_set() and _stop_server(stop):  # a failed stop may never release the worker
+            _wait_for(done)
+    finally:
+        if guard is not None:
+            guard.arm()  # raises the termination exit if a signal stopped the server
+    if failure:
+        raise failure[0]
+
+
+def _stop_server(stop: Callable[[], object] | None) -> bool:
+    """Run ``stop`` in its own thread and wait for it; whether it returned normally."""
+    if stop is None:
+        return False
+    stopped = threading.Event()
+    done = threading.Event()
+
+    def stopping() -> None:
+        try:
+            stop()
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — the signal still decides the exit
+            print(f"slayer: server stop failed: {exc!r}", file=sys.stderr)  # no traceback on a signal stop
+        else:
+            stopped.set()
+        finally:
+            done.set()
+
+    threading.Thread(target=stopping, name="slayer-server-stop", daemon=True).start()
+    _wait_for(done)
+    return stopped.is_set()
+
+
+def _wait_for(done: threading.Event, *, interrupt: threading.Event | None = None) -> None:
+    """Wait for ``done`` or ``interrupt``, waking periodically so a signal another thread took gets handled."""
+    while not done.is_set() and not (interrupt is not None and interrupt.is_set()):
+        done.wait(_SIGNAL_POLL_SECONDS)
 
 
 class _VersionAction(argparse.Action):
@@ -1119,14 +1281,18 @@ _SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
 
 
 def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
-    if args.command in _SERVER_COMMANDS:
-        _unwind_on(signal.SIGTERM)
     if args.command == "serve":
         _run_serve(args)
     elif args.command == "flight-serve":
-        run_flight_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_flight_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "pg-serve":
-        run_pg_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+        run_pg_serve(
+            args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo,
+            serve_until_terminated=_serve_until_terminated,
+        )
     elif args.command == "mcp":
         _run_mcp(args)
     elif args.command == "query":
@@ -1623,7 +1789,12 @@ def _run_serve(args):
 
     import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
-    uvicorn.run(app=app, host=args.host, port=args.port)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+
+    def stop() -> None:
+        server.should_exit = True
+
+    _serve_until_terminated(run=server.run, stop=stop)
 
 
 def _run_mcp(args):
@@ -1633,20 +1804,7 @@ def _run_mcp(args):
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
     mcp = create_mcp_server(storage=storage, **_server_flags(args))
-    _unwind_on(signal.SIGINT)
-    mcp.run()
-
-
-def _unwind_on(signum: signal.Signals) -> None:
-    """Make ``signum`` raise ``SystemExit`` so a server unwinds and spools; chains any installed handler."""
-    previous = signal.getsignal(signum)
-
-    def handler(received, frame):
-        if callable(previous):
-            previous(received, frame)
-        raise SystemExit(128 + received)
-
-    signal.signal(signum, handler)
+    _serve_until_terminated(run=mcp.run, stop=None)
 
 
 def _parse_csv_arg(value):

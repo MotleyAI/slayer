@@ -10,6 +10,8 @@ All commands accept a `--storage` flag to specify where models and datasources a
 
 A failing command prints one `Error: …` line on stderr and exits 1; add `--debug` (before or after the command) to see the full traceback, and run `slayer --version` to print the installed version.
 
+The server commands (`serve`, `mcp`, `pg-serve`, `flight-serve`) stop gracefully and exit 143 on SIGTERM and 130 on SIGINT; a second signal forces the stop.
+
 ## Commands
 
 ### `slayer serve`

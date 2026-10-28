@@ -17,6 +17,7 @@ from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
+from tests._fake_uvicorn import fake_uvicorn
 
 
 def _make_args(**overrides):
@@ -97,15 +98,12 @@ class TestServeMcpDemoHook:
         )
         monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
 
-        # Stub out create_app + uvicorn.run.
         fake_api = types.ModuleType("slayer.api.server")
         fake_api.create_app = lambda *args, **kwargs: "APP"
         monkeypatch.setitem(sys.modules, "slayer.api.server", fake_api)
-        fake_uvicorn = types.ModuleType("uvicorn")
-        fake_uvicorn.run = lambda *args, **kwargs: calls.append(
-            f"uvicorn:{args[0] if args else kwargs.get('app')}:{kwargs.get('host')}:{kwargs.get('port')}"
+        monkeypatch.setitem(
+            sys.modules, "uvicorn", fake_uvicorn(lambda app, host, port: calls.append(f"uvicorn:{app}:{host}:{port}"))
         )
-        monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
 
         args = argparse.Namespace(host="h", port=1, storage=None, models_dir=None, demo=True)
         cli._run_serve(args=args)
@@ -118,7 +116,6 @@ class TestServeMcpDemoHook:
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
         )
         monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
-
 
         class _FakeMCP:
             def run(self):
@@ -206,7 +203,6 @@ class TestEnsureDemoDatasourceScoping:
 
 class TestDemoEnrichment:
     def _orders_model(self):
-
         return SlayerModel(
             name="orders",
             sql_table="orders",
@@ -226,7 +222,6 @@ class TestDemoEnrichment:
         assert set(jaffle_shop.DEMO_ENRICHMENT) == set(jaffle_shop.TABLE_NAMES)
 
     def test_applies_labels_measures_and_aggregations(self):
-
         model = self._orders_model()
         assert jaffle_shop.apply_demo_enrichment(model) is True
 
@@ -257,7 +252,6 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].label == "Net Sales"
 
     def test_auto_default_format_replaced_custom_format_preserved(self):
-
         model = self._orders_model()
         by_name = {c.name: c for c in model.columns}
         # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
@@ -272,7 +266,6 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].format.symbol == "€"
 
     def test_duplicate_measure_names_not_added(self):
-
         model = self._orders_model()
         model.measures = [ModelMeasure(name="total_revenue", formula="subtotal:sum")]
         jaffle_shop.apply_demo_enrichment(model)
@@ -281,12 +274,10 @@ class TestDemoEnrichment:
         assert revenue[0].formula == "subtotal:sum"
 
     def test_unknown_model_untouched(self):
-
         model = SlayerModel(name="unrelated", sql_table="t", data_source="other")
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
     def test_non_table_backed_model_skipped(self):
-
         # The curated spec assumes the physical jaffle tables — a demo model
         # redefined as sql-mode or query-backed must be left alone.
         model = SlayerModel(

@@ -85,3 +85,17 @@ def test_composite_key_lands_whole_or_not_at_all():
     stored = _model(keys=set(), columns=(("id", "id || ''"), ("sku", None)))
     result = _additive_merge_existing(persisted=stored, fresh=_model(keys={"id", "sku"}, columns=_LIVE))
     assert _keys(result.merged) == set()
+
+
+def test_key_metadata_follows_the_physical_column():
+    """A stored ``id`` reading physical ``sku`` describes ``sku``, not the live ``id``."""
+    stored = _model(keys=set(), columns=(("id", "sku"), ("sku", None)))
+    fresh = SlayerModel(name="supplies", sql_table="supplies", data_source="ds", columns=[
+        Column(name="id", type=DataType.TEXT, primary_key=True, unique=True),
+        Column(name="sku", type=DataType.TEXT, primary_key=True),
+    ])
+    merged = _additive_merge_existing(persisted=stored, fresh=fresh).merged
+    assert _keys(merged) == set()
+    column = merged.get_column("id")
+    assert column is not None
+    assert not column.unique

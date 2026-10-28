@@ -42,6 +42,8 @@ class CaptureServer:
         self.behaviour = CaptureBehaviour()
         self.requests: list[CapturedRequest] = []
         self.arrivals = 0
+        self.hold = threading.Event()  # cleared: arrived requests wait unrecorded until set
+        self.hold.set()
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
         self._server.daemon_threads = True
@@ -57,6 +59,7 @@ class CaptureServer:
         return self
 
     def stop(self) -> None:
+        self.hold.set()
         self._server.shutdown()
         self._server.server_close()
 
@@ -92,6 +95,7 @@ class CaptureServer:
                 delay = server.behaviour.delay + (server.behaviour.stall_first if first else 0.0)
                 if delay:
                     time.sleep(delay)
+                server.hold.wait()
                 with server._lock:
                     server.requests.append(CapturedRequest(
                         path=self.path, headers=dict(self.headers.items()), body=body,
