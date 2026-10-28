@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from slayer.async_utils import run_sync
-from slayer.cli import _run_validate_models
+from slayer.cli import _CommandFailed, _run_validate_models
 from slayer.cli import main as cli_main
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
@@ -456,7 +456,7 @@ def test_drift_failure_skips_profiling(workspace: Path, monkeypatch, capsys) -> 
     assert "drift exploded" in capsys.readouterr().err
 
 
-def test_cardinality_failure_exits_one(workspace: Path, monkeypatch, capsys) -> None:
+def test_cardinality_failure_exits_one(workspace: Path, monkeypatch) -> None:
     store = _setup(workspace)
 
     async def _boom(self, **kwargs):
@@ -465,12 +465,10 @@ def test_cardinality_failure_exits_one(workspace: Path, monkeypatch, capsys) -> 
     monkeypatch.setattr(SlayerQueryEngine, "detect_join_cardinality", _boom)
 
     args = _args(store, cardinality=True)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(_CommandFailed) as exc:
         _run_validate_models(args)
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    assert "cardinality" in err.lower()
-    assert "profiling exploded" in err
+    assert "cardinality" in str(exc.value).lower()
+    assert "profiling exploded" in str(exc.value)
 
 
 def test_scan_failure_reports_fully_but_exits_one(

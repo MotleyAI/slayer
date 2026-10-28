@@ -6,7 +6,11 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
+
+from tests._engine_helpers import _engine_generate
 
 
 def test_clickhouse_sqlglot_name() -> None:
@@ -112,3 +116,25 @@ def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
     assert "DATETRUNC('WEEK'" in up
     assert "ADDDAYS(ORDERED_AT, 1)" in up
     assert up.endswith(", -1)")
+
+
+async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> None:
+    """ClickHouse resolves the dotted alias ``orders.created_at`` to the source column, not the bucket."""
+    model = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="created_at", type=DataType.TIMESTAMP)],
+    )
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+        measures=[ModelMeasure(formula="*:count")],
+    )
+    sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
+    assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"
+
+
+def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
+    window = exp.Window(this=exp.func("SUM", exp.column("x")), order=exp.Order(expressions=[exp.column("x")]))
+    statement = exp.select(window.as_("w")).from_("t").order_by(exp.column("w", quoted=True))
+    assert ClickhouseDialect().rewrite_statement(statement).sql(dialect="clickhouse").endswith('ORDER BY "w"')

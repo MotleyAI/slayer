@@ -10,6 +10,10 @@ The `SLAYER_INGEST_ON_STARTUP` environment variable mirrors the `--ingest-on-sta
 
 The `SLAYER_NOW` environment variable pins the "now" that relative time points resolve against (see [Time](../concepts/time.md#relative-tokens)); every command validates it first and exits non-zero on an invalid value.
 
+## Errors, `--debug` and `--version`
+
+A failing command prints one `Error: …` line on stderr and exits 1; add `--debug` (before or after the command) to see the full traceback, and run `slayer --version` to print the installed version.
+
 ## Commands
 
 ### `slayer serve`
@@ -90,7 +94,7 @@ The positional argument is interpreted as:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--format` | `table` | Output format: `table` or `json` |
+| `--format` | `table` | Output format: `table` (numbers rendered through each column's or measure's `format`, as in MCP output) or `json` (raw values) |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
@@ -205,6 +209,16 @@ slayer datasources list
 slayer datasources show my_postgres   # credentials masked
 ```
 
+#### `slayer datasources refresh-samples`
+
+Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models (`--format json` prints the result envelope). Per-column failures are reported but do not abort.
+
+```bash
+slayer datasources refresh-samples
+slayer datasources refresh-samples --data-source jaffle_shop
+slayer datasources refresh-samples --data-source jaffle_shop --model orders --model customers
+```
+
 ### `slayer search`
 
 Run semantic search over memories and canonical entities. Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
@@ -213,8 +227,8 @@ Run semantic search over memories and canonical entities. Three retrieval channe
 # Entity-driven
 slayer search --entity jaffle_shop.orders.order_total
 
-# Question-driven
-slayer search --question "What stores are in jaffle_shop?"
+# Question-driven (the question may also be given as --question)
+slayer search "What stores are in jaffle_shop?"
 
 # Inline query / from a file (auto-extracts canonical entities)
 slayer search --query '{"source_model": "orders", "measures": ["sum(order_total)"]}'
@@ -234,21 +248,11 @@ slayer search --question "lifetime spend" --format json
 |------|---------|-------------|
 | `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, `memory:<id>`). |
 | `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`); entities auto-extracted. |
-| `--question TEXT` | | Free-text question. Drives Tantivy + embeddings. |
+| `QUESTION` / `--question TEXT` | | Free-text question, positional or as `--question` (not both). Drives Tantivy + embeddings. |
 | `--datasource DS` | | Pre-narrow every channel to ids rooted at the named datasource. |
 | `--cypher-filter CYPHER` | | Graph pre-filter. Full openCypher with the `advanced_search` extra (LadybugDB property graph: `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes; `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; richer Cypher raises with an install hint. |
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
-
-#### `slayer search refresh-samples`
-
-Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort.
-
-```bash
-slayer search refresh-samples
-slayer search refresh-samples --data-source jaffle_shop
-slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
-```
 
 ### `slayer memory`
 

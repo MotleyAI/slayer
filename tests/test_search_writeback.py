@@ -4,7 +4,7 @@ Pins the four refresh trigger paths from §7 of the spec:
 
 1. ``ingest`` populates ``Column.sampled`` for every column on every
    table-backed model in the touched datasource.
-2. ``slayer search refresh-samples`` does the same on demand.
+2. ``slayer datasources refresh-samples`` does the same on demand.
 3. ``edit_model`` invalidates and immediately recomputes:
    - column sql/filter/type/name change → just that column;
    - SlayerModel.filters / sql / source_queries change → every column.
@@ -53,7 +53,7 @@ def sqlite_table_setup(tmp_path):
 async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     """Ingest is fast: it no longer fires a per-column full-table scan.
     Column samples are populated lazily on the first ``inspect`` of the
-    column (or explicitly via ``slayer search refresh-samples``)."""
+    column (or explicitly via ``slayer datasources refresh-samples``)."""
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
@@ -66,7 +66,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
 
 
 # ---------------------------------------------------------------------------
-# (2) slayer search refresh-samples
+# (2) slayer datasources refresh-samples
 # ---------------------------------------------------------------------------
 
 

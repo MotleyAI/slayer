@@ -2,6 +2,7 @@
 
 import datetime
 import gc
+import io
 import os
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -20,6 +22,32 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
+
+
+class JaffleGeneratorSpy:
+    """Stands in for jaffle_shop ``generate_data``: returns the shared CSVs, counts builds."""
+
+    def __init__(self, data_dir: str) -> None:
+        self.data_dir = data_dir
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> str:
+        self.calls += 1
+        return self.data_dir
+
+
+@pytest.fixture(scope="session")
+def jafgen_dir(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """One jafgen run (1 year) per session; tests only read it."""
+    out = tmp_path_factory.mktemp("jafgen")
+    return jaffle_shop.generate_data(output_dir=str(out), years=1, stream=io.StringIO())
+
+
+@pytest.fixture
+def jaffle_generator(monkeypatch: pytest.MonkeyPatch, jafgen_dir: str) -> JaffleGeneratorSpy:
+    spy = JaffleGeneratorSpy(jafgen_dir)
+    monkeypatch.setattr(jaffle_shop, "generate_data", spy)
+    return spy
 
 
 @pytest.fixture(scope="session", autouse=True)

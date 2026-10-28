@@ -11,7 +11,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.async_utils import run_sync
-from slayer.cli import _build_parser, _run_import_osi
+from slayer.cli import _build_parser, _CommandFailed, _run_import_osi
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
@@ -79,7 +79,7 @@ def test_import_osi_nonexistent_path_exits(tmp_path: Path) -> None:
     store = tmp_path / "store"
     YAMLStorage(base_dir=str(store))
     args = _args(store, tmp_path / "does_not_exist.yaml")
-    with pytest.raises(SystemExit):
+    with pytest.raises(_CommandFailed):
         _run_import_osi(args)
 
 
@@ -92,7 +92,7 @@ def test_import_osi_missing_datasource_exits(tmp_path: Path) -> None:
 
 
 def test_import_osi_duplicate_datasets_exits_cleanly(
-    shop_setup, tmp_path: Path, capsys
+    shop_setup, tmp_path: Path
 ) -> None:
     # Duplicate dataset names raise OsiConversionError in the converter; the CLI
     # must catch it and exit non-zero with the message, not dump a traceback.
@@ -115,10 +115,8 @@ def test_import_osi_duplicate_datasets_exits_cleanly(
         "            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}\n"
     )
     args = _args(store, osi)
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(_CommandFailed, match="Duplicate dataset names"):
         _run_import_osi(args)
-    assert exc_info.value.code == 1
-    assert "Duplicate dataset names" in capsys.readouterr().out
 
 
 # ─────────────────── current-spec document into DuckDB ─────────────────────

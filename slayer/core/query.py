@@ -837,6 +837,7 @@ def _advertise_order_item(schema: dict[str, Any]) -> None:
     """Publish ``column``'s string form; hide the internal ``raw_formula``."""
     props = schema.get("properties", {})
     props.pop("raw_formula", None)
+    props.pop("implied", None)
     if "column" in props:
         props["column"] = {"anyOf": [{"type": "string"}, props["column"]]}
 
@@ -862,6 +863,10 @@ class OrderItem(BaseModel):
     raw_formula: str | None = Field(
         default=None,
         description="Internal — captured automatically from expression strings; do not set.",
+    )
+    implied: bool = Field(
+        default=False, exclude=True,
+        description="Internal — set on the default order SLayer adds; do not set.",
     )
 
     @model_validator(mode="before")

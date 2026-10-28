@@ -89,7 +89,7 @@ model {
     surfaces = bucket 'User-facing surfaces' {
       metadata {
         packages ['slayer.api', 'slayer.mcp', 'slayer.cli', 'slayer.client', 'slayer.inspect', 'slayer.demo', 'slayer.__main__']
-        specs ['mcp']
+        specs ['mcp', 'demo']
       }
     }
 

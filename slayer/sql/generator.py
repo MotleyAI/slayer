@@ -435,7 +435,6 @@ def _lower_positions(planned_query) -> _LoweredPositions:
     order = _lower_order_entries(
         planned_query=planned_query,
         slots_by_id=slots_by_id,
-        slot_id_by_key=slot_id_by_key,
         combined_attached=combined_attached,
     )
     return _LoweredPositions(
@@ -447,10 +446,10 @@ def _lower_order_entries(
     planned_query,
     *,
     slots_by_id: Dict[str, ValueSlot],
-    slot_id_by_key: Dict[Any, str],
     combined_attached: Set[str],
 ) -> List[ScopedOrder]:
     order: List[ScopedOrder] = []
+    outer_composite_ids = staged_plan.combined_composite_slot_ids(planned_query)
     for entry in planned_query.order:
         slot = slots_by_id.get(entry.slot_id)
         if slot is None:
@@ -464,9 +463,8 @@ def _lower_order_entries(
             direction=entry.direction,
             scope=_classify_order_scope(
                 slot=slot,
-                slots_by_id=slots_by_id,
-                slot_by_key=slot_id_by_key,
                 combined_attached=combined_attached,
+                outer_composite_ids=outer_composite_ids,
                 public_projection=list(planned_query.projection),
             ),
             nulls=entry.nulls,
@@ -474,42 +472,15 @@ def _lower_order_entries(
     return order
 
 
-def _composite_operand_in_isolated_cte(
-    slot: ValueSlot,
-    *,
-    slots_by_id: Dict[str, ValueSlot],
-    slot_by_key: Dict[Any, str],
-    combined_attached: Set[str],
-    ranked_slot_ids: "AbstractSet[str]",
-) -> bool:
-    for dep in walk_value_keys(slot.key):
-        dep_sid = slot_by_key.get(dep)
-        if dep_sid is None or dep_sid == slot.id:
-            continue
-        dep_stage = slots_by_id[dep_sid].stage
-        if (
-            dep_sid in ranked_slot_ids
-            or dep_sid in combined_attached
-            or (dep_stage is not None and dep_stage.kind is StageKind.PRODUCER)
-        ):
-            return True
-    return False
-
-
 def _classify_order_scope(
     *,
     slot: ValueSlot,
-    slots_by_id: Dict[str, ValueSlot],
-    slot_by_key: Dict[Any, str],
     combined_attached: Set[str],
+    outer_composite_ids: Set[str],
     public_projection: List[str],
-    ranked_slot_ids: "AbstractSet[str]" = frozenset(),
 ) -> OrderScope:
-    """Name the scope that PRODUCES ``slot``'s value, from its planner stage
-    plus the attach facts (ranked kernel, combined-attached dual-role values);
-    a composite is OUTER_COMPOSITE when any operand lives in an isolated CTE."""
-    if slot.id in ranked_slot_ids:
-        return OrderScope.RANKED_CTE
+    """Name the scope that PRODUCES ``slot``'s value, from its planner stage plus the
+    attach facts; a composite is OUTER_COMPOSITE exactly where the planner places it."""
     if slot.id in combined_attached:
         return OrderScope.CROSS_MODEL_CTE
     stage_kind = slot.stage.kind if slot.stage is not None else None
@@ -521,13 +492,7 @@ def _classify_order_scope(
         return OrderScope.CROSS_MODEL_CTE
     if isinstance(slot.key, TransformKey):
         return OrderScope.TRANSFORM_STEP
-    if isinstance(slot.key, SLOT_COMPOSITE_KINDS) and _composite_operand_in_isolated_cte(
-        slot,
-        slots_by_id=slots_by_id,
-        slot_by_key=slot_by_key,
-        combined_attached=combined_attached,
-        ranked_slot_ids=ranked_slot_ids,
-    ):
+    if slot.id in outer_composite_ids:
         return OrderScope.OUTER_COMPOSITE
     if slot.hidden or slot.id not in public_projection:
         return OrderScope.HOST_BASE_HIDDEN

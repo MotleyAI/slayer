@@ -85,7 +85,7 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `filter` | string | No | — | SQL condition wrapping the column value in `CASE WHEN` — a value mask that fires in every position. See [Filtered columns](#filtered-columns) |
 | `granularity` | string | No | — | Time bucket a temporal column is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed models stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
-| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
+| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer datasources refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal columns |
 

@@ -10,6 +10,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from slayer.usage_reporting.sender import HTTP_TIMEOUT
+
+# Outlasts one whole send, which may itself take up to HTTP_TIMEOUT on a loaded runner.
+_WAIT = 3 * HTTP_TIMEOUT
+
 
 class CapturedRequest(BaseModel):
     path: str
@@ -58,7 +63,7 @@ class CaptureServer:
         self._server.shutdown()
         self._server.server_close()
 
-    def wait_for(self, *, count: int, timeout: float = 10.0) -> list[CapturedRequest]:
+    def wait_for(self, *, count: int, timeout: float = _WAIT) -> list[CapturedRequest]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
@@ -68,7 +73,7 @@ class CaptureServer:
         with self._lock:
             return list(self.requests)
 
-    def wait_for_arrival(self, *, timeout: float = 10.0) -> bool:
+    def wait_for_arrival(self, *, timeout: float = _WAIT) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:

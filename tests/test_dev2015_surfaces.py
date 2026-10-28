@@ -180,7 +180,7 @@ class TestDeclaredDefaultTimeDimensionType:
         path.write_text(yaml.safe_dump(_bad_default(name).model_dump(mode="json")))
         result = run_cli_in_process(["models", "--storage", base, "create", str(path)])
         assert result.returncode == 1, result.stdout + result.stderr
-        assert name in result.stdout
+        assert name in result.stderr
         if name != "time_spine":
             assert _stored_default(storage, name) is None
 
