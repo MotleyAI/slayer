@@ -291,7 +291,7 @@ def test_signal_wins_over_worker_failure(quiet: dict[str, str]) -> None:
 
 
 @pytest.mark.parametrize(("scenario", "expected", "needle"), [
-    ("worker_exception", 1, "RuntimeError: worker-boom"),
+    ("worker_exception", 1, "Error: RuntimeError: worker-boom (rerun with --debug for the traceback)"),
     ("worker_exit", 7, None),
     ("worker_interrupt", -signal.SIGINT, "KeyboardInterrupt"),
 ])
@@ -302,7 +302,7 @@ def test_worker_failure_without_signal_is_reraised(
     returncode = proc.finish()
     assert returncode == expected, proc.stderr
     if needle is not None:
-        assert "Traceback" in proc.stderr
+        assert ("Traceback" in proc.stderr) == (scenario == "worker_interrupt")
         assert needle in proc.stderr
     assert "STOP" not in proc.out
     entry = usage(show(), "cli:serve")

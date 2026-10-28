@@ -10,11 +10,13 @@ import duckdb
 import pytest
 
 from slayer import cli
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.demo import jaffle_shop
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cli_inprocess import run_cli_in_process
 from tests._fake_uvicorn import fake_uvicorn
 
 
@@ -84,7 +86,7 @@ class TestDemoKeywordDispatch:
         monkeypatch.setattr(cli, "_parse_connection_string", fake_parse)
         args = _make_args(connection_string="postgresql://host/db")
         storage = object()
-        with pytest.raises(SystemExit):
+        with pytest.raises(cli._CommandFailed):
             cli._run_datasources_create(args=args, storage=storage)
 
 
@@ -175,28 +177,24 @@ class TestJafgenCmdResolution:
         assert result.returncode == 0, result.stderr
 
 
+def _setup_demo(storage: YAMLStorage, storage_path: Path) -> tuple:
+    return jaffle_shop.ensure_demo_datasource(storage, storage_path=str(storage_path), years=1)
+
+
 class TestEnsureDemoDatasourceScoping:
-    def test_fast_path_with_models_in_multiple_datasources(self, tmp_path, monkeypatch):
+    def test_lookups_scoped_with_models_in_multiple_datasources(self, tmp_path, jaffle_generator):
         # Bare list_models()/get_model() raise on storages whose models span
         # several datasources (DEV-1330); the demo must scope every lookup to
         # its own datasource.
         storage = YAMLStorage(base_dir=str(tmp_path))
-        for table in jaffle_shop.TABLE_NAMES:
-            jaffle_shop.run_sync(
-                storage.save_model(
-                    SlayerModel(name=table, sql_table=table, data_source="jaffle_shop")
-                )
-            )
+        _setup_demo(storage, tmp_path)
         jaffle_shop.run_sync(
             storage.save_model(
                 SlayerModel(name="unrelated", sql_table="unrelated", data_source="other_ds")
             )
         )
-        monkeypatch.setattr(jaffle_shop, "build_jaffle_shop", lambda **kwargs: False)
 
-        ds, models, db_built = jaffle_shop.ensure_demo_datasource(
-            storage, storage_path=str(tmp_path)
-        )
+        ds, models, db_built = _setup_demo(storage, tmp_path)
 
         assert db_built is False
         assert ds.name == "jaffle_shop"
@@ -313,8 +311,9 @@ class TestDemoEnrichment:
         fmt_b = next(c for c in model_b.columns if c.name == "order_total").format
         assert fmt_b.symbol == "$"
 
-    def test_fast_path_saves_enriched_models(self, tmp_path, monkeypatch):
+    def test_setup_saves_enriched_models(self, tmp_path, jaffle_generator):
         storage = YAMLStorage(base_dir=str(tmp_path))
+        _setup_demo(storage, tmp_path)
         for table in jaffle_shop.TABLE_NAMES:
             jaffle_shop.run_sync(
                 storage.save_model(
@@ -326,11 +325,8 @@ class TestDemoEnrichment:
                     )
                 )
             )
-        monkeypatch.setattr(jaffle_shop, "build_jaffle_shop", lambda **kwargs: False)
 
-        _, models, _ = jaffle_shop.ensure_demo_datasource(
-            storage, storage_path=str(tmp_path)
-        )
+        _, models, _ = _setup_demo(storage, tmp_path)
 
         # Returned models are enriched, and the enrichment was persisted.
         assert all(m.description is not None for m in models)
@@ -356,8 +352,12 @@ class TestResolveDemoDbPath:
 class TestBuildJaffleShopIdempotency:
     def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch):
         db = tmp_path / "jaffle_shop.duckdb"
-        # Create a real (empty) DuckDB file so the reuse path can open it.
-        duckdb.connect(str(db)).close()
+        # An up-to-date (bundled-schema) DuckDB file, so the reuse path applies.
+        conn = duckdb.connect(str(db))
+        try:
+            jaffle_shop.create_schema(conn)
+        finally:
+            conn.close()
 
         shift_called = []
         monkeypatch.setattr(
@@ -368,3 +368,20 @@ class TestBuildJaffleShopIdempotency:
 
         assert jaffle_shop.build_jaffle_shop(db_path=str(db)) is False
         assert len(shift_called) == 1, "reuse path must refresh dates"
+
+
+class TestDemoRejectsIngestScope:
+    """The demo ingests all of its tables, so a scope option is refused before anything is built or saved."""
+
+    @pytest.mark.parametrize("flags", [
+        ["--include", "orders"], ["--exclude", "tweets"], ["--schema", "main"], ["--all-schemas"],
+        ["--no-views"], ["--surface-internals"],
+    ])
+    def test_scope_option_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]) -> None:
+        monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: pytest.fail("the demo must not be built"))
+        store = tmp_path / "store"
+        result = run_cli_in_process(["datasources", "--storage", str(store), "create", "demo", "--ingest", *flags])
+        assert result.returncode == 1
+        assert result.stderr.splitlines() == [result.stderr.strip()]
+        assert flags[0] in result.stderr
+        assert run_sync(YAMLStorage(base_dir=str(store)).list_datasources()) == []

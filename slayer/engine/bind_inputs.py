@@ -391,7 +391,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # Host spelling for the qualifier check below.
     _order_host_name = host_model_name(scope)
     for i, o in enumerate(query.order or []):
-        with stale_spelling_position(f"order[{i}]"):
+        # An implied (default) order item was never written: it records no spelling.
+        with stale_spelling_position(None if o.implied else f"order[{i}]"):
             col_name = o.column.name
             full_name = o.column.full_name
             # A functional ``gran(col)`` order key sorts by the projected time

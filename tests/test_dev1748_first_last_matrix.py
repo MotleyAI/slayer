@@ -791,10 +791,10 @@ class TestComposition:
         assert [
             (row["orders.created_at"], row["orders.c"]) for row in rows
         ] == [
-            (None, pytest.approx(NULLTIME_NULL_ROW_AMOUNT)),
             ("2024-01-01", pytest.approx(january)),
             ("2024-02-01", pytest.approx(february)),
             ("2024-03-01", pytest.approx(february + FAN_LAST)),
+            (None, pytest.approx(NULLTIME_NULL_ROW_AMOUNT)),
         ]
 
 

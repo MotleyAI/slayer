@@ -20,8 +20,8 @@ from slayer.usage_reporting.payload import (
     FLAGS,
     SCHEMA_VERSION,
     TRANSFORMS,
-    USAGE_KEYS,
     Batch,
+    known_usage_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,10 +282,7 @@ def _usage_key(surface: object, token: object) -> str | None:
     if not isinstance(surface, str):
         return None
     key = f"{surface}:{token}" if isinstance(token, str) else ""
-    if key in USAGE_KEYS:
-        return key
-    other = f"{surface}:other"
-    return other if other in USAGE_KEYS else None
+    return known_usage_key(surface=surface, key=key)
 
 
 def _succeeded(error: BaseException) -> bool:

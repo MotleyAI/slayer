@@ -6,6 +6,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -37,6 +38,7 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
+    sa_backend_names: frozenset[str] = frozenset({"postgresql"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -47,6 +49,30 @@ class PostgresDialect(SqlDialect):
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
+
+    def column_comments_query(self, location: TableLocation) -> exp.Select:
+        scope = (
+            eq_literal(col("nspname", "n"), location.schema_name) if location.schema_name
+            else call("pg_table_is_visible", col("oid", "c"))
+        )
+        return (
+            exp.select(col("attname", "a"), call("col_description", col("oid", "c"), col("attnum", "a")))
+            .from_(relation("pg_class", db="pg_catalog", alias="c"))
+            .join(
+                relation("pg_namespace", db="pg_catalog", alias="n"),
+                on=exp.EQ(this=col("oid", "n"), expression=col("relnamespace", "c")),
+            )
+            .join(
+                relation("pg_attribute", db="pg_catalog", alias="a"),
+                on=exp.EQ(this=col("attrelid", "a"), expression=col("oid", "c")),
+            )
+            .where(all_of([
+                eq_literal(col("relname", "c"), location.name),
+                exp.GT(this=col("attnum", "a"), expression=exp.Literal.number(0)),
+                exp.Not(this=col("attisdropped", "a")),
+                scope,
+            ]))
+        )
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(
