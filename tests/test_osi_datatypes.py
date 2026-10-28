@@ -1,5 +1,6 @@
 """OSI ``datatype`` on fields and metrics, and the ``is_time`` time-dimension role."""
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -119,4 +120,7 @@ async def test_metric_datatype_is_metadata_only(db: Path) -> None:
     assert (measures["typed"].meta or {})["osi_datatype"] == "Decimal"
     assert measures["typed"].type is None
     rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["typed", "untyped"]})
-    assert rows[0]["orders.typed"] == rows[0]["orders.untyped"]
+    # Exact only if the renamed field keeps the source column's db_type.
+    assert rows[0]["orders.typed"] == Decimal("22.00")
+    assert isinstance(rows[0]["orders.typed"], Decimal)
+    assert rows[0]["orders.untyped"] == rows[0]["orders.typed"]
