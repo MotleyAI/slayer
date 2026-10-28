@@ -142,6 +142,13 @@ def test_computed_join_key_is_reported(db: Path, side: str) -> None:
     assert mentions(result, "o2c_code")
 
 
+def test_relationship_with_empty_keys_is_reported(db: Path) -> None:
+    empty = rel("o2c_empty", src="orders", to="customers", from_columns=[], to_columns=[])
+    result = convert(db=db, docs=documents(_shop(relationships=[empty])))
+    assert by_name(result)["orders"].joins == []
+    assert mentions(result, "o2c_empty")
+
+
 def test_cross_document_relationship_is_reported(db: Path) -> None:
     doc1 = flat([_orders()], relationships=[O2C], name="sales")
     doc2 = flat([_customers()], name="crm")

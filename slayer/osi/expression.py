@@ -280,21 +280,24 @@ class _Converter:
             return functional_agg_text(source=self._operand_ref(self._masked(node.this, mask)), suffix=agg)
 
         if isinstance(node, exp.Count):
-            inner = node.this
-            if inner is None or isinstance(inner, exp.Star):
-                if mask is None:
-                    return functional_agg_text(source="*", suffix="count")
-                return functional_agg_text(
-                    source=self._operand_ref(self._masked(exp.Literal.number(1), mask)), suffix="count")
-            if isinstance(inner, exp.Distinct):
-                exprs = inner.expressions
-                if len(exprs) != 1:
-                    raise _Unconvertible("COUNT(DISTINCT ...) with multiple columns")
-                return functional_agg_text(
-                    source=self._operand_ref(self._masked(exprs[0], mask)), suffix="count_distinct")
-            return functional_agg_text(source=self._operand_ref(self._masked(inner, mask)), suffix="count")
+            return self._count_ref(node, mask=mask)
 
         raise _Unconvertible(f"unsupported aggregation {node.sql_name()!r}")
+
+    def _count_ref(self, node: exp.Count, *, mask: exp.Expr | None) -> str:
+        inner = node.this
+        if inner is None or isinstance(inner, exp.Star):
+            if mask is None:
+                return functional_agg_text(source="*", suffix="count")
+            return functional_agg_text(
+                source=self._operand_ref(self._masked(exp.Literal.number(1), mask)), suffix="count")
+        if isinstance(inner, exp.Distinct):
+            exprs = inner.expressions
+            if len(exprs) != 1:
+                raise _Unconvertible("COUNT(DISTINCT ...) with multiple columns")
+            return functional_agg_text(
+                source=self._operand_ref(self._masked(exprs[0], mask)), suffix="count_distinct")
+        return functional_agg_text(source=self._operand_ref(self._masked(inner, mask)), suffix="count")
 
     def _percentile_ref(self, node: exp.WithinGroup, *, mask: exp.Expr | None) -> str:
         inner = node.this

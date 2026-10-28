@@ -424,43 +424,55 @@ class OsiToSlayerConverter:
         if selected is None:
             return None
         sql, tree = selected
-        physical = self._physical[ds.name]
         declared = _DATATYPES.get(field.datatype or "")
-
         bare = _bare_column(tree)
-        if bare is not None:
-            source = physical.get(bare)
-            if source is None:
-                self._warn(
-                    f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
-                    f"which is not present in the source; skipping.",
-                    model_name=ds.name, category="missing_column",
-                )
-                return None
-            # A copy keeps the source's type, db_type, key flag and DB comment.
-            col = source.model_copy(deep=True, update={
-                "name": field.name, "sql": None if bare == field.name else sql})
-            db_type: DataType | None = source.type
-        else:
-            missing = _missing_expr_columns(tree, available=set(physical), self_name=ds.name)
-            if missing:
-                self._warn(
-                    f"Field {field.name!r} on {ds.name!r} references unknown "
-                    f"column(s) {missing}; skipping.",
-                    model_name=ds.name, category="missing_column",
-                )
-                return None
-            db_type = self._probe_expression_type(model=model, expr=sql)
-            shadowed = physical.get(field.name)
-            fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
-            col = Column(name=field.name, sql=sql, type=db_type or fallback)
-
+        typed = (self._bare_field_column(field=field, ds=ds, bare=bare, sql=sql) if bare is not None
+                 else self._derived_field_column(field=field, ds=ds, model=model, sql=sql, tree=tree,
+                                                 declared=declared))
+        if typed is None:
+            return None
+        col, db_type = typed
         if db_type is not None and declared is not None and db_type != declared:
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} declares datatype {field.datatype} but the "
                 f"database reports {db_type.value}; using {db_type.value}.",
                 model_name=ds.name, category="datatype", severity="info",
             )
+        self._apply_field_metadata(col=col, field=field)
+        return col
+
+    def _bare_field_column(self, *, field: OSIField, ds: OSIDataset, bare: str,
+                           sql: str) -> tuple[Column, DataType | None] | None:
+        source = self._physical[ds.name].get(bare)
+        if source is None:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
+                f"which is not present in the source; skipping.",
+                model_name=ds.name, category="missing_column",
+            )
+            return None
+        # A copy keeps the source's type, db_type, key flag and DB comment.
+        col = source.model_copy(deep=True, update={"name": field.name, "sql": None if bare == field.name else sql})
+        return col, source.type
+
+    def _derived_field_column(self, *, field: OSIField, ds: OSIDataset, model: SlayerModel, sql: str,
+                              tree: exp.Expr, declared: DataType | None) -> tuple[Column, DataType | None] | None:
+        physical = self._physical[ds.name]
+        missing = _missing_expr_columns(tree, available=set(physical), self_name=ds.name)
+        if missing:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} references unknown "
+                f"column(s) {missing}; skipping.",
+                model_name=ds.name, category="missing_column",
+            )
+            return None
+        db_type = self._probe_expression_type(model=model, expr=sql)
+        shadowed = physical.get(field.name)
+        fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
+        return Column(name=field.name, sql=sql, type=db_type or fallback), db_type
+
+    @staticmethod
+    def _apply_field_metadata(*, col: Column, field: OSIField) -> None:
         col.label = field.label or col.label
         col.description = _render_description(explicit=field.description, ctx=field.ai_context) \
             or col.description
@@ -472,7 +484,6 @@ class OsiToSlayerConverter:
         meta = _build_meta(ctx=field.ai_context, custom_extensions=field.custom_extensions, extra=extra)
         if meta:
             col.meta = {**(col.meta or {}), **meta}
-        return col
 
     def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
         """A derived expression's type from a LIMIT-0 probe of the model's source, or ``None``."""
@@ -549,9 +560,9 @@ class OsiToSlayerConverter:
                 model_name=src, category="relationship",
             )
             return
-        if len(rel.from_columns) != len(rel.to_columns):
+        if not rel.from_columns or len(rel.from_columns) != len(rel.to_columns):
             self._warn(
-                f"Relationship {rel.name!r} has mismatched key lengths "
+                f"Relationship {rel.name!r} has empty or mismatched key lengths "
                 f"({len(rel.from_columns)} vs {len(rel.to_columns)}); skipping.",
                 model_name=src, category="relationship",
             )
@@ -773,9 +784,11 @@ class OsiToSlayerConverter:
                          metric_name=metric.name)
             return None
 
-    def _canonicalize_refs(self, tree: exp.Expr, *, doc_models: list[str], home: str | None) -> None:
-        """Rewrite current-spec metric refs to declared names; raises ``LookupError`` on a scope violation."""
-        for col in list(tree.find_all(exp.Column)):
+    def _canonicalize_refs(self, tree: exp.Expr, *, doc_models: list[str], home: str | None) -> exp.Expr:
+        """``tree`` with current-spec metric refs rewritten to declared names; raises ``LookupError`` on a scope violation."""
+        def canonical(col: exp.Expr) -> exp.Expr:
+            if not isinstance(col, exp.Column):
+                return col
             idents = [p for p in col.parts if isinstance(p, exp.Identifier)]
             if len(idents) != len(col.parts) or len(idents) > 2:
                 raise LookupError(f"reference {col.sql()!r} is not a field reference")
@@ -791,8 +804,8 @@ class OsiToSlayerConverter:
             else:
                 owner = home
             declared = [c.name for c in self._models[owner].columns if not c.hidden]
-            name = _match_name(leaf, declared)
-            col.replace(exp.column(name, table=owner if home is None else None))
+            return exp.column(_match_name(leaf, declared), table=owner if home is None else None)
+        return tree.transform(canonical, copy=False)
 
     def _build_measure(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None,
                        doc_models: list[str]) -> None:
@@ -808,7 +821,7 @@ class OsiToSlayerConverter:
             return
         if not doc.legacy:
             try:
-                self._canonicalize_refs(tree, doc_models=doc_models, home=home)
+                tree = self._canonicalize_refs(tree, doc_models=doc_models, home=home)
             except LookupError as exc:
                 self._unconv(f"Metric {metric.name!r}: {exc}.", metric_name=metric.name)
                 return
@@ -951,12 +964,12 @@ class OsiToSlayerConverter:
         if tree is None:
             return sql
         by_name = {c.name: c for c in model.columns}
-        for ref in list(tree.find_all(exp.Column)):
-            col = by_name.get(ref.name)
-            definition = self._parse_target(col.sql) if col is not None and col.sql and not ref.table else None
-            if definition is not None:
-                ref.replace(exp.Paren(this=definition))
-        return tree.sql(dialect=self._target)
+
+        def inline(ref: exp.Expr) -> exp.Expr:
+            col = by_name.get(ref.name) if isinstance(ref, exp.Column) and not ref.table else None
+            definition = self._parse_target(col.sql) if col is not None and col.sql else None
+            return exp.Paren(this=definition) if definition is not None else ref
+        return tree.transform(inline, copy=False).sql(dialect=self._target)
 
     def _materialize_columns(self, materialized: list[MaterializedColumn]) -> None:
         for mc in materialized:
