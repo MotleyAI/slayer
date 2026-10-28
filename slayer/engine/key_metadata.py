@@ -198,29 +198,14 @@ def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeF
     return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
 
 
-def _stage_column_lookup(schema: StageSchema) -> Callable[[object], object]:
-    def lookup(key: object) -> object:
-        return schema.get(key.leaf) if isinstance(key, ColumnKey) and not key.path else None
-    return lookup
-
-
 def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callable[[object], bool]:
-    """Whether a column leaf holds a zoned instant on the bundle's dialect (its ``db_type`` names one)."""
-    zoned = get_dialect(bundle.dialect).zoned_timestamp_db_types
-    if not zoned:
+    """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
+    reads naive)."""
+    dialect = get_dialect(bundle.dialect)
+    if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.source_model is None:
         return lambda _key: False
-    lookup: Callable[[object], object]
-    if isinstance(scope, StageSchema):
-        lookup = _stage_column_lookup(scope)
-    elif scope.source_model is not None:
-        lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)
-    else:
-        return lambda _key: False
-
-    def is_zoned(key: object) -> bool:
-        db_type = getattr(lookup(key), "db_type", None)
-        return bool(db_type) and db_type.split("(")[0].strip().upper() in zoned
-    return is_zoned
+    lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)
+    return lambda key: dialect.is_zoned_db_type(getattr(lookup(key), "db_type", None))
 
 
 def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:

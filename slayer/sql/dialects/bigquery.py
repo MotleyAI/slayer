@@ -29,6 +29,7 @@ from slayer.sql.dialects.base import (
     SqlDialect,
     TemporalComparisonOp,
     TextFn,
+    ZONED_READ,
     TrimFn,
     _digest,
     anon,
@@ -262,6 +263,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         already = (isinstance(expr, exp.Cast) and expr.to.this is exp.DataType.Type.DATETIME) or (
             isinstance(expr, exp.Anonymous) and expr.name.upper() == "CURRENT_DATETIME")
         return expr.copy() if already else exp.Cast(this=expr.copy(), to=_DATETIME.copy())
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:
+        """A zoned ``TIMESTAMP`` reads as its UTC wall clock; a comparison unwraps it (``bare_comparands``)."""
+        if not zoned:
+            return column
+        read = exp.Cast(this=column, to=_DATETIME.copy())
+        read.meta[ZONED_READ] = True
+        return read
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         zoned = to.this is exp.DataType.Type.TIMESTAMPTZ

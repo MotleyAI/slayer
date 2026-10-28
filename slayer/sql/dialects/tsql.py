@@ -174,12 +174,20 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn in ("lpad", "rpad"):
             return self.portable_pad(fn=fn, s=args[0], n=args[1], fill=pad_fill(args))
+        if fn == "replace":
+            return anon("REPLACE", self.binary_text(args[0]), self.binary_text(args[1]), args[2])
         if fn == "contains":
             found = exp.GT(this=self.text_position(args[0], args[1]), expression=lit(0))
             empty = exp.And(this=exp.EQ(this=anon("DATALENGTH", args[1]), expression=lit(0)),
                             expression=exp.Not(this=any_null(args[0])))
             return either(found, empty)
         return super().build_text_call(fn, args)
+
+    def field_count(self, value: Expression, delimiter: Expression) -> Expression:
+        removed = self.char_length(anon("REPLACE", self.binary_text(value), self.binary_text(delimiter), lit("")))
+        gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
+        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
+        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
 
     def binary_text(self, value: Expression) -> Expression:
         # COLLATE binds tighter than any operator.
@@ -209,8 +217,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
         """The fields as a JSON array (``STRING_ESCAPE``d), indexed by ``JSON_VALUE``; ``''`` past the end."""
-        escaped = anon("REPLACE", anon("STRING_ESCAPE", value, lit("json")), anon("STRING_ESCAPE", delimiter, lit("json")),
-                       lit('","'))
+        escaped = anon("REPLACE", self.binary_text(anon("STRING_ESCAPE", value, lit("json"))),
+                       self.binary_text(anon("STRING_ESCAPE", delimiter, lit("json"))), lit('","'))
         array = anon("CONCAT", lit('["'), escaped, lit('"]'))
         if index > 0:
             path: Expression = lit(f"$[{index - 1}]")

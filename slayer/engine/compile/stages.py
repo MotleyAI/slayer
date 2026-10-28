@@ -4646,7 +4646,6 @@ def _stage_column(
         hidden=False,
         format=slot.format or (row.format if row is not None else None),
         description=slot.description or (row.description if row is not None else None),
-        db_type=getattr(row, "db_type", None),
         respellings=respellings,
     )
 

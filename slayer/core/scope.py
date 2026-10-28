@@ -67,8 +67,6 @@ class StageColumn(BaseModel):
     format: Optional[NumberFormat] = None
     hidden: bool = False
     description: Optional[str] = None
-    # The source column's lossy database type, kept through a row-level pass-through or bucket.
-    db_type: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
     sampled: Optional[str] = None
     provenance: Optional[str] = None

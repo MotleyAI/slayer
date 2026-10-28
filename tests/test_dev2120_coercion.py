@@ -100,6 +100,22 @@ class TestLimitedToMixedOperands:
         values = lib_values(await engine.execute(lib_query("num_txt || qty", filters=["id = 1"])))
         assert values == {1: "120.53"}
 
+    async def test_concat_ws_with_a_number_is_text(self, engine: SlayerQueryEngine) -> None:
+        values = lib_values(await engine.execute(lib_query("concat_ws('-', word, qty)", filters=["id = 1"])))
+        assert values == {1: "paid-3"}
+
+    @pytest.mark.parametrize("expr", ["word || (qty > 1)", "concat(word, qty > 1)", "concat_ws('-', word, qty > 1)",
+                                      "concat_ws(qty > 1, word)"])
+    async def test_boolean_in_concatenation_is_refused(self, engine: SlayerQueryEngine, expr: str) -> None:
+        query = lib_query(expr)
+        with pytest.raises(SlayerError, match="CASE WHEN"):
+            await engine.execute(query)
+
+    @pytest.mark.parametrize("dialect", ["bigquery", "clickhouse"])
+    async def test_concat_ws_array_engines_get_text_elements(self, dialect: str) -> None:
+        sql = await emit_lib(lib_query("concat_ws('-', word, qty)"), dialect=dialect)
+        assert "CAST(LIB.QTY AS " in sql.upper(), sql
+
 
 class TestEmission:
     async def test_text_side_is_a_try_cast_to_double(self) -> None:

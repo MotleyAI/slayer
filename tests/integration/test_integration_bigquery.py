@@ -325,6 +325,13 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
         }))
         got = {int(r["events.id"]): r["events.v"] for r in resp.data}
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "events",
+            "dimensions": ["id", column, {"expression": f"month({column})", "name": "bucket"}],
+        }))
+        rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
+        assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
+                        2: (datetime(2025, 6, 1, 23, 30), datetime(2025, 6, 1))}, (column, resp.sql)
 
 
 # ---------------------------------------------------------------------------

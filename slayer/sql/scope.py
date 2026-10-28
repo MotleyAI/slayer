@@ -29,7 +29,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
-from slayer.core.join_walker import model_column_type, resolved_terminal
+from slayer.core.join_walker import model_column_lookup, model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -407,10 +407,14 @@ class ScopeFrame(BaseModel):
                 limit=self.dialect.max_identifier_bytes,
             )
             self._register_path_prefixes(ref.path)
-            return quote_mixed_case_identifiers(exp.Column(
+            column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
+            declared = model_column_lookup(model=self.root_model, models_by_name=self._models_by_name())(ref)
+            return self.dialect.read_column(
+                column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
+            )
         if isinstance(ref, ColumnSqlKey):
             model = self._model_for(ref.model)
             col = next(
@@ -453,7 +457,7 @@ class ScopeFrame(BaseModel):
                 alias_resolver=self._alias_resolver(),
                 crossed_paths=self.join_paths,
             )
-            return self._parse(expanded)
+            return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
             # its joins) here, substituted into the parsed template.

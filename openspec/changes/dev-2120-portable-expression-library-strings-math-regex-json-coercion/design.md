@@ -72,7 +72,7 @@ Alternatives: doubling quantifier braces (`'[0-9]{{3}}'`) — rejected: standard
 
 ### D13. BigQuery TIMESTAMP is DATETIME
 
-SLayer's TIMESTAMP is naive, so on BigQuery every SLayer-produced timestamp is `DATETIME`: `CURRENT_DATETIME()`, `DATETIME_ADD` / `DATETIME_DIFF` / `DATETIME_TRUNC`, and `SAFE_CAST(… AS DATETIME)` for `TRY_CAST` / `RETURNING` (a plain `CAST` stays the database's own). Ingestion keeps `db_type` for the dialect's zoned type (`SqlDialect.zoned_timestamp_db_types`, BigQuery `TIMESTAMP`), and the binder casts the other side of a comparison with such a column to `TIMESTAMP`, so the column stays bare and partition pruning holds. Query time zones are DEV-2000.
+SLayer's TIMESTAMP is naive, so on BigQuery every SLayer-produced timestamp is `DATETIME`: `CURRENT_DATETIME()`, `DATETIME_ADD` / `DATETIME_DIFF` / `DATETIME_TRUNC`, and `SAFE_CAST(… AS DATETIME)` for `TRY_CAST` / `RETURNING` (a plain `CAST` stays the database's own). Ingestion keeps `db_type` for the dialect's zoned type (`SqlDialect.zoned_timestamp_db_types`, BigQuery `TIMESTAMP`), and the binder casts the other side of a comparison with such a column to `TIMESTAMP`, so the column stays bare and partition pruning holds. Query time zones are DEV-2000. Elsewhere a zoned column reads as `CAST(col AS DATETIME)`, so buckets, windows, the time spine and returned values see one type; only a direct comparison operand stays bare.
 
 ## Risks / Trade-offs
 

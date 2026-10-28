@@ -65,6 +65,7 @@ from slayer.core.keys import (
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
     is_reaggregation_key,
+    boolean_valued,
     list_element_type,
     list_valued,
     literal_type,
@@ -1303,7 +1304,7 @@ def _number_literal(text: str, *, beside: ValueKey) -> Decimal:
 
 def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey:
     """TEXT beside a number in a comparison, ``IN``, arithmetic or ``greatest`` / ``least`` reads as a number;
-    a number function over TEXT fails (literals convert); ``||`` reads a number as its text."""
+    a number function over TEXT fails (literals convert); ``||`` reads a number as its text and refuses a BOOLEAN."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_text_numbers(c, column_type=column_type)))
 
     def text(k: object) -> bool:
@@ -1312,12 +1313,15 @@ def coerce_text_numbers(key: ValueKey, *, column_type: ColumnTypeFn) -> ValueKey
     def number(k: object) -> bool:
         return numeric_valued(k, column_type=column_type)
 
+    def boolean(k: object) -> bool:
+        return boolean_valued(k, column_type=column_type)
+
     if isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _COERCED_OPS and len(rebuilt.operands) == 2:
         return _coerce_binary(rebuilt, text=text, number=number)
     if isinstance(rebuilt, InKey):
         return _coerce_in(rebuilt, text=text, number=number)
     if isinstance(rebuilt, ScalarCallKey):
-        return _coerce_scalar_args(rebuilt, text=text, number=number)
+        return _coerce_scalar_args(rebuilt, text=text, number=number, boolean=boolean)
     return rebuilt
 
 
@@ -1385,7 +1389,25 @@ def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) 
     return args
 
 
-def _coerce_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
+def _text_concat_args(
+    key: ScalarCallKey, *, number: Callable[[object], bool], boolean: Callable[[object], bool],
+) -> list:
+    """Concatenation arguments: a number reads as its text; a BOOLEAN has no portable text."""
+    for arg in key.args:
+        if boolean(arg):
+            display = _operand_display(arg)
+            raise ScalarOperandTypeError(
+                summary=f"Text concatenation has no portable spelling for the BOOLEAN `{display}`.",
+                suggestion=f"Spell it explicitly: CASE WHEN {display} THEN 'true' ELSE 'false' END.",
+            )
+    return [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
+            for a in key.args]
+
+
+def _coerce_scalar_args(
+    key: ScalarCallKey, *, text: Callable[[object], bool], number: Callable[[object], bool],
+    boolean: Callable[[object], bool],
+) -> ValueKey:
     args = list(key.args)
     if key.name in ("greatest", "least"):
         numbers = [a for a in args if number(a)]
@@ -1393,9 +1415,8 @@ def _coerce_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool], n
             args = [_as_number(cast(ValueKey, a), beside=cast(ValueKey, numbers[0])) if text(a) else a for a in args]
     elif key.name in NUMERIC_ARG_SCALARS:
         args = _numeric_scalar_args(key, text=text)
-    elif key.name == "concat":
-        args = [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
-                for a in args]
+    elif key.name in ("concat", "concat_ws"):
+        args = _text_concat_args(key, number=number, boolean=boolean)
     if args == list(key.args):
         return key
     return key.model_copy(update={"args": tuple(args)})

@@ -88,7 +88,7 @@ def is_stat_agg2(name: str) -> TypeGuard[StatAgg2Name]:
 
 TextFn = Literal[
     "left", "right", "starts_with", "ends_with", "contains", "lpad", "rpad", "reverse", "repeat", "concat_ws",
-    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr",
+    "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
 ]
 TrimFn = Literal["trim", "ltrim", "rtrim"]
 MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
@@ -211,6 +211,25 @@ COMPARISON_NODES: dict[str, Any] = {
 NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
 TRUE_WORDS = ("true", "t", "yes", "1")
 FALSE_WORDS = ("false", "f", "no", "0")
+
+
+#: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
+ZONED_READ = "slayer_zoned_read"
+
+
+def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:
+    """A zoned column read stays bare where the other side is already in the zoned type (a ``TIMESTAMP``
+    cast, ISO text, another zoned column), so the comparison keeps partition pruning."""
+    def zoned(node: Expression) -> bool:
+        return isinstance(node, exp.Cast) and bool(node.meta.get(ZONED_READ))
+
+    def in_zoned_type(node: Expression) -> bool:
+        return zoned(node) or (isinstance(node, exp.Literal) and node.is_string) or (
+            isinstance(node, exp.Cast) and node.to.this is exp.DataType.Type.TIMESTAMPTZ)
+
+    new_left = left.this if zoned(left) and in_zoned_type(right) else left
+    new_right = right.this if zoned(right) and in_zoned_type(left) else right
+    return new_left, new_right
 
 
 def as_text(value: Expression) -> Expression:
@@ -520,6 +539,14 @@ class SqlDialect(BaseModel):
     #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
 
+    def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
+        """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
+        return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        """A column as SLayer reads it; default: as stored."""
+        return column
+
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
         return to
@@ -597,6 +624,8 @@ class SqlDialect(BaseModel):
             return exp.GT(this=self.text_position(s, args[1]), expression=lit(0))
         if fn in ("strpos", "instr"):
             return self.text_position(s, args[1])
+        if fn == "replace":
+            return self.rewrite_target_ast(func("REPLACE", *args))
         if fn in ("lpad", "rpad"):
             return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
         if fn == "reverse":
@@ -671,7 +700,8 @@ class SqlDialect(BaseModel):
         """How many ``delimiter``-separated fields ``value`` has."""
         removed = self.char_length(anon("REPLACE", value, delimiter, lit("")))
         gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
-        return exp.Add(this=exp.IntDiv(this=gap, expression=self.char_length(delimiter)), expression=lit(1))
+        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
+        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
 
     def code_point_char(self, n: Expression) -> Expression:
         """The character of Unicode code point ``n`` (in range)."""

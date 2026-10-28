@@ -49,7 +49,12 @@ A TEXT literal meeting a number SHALL be converted to a number at plan time; a l
 
 ### Requirement: Coercion is limited to mixed operands
 
-Coercion SHALL apply only where TEXT meets a number in the positions above. A numeric function or numeric aggregation over a TEXT argument (`abs(amount_txt)`, `sum(amount_txt)`) SHALL keep its type error, whose remedy SHALL name `TRY_CAST`. An author-written `CAST` / `::` SHALL never be rewritten. `||` with a number SHALL convert the number to TEXT with the database's own number-to-text cast. Existing rules for TEXT against a DATE / TIMESTAMP (a time point) and booleans in a numeric context (1 / 0) SHALL be unchanged.
+Coercion SHALL apply only where TEXT meets a number in the positions above. A numeric function or numeric aggregation over a TEXT argument (`abs(amount_txt)`, `sum(amount_txt)`) SHALL keep its type error, whose remedy SHALL name `TRY_CAST`. An author-written `CAST` / `::` SHALL never be rewritten. `||` with a number SHALL convert the number to TEXT with the database's own number-to-text cast. A BOOLEAN operand of `||`, `concat` or `concat_ws` SHALL be rejected at plan time with a typed error whose remedy names `CASE`. Existing rules for TEXT against a DATE / TIMESTAMP (a time point) and booleans in a numeric context (1 / 0) SHALL be unchanged.
+
+#### Scenario: Boolean in text concatenation
+
+- **WHEN** a dimension is `name || (amount > 100)`
+- **THEN** the query fails at plan time with a type error whose remedy names `CASE`
 
 #### Scenario: Numeric aggregation over TEXT
 
@@ -72,7 +77,7 @@ The documentation SHALL state that the DOUBLE reading loses precision for intege
 
 ### Requirement: A naive timestamp meets a zoned column in the column's type
 
-SLayer's TIMESTAMP SHALL be a naive wall-clock value on every dialect (BigQuery `DATETIME`) — the result of `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions. Where a column's `db_type` is the dialect's zoned instant type (BigQuery `TIMESTAMP`), a comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`, `IS [NOT] DISTINCT FROM`) between that column and a non-literal TIMESTAMP value SHALL convert the value to the column's type, reading it as UTC, and SHALL leave the column unconverted.
+SLayer's TIMESTAMP SHALL be a naive wall-clock value on every dialect (BigQuery `DATETIME`) — the result of `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions. A timestamp literal against such a column SHALL compare as ISO text in the column's type, read as UTC. Where a column's `db_type` is the dialect's zoned instant type (BigQuery `TIMESTAMP`), a comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`, `IS [NOT] DISTINCT FROM`) between that column and a non-literal TIMESTAMP value SHALL convert the value to the column's type, reading it as UTC, and SHALL leave the column unconverted. Everywhere else — buckets, date functions, windows, the time spine, scalar functions and returned values — such a column SHALL read as its UTC wall clock, a naive TIMESTAMP.
 
 #### Scenario: now() against a BigQuery TIMESTAMP column
 
@@ -83,3 +88,13 @@ SLayer's TIMESTAMP SHALL be a naive wall-clock value on every dialect (BigQuery 
 
 - **WHEN** a filter is `created_at < now()` over a BigQuery `DATETIME` column
 - **THEN** it keeps the rows before the current UTC wall clock
+
+#### Scenario: Timestamp literal against a BigQuery TIMESTAMP column
+
+- **WHEN** a filter is `created_at < TIMESTAMP '2025-01-01 00:00:00'` over a BigQuery `TIMESTAMP` column ingested with `db_type` `TIMESTAMP`
+- **THEN** it keeps the rows before the UTC instant 2025-01-01 00:00:00, comparing the column itself
+
+#### Scenario: Monthly bucket of a BigQuery TIMESTAMP column
+
+- **WHEN** a query has the time dimension `month(created_at)` over a BigQuery `TIMESTAMP` column ingested with `db_type` `TIMESTAMP`, on the time spine
+- **THEN** each bucket is the naive month start of the UTC wall clock and joins the spine

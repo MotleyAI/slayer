@@ -122,6 +122,25 @@ class TestLiteralOutOfDomain:
             await emit_lib(query, dialect=dialect)
 
 
+class TestSplitPartEmptyDelimiter:
+    @pytest.mark.parametrize(("index", "expected"), [(1, "a/b/c"), (2, ""), (-1, "a/b/c"), (-2, "")])
+    async def test_whole_value_is_the_one_field(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
+        assert await _value(engine, f"split_part(s, '', {index})", row=3) == expected
+
+    @pytest.mark.parametrize(("index", "expected"), [(2, "b"), (-1, "c")])
+    async def test_space_delimiter_is_not_empty(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
+        assert await _value(engine, f"split_part('a b c', ' ', {index})") == expected
+
+    async def test_tsql_space_has_length_one(self) -> None:
+        sql = await emit_lib(lib_query("split_part(word, ' ', -1)"), dialect="tsql")
+        assert "LEN(CAST(' ' AS NVARCHAR(MAX)) + 'x') - 1" in " ".join(sql.split()), sql
+
+    @pytest.mark.parametrize("dialect", ["tsql", "mysql"])
+    async def test_field_count_never_divides_by_zero(self, dialect: str) -> None:
+        sql = await emit_lib(lib_query("split_part(word, tag, -1)"), dialect=dialect)
+        assert "NULLIF(" in sql.upper(), sql
+
+
 class TestSplitPartIndex:
     @pytest.mark.parametrize("expr", [
         "split_part(s, '/', n)", "split_part(s, '/', 0)", "split_part(s, '/', 1.5)", "split_part(s, '/', 1 + 1)",
@@ -216,6 +235,11 @@ class TestTextMatchingIgnoresCollation:
     async def test_insensitive_default_engines_compare_binary(self, dialect: str, marker: str, expr: str) -> None:
         sql = (await emit_lib(lib_query(expr), dialect=dialect)).upper()
         assert sql.count(marker) >= 2, sql
+
+    @pytest.mark.parametrize("expr", ["replace(word, 'a', 'x')", "split_part(word, 'a', 2)", "split_part(word, 'a', -1)"])
+    async def test_tsql_replace_and_split_part_compare_binary(self, expr: str) -> None:
+        sql = (await emit_lib(lib_query(expr), dialect="tsql")).upper()
+        assert sql.count("COLLATE LATIN1_GENERAL_100_BIN2") >= 2, sql
 
     async def test_tsql_collates_a_compound_operand_whole(self) -> None:
         sql = await emit_lib(lib_query("contains(word || 'x', 'ad')"), dialect="tsql")
