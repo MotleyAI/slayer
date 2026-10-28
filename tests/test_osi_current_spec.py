@@ -71,6 +71,12 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
 
 
+def test_semantic_model_custom_extensions_are_kept(db: Path) -> None:
+    ext = {"vendor_name": "acme", "data": '{"tier": "gold"}'}
+    result = convert(db=db, docs=documents({**_shop(), "custom_extensions": [ext]}))
+    assert (by_name(result)["orders"].meta or {})["osi_semantic_model"]["custom_extensions"] == [ext]
+
+
 @pytest.mark.parametrize("wrapped", ["array", "object"])
 def test_legacy_wrapper_datasets_all_import(db: Path, tmp_path: Path, wrapped: str) -> None:
     a = {"name": "a", "datasets": [_orders()]}

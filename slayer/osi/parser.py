@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from slayer.osi.models import OSIDocument
 
@@ -89,14 +90,13 @@ def parse_osi_file(path: Path) -> list[OSIDocument]:
             path, version, ", ".join(sorted(KNOWN_OSI_VERSIONS)),
         )
 
-    mappings = _flat_mappings(path, data)
-    if mappings is None:
-        return []
-    try:
-        return [OSIDocument.model_validate(mapping) for mapping in mappings]
-    except Exception as exc:  # noqa: BLE001 — any validation error -> skip
-        logger.warning("Failed to validate OSI document in %s: %s", path, exc)
-        return []
+    docs: list[OSIDocument] = []
+    for mapping in _flat_mappings(path, data) or []:
+        try:
+            docs.append(OSIDocument.model_validate(mapping))
+        except ValidationError as exc:
+            logger.warning("Failed to validate OSI semantic model %r in %s: %s", mapping.get("name"), path, exc)
+    return docs
 
 
 def parse_osi_path(path: str | Path) -> list[OSIDocument]:

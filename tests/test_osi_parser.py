@@ -181,6 +181,14 @@ def test_legacy_array_splits_into_one_document_per_model(tmp_path: Path) -> None
     assert [[x.name for x in d.datasets] for d in docs] == [["a_t"], ["b_t"]]
 
 
+def test_invalid_legacy_model_keeps_its_valid_siblings(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = write_yaml(tmp_path / "two.yaml", legacy({"name": "broken"}, _legacy_model("b")))
+    with caplog.at_level(logging.WARNING):
+        docs = parse_osi_path(path)
+    assert [d.name for d in docs] == ["b"]
+    assert any("broken" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
 def test_legacy_object_wrapper(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "one.yaml", {"version": "0.1.1", "semantic_model": _legacy_model("a")})
     docs = parse_osi_path(path)

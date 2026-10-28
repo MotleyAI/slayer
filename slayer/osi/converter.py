@@ -515,11 +515,13 @@ class OsiToSlayerConverter:
         if unique_keys:
             extra["osi_unique_keys"] = unique_keys
         doc_ctx = ai_context_to_dict(doc.ai_context)
-        if doc_ctx or doc.description:
+        doc_ext = [e.model_dump() for e in doc.custom_extensions or []]
+        if doc_ctx or doc.description or doc_ext:
             extra["osi_semantic_model"] = {
                 "name": doc.name,
                 "description": doc.description,
                 "ai_context": doc_ctx,
+                **({"custom_extensions": doc_ext} if doc_ext else {}),
             }
         meta = _build_meta(ctx=ds.ai_context, custom_extensions=ds.custom_extensions, extra=extra)
         if meta:
