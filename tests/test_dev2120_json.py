@@ -6,6 +6,7 @@ import contextlib
 import os
 import tempfile
 from typing import Any, Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
@@ -24,6 +25,7 @@ from slayer.engine.ingestion import _introspected_column, ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql import engine_factory
+from slayer.sql.dialects import clickhouse as clickhouse_dialect
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import ReflectedColumn
 from tests._dev2120_fixtures import (
@@ -203,6 +205,12 @@ class TestInputForms:
         text = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", models=[_json_model(db_type=None)])
         assert native != text
 
+    async def test_clickhouse_json_column_read_without_a_json_cast(self) -> None:
+        # CAST(… AS JSON) needs an experimental setting before ClickHouse 25.3.
+        sql = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", models=[_json_model(db_type="JSON")])
+        assert "toString(lib.payload)" in sql, sql
+        assert "AS JSON" not in sql.upper(), sql
+
     @pytest.mark.parametrize(("dialect", "db_type"), [
         ("postgres", "jsonb"), ("postgres", "json"), ("mysql", "JSON"), ("duckdb", "JSON"), ("bigquery", "JSON"),
         ("snowflake", "VARIANT"), ("snowflake", "OBJECT"), ("snowflake", "ARRAY"), ("clickhouse", "JSON"),
@@ -284,6 +292,15 @@ class TestIngestionKeepsJsonDbType:
 
     def test_postgres_array_is_not_json(self) -> None:
         assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") is None
+
+    def test_clickhouse_column_the_driver_cannot_type_reads_its_catalog_type(self) -> None:
+        inspector = MagicMock()
+        inspector.get_columns.return_value = [{"name": "id", "type": sa.Integer()},
+                                              {"name": "payload", "type": sa.types.NullType()}]
+        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("payload", "JSON")]):
+            cols = get_dialect("clickhouse").reflect_columns(
+                sa_engine=None, inspector=inspector, table="docs", schema="db", catalog=None)
+        assert [(c.name, c.db_type) for c in cols] == [("id", None), ("payload", "JSON")]
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
         duckdb = pytest.importorskip("duckdb")

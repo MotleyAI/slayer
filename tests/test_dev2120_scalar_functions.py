@@ -269,3 +269,31 @@ class TestFloorDivisionHint:
             await engine.execute(query)
         values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
         assert int(values[1]) == 3
+
+
+async def _clickhouse(expr: str) -> str:
+    return " ".join((await emit_lib(lib_query(expr), dialect="clickhouse")).split())
+
+
+class TestClickHouseLowering:
+    async def test_cbrt_is_lowercase(self) -> None:
+        assert "cbrt(lib.x)" in await _clickhouse("cbrt(x)")
+
+    async def test_ln_reads_the_exact_log2(self) -> None:
+        sql = await _clickhouse("ln(x)")
+        assert "log2(lib.x) * 0.6931471805599453" in sql, sql
+        assert "LN(" not in sql.upper(), sql
+
+    async def test_negative_right_keeps_a_length(self) -> None:
+        sql = await _clickhouse("right(s, -1)")
+        assert "rightUTF8(lib.s, CASE WHEN -1 < 0 THEN greatest(lengthUTF8(lib.s) + -1, 0) ELSE -1 END)" in sql, sql
+
+    async def test_reverse_splits_by_code_point(self) -> None:
+        sql = await _clickhouse("reverse(s)")
+        assert "arrayReverse(extractAll(assumeNotNull(lib.s), '(?s).'))" in sql, sql
+        assert "reverseUTF8" not in sql, sql
+
+    async def test_split_part_never_splits_a_nullable(self) -> None:
+        sql = await _clickhouse("split_part(s, '/', 2)")
+        assert "splitByString(assumeNotNull('/'), assumeNotNull(lib.s))" in sql, sql
+        assert "lib.s IS NULL OR '/' IS NULL" in sql, sql

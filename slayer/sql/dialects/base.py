@@ -519,6 +519,10 @@ class SqlDialect(BaseModel):
         """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
         return exp.TryCast(this=as_text(value), to=to)
 
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """The author's ``CAST``; NULL stays NULL."""
+        return exp.Cast(this=value, to=to)
+
     # A native case-insensitive ``ILIKE``; elsewhere it is ``LOWER(x) LIKE LOWER(p)``.
     ilike_native: ClassVar[bool] = False
 
@@ -701,6 +705,9 @@ class SqlDialect(BaseModel):
     def cube_root(self, value: Expression) -> Expression:
         return anon("CBRT", value)
 
+    def natural_log(self, value: Expression) -> Expression:
+        return self.rewrite_target_ast(exp.Ln(this=value.copy()))
+
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """``greatest`` / ``least`` of the non-NULL arguments; NULL only when all are NULL."""
         return anon(fn.upper(), *args)
@@ -815,6 +822,10 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """Null-safe equality (``IS NOT DISTINCT FROM``) for grain join-backs."""
         return exp.NullSafeEQ(this=left, expression=right)
+
+    def build_is_not_distinct_from(self, left: Expression, right: Expression) -> Expression:
+        """``IS NOT DISTINCT FROM`` in an expression (``build_null_safe_eq`` serves join conditions)."""
+        return self.build_null_safe_eq(left, right)
 
     def build_ordered(
         self,
