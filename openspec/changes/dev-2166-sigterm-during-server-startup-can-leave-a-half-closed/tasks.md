@@ -5,6 +5,8 @@
 - [ ] 1.3 Add script scenario `serve_after_signal` (the startup worker signals itself, waits inside `try/except BaseException: mark("RAISED_INTO_STARTUP"); raise` until the guard has recorded the signal, then calls `_serve_until_terminated` with `run`/`stop` marking `RUNNING`/`STOP`) and a test over both signals expecting exit 128 + sig, no `RUNNING`, `STOP` or `RAISED_INTO_STARTUP` (design 3, 9); verify it FAILS on the current code.
 - [ ] 1.4 Add an in-process guard-handler test over phases `before`, `running`, `closing`, `after`: first and second signal, with a raising prior handler, `_exit_now` monkeypatched; assert `_handle` never raises into the caller, the prior handler is called exactly once, forced exit happens on the second signal outside `closing`, and the usage record happens only in `before` / `running`; handlers restored afterwards (design 2, 10); verify it FAILS on the current code.
 - [ ] 1.5 Update `test_guard_stays_installed_after_signal_races_restore` mechanically to the new `finish` signature (design 5; signature only, no logic change).
+- [ ] 1.6 Retarget the signal-inside-worker-start test at the `slayer-command` worker start (script flag `--signal-inside-command-start`, scenario `join`); expect exit 128 + sig, no traceback, `cli:serve` ok, no `RUNNING` / `STOP` (design 1, 3); verify it FAILS on the current code.
+- [ ] 1.7 Add an in-process `finish()` test: with `abandoned` set it calls `_exit_now(128 + signum)`, otherwise it raises `SystemExit(128 + signum)` (design 5); verify it FAILS on the current code.
 
 ## 2. Implementation (pr-implement)
 
