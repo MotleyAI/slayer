@@ -9,7 +9,8 @@ name: Integration - SQL Server
 
 on:
   pull_request:
-    branches: [main]
+    # Every base branch: stacked PRs need the same gate as PRs to main.
+    branches: ['**']
     paths:
       - 'slayer/sql/dialects/tsql.py'
       - 'slayer/sql/client.py'
