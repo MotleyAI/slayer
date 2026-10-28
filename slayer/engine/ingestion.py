@@ -1511,15 +1511,16 @@ class AdditiveMergeResult(BaseModel):
 
 def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
     """A stored TEXT column whose live column is a list, re-typed to it (system P14's exception); a stored list's
-    UNKNOWN elements filled from the live element type. ``None`` when nothing changes."""
+    UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
     if fresh.type is not DataType.ARRAY:
         return None
     if persisted.type is DataType.TEXT:
         return persisted.model_copy(update={
             "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
         })
+    inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
     known = fresh.element_type is not None and not fresh.element_type.is_opaque
-    if persisted.type is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and known:
+    if persisted.type is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and inferred and known:
         return persisted.model_copy(update={"element_type": fresh.element_type})
     return None
 

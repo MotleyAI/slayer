@@ -927,6 +927,7 @@ _INFERRED = (
     "INSERT INTO inferred SELECT 1, ARRAY_CONSTRUCT(1, 2), ARRAY_CONSTRUCT('a', 1), "
     "ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('k', 1)), ARRAY_CONSTRUCT()",
     "CREATE TABLE structured (id NUMBER(38,0), typed ARRAY(VARCHAR))",
+    "INSERT INTO structured SELECT 1, ['go', 'sql']::ARRAY(VARCHAR) UNION ALL SELECT 2, ['sql']::ARRAY(VARCHAR)",
 )
 
 
@@ -984,6 +985,22 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
     finally:
         event.remove(sa.engine.Engine, "before_cursor_execute", record)
     assert not [s for s in statements if "FLATTEN" in s.upper()], statements
+
+
+@pytest.mark.parametrize(("filters", "kept"), [
+    (["contains(typed, 'go')"], {1}),
+    (["contains_any(typed, ['go', 'rust'])"], {1}),
+    (["contains_all(typed, ['go', 'sql'])"], {1}),
+    (["length(typed) = 1"], {2}),
+    (["typed.value = 'sql'"], {1, 2}),
+])
+def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: DatasourceConfig, filters, kept) -> None:
+    storage, _ = sf_lists
+    (model,) = ingest_datasource(datasource=sf_datasource, include_tables=["structured"])
+    run_sync(storage.save_model(model))
+    resp = run_sync(SlayerQueryEngine(storage=storage).execute(
+        {"source_model": "structured", "dimensions": ["id"], "filters": filters}))
+    assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
 
 
 def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: DatasourceConfig) -> None:

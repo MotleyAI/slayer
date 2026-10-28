@@ -12,13 +12,14 @@ import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
 
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    LIST_VALUE, ExtremumFn, ListRelation, SqlDialect, TextFn, anon, case, either, is_not_null, lit, operand_copy,
+    LIST_VALUE, ExtremumFn, ListRelation, SqlDialect, TextFn, anon, case, either, element_lambda, lit,
+    operand_copy,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -28,6 +29,20 @@ if TYPE_CHECKING:
 
 
 _ARRAY_TYPE_CODE = 10
+
+
+def _semi_structured(values: Expression) -> Expression:
+    """A structured ``ARRAY(T)`` read as a semi-structured ARRAY (a no-op on one), which the ARRAY functions take."""
+    return exp.Cast(this=values.copy(), to=exp.DataType.build("ARRAY"))
+
+
+def _typed_elements(values: Expression, element: Optional[DataType], distinct: bool = False) -> Expression:
+    """The non-NULL elements as a structured ``ARRAY(T)``, whose elements read as ``T``."""
+    kept = anon("ARRAY_COMPACT", _semi_structured(values))
+    kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
+    if element is None or element.is_opaque:
+        return kept
+    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.value}>"))
 
 
 def _json_list(value: Any) -> Any:
@@ -183,35 +198,36 @@ class SnowflakeDialect(SqlDialect):
         return kinds.pop() if len(kinds) == 1 else DataType.TEXT
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", values))
+        return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", _semi_structured(values)))
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
-        return anon("ARRAY_CONTAINS", exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT")), values)
+        found = exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT"))
+        return anon("ARRAY_CONTAINS", found, _semi_structured(values))
 
     def list_overlaps(self, values: Expression, other: Expression) -> Expression:
-        return anon("ARRAYS_OVERLAP", anon("ARRAY_COMPACT", values), anon("ARRAY_COMPACT", other))
+        return anon("ARRAYS_OVERLAP", anon("ARRAY_COMPACT", _semi_structured(values)),
+                    anon("ARRAY_COMPACT", _semi_structured(other)))
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
-        missing = anon("ARRAY_EXCEPT", anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", other)), values)
+        wanted = anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", _semi_structured(other)))
+        missing = anon("ARRAY_EXCEPT", wanted, _semi_structured(values))
         return exp.EQ(this=anon("ARRAY_SIZE", missing), expression=lit(0))
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
         distinct: bool = False,
     ) -> ListRelation:
-        """``FLATTEN``'s VARIANT ``value`` read as the element type."""
-        flattened = exp.to_identifier("__slayer_f")
-        value = exp.column(LIST_VALUE, table="__slayer_f")
-        typed = value if element is None or element.is_opaque else exp.Cast(
-            this=value, to=exp.DataType.build(element.value))
-        table = exp.TableFromRows(this=exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=values.copy())),
-                                  alias=exp.TableAlias(this=flattened))
-        rows = exp.select(exp.alias_(typed, LIST_VALUE)).from_(table).where(is_not_null(typed.copy()))
-        rows = rows.distinct() if distinct else rows
-        table_alias = exp.TableAlias(this=alias.copy())
-        if leading:
-            return ListRelation(relation=exp.Subquery(this=rows, alias=table_alias))
-        return ListRelation(relation=exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+        """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
+        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
+        return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """``FILTER(values, e -> predicate(e))`` is non-empty: Snowflake rejects a correlated subquery over FLATTEN."""
+        matched = anon("FILTER", _typed_elements(values, element), element_lambda(predicate, alias=alias))
+        found = exp.GT(this=anon("ARRAY_SIZE", matched), expression=lit(0))
+        return exp.Coalesce(this=found, expressions=[exp.false()])
 
     def empty_list(self, element: Optional[DataType]) -> Expression:
         """An untyped ``[]``: a semi-structured ARRAY never meets a structured one."""

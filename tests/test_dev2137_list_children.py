@@ -237,7 +237,8 @@ async def test_no_self_join(name: str, dialect: str) -> None:
 ELEMENT_FILTERS = ["skills.value = 'go'", "skills.value IN ('go', 'sql')", "NOT (skills.value = 'go')"]
 
 
-@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS")])
+@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS"),
+                                                 ("snowflake", "FILTER(")])
 @pytest.mark.parametrize("condition", ELEMENT_FILTERS)
 async def test_element_filter_is_a_lambda_without_a_correlated_subquery(
     dialect: str, function: str, condition: str,
@@ -248,7 +249,8 @@ async def test_element_filter_is_a_lambda_without_a_correlated_subquery(
     assert function in sql.upper(), sql
 
 
-@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS")])
+@pytest.mark.parametrize(("dialect", "function"), [("trino", "ANY_MATCH"), ("clickhouse", "ARRAYEXISTS"),
+                                                 ("snowflake", "FILTER(")])
 async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
     dialect: str, function: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -263,3 +265,18 @@ async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
     assert not list(tree.find_all(exp.Unnest)), sql
     assert not [j for j in tree.find_all(exp.Join) if j.args.get("kind") == "ARRAY"], sql
     assert function in sql.upper(), sql
+
+
+async def test_a_snowflake_list_child_flattens_the_typed_list_without_a_subquery() -> None:
+    sql = await emit_contractors(query(dimensions=["skills.value"], measures=[measure("count(skills.*)", "n")]),
+                                 dialect="snowflake")
+    tree = sqlglot.parse_one(sql, read="snowflake")
+    assert not [s for s in tree.find_all(exp.Subquery) if "FLATTEN" in s.sql("snowflake").upper()], sql
+    assert "AS ARRAY(VARCHAR)" in sql.upper(), sql
+
+
+@pytest.mark.parametrize("expr", ["contains(skills, 'go')", "contains_any(skills, ['go'])",
+                                  "contains_all(skills, ['go'])", "length(skills)"])
+async def test_snowflake_list_functions_read_a_structured_list_as_semi_structured(expr: str) -> None:
+    sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect="snowflake")
+    assert "CAST(CONTRACTORS.SKILLS AS ARRAY)" in sql.upper(), sql

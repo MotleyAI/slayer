@@ -17,7 +17,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import _introspected_column, ingest_datasource, ingest_datasource_idempotent
+from slayer.engine.ingestion import _introspected_column, _retyped_list, ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
@@ -362,6 +362,21 @@ class TestReingest:
         scores = loaded.get_column("scores")
         assert scores is not None
         assert (scores.type, scores.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+    async def test_a_declared_unknown_element_type_survives(self) -> None:
+        opaque = Column(name="scores", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _stored(opaque))
+        scores = loaded.get_column("scores")
+        assert scores is not None
+        assert (scores.type, scores.element_type) == (DataType.ARRAY, DataType.UNKNOWN)
+
+    @pytest.mark.parametrize(("live_db_type", "refilled"), [("ARRAY", DataType.INT), ("ARRAY(NUMBER(38,0))", None)])
+    def test_only_an_untyped_snowflake_list_is_re_inferred(self, live_db_type: str, refilled: Any) -> None:
+        stored = Column(name="scores", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        live = Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT, db_type=live_db_type)
+        merged = _retyped_list(persisted=stored, fresh=live)
+        assert (merged.element_type if merged is not None else None) == refilled
 
     async def test_text_over_a_live_text_column_untouched(self) -> None:
         with _duckdb_file("CREATE TABLE contractors (id INTEGER, skills VARCHAR)") as (ds, tmp):
