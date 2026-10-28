@@ -6,7 +6,7 @@ import pytest
 from sqlglot import exp, parse_one
 
 from slayer.core.enums import DataType
-from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.errors import SlayerError, UnknownFunctionError, UnsupportedServerFunctionError
 from slayer.core.models import Column
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
@@ -378,3 +378,17 @@ class TestClickHouseLowering:
         sql = await _clickhouse("split_part(s, '/', 2)")
         assert "splitByString(assumeNotNull('/'), assumeNotNull(lib.s))" in sql, sql
         assert "lib.s IS NULL OR '/' IS NULL" in sql, sql
+
+
+class TestMariaDBRefusesWhatItCannotMean:
+    @pytest.mark.parametrize("expr", [
+        "regexp_like(word, '^a')", "word ~ '^a'", "regexp_extract(word, 'a(d)', 1)", "regexp_replace(word, 'a', 'b')",
+        "TRY_CAST(num_txt AS INT)", "num_txt > 100", "json_value(payload, '$.ok')", "payload ->> 'ok'",
+    ])
+    async def test_refused_at_plan_time(self, expr: str) -> None:
+        with pytest.raises(UnsupportedServerFunctionError, match="MariaDB"):
+            await emit_lib(lib_query(expr), dialect="mariadb")
+
+    @pytest.mark.parametrize("expr", ["starts_with(word, 'a')", "TRY_CAST(word AS BOOLEAN)", "upper(word)"])
+    async def test_the_rest_renders_as_mysql(self, expr: str) -> None:
+        assert await emit_lib(lib_query(expr), dialect="mariadb") == await emit_lib(lib_query(expr), dialect="mysql")

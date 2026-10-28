@@ -794,11 +794,14 @@ class SlayerQueryEngine:
     async def _render_dialect(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
     ) -> "str | SqlDialect":
-        """``dialect``, carrying the server profile when rendering the plan reads it; an unreadable
-        profile renders as an unknown server."""
-        sql_dialect = get_dialect(dialect)
+        """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
+        name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
+        as an unknown server."""
+        sql_dialect = dialect_for_ds_type(datasource.type)
+        if sql_dialect.sqlglot_name != dialect:
+            sql_dialect = get_dialect(dialect)
         if not sql_dialect.profile_needed(planned_keys(planned_list)):
-            return dialect
+            return sql_dialect
         try:
             profile = await self._client_for(datasource).server_profile()
         except Exception:  # noqa: BLE001 — an unknown server gets the plain cast

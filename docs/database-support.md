@@ -172,6 +172,8 @@ treats backslash as an ordinary char; SLayer's entire sqlglot-based MySQL
 emission — not just variable substitution — assumes that mode is off, so
 backslash-bearing string values are not supported on such servers.
 
+**MariaDB** renders as MySQL, except that the portable library's regex functions and `~` operators, `TRY_CAST` to a number (and so comparing or computing text with numbers) and `json_value` with its spellings are refused at plan time.
+
 ### SQL Server (T-SQL) caveats
 
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
