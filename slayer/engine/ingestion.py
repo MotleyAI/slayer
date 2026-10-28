@@ -1320,7 +1320,7 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col)
+        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):

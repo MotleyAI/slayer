@@ -11,6 +11,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
 from slayer.core.models import Column
+from slayer.core.refs import key_display
 from slayer.core.scope import ModelScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
@@ -182,6 +183,9 @@ class TestArrayLiteralKey:
     def test_identity_map_returns_self(self) -> None:
         literal = self._literal()
         assert literal.map_children(lambda k: k) is literal
+
+    def test_displays_as_a_list_inside_a_call(self) -> None:
+        assert key_display(_bind("contains_any(skills, ['go', 'sql'])")) == "contains_any(skills, ['go', 'sql'])"
 
     def test_equal_literals_share_one_key(self) -> None:
         first, second = self._literal(), self._literal()

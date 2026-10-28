@@ -224,7 +224,9 @@ def _scalar_display(value: Any) -> str:
 
 
 def _arg_display(value: Any) -> str:
-    return key_display(value) if type(value) in _LEGACY_KEY_SPELLINGS else _scalar_display(value)
+    if isinstance(value, ArrayLiteralKey) or type(value) in _LEGACY_KEY_SPELLINGS:
+        return key_display(value)
+    return _scalar_display(value)
 
 
 def _grain_display_list(keys: Any) -> str:

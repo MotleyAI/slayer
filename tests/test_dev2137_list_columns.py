@@ -384,6 +384,14 @@ class TestReingest:
         merged = _retyped_list(persisted=stored, fresh=live)
         assert (merged.element_type if merged is not None else None) == refilled
 
+    async def test_a_derived_text_column_named_like_a_live_list_untouched(self) -> None:
+        derived = Column(name="skills", sql="CAST(id AS VARCHAR)", type=DataType.TEXT)
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _stored(derived))
+        skills = loaded.get_column("skills")
+        assert skills is not None
+        assert (skills.type, skills.element_type) == (DataType.TEXT, None)
+
     async def test_text_over_a_live_text_column_untouched(self) -> None:
         with _duckdb_file("CREATE TABLE contractors (id INTEGER, skills VARCHAR)") as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(Column(name="skills", type=DataType.TEXT)))
