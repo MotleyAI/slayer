@@ -278,7 +278,7 @@ A non-bare aggregate operand (arithmetic, `CASE`, scalar functions, or, in a mod
 
 ### Requirement: Field datatypes
 
-A field's `datatype` SHALL map to SLayer types as: `String`→TEXT, `Integer`→INT, `Decimal` and `Float`→DOUBLE, `Boolean`→BOOLEAN, `Date`→DATE, `DateTime` and `DateTimeTz`→TIMESTAMP, `Time` and `Opaque`→UNKNOWN. A column's type SHALL be the type the database reports for it; when the database cannot report one, the mapped `datatype` SHALL be used, and DOUBLE only when neither exists. When both exist and disagree, the report SHALL hold an informational entry. The declared value SHALL be kept in the column's metadata.
+A field's `datatype` SHALL map to SLayer types as: `String`→TEXT, `Integer`→INT, `Decimal` and `Float`→DOUBLE, `Boolean`→BOOLEAN, `Date`→DATE, `DateTime` and `DateTimeTz`→TIMESTAMP, `Time` and `Opaque`→UNKNOWN. A column's type SHALL be the type the database reports for it; when the database cannot report one, the mapped `datatype` SHALL be used, then the type of a source column the field shares its name with, and DOUBLE only when none exists. When both exist and disagree, the report SHALL hold an informational entry. The declared value SHALL be kept in the column's metadata.
 
 #### Scenario: Declared type when the database cannot report one
 - **WHEN** a derived field `UPPER(name)` declares `datatype: String` and the database type probe fails

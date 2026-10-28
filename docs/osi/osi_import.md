@@ -34,7 +34,7 @@ Spec versions `1.0`, `0.1.0`, `0.1.1` and `0.2.0.dev0` parse silently; an unknow
 
 A current-spec model exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the model. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible columns and a warning. Older wrapped documents keep every introspected column and overlay their fields on top.
 
-A column's type is the type the database reports; a field's declared `datatype` is used only when the database cannot report one (DOUBLE when neither exists), and a disagreement adds an informational report entry. This deviates from the spec's consumer guidance on purpose, since `Column.type` drives SQL casts against the real database. The declared value is kept in `meta["osi_datatype"]`.
+A column's type is the type the database reports; a field's declared `datatype` is used only when the database cannot report one, then the type of a source column the field shares its name with (DOUBLE when none exists), and a disagreement adds an informational report entry. This deviates from the spec's consumer guidance on purpose, since `Column.type` drives SQL casts against the real database. The declared value is kept in `meta["osi_datatype"]`.
 
 | `datatype` | SLayer type |
 |---|---|
