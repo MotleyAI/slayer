@@ -220,8 +220,9 @@ def test_duplicate_dataset_names_raise(shop_engine):
                                        fields=[OSIField(name="amount", expression=_expr("amount"))])], name=name)
         for name in ("a", "b")
     ]
+    converter = OsiToSlayerConverter(documents=docs, data_source="testds", sa_engine=shop_engine)
     with pytest.raises(OsiConversionError):
-        OsiToSlayerConverter(documents=docs, data_source="testds", sa_engine=shop_engine).convert()
+        converter.convert()
 
 
 def test_illegal_dataset_name_clean_fails(shop_engine):

@@ -1,15 +1,16 @@
-"""Parse OSI config files (YAML or JSON) into ``OSIDocument`` objects.
+"""Parse Ossie (OSI) files (YAML or JSON) into ``OSIDocument`` objects.
 
 ``parse_osi_path`` accepts a single file or a directory (walked recursively).
-Per-file parse/validation failures are logged and skipped (mirroring the dbt
-parser's leniency). Known OSI spec versions parse silently; unknown versions
-warn but are still attempted (the schema is stable across versions).
+A flat current-spec file yields one document; a legacy ``semantic_model``
+wrapper yields one ``legacy`` document per wrapped model. Unreadable or
+malformed files are logged and skipped; unknown versions warn but still parse.
 """
 
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -17,12 +18,11 @@ from slayer.osi.models import OSIDocument
 
 logger = logging.getLogger(__name__)
 
-# All OSI spec versions are structurally identical (verified via git diff of
-# core-spec/osi-schema.json); only the version const and two optional top-level
-# enum arrays differ. So every known version parses through the same models.
+# Upstream has tagged no release past osi-0.1.1-rc1; review when it does.
 KNOWN_OSI_VERSIONS = frozenset({"1.0", "0.1.0", "0.1.1", "0.2.0.dev0"})
 
 _SUFFIXES = (".yaml", ".yml", ".json")
+_WRAPPER = "semantic_model"
 
 
 def _collect_files(path: Path) -> list[Path]:
@@ -40,30 +40,48 @@ def _collect_files(path: Path) -> list[Path]:
     return files
 
 
-def parse_osi_file(path: Path) -> OSIDocument | None:
-    """Parse a single OSI file into an ``OSIDocument`` (or ``None`` on failure)."""
+def _load(path: Path) -> Any:
+    text = path.read_text(encoding="utf-8")
+    return json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+
+
+def _flat_mappings(path: Path, data: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """One flat mapping per semantic model in ``data``, or ``None`` (warned) for an invalid shape."""
+    has_wrapper, has_datasets = _WRAPPER in data, "datasets" in data
+    if has_wrapper and has_datasets:
+        logger.warning("OSI file %s mixes a %r wrapper with root datasets; skipping", path, _WRAPPER)
+        return None
+    if has_datasets:
+        return [{**data, "legacy": False}]
+    if not has_wrapper:
+        logger.warning("OSI file %s has neither root datasets nor a %r wrapper; skipping", path, _WRAPPER)
+        return None
+    wrapped = data[_WRAPPER]
+    models = [wrapped] if isinstance(wrapped, dict) else wrapped
+    if not isinstance(models, list) or not models or not all(isinstance(m, dict) and m for m in models):
+        logger.warning("OSI file %s has an empty or malformed %r value; skipping", path, _WRAPPER)
+        return None
+    version = {"version": data["version"]} if "version" in data else {}
+    return [{**model, **version, "legacy": True} for model in models]
+
+
+def parse_osi_file(path: Path) -> list[OSIDocument]:
+    """Parse one OSI file into its documents (empty on any failure)."""
     try:
-        text = path.read_text(encoding="utf-8")
+        data = _load(path)
     except OSError as exc:
         logger.warning("Failed to read OSI file %s: %s", path, exc)
-        return None
-
-    try:
-        if path.suffix == ".json":
-            data = json.loads(text)
-        else:
-            data = yaml.safe_load(text)
+        return []
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
         logger.warning("Failed to parse OSI file %s: %s", path, exc)
-        return None
+        return []
 
     if not isinstance(data, dict):
         logger.warning("OSI file %s is not a mapping; skipping", path)
-        return None
+        return []
 
     version = data.get("version")
-    # Coerce for the known-version check: YAML parses an unquoted ``1.0`` as a
-    # float, which would never match the string set (OSIDocument coerces it too).
+    # YAML reads an unquoted ``1.0`` as a float; compare as a string.
     if version is not None and str(version) not in KNOWN_OSI_VERSIONS:
         logger.warning(
             "OSI file %s declares unknown spec version %r (known: %s); "
@@ -71,17 +89,19 @@ def parse_osi_file(path: Path) -> OSIDocument | None:
             path, version, ", ".join(sorted(KNOWN_OSI_VERSIONS)),
         )
 
+    mappings = _flat_mappings(path, data)
+    if mappings is None:
+        return []
     try:
-        return OSIDocument.model_validate(data)
+        return [OSIDocument.model_validate(mapping) for mapping in mappings]
     except Exception as exc:  # noqa: BLE001 — any validation error -> skip
         logger.warning("Failed to validate OSI document in %s: %s", path, exc)
-        return None
+        return []
 
 
 def parse_osi_path(path: str | Path) -> list[OSIDocument]:
     """Parse an OSI file or directory into a list of ``OSIDocument`` objects."""
-    # Canonicalize the caller-supplied path before touching the filesystem so
-    # every downstream read works off a resolved, symlink-free base.
+    # Resolve first so every read works off a symlink-free base.
     root = Path(path).resolve()
     if not root.exists():
         raise FileNotFoundError(f"OSI path does not exist: {root}")
@@ -89,10 +109,4 @@ def parse_osi_path(path: str | Path) -> list[OSIDocument]:
     files = _collect_files(root)
     if not files:
         logger.warning("No OSI files (.yaml/.yml/.json) found in %s", root)
-
-    docs: list[OSIDocument] = []
-    for f in files:
-        doc = parse_osi_file(f)
-        if doc is not None:
-            docs.append(doc)
-    return docs
+    return [doc for f in files for doc in parse_osi_file(f)]

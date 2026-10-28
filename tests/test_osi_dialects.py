@@ -166,7 +166,7 @@ async def test_portable_function_executes_on_target(
     tmp_path: Path, dialect: str, field: dict[str, Any], formula: str, expected: Any
 ) -> None:
     db = seed_db(directory=tmp_path, dialect=dialect)
-    result = convert(db=db, docs=documents(_orders(field)), dialect=dialect)
+    result = convert(db=db, docs=documents(_orders(field)), db_dialect=dialect)
     assert not mentions(result, field["name"])
     assert await scalar(result=result, db=db, model="orders", formula=formula, dialect=dialect) == expected
 
@@ -174,7 +174,7 @@ async def test_portable_function_executes_on_target(
 @pytest.mark.parametrize("dialect", ["duckdb", "sqlite"])
 async def test_dateadd_executes_on_target(tmp_path: Path, dialect: str) -> None:
     db = seed_db(directory=tmp_path, dialect=dialect)
-    result = convert(db=db, docs=documents(_orders(f("next_day", "DATEADD(day, 1, ordered_on)"))), dialect=dialect)
+    result = convert(db=db, docs=documents(_orders(f("next_day", "DATEADD(day, 1, ordered_on)"))), db_dialect=dialect)
     value = await scalar(result=result, db=db, model="orders", formula="max(next_day)", dialect=dialect)
     assert str(value)[:10] == "2026-02-02"
 

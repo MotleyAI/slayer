@@ -33,7 +33,8 @@ def test_parse_yaml_file_structure() -> None:
         "quantity", "ordered_at", "status",
     }
     ordered_at = next(f for f in orders.fields if f.name == "ordered_at")
-    assert ordered_at.dimension is not None and ordered_at.dimension.is_time is True
+    assert ordered_at.dimension is not None
+    assert ordered_at.dimension.is_time is True
     amount = next(f for f in orders.fields if f.name == "amount")
     assert amount.expression.dialects[0].dialect == "ANSI_SQL"
     assert amount.expression.dialects[0].expression == "amount"
@@ -88,7 +89,8 @@ def test_known_version_no_warning(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     f.write_text(src)
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(f)
-    assert len(docs) == 1 and docs[0].version == version
+    assert len(docs) == 1
+    assert docs[0].version == version
     assert not any("version" in r.message.lower() for r in caplog.records)
 
 
@@ -104,14 +106,16 @@ def test_unquoted_numeric_version_parses_without_warning(
     f.write_text(src)
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(f)
-    assert len(docs) == 1 and docs[0].version == "1.0"
+    assert len(docs) == 1
+    assert docs[0].version == "1.0"
     assert not any("version" in r.message.lower() for r in caplog.records)
 
 
 def test_unknown_version_warns_but_parses(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(FIXTURES / "unknown_version.yaml")
-    assert len(docs) == 1 and docs[0].version == "9.9.9"
+    assert len(docs) == 1
+    assert docs[0].version == "9.9.9"
     assert any("version" in r.message.lower() for r in caplog.records)
 
 

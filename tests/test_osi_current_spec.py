@@ -320,5 +320,6 @@ def test_dataset_scoped_and_model_scoped_metric_name_clash(db: Path) -> None:
 
 
 def test_duplicate_dataset_names_across_documents_are_refused(db: Path) -> None:
+    docs = documents(flat([_orders()], name="a"), flat([_orders()], name="b"))
     with pytest.raises(OsiConversionError):
-        convert(db=db, docs=documents(flat([_orders()], name="a"), flat([_orders()], name="b")))
+        convert(db=db, docs=docs)

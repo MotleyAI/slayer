@@ -106,7 +106,8 @@ def test_root_properties_are_modelled() -> None:
 
 def _example_setup() -> ModuleType:
     spec = importlib.util.spec_from_file_location("setup_osi", EXAMPLE_DIR / "setup_osi.py")
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

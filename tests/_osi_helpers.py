@@ -126,10 +126,10 @@ def documents(*mappings: dict[str, Any]) -> list[OSIDocument]:
     return [OSIDocument.model_validate(mapping) for mapping in mappings]
 
 
-def convert(*, db: Path, docs: list[OSIDocument], dialect: str = "duckdb", **kwargs: Any) -> ConversionResult:
+def convert(*, db: Path, docs: list[OSIDocument], db_dialect: str = "duckdb", **kwargs: Any) -> ConversionResult:
     """Run the converter over ``docs`` against the seeded ``db`` (target defaults to its dialect)."""
-    kwargs.setdefault("target_dialect", dialect)
-    with disposable_engine(db_url(path=db, dialect=dialect)) as engine:
+    kwargs.setdefault("target_dialect", db_dialect)
+    with disposable_engine(db_url(path=db, dialect=db_dialect)) as engine:
         return OsiToSlayerConverter(
             documents=docs, data_source=DATASOURCE, sa_engine=engine, **kwargs,
         ).convert()
