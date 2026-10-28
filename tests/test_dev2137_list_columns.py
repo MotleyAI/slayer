@@ -361,6 +361,14 @@ class TestReingest:
         assert (skills.description, skills.label, skills.meta) == ("What they can do", "Skills", {"source": "hr"})
         assert (skills.db_type or "").upper() == "VARCHAR[]"
 
+    async def test_retyping_keeps_only_the_count_aggregation(self) -> None:
+        stale = Column(name="skills", type=DataType.TEXT, allowed_aggregations=["count", "count_distinct"])
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _stored(stale))
+        skills = loaded.get_column("skills")
+        assert skills is not None
+        assert (skills.type, skills.allowed_aggregations) == (DataType.ARRAY, ["count"])
+
     async def test_a_users_element_type_survives(self) -> None:
         mine = Column(name="scores", type=DataType.ARRAY, element_type=DataType.TEXT)
         with _duckdb_file(*LIVE) as (ds, tmp):

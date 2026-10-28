@@ -1295,6 +1295,8 @@ def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
     if persisted.type is DataType.TEXT:
         return persisted.model_copy(update={
             "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
+            # A list's only aggregation is count.
+            "allowed_aggregations": [a for a in persisted.allowed_aggregations or () if a == "count"] or None,
         })
     inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
     known = fresh.element_type is not None and not fresh.element_type.is_opaque
