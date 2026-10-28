@@ -49,6 +49,7 @@ from slayer.sql.dialects.base import (
     TemporalComparisonOp,
     bare_comparands,
     cast_target,
+    func,
     operand_copy,
     temporal_type_of,
 )
@@ -299,7 +300,7 @@ def render_scalar_call(
         raise RuntimeError(f"Date function {name!r} renders only from its key (render_date_call).")
     library = render_library_call(name=name, args=args, dialect=dialect)
     if library is not None:
-        return dialect.rewrite_target_ast(library)
+        return dialect.rewrite_library_ast(dialect.rewrite_target_ast(library))
     if name == "mod":
         return dialect.build_modulo(args[0], args[1], True)
     if name == "ln":
@@ -322,7 +323,7 @@ def render_scalar_key(
 def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:
     """``name(args)`` as sqlglot spells it on ``dialect``. The log fix-up is load-bearing:
     ``exp.func("LOG10", x)`` normalises to ``LOG(10, x)``, wrong where ``LOG10`` is native single-arg."""
-    node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
+    node = dialect.rewrite_library_ast(dialect.rewrite_target_ast(func(name.upper(), *args)))
     return rewrite_log_alias(node, dialect=dialect)
 
 

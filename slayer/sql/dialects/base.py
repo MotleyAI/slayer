@@ -1172,6 +1172,10 @@ class SqlDialect(BaseModel):
         """Hook: output-shaping AST rewrite keyed on the target dialect."""
         return tree
 
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        """Hook: a Mode-B call's rewrite to its portable meaning; author (Mode-A) SQL never sees it."""
+        return tree
+
     def rewrite_statement(self, statement: Expression) -> Expression:
         """Rewrite the assembled statement once, just before its single render. Default: identity."""
         return statement

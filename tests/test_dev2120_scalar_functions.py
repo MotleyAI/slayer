@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 from sqlglot import exp, parse_one
 
+from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.models import Column
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ServerProfile
@@ -14,6 +16,7 @@ from tests._dev2120_fixtures import (
     TIER1,
     emit_lib,
     lib_engine,
+    lib_model,
     lib_ids,
     lib_query,
     lib_values,
@@ -295,6 +298,19 @@ class TestSQLServerCodePoints:
         sql = await _tsql("strpos(s, p)")
         assert "LEN( ( CAST(LEFT( lib.s COLLATE Latin1_General_100_BIN2" in sql, sql
         assert "WHEN DATALENGTH(lib.p) = 0 THEN CASE WHEN NOT lib.s IS NULL THEN 1 END" in sql, sql
+
+    async def test_runtime_negated_length_is_kept(self) -> None:
+        sql = await _tsql("left(s, -n)")
+        lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
+        assert any(isinstance(n, exp.Neg) and isinstance(n.this, exp.Column) for n in lengths), sql
+
+    async def test_author_sql_is_not_rewritten(self) -> None:
+        base = lib_model()
+        model = base.model_copy(update={"columns": [*base.columns, Column(
+            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", type=DataType.TEXT)]})
+        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
+        assert "SUBSTRING(lib.s, 1, 2)" in sql and "POWER(lib.a, 2)" in sql, sql
+        assert "COLLATE" not in sql and "FLOAT" not in sql, sql
 
     @pytest.mark.parametrize("expr", ["left(s, -2)", "right(s, -1)"])
     async def test_no_negative_literal_substring_length(self, expr: str) -> None:

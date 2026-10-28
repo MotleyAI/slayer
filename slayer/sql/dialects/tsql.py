@@ -88,6 +88,12 @@ def _collated(value: Expression, collation: str) -> Expression:
     return exp.Collate(this=operand, expression=exp.var(collation))
 
 
+def _negative_literal(node: Optional[Expression]) -> bool:
+    if isinstance(node, exp.Neg):
+        return isinstance(node.this, exp.Literal) and node.this.is_number
+    return isinstance(node, exp.Literal) and node.is_number and node.this.startswith("-")
+
+
 def _days_since_monday(expr: Expression) -> Expression:
     """0 for Monday … 6 for Sunday, counted from 1900-01-01 (a Monday)."""
     days = exp.Anonymous(this="DATEDIFF", expressions=[
@@ -358,25 +364,31 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
-        """``LEN`` drops trailing spaces: ``length`` counts an ``NVARCHAR(MAX)`` copy through a sentinel;
-        ``LEN`` / ``SUBSTRING`` count characters under ``_CODE_POINTS``; a 2-arg ``SUBSTRING`` reads to the end via
-        ``DATALENGTH``, a negative literal length is 0 (rejected at compile time, even in an untaken branch);
-        ``ROUND`` needs its digits and ``POWER`` a FLOAT base (an INT one returns an INT)."""
+        """``LEN`` drops trailing spaces: ``length`` counts an ``NVARCHAR(MAX)`` copy through a
+        sentinel, and a 2-arg ``SUBSTRING`` (which requires a length) reads to the end via ``DATALENGTH``."""
         def _fix(node: Expression) -> Expression:
-            if isinstance(node, exp.Substring):
-                length = node.args.get("length")
-                if length is None:
-                    node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
-                elif isinstance(length, exp.Neg) or (isinstance(length, exp.Literal) and length.this.startswith("-")):
-                    node.set("length", exp.Literal.number(0))
-                node.set("this", _collated(node.this, _CODE_POINTS))
+            if isinstance(node, exp.Substring) and node.args.get("length") is None:
+                node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
             if isinstance(node, exp.Length):
                 text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
-                padded = exp.Paren(this=exp.Add(this=text, expression=exp.Literal.string("x")))
+                padded = exp.Add(this=text, expression=exp.Literal.string("x"))
                 return exp.Paren(this=exp.Sub(
-                    this=exp.Anonymous(this="LEN", expressions=[_collated(padded, _CODE_POINTS)]),
-                    expression=exp.Literal.number(1),
+                    this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
                 ))
+            return node
+        return tree.transform(_fix)
+
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        """``LEN`` / ``SUBSTRING`` count characters under ``_CODE_POINTS``; a negative literal ``SUBSTRING``
+        length is 0 (rejected at compile time, even in an untaken branch); ``ROUND`` gets its digits and
+        ``POWER`` a FLOAT base (an INT one returns an INT)."""
+        def _fix(node: Expression) -> Expression:
+            if isinstance(node, exp.Substring):
+                if _negative_literal(node.args.get("length")):
+                    node.set("length", exp.Literal.number(0))
+                node.set("this", _collated(node.this, _CODE_POINTS))
+            if isinstance(node, exp.Anonymous) and node.name.upper() == "LEN":
+                node.set("expressions", [_collated(node.expressions[0], _CODE_POINTS)])
             if isinstance(node, exp.Round) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             if isinstance(node, exp.Pow):
