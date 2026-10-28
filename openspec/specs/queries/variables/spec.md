@@ -7,7 +7,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 ### Requirement: Every Mode-B formula surface substitutes variables
 
-`{var}` placeholders in a query's filters, measure formulas, computed-dimension expressions (string and object form) and order expressions SHALL be bound from the query's effective variables as literal values, never as text spliced into the expression. A placeholder inside a string literal, wholly or partly (`'{status}'`, `'%{q}%'`), SHALL contribute its value's text to that literal; a placeholder in a bare literal position SHALL take a number or boolean value, a numeric string reading as its number; a placeholder forming the whole parenthesised list of `IN` SHALL take a list value. `{{` and `}}` inside a string literal SHALL render literal braces. A query carrying placeholders on these surfaces SHALL construct successfully and SHALL execute with the bound values.
+`{var}` placeholders in a query's filters, measure formulas, computed-dimension expressions (string and object form) and order expressions SHALL be bound from the query's effective variables as literal values, never as text spliced into the expression. A placeholder inside a string literal, wholly or partly (`'{status}'`, `'%{q}%'`), SHALL contribute its value's text to that literal; a placeholder in a bare literal position SHALL take a number or boolean value, a numeric string reading as its number; a placeholder forming the whole parenthesised list of `IN` SHALL take a list value. `{{` and `}}` inside a string literal SHALL render literal braces, and a brace pair inside a string literal whose contents are only digits, commas and spaces (`'[0-9]{3}'`, `'{1, 2, 3}'`, `'{}'`) SHALL be literal text, not a placeholder. A query carrying placeholders on these surfaces SHALL construct successfully and SHALL execute with the bound values.
 
 #### Scenario: Measure formula
 
@@ -33,6 +33,11 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 - **WHEN** a measure contains `'{name}'` inside a quoted literal and `variables={"name": "O'Brien"}`
 - **THEN** the literal's value is `O'Brien` and the query executes without a parse error
+
+#### Scenario: Digit-and-comma braces in a string literal
+
+- **WHEN** a filter is `regexp_like(code, '^[a-z]{1,2}[0-9]{2,}$')`, `status = '{1, 2, 3}'` or `status = '{}'`, with or without variables
+- **THEN** the braces stay in the literal and no variable is looked up
 
 ### Requirement: Saved measure formulas substitute on the models whose SQL surfaces substitute
 

@@ -61,7 +61,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
+from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -1925,16 +1925,6 @@ def _introspect_one_table(
     return LiveTable(columns=columns, list_types=list_types)
 
 
-# Cursor type-category strings → DataType buckets.
-_CURSOR_CATEGORY_TO_DATATYPE = {
-    "number": DataType.DOUBLE,
-    "string": DataType.TEXT,
-    "boolean": DataType.BOOLEAN,
-    "time": DataType.TIMESTAMP,
-    "list": DataType.ARRAY,
-}
-
-
 async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
@@ -1954,7 +1944,7 @@ async def _live_columns_for_sql_model(
         )
         return None
     return {
-        name: _CURSOR_CATEGORY_TO_DATATYPE.get(cat, DataType.TEXT)
+        name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT)
         for name, cat in cats.items()
     }
 

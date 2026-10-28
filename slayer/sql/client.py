@@ -20,6 +20,7 @@ from sqlglot import expressions as exp
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
@@ -63,6 +64,13 @@ def _async_connection_string(connection_string: str, db_type: str | None) -> str
     if url.drivername.partition("+")[2] != facts.sync_driver:
         return None
     return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
+
+
+#: Cursor type categories → their ``DataType``.
+CATEGORY_DATA_TYPES: dict[str, DataType] = {
+    "number": DataType.DOUBLE, "string": DataType.TEXT, "boolean": DataType.BOOLEAN,
+    "time": DataType.TIMESTAMP, "list": DataType.ARRAY,
+}
 
 
 def _map_type_code(type_code, db_type: str | None = None) -> str:

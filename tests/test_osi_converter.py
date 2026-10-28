@@ -5,6 +5,7 @@ OSI semantic metadata (labels, descriptions, is_time, relationships->joins,
 metrics->measures) on top.
 """
 
+import contextlib
 from pathlib import Path
 from collections.abc import Iterator
 
@@ -23,7 +24,6 @@ from slayer.osi.models import (
     OSIField,
     OSIMetric,
     OSIRelationship,
-    OSISemanticModel,
 )
 from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
@@ -184,26 +184,18 @@ def test_simple_and_ratio_measures(shop_engine):
     assert m["aov"].formula == "sum(amount) / count(*)"
 
 
-def test_materialized_derived_column_metric(shop_engine):
+def test_inline_operand_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     measure = {meas.name: meas for meas in orders.measures}["revenue_line"]
-    # A hidden derived column was created for quantity*amount.
-    hidden = [c for c in orders.columns if c.hidden and c.sql]
-    assert any(
-        {"quantity", "amount"}.issubset(c.sql.replace("*", " ").split()) for c in hidden
-    )
-    agg, derived_name = _single_agg(measure.formula)
-    assert any(c.name == derived_name and c.hidden for c in orders.columns)
-    assert agg == "sum"
+    assert not [c for c in orders.columns if c.hidden]
+    assert parse_expr(measure.formula) == parse_expr("sum(quantity * amount)")
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
-    # With bidirectional traversal the
-    # mentioned-model tiebreak anchors on customers (lexicographic), and the
-    # orders operand rides the reverse hop.
-    customers = _by_name(_shop_result(shop_engine))["customers"]
-    m = {meas.name: meas for meas in customers.measures}
-    assert m["cust_reach"].formula == "sum(orders.amount) / count_distinct(customer_id)"
+    # The anchor reaching every referenced dataset without a fanning hop wins.
+    orders = _by_name(_shop_result(shop_engine))["orders"]
+    m = {meas.name: meas for meas in orders.measures}
+    assert m["cust_reach"].formula == "sum(amount) / count_distinct(customers.customer_id)"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
@@ -216,36 +208,20 @@ def test_multihop_metric_anchor_relative_path(shop_engine):
 
 def _mini_doc(datasets, relationships=None, metrics=None, name="s"):
     return OSIDocument(
-        version="0.2.0.dev0",
-        semantic_model=[
-            OSISemanticModel(
-                name=name,
-                datasets=datasets,
-                relationships=relationships,
-                metrics=metrics,
-            )
-        ],
+        version="0.2.0.dev0", name=name, datasets=datasets,
+        relationships=relationships, metrics=metrics, legacy=True,
     )
 
 
 def test_duplicate_dataset_names_raise(shop_engine):
-    doc = OSIDocument(
-        version="0.2.0.dev0",
-        semantic_model=[
-            OSISemanticModel(
-                name="a",
-                datasets=[OSIDataset(name="orders", source="orders",
-                                     fields=[OSIField(name="amount", expression=_expr("amount"))])],
-            ),
-            OSISemanticModel(
-                name="b",
-                datasets=[OSIDataset(name="orders", source="orders",
-                                     fields=[OSIField(name="amount", expression=_expr("amount"))])],
-            ),
-        ],
-    )
+    docs = [
+        _mini_doc(datasets=[OSIDataset(name="orders", source="orders",
+                                       fields=[OSIField(name="amount", expression=_expr("amount"))])], name=name)
+        for name in ("a", "b")
+    ]
+    converter = OsiToSlayerConverter(documents=docs, data_source="testds", sa_engine=shop_engine)
     with pytest.raises(OsiConversionError):
-        _convert(shop_engine, doc)
+        converter.convert()
 
 
 def test_illegal_dataset_name_clean_fails(shop_engine):
@@ -502,14 +478,12 @@ def test_unique_keys_into_meta(shop_engine):
 # ─────────────── anchoring: bridge model + COUNT(*) fact-root ────────────────
 
 def test_bridge_anchor_metric(shop_engine):
-    # customers reaches products over
-    # the reverse orders hop, so the mentioned-model tiebreak anchors on
-    # customers instead of the unmentioned orders bridge.
-    customers = _by_name(_shop_result(shop_engine))["customers"]
-    m = {meas.name: meas for meas in customers.measures}
+    # Only the unmentioned orders bridge reaches products and customers without a fanning hop.
+    orders = _by_name(_shop_result(shop_engine))["orders"]
+    m = {meas.name: meas for meas in orders.measures}
     assert "bridge_metric" in m
     assert m["bridge_metric"].formula == (
-        "sum(orders.products.price) + count_distinct(customer_id)"
+        "sum(products.price) + count_distinct(customers.customer_id)"
     )
 
 
@@ -992,7 +966,7 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
         )],
         metrics=[
             OSIMetric(name="_rev_0", expression=_expr("SUM(amount)")),
-            OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)")),
+            OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))")),
         ],
     )
     result = _convert(shop_engine, doc)
@@ -1045,7 +1019,7 @@ def test_materialized_name_avoids_existing_column(shop_engine):
                 OSIField(name="_rev_0", expression=_expr("amount")),  # occupies name
             ],
         )],
-        metrics=[OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)"))],
+        metrics=[OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))"))],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.models}["orders"]
@@ -1256,3 +1230,73 @@ def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
     assert '"' not in formula
     assert "\\" not in formula
     assert " | " not in formula
+
+
+# ─────────────────────── list columns ─────────────────────
+
+@pytest.fixture
+def staff_engine(tmp_path: Path) -> Iterator[sa.Engine]:
+    duckdb = pytest.importorskip("duckdb")
+    path = tmp_path / "staff.duckdb"
+    with contextlib.closing(duckdb.connect(str(path))) as con:
+        con.execute("CREATE TABLE staff (id INTEGER, skills VARCHAR[])")
+        con.execute("INSERT INTO staff VALUES (1, ['go', 'sql'])")
+        con.execute("CREATE TABLE assignments (id INTEGER, staff_id INTEGER)")
+    with disposable_engine(f"duckdb:///{path}") as engine:
+        yield engine
+
+
+def _staff_columns(engine: sa.Engine, *, source: str, fields: list[OSIField]) -> dict:
+    doc = OSIDocument(version="0.2.0.dev0", name="s", datasets=[OSIDataset(name="staff", source=source, fields=fields)])
+    staff = _by_name(_convert(engine, doc, target_dialect="duckdb"))["staff"]
+    return {c.name: (c.type, c.element_type) for c in staff.columns}
+
+
+def test_a_query_source_list_column_is_a_list(staff_engine):
+    cols = _staff_columns(staff_engine, source="SELECT id, skills FROM staff",
+                          fields=[OSIField(name="skills", expression=_expr("skills"))])
+    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+
+
+def test_a_derived_list_field_is_a_list(staff_engine):
+    cols = _staff_columns(staff_engine, source="staff", fields=[
+        OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
+        OSIField(name="skills", expression=_expr("list_distinct(skills)")),
+    ])
+    assert cols["skill_set"] == (DataType.ARRAY, DataType.UNKNOWN)
+    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+
+
+def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
+    doc = OSIDocument(version="0.2.0.dev0", name="s",
+                      datasets=[OSIDataset(name="staff", source="staff",
+                                           fields=[OSIField(name="skills", expression=_expr("skills"))])],
+                      metrics=[OSIMetric(name="sets", expression=_expr("COUNT(list_distinct(staff.skills))"))])
+    staff = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["staff"]
+    hidden = [(c.type, c.element_type) for c in staff.columns if c.hidden]
+    assert hidden == [(DataType.ARRAY, DataType.UNKNOWN)]
+
+
+def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="assignments", source="assignments",
+                       fields=[OSIField(name="staff_id", expression=_expr("staff_id")),
+                               OSIField(name="staff_skills", expression=_expr("staff.skills"))]),
+            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
+                                                            OSIField(name="skills", expression=_expr("skills"))]),
+        ],
+        relationships=[OSIRelationship.model_validate({"name": "a2s", "from": "assignments", "to": "staff",
+                                                       "from_columns": ["staff_id"], "to_columns": ["id"]})],
+    )
+    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
+    col = assignments.get_column("staff_skills")
+    assert col is not None
+    assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
+    monkeypatch.setattr(OsiToSlayerConverter, "_probe_expression_type", lambda self, model, expr: None)
+    cols = _staff_columns(staff_engine, source="staff",
+                          fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
+    assert cols["skills"] == (DataType.ARRAY, DataType.TEXT)
