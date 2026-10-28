@@ -182,12 +182,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return either(found, empty)
         return super().build_text_call(fn, args)
 
-    def field_count(self, value: Expression, delimiter: Expression) -> Expression:
-        removed = self.char_length(anon("REPLACE", self.binary_text(value), self.binary_text(delimiter), lit("")))
-        gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
-        per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
-        return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
-
     def binary_text(self, value: Expression) -> Expression:
         # COLLATE binds tighter than any operator.
         atomic = isinstance(value, (exp.Column, exp.Literal, exp.Paren))

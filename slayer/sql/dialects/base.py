@@ -662,7 +662,7 @@ class SqlDialect(BaseModel):
 
     def field_count(self, value: Expression, delimiter: Expression) -> Expression:
         """How many ``delimiter``-separated fields ``value`` has."""
-        removed = self.char_length(anon("REPLACE", value, delimiter, lit("")))
+        removed = self.char_length(anon("REPLACE", self.binary_text(value), self.binary_text(delimiter), lit("")))
         gap = exp.Paren(this=exp.Sub(this=self.char_length(value), expression=removed))
         per_field = exp.Nullif(this=self.char_length(delimiter), expression=lit(0))
         return exp.Add(this=exp.IntDiv(this=gap, expression=per_field), expression=lit(1))
