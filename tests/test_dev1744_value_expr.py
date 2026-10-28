@@ -758,7 +758,7 @@ _SCALAR_MATRIX = [
      "orders.label || 'x'", "orders.label + 'x'"),
     # T-SQL LEN drops trailing spaces; an NVARCHAR(MAX) copy plus a sentinel keeps them.
     ("length", (ColumnKey(leaf="label"),),
-     "LENGTH(orders.label)", "(LEN(CAST(orders.label AS NVARCHAR(MAX)) + 'x') - 1)"),
+     "LENGTH(orders.label)", "(LEN((CAST(orders.label AS NVARCHAR(MAX)) + 'x') COLLATE Latin1_General_100_CS_AS_SC) - 1)"),
 ]
 
 

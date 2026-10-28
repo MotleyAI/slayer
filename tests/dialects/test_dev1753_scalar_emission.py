@@ -23,9 +23,11 @@ EXPECTED: dict[tuple[str, int], dict[str, str]] = {
     ("ltrim", 1): {**_same("LTRIM(a)"), "bigquery": "LTRIM(a, ' ')"},
     ("rtrim", 1): {**_same("RTRIM(a)"), "bigquery": "RTRIM(a, ' ')"},
     # T-SQL SUBSTRING requires a length; DATALENGTH(a) reaches the end, trailing spaces included.
-    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)", "tsql": "SUBSTRING(a, b, DATALENGTH(a))",
+    ("substring", 2): {**_same("SUBSTRING(a, b)"), "postgres": "SUBSTRING(a FROM b)",
+                       "tsql": "SUBSTRING(a COLLATE Latin1_General_100_CS_AS_SC, b, DATALENGTH(a))",
                        "clickhouse": "substringUTF8(a, b)"},
     ("substring", 3): {**_same("SUBSTRING(a, b, c)"), "postgres": "SUBSTRING(a FROM b FOR c)",
+                       "tsql": "SUBSTRING(a COLLATE Latin1_General_100_CS_AS_SC, b, c)",
                        "clickhouse": "substringUTF8(a, b, c)"},
 }
 
@@ -49,9 +51,9 @@ def test_emission_reparses_in_its_dialect(name: str, argc: int, dialect: str) ->
 
 
 def test_tsql_two_arg_substr_gets_a_length() -> None:
-    assert _emit("substr", 2, "tsql") == "SUBSTRING(a, b, DATALENGTH(a))"
+    assert _emit("substr", 2, "tsql") == "SUBSTRING(a COLLATE Latin1_General_100_CS_AS_SC, b, DATALENGTH(a))"
 
 
 def test_tsql_length_counts_trailing_spaces() -> None:
     # LEN drops trailing spaces; a sentinel character keeps them.
-    assert _emit("length", 1, "tsql") == "(LEN(CAST(a AS NVARCHAR(MAX)) + 'x') - 1)"
+    assert _emit("length", 1, "tsql") == "(LEN((CAST(a AS NVARCHAR(MAX)) + 'x') COLLATE Latin1_General_100_CS_AS_SC) - 1)"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlglot import exp, parse_one
 
 from slayer.core.errors import SlayerError, UnknownFunctionError
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -133,7 +134,7 @@ class TestSplitPartEmptyDelimiter:
 
     async def test_tsql_space_has_length_one(self) -> None:
         sql = await emit_lib(lib_query("split_part(word, ' ', -1)"), dialect="tsql")
-        assert "LEN(CAST(' ' AS NVARCHAR(MAX)) + 'x') - 1" in " ".join(sql.split()), sql
+        assert "LEN(( CAST(' ' AS NVARCHAR(MAX)) + 'x' ) COLLATE Latin1_General_100_CS_AS_SC) - 1" in " ".join(sql.split()), sql
 
     @pytest.mark.parametrize("dialect", ["tsql", "mysql"])
     async def test_field_count_never_divides_by_zero(self, dialect: str) -> None:
@@ -279,3 +280,48 @@ class TestMySQLDoublePrecision:
     async def test_cube_root_exponent_is_double(self) -> None:
         sql = (await emit_lib(lib_query("cbrt(x)"), dialect="mysql")).upper()
         assert "1 / 3E0" in sql, sql
+
+
+async def _tsql(expr: str) -> str:
+    return " ".join((await emit_lib(lib_query(expr), dialect="tsql")).split())
+
+
+class TestSQLServerCodePoints:
+    @pytest.mark.parametrize("expr", ["length(s)", "substr(s, 2)", "reverse(s)", "lpad(s, 4, '*')"])
+    async def test_counting_is_supplementary_aware(self, expr: str) -> None:
+        assert "COLLATE Latin1_General_100_CS_AS_SC" in await _tsql(expr)
+
+    async def test_position_recounts_units_as_characters(self) -> None:
+        sql = await _tsql("strpos(s, p)")
+        assert "LEN( ( CAST(LEFT( lib.s COLLATE Latin1_General_100_BIN2" in sql, sql
+        assert "WHEN DATALENGTH(lib.p) = 0 THEN CASE WHEN NOT lib.s IS NULL THEN 1 END" in sql, sql
+
+    @pytest.mark.parametrize("expr", ["left(s, -2)", "right(s, -1)"])
+    async def test_no_negative_literal_substring_length(self, expr: str) -> None:
+        sql = await _tsql(expr)
+        lengths = [s.args["length"] for s in parse_one(sql, read="tsql").find_all(exp.Substring)]
+        assert lengths and not any(isinstance(n, exp.Neg) for n in lengths), sql
+
+
+class TestSQLServerNumbers:
+    async def test_round_has_digits(self) -> None:
+        assert "ROUND(lib.x + 0.1, 0)" in await _tsql("round(x + 0.1)")
+
+    async def test_power_base_is_float(self) -> None:
+        assert "POWER(CAST(2 AS FLOAT), lib.a)" in await _tsql("power(2, a)")
+
+    async def test_cube_root_exponent_is_float(self) -> None:
+        assert "/ 3E0)" in await _tsql("cbrt(x)")
+
+
+class TestSQLServerQuirks:
+    async def test_split_part_before_the_first_field_is_empty(self) -> None:
+        assert "< 0 THEN ''" in await _tsql("split_part(s, '/', -4)")
+
+    async def test_replacement_ampersand_is_literal(self) -> None:
+        sql = await _tsql("regexp_replace(tag, 'USD', '$ & co')")
+        assert "'$ & co'" in sql and "\\&" not in sql, sql
+
+    async def test_returning_timestamp_is_datetime2(self) -> None:
+        sql = await _tsql("json_value(payload, '$.t' RETURNING TIMESTAMP)")
+        assert "AS DATETIME2)" in sql and "ROWVERSION" not in sql, sql

@@ -37,7 +37,7 @@ from slayer.sql.dialects.base import (
     _build_covar_decomposition,
 )
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
-from slayer.sql.dialects.reflection import TableLocation, all_of, call, info_schema_comments_query
+from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
 
 
 def _match_type(case_insensitive: bool) -> Expression:
@@ -140,8 +140,11 @@ class MysqlDialect(SqlDialect):
         # MySQL reads ``[n]`` on a non-array as the value itself; an index needs an array parent.
         arrays = [exp.EQ(this=json_type(path.steps[:i]), expression=lit("ARRAY"))
                   for i, step in enumerate(path.steps) if isinstance(step, int)]
-        scalar = exp.Not(this=exp.In(this=json_type(path.steps), expressions=[lit("OBJECT"), lit("ARRAY"), lit("NULL")]))
-        read = case((all_of([*arrays, scalar]), anon("JSON_VALUE", value.copy(), lit(path.text))))
+        readable: Expression = exp.Not(this=exp.In(this=json_type(path.steps),
+                                                   expressions=[lit("OBJECT"), lit("ARRAY"), lit("NULL")]))
+        for array in reversed(arrays):
+            readable = exp.And(this=array, expression=readable)
+        read = case((readable, anon("JSON_VALUE", value.copy(), lit(path.text))))
         return case((anon("JSON_VALID", value), read))  # a nested CASE: JSON_EXTRACT raises on invalid text
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:

@@ -43,6 +43,9 @@ _SQL_SERVER_2025 = (17, 0)
 _REGEX_FUNCTIONS = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
 _GATED_FUNCTIONS = _REGEX_FUNCTIONS | {"greatest", "least"}
 _HIGH_SURROGATES = (55296, 56319)
+#: Matching compares binary; counting needs a supplementary-character (``_SC``) collation, which no binary one is.
+_BINARY = "Latin1_General_100_BIN2"
+_CODE_POINTS = "Latin1_General_100_CS_AS_SC"
 
 
 # sqlglot's tsql transpiler emits names (VAR_SAMP, VARIANCE_POP) T-SQL lacks.
@@ -76,6 +79,13 @@ def _datepart(unit: str, expr: Expression) -> Expression:
 
 def _dateadd(unit: str, count: Expression, expr: Expression) -> Expression:
     return exp.Anonymous(this="DATEADD", expressions=[exp.var(unit), count, expr])
+
+
+def _collated(value: Expression, collation: str) -> Expression:
+    """``value COLLATE collation``, replacing a collation it already carries; COLLATE binds tighter than any operator."""
+    inner = value.this if isinstance(value, exp.Collate) else value
+    operand = inner.copy() if isinstance(inner, (exp.Column, exp.Literal, exp.Paren)) else exp.Paren(this=inner.copy())
+    return exp.Collate(this=operand, expression=exp.var(collation))
 
 
 def _days_since_monday(expr: Expression) -> Expression:
@@ -140,7 +150,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
 
-    regex_flavour: ClassVar[RegexFlavour] = RE2.model_copy(update={"replacement_ampersand": True})
+    regex_flavour: ClassVar[RegexFlavour] = RE2  # a replacement's ``&`` is literal; ``\&`` would insert the match
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     like_brackets: ClassVar[bool] = True
 
@@ -175,6 +185,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return self.portable_pad(fn=fn, s=args[0], n=args[1], fill=pad_fill(args))
         if fn == "replace":
             return anon("REPLACE", self.binary_text(args[0]), self.binary_text(args[1]), args[2])
+        if fn == "reverse":
+            return anon("REVERSE", _collated(args[0], _CODE_POINTS))
         if fn == "contains":
             found = exp.GT(this=self.text_position(args[0], args[1]), expression=lit(0))
             empty = exp.And(this=exp.EQ(this=anon("DATALENGTH", args[1]), expression=lit(0)),
@@ -183,10 +195,21 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return super().build_text_call(fn, args)
 
     def binary_text(self, value: Expression) -> Expression:
-        # COLLATE binds tighter than any operator.
-        atomic = isinstance(value, (exp.Column, exp.Literal, exp.Paren))
-        operand = value.copy() if atomic else exp.Paren(this=value.copy())
-        return exp.Collate(this=operand, expression=exp.var("Latin1_General_100_BIN2"))
+        return _collated(value, _BINARY)
+
+    def text_position(self, s: Expression, p: Expression) -> Expression:
+        """``CHARINDEX`` counts UTF-16 units: the units before the match are recounted as characters."""
+        units = super().text_position(s, p)
+        before = anon("LEFT", self.binary_text(s), exp.Sub(this=units.copy(), expression=lit(1)))
+        return case(
+            (exp.EQ(this=anon("DATALENGTH", p.copy()), expression=lit(0)), case((exp.Not(this=any_null(s)), lit(1)))),
+            (exp.GT(this=units.copy(), expression=lit(0)), exp.Add(this=self.char_length(before), expression=lit(1))),
+            default=units,
+        )
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
+        """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
+        return exp.DataType.build("DATETIME2", dialect="tsql") if data_type is DataType.TIMESTAMP else to
 
     def code_point_char(self, n: Expression) -> Expression:
         """``NCHAR``, astral code points as their UTF-16 surrogate pair (no supplementary collation needed)."""
@@ -213,17 +236,20 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         escaped = anon("REPLACE", self.binary_text(anon("STRING_ESCAPE", value, lit("json"))),
                        self.binary_text(anon("STRING_ESCAPE", delimiter, lit("json"))), lit('","'))
         array = anon("CONCAT", lit('["'), escaped, lit('"]'))
+        def field(path: Expression) -> Expression:
+            return exp.Coalesce(this=anon("JSON_VALUE", array, path), expressions=[lit("")])
+
         if index > 0:
-            path: Expression = lit(f"$[{index - 1}]")
-        else:
-            position = exp.Add(this=self.field_count(value, delimiter), expression=lit(index))
-            path = anon("CONCAT", lit("$["), position, lit("]"))
-        field = exp.Coalesce(this=anon("JSON_VALUE", array, path), expressions=[lit("")])
-        return case((any_null(value, delimiter), exp.Null()), default=field)
+            return case((any_null(value, delimiter), exp.Null()), default=field(lit(f"$[{index - 1}]")))
+        position = exp.Add(this=self.field_count(value, delimiter), expression=lit(index))
+        # Before the first field the path would be ``$[-n]``, which JSON_VALUE rejects.
+        return case((any_null(value, delimiter), exp.Null()), (exp.LT(this=position, expression=lit(0)), lit("")),
+                    default=field(anon("CONCAT", lit("$["), position.copy(), lit("]"))))
 
     def cube_root(self, value: Expression) -> Expression:
         magnitude = exp.Cast(this=exp.Abs(this=value.copy()), to=exp.DataType.build("FLOAT"))
-        root = anon("POWER", magnitude, exp.Div(this=lit(1), expression=exp.Literal.number("3.0")))
+        # A FLOAT exponent: 1 / 3.0 is NUMERIC with 6 places.
+        root = anon("POWER", magnitude, exp.Div(this=lit(1), expression=exp.Literal.number("3E0")))
         return exp.Mul(this=exp.Sign(this=value.copy()), expression=root)
 
     def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
@@ -332,17 +358,30 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
-        """``LEN`` drops trailing spaces: ``length`` counts an ``NVARCHAR(MAX)`` copy through a
-        sentinel, and a 2-arg ``SUBSTRING`` (which requires a length) reads to the end via ``DATALENGTH``."""
+        """``LEN`` drops trailing spaces: ``length`` counts an ``NVARCHAR(MAX)`` copy through a sentinel;
+        ``LEN`` / ``SUBSTRING`` count characters under ``_CODE_POINTS``; a 2-arg ``SUBSTRING`` reads to the end via
+        ``DATALENGTH``, a negative literal length is 0 (rejected at compile time, even in an untaken branch);
+        ``ROUND`` needs its digits and ``POWER`` a FLOAT base (an INT one returns an INT)."""
         def _fix(node: Expression) -> Expression:
-            if isinstance(node, exp.Substring) and node.args.get("length") is None:
-                node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
+            if isinstance(node, exp.Substring):
+                length = node.args.get("length")
+                if length is None:
+                    node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
+                elif isinstance(length, exp.Neg) or (isinstance(length, exp.Literal) and length.this.startswith("-")):
+                    node.set("length", exp.Literal.number(0))
+                node.set("this", _collated(node.this, _CODE_POINTS))
             if isinstance(node, exp.Length):
                 text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
-                padded = exp.Add(this=text, expression=exp.Literal.string("x"))
+                padded = exp.Paren(this=exp.Add(this=text, expression=exp.Literal.string("x")))
                 return exp.Paren(this=exp.Sub(
-                    this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
+                    this=exp.Anonymous(this="LEN", expressions=[_collated(padded, _CODE_POINTS)]),
+                    expression=exp.Literal.number(1),
                 ))
+            if isinstance(node, exp.Round) and node.args.get("decimals") is None:
+                node.set("decimals", exp.Literal.number(0))
+            if isinstance(node, exp.Pow):
+                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
+                            node.expression.copy())
             return node
         return tree.transform(_fix)
 
