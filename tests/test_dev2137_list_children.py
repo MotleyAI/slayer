@@ -156,6 +156,20 @@ class TestComposition:
             resp = await e.execute(query(dimensions=["a_skills.value"], measures=[measure("count(a_skills.*)", "n")]))
         assert _per(resp, "a_skills.value") == {"go": 2, "sql": 2}
 
+    async def test_element_aggregates_filtered_across_a_declared_to_many(self) -> None:
+        contractors = contractors_model().model_copy(update={"joins": [ModelJoin(
+            target_model="assignments", join_pairs=[["id", "contractor_id"]],
+            cardinality=JoinCardinality.ONE_TO_MANY)]})
+        assignments = SlayerModel(name="assignments", sql_table="assignments", data_source="test", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True), Column(name="contractor_id", type=DataType.INT)])
+        async with list_engine(models=[contractors, assignments, twins_model()]) as e:
+            resp = await e.execute(query(dimensions=["team"], filters=["assignments.id = 1"], measures=[
+                measure("count(skills.*)", "n"), measure("count_distinct(skills.value)", "d"),
+                measure("collect(skills.value)", "c")]))
+        got = {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.d"]), list(r["contractors.c"]))
+               for r in resp.data}
+        assert got == {"A": (3, 2, ["go", "sql"])}
+
     async def test_a_collected_list_in_a_later_stage(self, engine) -> None:
         stage = {"name": "s", "source_model": "contractors", "dimensions": ["team"],
                  "measures": [measure("collect(skills.value)", "team_skills")]}
@@ -245,6 +259,20 @@ async def test_no_self_join(name: str, dialect: str) -> None:
     assert _contractors_scans(sql, dialect=dialect) == 1, sql
 
 
+async def _correlating(_self: Any) -> ServerProfile:
+    return ServerProfile(version=(25, 8), readonly=0, correlated_subqueries=True)
+
+
+@pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
+async def test_element_aggregates_filtered_across_another_to_many_emit(
+    dialect: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", _correlating)
+    q = query(dimensions=["team"], filters=["assignments.id = 1"],
+              measures=[measure("count(skills.*)", "n"), measure("collect(skills.value)", "c")])
+    await emit_contractors(q, dialect=dialect, models=all_models())
+
+
 ELEMENT_FILTERS = ["skills.value = 'go'", "skills.value IN ('go', 'sql')", "NOT (skills.value = 'go')"]
 
 
@@ -265,10 +293,7 @@ async def test_element_filter_is_a_lambda_without_a_correlated_subquery(
 async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
     dialect: str, function: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def correlating(_self: Any) -> ServerProfile:
-        return ServerProfile(version=(25, 8), readonly=0, correlated_subqueries=True)
-
-    monkeypatch.setattr(SlayerSQLClient, "server_profile", correlating)
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", _correlating)
     q = SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
                                     "filters": ["contractors.skills.value = 'sql'"]})
     sql = await emit_contractors(q, dialect=dialect, models=all_models())

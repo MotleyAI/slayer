@@ -810,7 +810,7 @@ class SlayerQueryEngine:
         return sql_dialect.model_copy(update={"server_profile": profile})
 
     async def _require_correlated_subqueries(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
     ) -> None:
         """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
         sql_dialect = get_dialect(dialect)
@@ -823,9 +823,9 @@ class SlayerQueryEngine:
             profile = await self._client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
-            reason = sql_dialect.correlated_subquery_refusal(ServerProfile())
+            reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), sql=sql)
             raise SlayerError(f"{lead} {reason}") from exc
-        reason = sql_dialect.correlated_subquery_refusal(profile)
+        reason = sql_dialect.correlated_subquery_refusal(profile, sql=sql)
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
@@ -1069,7 +1069,7 @@ class SlayerQueryEngine:
         root_planned = planned_list[-1]
         if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
-                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list,
+                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list, sql=sql,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.

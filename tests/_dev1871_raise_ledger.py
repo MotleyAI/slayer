@@ -457,9 +457,6 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function='_forward_lateral', exc='_PushBlocked',
          message="a list child's hop back to its parent is its own row",
          category='control', family='positions', user=False, owner='compiler'),
-    _row(module=_SP, function='_reverse_hops', exc='_PushBlocked',
-         message="a list child's parent is reached on its own row",
-         category='control', family='positions', user=False, owner='compiler'),
     _row(module=_EE, function='_check_native_lists', exc='ListTypeError',
          message='… needs a database with native lists; … has none.'
          + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse or Trino).',

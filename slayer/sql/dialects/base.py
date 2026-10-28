@@ -1615,8 +1615,10 @@ class SqlDialect(BaseModel):
         """Hook: whether this user may set the statement timeout."""
         return True
 
-    def correlated_subquery_refusal(self, profile: ServerProfile) -> str | None:  # NOSONAR(S1172) — no-op hook default
-        """Hook: why this user cannot run a correlated subquery, or ``None``."""
+    def correlated_subquery_refusal(  # NOSONAR(S1172) — no-op hook default
+        self, profile: ServerProfile, *, sql: str = "",
+    ) -> str | None:
+        """Hook: why this user cannot run ``sql``'s correlated subquery, or ``None``."""
         return None
 
     def attach_correlated_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default

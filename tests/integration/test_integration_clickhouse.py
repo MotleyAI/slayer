@@ -1963,10 +1963,13 @@ class TestClickHouseLists:
     async def test_lists(self, _clickhouse_lists) -> None:
         # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
         await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
-                          refused={"through-to-one": "25.4"})
+                          refused={"through-to-one": "25.4", "elements-filtered-across-another-to-many": "25.4"})
 
-    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists) -> None:
-        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse")
+    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists, versioned_clickhouse) -> None:
+        # Before 25.8 a correlated EXISTS beside a list's ARRAY JOIN is refused.
+        refused = {"elements-filtered-across-another-to-many": "25.8"} if versioned_clickhouse[0] == "25.4" else None
+        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse",
+                          refused=refused)
 
     def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
         (model,) = ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])

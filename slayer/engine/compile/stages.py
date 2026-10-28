@@ -1475,7 +1475,10 @@ def _forward_hops(
         )
     node_path = base_node_path
     for edge in chain:
+        own_row = not node_path and _is_parent_hop(edge)
         node_path = (*node_path, canonical_token(edge))
+        if own_row:
+            continue  # the root list child's parent row is already in the producer's FROM
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
             pairs=physical_join_pairs(edge=edge, source=models[edge.source_model],
@@ -1486,11 +1489,16 @@ def _forward_hops(
     return node_path
 
 
+def _is_parent_hop(edge) -> bool:
+    """A list child's hop back to its parent."""
+    return edge.lateral is not None and edge.cardinality is not JoinCardinality.ONE_TO_MANY
+
+
 def _forward_lateral(edge) -> Optional[str]:
-    """A list child hop's list column; the hop back to the parent cannot be correlated (fail closed)."""
+    """A list child hop's list column; a parent hop below the producer root cannot be correlated (fail closed)."""
     if edge.lateral is None:
         return None
-    if edge.cardinality is not JoinCardinality.ONE_TO_MANY:
+    if _is_parent_hop(edge):
         raise _PushBlocked("a list child's hop back to its parent is its own row")
     return edge.lateral
 
@@ -1519,10 +1527,11 @@ def _reverse_hops(
         physical = physical_join_pairs(
             edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
         )
+        # A list child's parent is its own row, already in the producer's FROM: no hop.
+        if edge.lateral is not None:
+            continue
         # A reverse hop is the population correlation, not a declared join:
         # never null-extended.
-        if edge.lateral is not None:
-            raise _PushBlocked("a list child's parent is reached on its own row")
         _register_hop(
             nodes, node_path=node_path, target_model=edge.source_model,
             pairs=[(tgt, src) for src, tgt in physical],

@@ -39,7 +39,7 @@ deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
 [List columns](concepts/queries.md#list-columns), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse and Trino, and fail at plan time on SQLite, MySQL, SQL Server and every Tier-2 database but Presto.
-On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version.
+On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later.
 
 ## Tier 2 — code-covered
 

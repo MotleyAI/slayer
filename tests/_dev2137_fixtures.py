@@ -123,6 +123,7 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
         return [e for r in team_rows for e in elements(r["skills"] or [])]
 
     sql_ids = {r["id"] for r in rows if "sql" in elements(r["skills"] or [])}
+    assigned = [r for r in rows if r["id"] in {c for a, c in ASSIGNMENTS if a in (1, 4)}]
     return [
         Probe(name="count-elements", query=query(measures=[measure("count(skills.*)", "n")]),
               read=lambda resp: num(resp.data[0]["contractors.n"]), expected=len(elems)),
@@ -171,6 +172,14 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
                                                 "filters": ["contractors.skills.value = 'sql'"]}),
               read=lambda resp: {int(r["assignments.id"]) for r in resp.data},
               expected={a for a, c in ASSIGNMENTS if c in sql_ids}),
+        Probe(name="elements-filtered-across-another-to-many",
+              query=query(dimensions=["team"], measures=[measure("count(skills.*)", "n"), measure("count(*)", "m"),
+                                                          measure("collect(skills.value)", "c")],
+                          filters=["assignments.id IN (1, 4)"]),
+              read=lambda resp: {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.m"]),
+                                                         as_list(r["contractors.c"])) for r in resp.data},
+              expected={t: (len(team_elements(rs)), len(rs), _collect(team_elements(rs)))
+                        for t in teams if (rs := [r for r in assigned if r["team"] == t])}),
     ]
 
 
