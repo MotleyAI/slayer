@@ -874,7 +874,7 @@ class CubeToSlayerConverter:
         name = build.helpers.get(key)
         if name is None:
             name = build.helpers[key] = build.names.take(f"{measure}_col")
-            build.columns.append(Column(name=name, sql=sql, filter=predicate, format=fmt,
+            build.columns.append(Column(name=name, sql=sql, filter=predicate, format=fmt, hidden=True,
                                         type=implied[0] if implied else DataType.DOUBLE))
         build.column_aggs[name].append(agg)
         return name

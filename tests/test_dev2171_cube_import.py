@@ -151,6 +151,15 @@ class TestFilteredHelpers:
         assert source_column(model, "paid_sum").name == source_column(model, "paid_avg").name
         assert source_column(model, "paid_sum").name != source_column(model, "open_sum").name
 
+    def test_helpers_are_hidden(self) -> None:
+        result = import_cube([cube(measures=[
+            meas("paid_sum", "sum", "{CUBE}.amount", filters=PAID),
+            meas("paid_cnt", "number", "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"),
+        ])])
+        model = models_of(result)["orders"]
+        assert source_column(model, "paid_sum").hidden
+        assert column(model, "paid_cnt_col").hidden
+
     def test_helpers_differ_by_type(self) -> None:
         result = import_cube([cube(measures=[
             meas("paid_sum", "sum", "{CUBE}.amount", filters=PAID),
