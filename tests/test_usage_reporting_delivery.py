@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -200,7 +201,7 @@ def test_server_shutdown_spools(
             env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=stderr,
         )
     try:
-        assert wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
+        assert wait_for_port(port, pid=proc.pid), f"{command} did not start (exit {proc.poll()})"
         proc.send_signal(sig)
         returncode = proc.wait(timeout=30)
     finally:
@@ -221,7 +222,7 @@ def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> No
         env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        assert wait_for_port(port)
+        assert wait_for_port(port, pid=proc.pid)
         result = run_python(
             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/health').read()",
             env=usage_reporting_env.subprocess_env(),
@@ -234,6 +235,21 @@ def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> No
             proc.kill()
             proc.wait(timeout=10)
     assert usage(show(), "rest:/health")["ok"] == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_wait_for_port_ignores_another_process_listener() -> None:
+    port = free_port()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", port))
+        listener.listen()
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            assert not wait_for_port(port, pid=other.pid, timeout=0.5)
+            assert wait_for_port(port, pid=os.getpid(), timeout=5)
+        finally:
+            other.kill()
+            other.wait(timeout=10)
 
 
 _FORK_SCRIPT = """

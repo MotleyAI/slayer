@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
@@ -182,11 +183,38 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def wait_for_port(port: int, *, timeout: float = 60.0) -> bool:
-    def listening() -> bool:
+def _listening_sockets(port: int) -> set[str]:
+    """``socket:[inode]`` of every TCP socket listening on ``port``."""
+    found: set[str] = set()
+    for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        with contextlib.suppress(OSError):
+            for line in table.read_text().splitlines()[1:]:
+                fields = line.split()
+                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                    found.add(f"socket:[{fields[9]}]")
+    return found
+
+
+def _listens(pid: int, port: int) -> bool:
+    """Whether process ``pid`` listens on ``port`` (elsewhere than Linux: whether anything does)."""
+    if not sys.platform.startswith("linux"):
         with socket.socket() as sock:
             return sock.connect_ex(("127.0.0.1", port)) == 0
-    return wait_until(listening, timeout=timeout)
+    sockets = _listening_sockets(port)
+    try:
+        fds = list(Path(f"/proc/{pid}/fd").iterdir())
+    except OSError:
+        return False
+    for fd in fds:
+        with contextlib.suppress(OSError):
+            if os.readlink(fd) in sockets:
+                return True
+    return False
+
+
+def wait_for_port(port: int, *, pid: int, timeout: float = 60.0) -> bool:
+    """Wait until process ``pid`` itself listens on ``port``: another process's listener does not count."""
+    return wait_until(lambda: _listens(pid, port), timeout=timeout)
 
 
 # --- sentinels --------------------------------------------------------------------------
