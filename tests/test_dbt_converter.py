@@ -1643,6 +1643,7 @@ class TestJoinKeyColumns:
             w.model_name == "orders" and "customer_id" in w.message
             for w in result.warnings)
 
+    @pytest.mark.xfail(strict=True, reason="DEV-2175: self-named dimension")
     def test_target_key_named_by_a_derived_column_drops_the_join(self) -> None:
         project = _make_simple_project()
         customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")

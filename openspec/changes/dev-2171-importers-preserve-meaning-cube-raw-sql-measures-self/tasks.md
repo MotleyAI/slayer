@@ -35,13 +35,13 @@
 
 - [x] 5.1 Route field expressions (current-spec and legacy overlay) through the resolver; a construct reading a physical name a different member holds, and a self-named member, is dropped with a report; verify the collision-drop tests and the existing OSI suites pass
 - [x] 5.2 Refuse list aggregation inputs other than `COUNT`; verify the refusal tests pass
-- [ ] 5.3 Map `ARRAY_AGG(DISTINCT)`, `ARRAY_CONTAINS` / `= ANY`, `ARRAY_LENGTH` / `CARDINALITY` in metrics (Mode B) and in field expressions (rendered through `SqlDialect` list hooks); verify the mapping tests pass on DuckDB and the emission tests for Postgres, Snowflake and BigQuery
+- [x] 5.3 Map `ARRAY_AGG(DISTINCT)`, `ARRAY_CONTAINS` / `= ANY`, `ARRAY_LENGTH` / `CARDINALITY` in metrics (Mode B) and in field expressions (rendered through `SqlDialect` list hooks); verify the mapping tests pass on DuckDB and the emission tests for Postgres, Snowflake and BigQuery
 - [x] 5.4 Remove `_SAFE_STRING`; emit `''`, keep backslash; verify the literal test passes
 
 ## 6. Docs, arc42, gates
 
 - [x] 6.1 One sentence per change in `docs/cube/cube_import.md`, `docs/dbt/dbt_import.md`, `docs/osi/osi_import.md` (including the NULL conventions of the OSI mappings); verify the pages build in `zensical.toml` nav
-- [ ] 6.2 Flip principle 17's tag with the approved wording; verify `poetry run la-arch-check` passes
+- [x] 6.2 Flip principle 17's tag with the approved wording; verify `poetry run la-arch-check` passes
 - [ ] 6.3 Relate DEV-1363 to DEV-2171 and comment on DEV-1363 that this PR closes it
 - [ ] 6.4 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all pass
 - [ ] 6.5 Comment on DEV-2175 listing the xfails it lifts

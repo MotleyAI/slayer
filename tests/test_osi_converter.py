@@ -30,6 +30,8 @@ from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
+#: A self-named field is dropped until DEV-2175 imports it.
+SELF_NAMED = pytest.mark.xfail(strict=True, reason="DEV-2175: self-named field")
 
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
@@ -415,6 +417,7 @@ def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
     assert _reported(result)
 
 
+@SELF_NAMED
 def test_derived_overlay_preserves_primary_key(shop_engine):
     # A derived overlay on the PK column (OSI not restating primary_key) keeps
     # the introspected PK flag.
@@ -1259,6 +1262,7 @@ def test_a_query_source_list_column_is_a_list(staff_engine):
     assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
 
 
+@SELF_NAMED
 def test_a_derived_list_field_is_a_list(staff_engine):
     cols = _staff_columns(staff_engine, source="staff", fields=[
         OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
@@ -1296,6 +1300,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
     assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
 
+@SELF_NAMED
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
     monkeypatch.setattr(OsiToSlayerConverter, "_probe_expression_type", lambda self, model, expr: None)
     cols = _staff_columns(staff_engine, source="staff",

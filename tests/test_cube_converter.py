@@ -403,8 +403,9 @@ def test_count_distinct_exact():
 
 @pytest.mark.parametrize("agg", ["avg", "min", "max"])
 def test_simple_aggregation_passthrough(agg):
-    models, _ = convert(_orders_with(
-        [CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")]))
+    project = _orders_with([CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")])
+    project.cubes[0].dimensions.append(CubeDimension(name="amount", sql="{CUBE}.amount", type="number"))
+    models, _ = convert(project)
     assert measure(models["orders"], f"m_{agg}").formula.startswith(f"{agg}(")
 
 
