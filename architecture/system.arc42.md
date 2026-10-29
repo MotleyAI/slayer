@@ -127,8 +127,13 @@ All code, old and new, MUST obey these.
     vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
     canonical function library, extended never forked. [review] Every Mode B
     construct means the same on every dialect. [enforced: test:tests/test_dev2120_library_matrix.py]
-11. **Versioned persistence**: models/queries/datasource configs carry
-    `version`; migrations run automatically on load. [review]
+11. **Versioned persistence**: models, queries, datasource configs and memories
+    carry `version`; migrations run automatically on load. [review]
+    - **11.1** A load never writes; an upgraded document is persisted only by a
+      save. [target: DEV-1844]
+    - **11.2** Library growth never invalidates a stored artefact: a name the
+      library newly reserves yields to a stored definition of it, or ships with
+      a migration. [target: DEV-2170]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
 13. **One key kind per meaning**: a construct with an existing kind's shape and
     meaning reuses it; anything else is a new kind, never a reserved name
