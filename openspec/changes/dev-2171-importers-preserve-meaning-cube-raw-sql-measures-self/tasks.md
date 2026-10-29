@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Write `tests/test_dev2171_importers_preserve_meaning.py`: one Cube, one dbt and one OSI fixture over a DuckDB `orders` table holding every ambiguous form in the specs (collision in each surface, self-named transforms, filtered helpers, same-cube dotted refs, raw SQL calc measures, list columns, OSI array functions); assert executed values and refusal report entries; verify it fails at HEAD for the reasons the specs name
-- [ ] 1.2 Unit tests per spec scenario beside the existing importer tests (resolver, Cube reference forms / calc measures / join keys / FILTER_PARAMS bodies / views, dbt `data_type` table and datasource use, typing order incl. offline and unreachable, list-aggregation refusals, OSI mappings and literals); verify each fails at HEAD
-- [ ] 1.3 Cover the Codex gap list: optional and required FILTER_PARAMS bodies, quoted / case-folded identifiers and case-only ambiguity, composite and renamed join keys, root vs nested CTE / subquery scope, query-backed (sql-mode) sources, helper dedup by (operand, filter, type), current-spec vs legacy OSI overlays, facade name collisions and transitive helpers, unreachable datasource, probed lists with known vs unknown element types
-- [ ] 1.4 Test that `validate_models` proposes no deletion for an imported Cube and dbt model with a measure over a list column (datasource reachable)
-- [ ] 1.5 List every existing test that pins a behaviour this change reverses and get the user's consent before changing any of them
+- [x] 1.1 Write `tests/test_dev2171_importers_preserve_meaning.py`: one Cube, one dbt and one OSI fixture over a DuckDB `orders` table holding every ambiguous form in the specs (collision in each surface, self-named transforms, filtered helpers, same-cube dotted refs, raw SQL calc measures, list columns, OSI array functions); assert executed values and refusal report entries; verify it fails at HEAD for the reasons the specs name
+- [x] 1.2 Unit tests per spec scenario beside the existing importer tests (resolver, Cube reference forms / calc measures / join keys / FILTER_PARAMS bodies / views, dbt `data_type` table and datasource use, typing order incl. offline and unreachable, list-aggregation refusals, OSI mappings and literals); verify each fails at HEAD
+- [x] 1.3 Cover the Codex gap list: optional and required FILTER_PARAMS bodies, quoted / case-folded identifiers and case-only ambiguity, composite and renamed join keys, root vs nested CTE / subquery scope, query-backed (sql-mode) sources, helper dedup by (operand, filter, type), current-spec vs legacy OSI overlays, facade name collisions and transitive helpers, unreachable datasource, probed lists with known vs unknown element types
+- [x] 1.4 Test that `validate_models` proposes no deletion for an imported Cube and dbt model with a measure over a list column (datasource reachable)
+- [x] 1.5 List every existing test that pins a behaviour this change reverses and get the user's consent before changing any of them
 
 ## 2. Shared package
 
