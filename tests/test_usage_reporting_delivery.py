@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from slayer import usage_reporting
-from slayer.usage_reporting import control, sender, settings, spool
+from slayer.usage_reporting import control, recorder, sender, settings, spool
 from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
@@ -50,8 +51,10 @@ def store(usage_reporting_env) -> str:
 
 
 def _spool_one(token: str = "query") -> None:
+    """Spool one record without sending."""
     usage_reporting.start()
     usage_reporting.record(surface="mcp", token=token)
+    assert recorder._recorder.sending is None
     end_process()
 
 
@@ -198,7 +201,7 @@ def test_server_shutdown_spools(
             env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=stderr,
         )
     try:
-        assert wait_for_port(port), f"{command} did not start (exit {proc.poll()})"
+        assert wait_for_port(port, pid=proc.pid), f"{command} did not start (exit {proc.poll()})"
         proc.send_signal(sig)
         returncode = proc.wait(timeout=30)
     finally:
@@ -219,7 +222,7 @@ def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> No
         env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        assert wait_for_port(port)
+        assert wait_for_port(port, pid=proc.pid)
         result = run_python(
             f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/health').read()",
             env=usage_reporting_env.subprocess_env(),
@@ -232,6 +235,21 @@ def test_serve_sigterm_spools_rest_counts(store: str, usage_reporting_env) -> No
             proc.kill()
             proc.wait(timeout=10)
     assert usage(show(), "rest:/health")["ok"] == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_wait_for_port_ignores_another_process_listener() -> None:
+    port = free_port()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", port))
+        listener.listen()
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            assert not wait_for_port(port, pid=other.pid, timeout=0.5)
+            assert wait_for_port(port, pid=os.getpid(), timeout=5)
+        finally:
+            other.kill()
+            other.wait(timeout=10)
 
 
 _FORK_SCRIPT = """
@@ -362,12 +380,14 @@ def test_due_at_start_sends_spool(usage_reporting_env) -> None:
 
 
 def test_last_send_in_the_future_counts_as_due(usage_reporting_env) -> None:
-    quiet_config(last_sent=_T0 + datetime.timedelta(days=30))
+    quiet_config(last_sent=_T0)
     usage_reporting_env.set_now(_T0)
     _spool_one()
+    write_config(last_sent=_T0 + datetime.timedelta(days=30))
     usage_reporting.start()
     assert len(usage_reporting_env.capture.wait_for(count=1)) == 1
     end_process()
+    assert len(usage_reporting_env.capture.requests) == 1
 
 
 def test_clock_jump_forward_is_due(usage_reporting_env) -> None:
@@ -537,7 +557,7 @@ def test_install_id_created_on_first_use(usage_reporting_env) -> None:
 def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) -> None:
     old = uuid.uuid4()
     write_config(install_id=old, install_id_created=_T0.date())
-    quiet_config(last_sent=_T0)
+    quiet_config(last_sent=_T0 + datetime.timedelta(days=age_days))
     usage_reporting_env.set_now(_T0 + datetime.timedelta(days=age_days))
     _spool_one()
     current = config()
