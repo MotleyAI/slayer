@@ -161,10 +161,13 @@ def renamed_datasource(data: dict, *, renames: Renames) -> dict:
     return {**data, "granularities": granularities}
 
 
-def memory_source_model(data: dict) -> str | None:
-    """The root model name a stored memory's query reads, if any."""
+def memory_source_model(data: dict) -> tuple[str | None, str | None]:
+    """``(inline model's data_source, saved root model name)`` a stored memory's query reads, each if any."""
     query = data.get("query")
     source = query.get("source_model") if isinstance(query, dict) else None
+    if isinstance(source, dict) and "source_name" not in source:
+        data_source = source.get("data_source")
+        return (data_source if isinstance(data_source, str) else None), None
     if isinstance(source, dict):
         source = source.get("source_name")
-    return source if isinstance(source, str) else None
+    return None, (source if isinstance(source, str) else None)

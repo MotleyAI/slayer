@@ -79,6 +79,8 @@ _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
+# Inside the one-time granularity settle, whose own loads must not wait on it.
+_SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -667,16 +669,20 @@ class StorageBackend(ABC):
     async def _settle_library_granularities(self) -> None:
         """Once per instance, before any model or memory loads: load every datasource, which renames its library-named
         granularities (an unloadable datasource is reported where it is used)."""
-        if getattr(self, "_granularities_settled", False):
+        if getattr(self, "_granularities_settled", False) or _SETTLING.get():
             return
-        self._granularities_settled = True
-        try:
-            for name in await self.list_datasources():
-                with contextlib.suppress(ValueError):
-                    await self.get_datasource(name)
-        except BaseException:
-            self._granularities_settled = False
-            raise
+        lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
+        async with lock:
+            if getattr(self, "_granularities_settled", False):
+                return
+            token = _SETTLING.set(True)
+            try:
+                for name in await self.list_datasources():
+                    with contextlib.suppress(ValueError):
+                        await self.get_datasource(name)
+            finally:
+                _SETTLING.reset(token)
+            self._granularities_settled = True
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
         """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
@@ -702,9 +708,9 @@ class StorageBackend(ABC):
                 await self._write_raw_model_dict(name=name, data_source=data_source, data=new)
                 renamed[("model", f"{data_source}.{name}")] = (data, new)
         for memory_id, data in (await self._raw_memory_dicts()).items():
-            source = memory_source_model(data)
-            in_datasource = source in own and (
-                source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or [])
+            inline_data_source, source = memory_source_model(data)
+            in_datasource = inline_data_source == data_source if inline_data_source is not None else (
+                source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
             )
             if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
                 await self._write_raw_memory_dict(memory_id=memory_id, data=new)

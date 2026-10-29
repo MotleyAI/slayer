@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -18,6 +19,7 @@ from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerResponse
+from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
@@ -337,6 +339,39 @@ class TestEveryPosition:
         assert "left_granularity" in dumped, dumped
         assert not _mentions(dumped, "left"), dumped
         assert _rows(await run(store.storage, query_fn("left_granularity"))) == expected
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_memory_over_an_inline_model_is_renamed(tmp_path: Any, backend: str) -> None:
+    inline = {k: v for k, v in events_doc(name="inline_events").items() if k != "version"}
+    query = stage_doc(source_model=inline, time_dimensions=[{"dimension": "created_at", "granularity": "left"}],
+                      measures=[SUM])
+    store = await _store(tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
+                         models=[events_doc()], memories=[memory_doc(memory_id="m", query=query)])
+    await store.storage.get_datasource(DS)
+    assert "left_granularity" in store.raw()["memories/m"]
+    mem_query = await _memory_query(store.storage, "m")
+    assert _td_granularity(mem_query) == "left_granularity"
+    rows = (await run(store.storage, mem_query)).data
+    assert {str(r["inline_events.created_at"])[:10]: float(r["inline_events.s"]) for r in rows} == EXPECTED_BUCKETS
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend: str) -> None:
+    store = await _store(
+        tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
+        models=[events_doc(), query_backed_doc(name="bucketed", stage=bucket_stage("left"))],
+        memories=[memory_doc(memory_id="m", query=bucket_stage("left"))],
+    )
+    loads = await asyncio.gather(
+        *(store.storage.get_model("bucketed", data_source=DS) for _ in range(4)),
+        *(store.storage.get_memory("m") for _ in range(4)),
+    )
+    for loaded in loads:
+        assert loaded is not None
+        query = loaded.query if isinstance(loaded, Memory) else (loaded.source_queries or [None])[0]
+        assert query is not None
+        assert _td_granularity(query) == "left_granularity"
 
 
 def _current(doc: dict, entity: str) -> dict:
