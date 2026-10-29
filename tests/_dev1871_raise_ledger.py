@@ -454,4 +454,59 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_PL, function="_iter_slot_deps", exc="TypeError",
          message="_iter_slot_deps has no case for …: classify the kind explicitly (slot-worthy, inlined composite, or never slottable).",
          category="internal", family="internal", user=False, owner="compiler"),
+    _row(module=_SP, function='_forward_lateral', exc='_PushBlocked',
+         message="a list child's hop back to its parent is its own row",
+         category='control', family='positions', user=False, owner='compiler'),
+    _row(module=_EE, function='_check_native_lists', exc='ListTypeError',
+         message='… needs a database with native lists; … has none.'
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse or Trino).',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
+         message="The list literal … holds a NULL element; a list's elements are its non-NULL elements."
+         + SUGGEST + 'Drop the NULL from the literal.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
+         message='The list literal … mixes element types; every element must be of one type.'
+         + SUGGEST + 'Write every element as text, or every element as a number.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_comparison', exc='ListTypeError',
+         message='`…` is a list and cannot be compared with ….'
+         + SUGGEST + '…',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_in', exc='ListTypeError',
+         message='`…` is a list and cannot be an IN operand.'
+         + SUGGEST + 'Use contains_any(…, [...]), or filter … IN (...).',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…() compares two lists; `…` is not a list.'
+         + SUGGEST + 'Use contains(list, value) for one value, or contains(text, substring) on text.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…([]): [] has no element type here.'
+         + SUGGEST + 'Give the empty list a typed operand.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='`…` holds opaque (UNKNOWN) elements, which …() cannot compare.'
+         + SUGGEST + "Declare the column's element_type.",
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_call', exc='ListTypeError',
+         message='…() compares … elements with ….'
+         + SUGGEST + 'Pass a … value.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_arguments', exc='ListTypeError',
+         message='…() does not take the list `…`.'
+         + SUGGEST + 'Read its elements through …, or use contains / length.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
+         message='`…` is a list: an aggregation over a list is only count; …() cannot take it.'
+         + SUGGEST + '…',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='_check_list_aggregation', exc='ListTypeError',
+         message='…() cannot collect the opaque (UNKNOWN) values of `…`.'
+         + SUGGEST + 'Collect a column with a scalar type.',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='check_list_dimension', exc='ListTypeError',
+         message='Dimension … is a list, which cannot be grouped on.'
+         + SUGGEST + 'Group by its elements: ….',
+         category='checker', family='lists', user=True, owner='checker'),
 )

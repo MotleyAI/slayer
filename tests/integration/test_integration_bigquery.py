@@ -20,7 +20,8 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
+from slayer.core.errors import SchemaDriftError
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
     ingest_datasource,
@@ -33,10 +34,13 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
+    contractors_model,
+    contractors_statements,
     lib_model,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -328,3 +332,52 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
         rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
                         2: (datetime(2025, 6, 1, 23, 30), datetime(2025, 6, 1))}, (column, resp.sql)
+
+
+# ---------------------------------------------------------------------------
+# List columns: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
+# queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+def _stale_contractors(data_source: str) -> SlayerModel:
+    """``contractors`` as stored before list columns: ``skills`` as TEXT."""
+    return SlayerModel(name="stale", sql_table="contractors", data_source=data_source, columns=[
+        Column(name="id", type=DataType.INT, primary_key=True), Column(name="skills", type=DataType.TEXT)])
+
+
+@pytest.fixture(scope="module")
+def bq_lists(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    prefix = f"{dataset_id}."
+    for stmt in [*contractors_statements(dialect="bigquery", prefix=prefix),
+                 *assignments_statements(dialect="bigquery", prefix=prefix)]:
+        client.query(stmt).result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
+    run_sync(storage.save_datasource(ds))
+    for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
+                  _stale_contractors(ds.name)):
+        run_sync(storage.save_model(model))
+    return storage, ds
+
+
+async def test_lists(bq_lists) -> None:
+    await check_lists(SlayerQueryEngine(storage=bq_lists[0]), dialect="bigquery")
+
+
+def test_repeated_field_ingested(bq_lists) -> None:
+    (model,) = ingest_datasource(datasource=bq_lists[1], include_tables=["contractors"])
+    skills = model.get_column("skills")
+    assert skills is not None
+    assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert "STRING" in (skills.db_type or "").upper(), skills.db_type
+
+
+async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
+    engine = SlayerQueryEngine(storage=bq_lists[0])
+    stale = SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]})
+    with pytest.raises(SchemaDriftError) as info:
+        await engine.execute(stale)
+    assert "skills" in str(info.value), str(info.value)
+    assert "ingest" in str(info.value).lower(), str(info.value)

@@ -28,6 +28,7 @@ from slayer.core.keys import (
     DATE_OPERAND_ARGS,
     NULL_SAFE_COMPARISON_OPS,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -40,6 +41,8 @@ from slayer.core.keys import (
     boolean_valued,
     check_scalar_arity,
     integer_valued,
+    is_list_call,
+    numbers_read_list,
     numeric_boolean_positions,
     temporal_type,
     unit_word,
@@ -50,6 +53,7 @@ from slayer.sql.dialects.base import (
     bare_comparands,
     cast_target,
     func,
+    is_list_fn,
     operand_copy,
     temporal_type_of,
 )
@@ -313,11 +317,23 @@ def render_scalar_call(
 
 def render_scalar_key(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    part: Callable[[Any], Expression],
 ) -> Expression:
     """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
     if key.name == "mod":
         return render_modulo(key=key, operands=args, dialect=dialect, column_type=column_type)
+    if is_list_fn(key.name) and is_list_call(key, column_type=column_type):
+        numbers = numbers_read_list(key, column_type=column_type)
+        if numbers is not None:
+            each = DataType.TEXT if numbers.try_ else DataType.DOUBLE
+            return dialect.rewrite_target_ast(
+                dialect.build_list_call(key.name, (args[0], part(numbers.source)), each=each))
+        return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args)))
     return render_scalar_call(name=key.name, args=args, dialect=dialect)
+
+
+def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expression:
+    return dialect.build_array_literal([_literal(v.value, dialect=dialect) for v in key.values])
 
 
 def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Expression:
@@ -459,6 +475,8 @@ def render_row_expression(
         return render_in_predicate(key=key, column=column, dialect=dialect)
     if isinstance(key, CastKey):
         return render_cast(key=key, part=_part, dialect=dialect)
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
@@ -496,4 +514,4 @@ def _row_scalar_call(
     args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
     if key.name in DATE_FUNCTIONS:
         return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type)
+    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type, part=part)

@@ -15,7 +15,7 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from slayer.core.enums import DataType
 from slayer.core.join_edges import edge_reference
 from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors
-from slayer.core.models import Column, SlayerModel, is_identifier
+from slayer.core.models import Column, SlayerModel, column_type_text, is_identifier
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
@@ -193,9 +193,9 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
 
 
 def _render_column_type(column: Column) -> str:
-    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker."""
+    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker, a list its operations."""
     if not column.type.is_opaque:
-        return str(column.type)
+        return column_type_text(column)
     detail = column.db_type or "unrecognized DB type"
     return f"{column.type} ({detail}; not queryable)"
 
@@ -231,6 +231,8 @@ def _choose_sample_agg(
     """
     if column.type.is_opaque:
         return None
+    if column.type is DataType.ARRAY:
+        return "count"
     allowed = column.allowed_aggregations
     if allowed is not None and "avg" not in allowed:
         if not allowed:
@@ -876,6 +878,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
+                    **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                     # Opaque columns only (see _render_column_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}

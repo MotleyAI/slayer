@@ -51,7 +51,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import NarrowedAccessFinding
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, ListRetypeFinding, NarrowedAccessFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
@@ -243,7 +243,14 @@ class _TerminationGuard:
             if callable(previous) and previous is not signal.default_int_handler:
                 self.prior[signum] = previous
             signal.signal(signum, self._handle)
+        self.prior_unraisable = sys.unraisablehook
+        sys.unraisablehook = self._unraisable
         _TerminationGuard.active = self
+
+    def _unraisable(self, unraisable: Any) -> None:
+        """A termination raised where Python cannot propagate it (e.g. a weakref callback) is already recorded."""
+        if not isinstance(unraisable.exc_value, _Terminated):
+            self.prior_unraisable(unraisable)
 
     def _handle(self, signum: int, frame: FrameType | None) -> None:
         if self.forcing:
@@ -299,6 +306,7 @@ class _TerminationGuard:
         """Put back the handlers this guard replaced."""
         for signum, handler in self.replaced.items():
             signal.signal(signum, handler)
+        sys.unraisablehook = self.prior_unraisable
         if _TerminationGuard.active is self:
             _TerminationGuard.active = None
 
@@ -1895,6 +1903,9 @@ def _format_validate_models_output(entries) -> str:
                 f"reads {', '.join(entry.narrowed_by)}"
             )
             continue
+        if isinstance(entry, ListRetypeFinding):
+            lines.append(f"RE-TYPE: {entry.summary}")
+            continue
         if entry.tool == "delete_model":
             lines.append(
                 f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
@@ -2136,7 +2147,7 @@ def _run_validate_models(args):
     _print_drift_section(entries, headed=wants_cardinality)
     _print_join_safety_section(join_safety)
     # Clean first: profiling a model we are about to repair is wasted work.
-    deletes = [e for e in entries if not isinstance(e, NarrowedAccessFinding)]
+    deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
     if bool(getattr(args, "force_clean", False)) and deletes:
         _apply_force_clean(args, engine, deletes)
     report = _collect_cardinality_report(args, engine)

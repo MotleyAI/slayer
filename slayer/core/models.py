@@ -8,6 +8,7 @@ from typing import AbstractSet, Annotated, Any, Optional
 from pydantic import (
     BaseModel,
     BeforeValidator,
+    ConfigDict,
     Field,
     PrivateAttr,
     field_validator,
@@ -15,7 +16,7 @@ from pydantic import (
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, DataType, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
@@ -150,6 +151,21 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (_bare_identifier(sql) if sql is not None else None) or name
 
 
+def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
+    """``element_type`` is required on a list, rejected elsewhere, and never itself a list."""
+    if data_type is DataType.ARRAY and element_type is None:
+        raise ValueError(f"Column {name!r} is a list (type ARRAY) and needs an element_type.")
+    if data_type is not DataType.ARRAY and element_type is not None:
+        raise ValueError(
+            f"Column {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
+            f"only an ARRAY column has an element_type."
+        )
+    if element_type is DataType.ARRAY:
+        raise ValueError(
+            f"Column {name!r}: element_type ARRAY is not supported; a nested list's elements are UNKNOWN."
+        )
+
+
 def _coerce_legacy_type_field(data: Any) -> Any:
     """Map a legacy lowercase ``type`` string in a raw payload; drop pseudo-types."""
     if isinstance(data, dict) and "type" in data:
@@ -166,6 +182,10 @@ class Column(BaseModel):
     name: str
     sql: str | None = None
     type: DataType = DataType.TEXT
+    element_type: DataType | None = Field(
+        default=None,
+        description="A list's element type.",
+    )
     db_type: str | None = Field(
         default=None,
         description=(
@@ -230,6 +250,11 @@ class Column(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_element_type(self) -> "Column":
+        check_element_type(name=self.name, data_type=self.type, element_type=self.element_type)
+        return self
+
     @property
     def _sql_is_nontrivial(self) -> bool:
         """The value SQL is not the bare self-name; a QUOTED self-name counts, since
@@ -264,6 +289,20 @@ class Column(BaseModel):
         out = self.model_copy()
         out._respellings = tuple(respellings)
         return out
+
+
+def list_operations_hint(column: Column) -> str:
+    """One line naming what a list column takes."""
+    n = column.name
+    return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}); "
+            f"its elements are {n}.value")
+
+
+def column_type_text(column: Column) -> str:
+    """``ARRAY<TEXT> (list: …)`` for a list column, else its type."""
+    if column.type is not DataType.ARRAY:
+        return str(column.type)
+    return f"{type_display(column.type, column.element_type)} ({list_operations_hint(column)})"
 
 
 def is_identifier(*, column: Column, columns: list[Column]) -> bool:
@@ -481,10 +520,24 @@ def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregat
     return next((a for a in (owner.aggregations or []) if a.name == agg), None)
 
 
-def empty_value(*, agg: str, definition: Aggregation | None) -> int | None:
-    """``agg``'s value over no rows; a declared ``formula`` overrides the built-in's."""
+class EmptyList(BaseModel):
+    """The empty list of ``element_type`` elements (``None``: unknown) — ``collect``'s value over no rows."""
+
+    model_config = ConfigDict(frozen=True)
+
+    element_type: DataType | None = None
+
+
+EmptyValue = int | EmptyList | None
+
+
+def empty_value(*, agg: str, definition: Aggregation | None, element_type: DataType | None = None) -> EmptyValue:
+    """``agg``'s value over no rows (``element_type``: a list aggregation's input type); a declared ``formula``
+    overrides the built-in's."""
     if definition is not None and definition.formula is not None:
         return None
+    if agg in LIST_AGGREGATIONS:
+        return EmptyList(element_type=element_type)
     return builtin_empty_value(agg)
 
 
@@ -713,6 +766,11 @@ class SlayerModel(BaseModel):
     _population_spine: bool = PrivateAttr(default=False)
     # Runtime-only: datasets no join path reaches that this query frame's population names.
     _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
+    # Runtime-only: a list child's ``(parent model, list column)``.
+    _list_of: tuple[str, str] | None = PrivateAttr(default=None)
+    # Runtime-only: the list children built from this model (``join_walker.list_child``).
+    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
+        default_factory=dict)
 
     @field_validator("filters")
     @classmethod
@@ -766,6 +824,11 @@ class SlayerModel(BaseModel):
                     f"cannot be declared on a column of type {c.type} — "
                     f"aggregations are not supported for that type. Remove "
                     f"allowed_aggregations, or give the column an operable type."
+                )
+            if c.type is DataType.ARRAY and set(c.allowed_aggregations) - {"count"}:
+                raise ValueError(
+                    f"Column '{c.name}' is a list: its only aggregation is 'count', got allowed_aggregations "
+                    f"{c.allowed_aggregations}. Aggregate its elements through '{c.name}.value' instead."
                 )
             identifier = is_identifier(column=c, columns=self.columns)
             for agg_name in c.allowed_aggregations:
@@ -880,6 +943,15 @@ class SlayerModel(BaseModel):
         out = self.model_copy()
         out._unrelated = names
         return out
+
+    @property
+    def list_of(self) -> tuple[str, str] | None:
+        """``(parent model, list column)`` when this is a list column's element child (semantics Axiom 3.2)."""
+        return self._list_of
+
+    def list_columns(self) -> list[Column]:
+        """The list columns whose elements are reachable as a child (opaque elements excluded)."""
+        return [c for c in self.columns if c.type is DataType.ARRAY and not (c.element_type or DataType.UNKNOWN).is_opaque]
 
     @property
     def awaits_columns(self) -> bool:

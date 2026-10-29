@@ -183,6 +183,7 @@ class TestAggRenderSpecConstruction:
             "column_type",
             "input_type",
             "value",
+            "element_type",
         }
 
     def test_minimal_count_star(self):

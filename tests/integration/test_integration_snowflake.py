@@ -20,6 +20,7 @@ from typing import NoReturn
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -31,7 +32,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -40,10 +41,13 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
+    contractors_model,
+    contractors_statements,
     lib_model,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -911,3 +915,100 @@ def test_dev2120_library(sf_dev2120_storage) -> None:
 
 def test_dev2120_variant_column(sf_dev2120_storage) -> None:
     run_sync(check_native_json(SlayerQueryEngine(storage=sf_dev2120_storage)))
+
+
+# ---------------------------------------------------------------------------
+# List columns: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
+# queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+_INFERRED = (
+    "CREATE TABLE inferred (id NUMBER(38,0), ints ARRAY, mixed ARRAY, objs ARRAY, empty ARRAY)",
+    "INSERT INTO inferred SELECT 1, ARRAY_CONSTRUCT(1, 2), ARRAY_CONSTRUCT('a', 1), "
+    "ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('k', 1)), ARRAY_CONSTRUCT()",
+    "CREATE TABLE structured (id NUMBER(38,0), typed ARRAY(VARCHAR))",
+    "INSERT INTO structured SELECT 1, ['go', 'sql']::ARRAY(VARCHAR) UNION ALL SELECT 2, ['sql']::ARRAY(VARCHAR)",
+)
+
+
+@pytest.fixture
+def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in [*contractors_statements(dialect="snowflake"), *assignments_statements(dialect="snowflake"),
+                     *_INFERRED]:
+            cur.execute(stmt)
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(sf_datasource))
+        for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
+            run_sync(storage.save_model(base.model_copy(update={
+                "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
+        yield storage, cur
+    finally:
+        try:
+            for table in ("contractors", "assignments", "inferred", "structured"):
+                cur.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
+    (model,) = ingest_datasource(datasource=datasource, include_tables=[table])
+    return {c.name: (c.type, c.element_type) for c in model.columns if c.name != "id"}
+
+
+def test_lists(sf_lists) -> None:
+    run_sync(check_lists(SlayerQueryEngine(storage=sf_lists[0]), dialect="snowflake"))
+
+
+def test_untyped_array_elements_inferred(sf_lists, sf_datasource: DatasourceConfig) -> None:
+    assert _elements(sf_datasource, "inferred") == {
+        "ints": (DataType.ARRAY, DataType.INT), "mixed": (DataType.ARRAY, DataType.TEXT),
+        "objs": (DataType.ARRAY, DataType.UNKNOWN), "empty": (DataType.ARRAY, DataType.UNKNOWN)}
+    assert _elements(sf_datasource, "contractors")["scores"] == (DataType.ARRAY, DataType.INT)
+
+
+def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: DatasourceConfig) -> None:
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *args) -> None:  # noqa: ARG001 — SQLAlchemy listener signature
+        statements.append(statement)
+
+    event.listen(sa.engine.Engine, "before_cursor_execute", record)
+    try:
+        assert _elements(sf_datasource, "structured") == {"typed": (DataType.ARRAY, DataType.TEXT)}
+    finally:
+        event.remove(sa.engine.Engine, "before_cursor_execute", record)
+    assert not [s for s in statements if "FLATTEN" in s.upper()], statements
+
+
+@pytest.mark.parametrize(("filters", "kept"), [
+    (["contains(typed, 'go')"], {1}),
+    (["contains_any(typed, ['go', 'rust'])"], {1}),
+    (["contains_all(typed, ['go', 'sql'])"], {1}),
+    (["length(typed) = 1"], {2}),
+    (["typed.value = 'sql'"], {1, 2}),
+])
+def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: DatasourceConfig, filters, kept) -> None:
+    storage, _ = sf_lists
+    (model,) = ingest_datasource(datasource=sf_datasource, include_tables=["structured"])
+    run_sync(storage.save_model(model))
+    resp = run_sync(SlayerQueryEngine(storage=storage).execute(
+        {"source_model": "structured", "dimensions": ["id"], "filters": filters}))
+    assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
+
+
+def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: DatasourceConfig) -> None:
+    storage, cur = sf_lists
+    for model in ingest_datasource(datasource=sf_datasource, include_tables=["inferred"]):
+        run_sync(storage.save_model(model))
+    cur.execute("INSERT INTO inferred SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
+    run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, include_tables=["inferred"]))
+    model = run_sync(storage.get_model("inferred", data_source="sf_test"))
+    typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}
+    assert typed == {"ints": DataType.INT, "empty": DataType.INT}

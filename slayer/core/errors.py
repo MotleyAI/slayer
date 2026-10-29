@@ -96,13 +96,15 @@ class SchemaDriftError(SlayerError):
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
+        findings: list[str] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
+        notes = "".join(f" {f}" for f in findings or [])
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s). Original error: {original}"
+            f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
@@ -423,6 +425,11 @@ class ScalarArgumentError(QueryTypeError):
 class ScalarOperandTypeError(QueryTypeError):
     """A scalar function or operator over an operand of a type it does not read (a number function over TEXT,
     a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
+
+
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
 
 
 class ServerVersionError(QueryTypeError):

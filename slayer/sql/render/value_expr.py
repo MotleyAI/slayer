@@ -16,6 +16,7 @@ from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -55,6 +56,7 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     iif_case_chain,
     numeric_parts,
     render_arithmetic,
+    render_array_literal,
     render_cast,
     render_in_predicate,
     render_modulo,
@@ -376,6 +378,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=ctx.dialect)
 
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=ctx.dialect)
+
     if isinstance(key, TimeTruncKey):
         source = (
             _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
@@ -427,7 +432,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
             )
-        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx))
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+                                 part=lambda a: render_value_key(key=a, ctx=ctx))
 
     if isinstance(key, InKey):
         (column,) = numeric_parts(

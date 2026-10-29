@@ -37,6 +37,11 @@ a dimension it cannot be attributed to (an order's status for customer credit),
   `{"formula": "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))",
   "name": "orders_2025"}`; NULL where a region has no orders, so add a `count(...)`
   beside it when a 0 matters.
+- A list column `tags` is a child with one row per element, `tags.value`: the condition
+  `tags.value = 'x'` keeps the rows having element x; `tags.value` as a dimension with
+  `associate` counts the rows per element. Every `tags.value` condition reads the same
+  element, so `tags.value = 'x'` with `tags.value = 'y'` matches nothing: write
+  `contains_all(tags, ['x', 'y'])`; `not contains(tags, 'x')` keeps the rows without x.
 - A per-query column or join: `source_model` as an inline extension,
   `{"source_name": "orders", "columns": [{"name": "is_big", "sql": "amount > 100",
   "type": "boolean"}]}`.

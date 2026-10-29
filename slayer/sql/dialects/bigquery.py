@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -20,6 +20,9 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
+    LIST_ELEMENT,
+    LIST_VALUE,
+    ListRelation,
     DottedAliasManglingMixin,
     ExtremumFn,
     MathFn,
@@ -32,6 +35,7 @@ from slayer.sql.dialects.base import (
     anon,
     any_null,
     case,
+    is_not_null,
     iso_text,
     lit,
     operand_copy,
@@ -48,6 +52,16 @@ if TYPE_CHECKING:
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 _DATETIME = exp.DataType.build("DATETIME")
+
+
+_ELEMENT, _WANTED = LIST_ELEMENT, "__slayer_w"
+
+
+def _over_elements(values: Expression, name: str) -> exp.Select:
+    """``SELECT name FROM UNNEST(values) AS name``."""
+    return exp.select(exp.column(name)).from_(exp.Unnest(
+        expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(name)]),
+    ))
 
 
 def _date_part_unit(unit: TimeGranularity) -> Expression:
@@ -126,6 +140,43 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     regex_flavour: ClassVar[RegexFlavour] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+
+    database_name: ClassVar[str] = "BigQuery"
+
+    def list_length(self, values: Expression) -> Expression:
+        kept = _over_elements(values, _ELEMENT).where(is_not_null(exp.column(_ELEMENT)))
+        return anon("ARRAY_LENGTH", exp.Array(expressions=[kept]))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
+            exp.EQ(this=exp.column(_ELEMENT), expression=operand_copy(value))))
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
+            exp.In(this=exp.column(_ELEMENT), unnest=exp.Unnest(expressions=[other.copy()]))))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        missing = _over_elements(other, _WANTED).where(exp.and_(
+            is_not_null(exp.column(_WANTED)), exp.Not(this=self.list_contains(values, exp.column(_WANTED)))))
+        return exp.Not(this=exp.Exists(this=missing))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``UNNEST`` of a ``STRUCT<value>`` array, so the element reads as ``alias.value``."""
+        element_ref = exp.column(_ELEMENT)
+        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(exp.Unnest(
+            expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(_ELEMENT)]),
+        )).where(is_not_null(element_ref))
+        rows = rows.distinct() if distinct else rows
+        return ListRelation(relation=exp.Unnest(
+            expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),
+        ))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        ordered = self.distinct_sorted(value)
+        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[self.empty_list(element)])
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "concat_ws":

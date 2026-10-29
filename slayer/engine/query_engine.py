@@ -47,7 +47,7 @@ from slayer.engine.cardinality import (
     declares_solo_unique,
 )
 from slayer.core.policy import SessionPolicy
-from slayer.core.format import format_number
+from slayer.core.format import format_number, list_json_text
 from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
@@ -128,6 +128,8 @@ from slayer.engine.schema_drift import (
     ApplyDriftResult,
     ApplyError,
     LiveSnapshotCache,
+    REPORT_ONLY_FINDINGS,
+    ListRetypeFinding,
     NarrowedAccessFinding,
     ToDeleteEntry,
     unloadable_model_delete,
@@ -631,6 +633,8 @@ class SlayerResponse(BaseModel):
         """Format a single cell value using column format metadata if available."""
         if value is None:
             return ""
+        if isinstance(value, list):
+            return list_json_text(value)
         fm = self.attributes.get(column)
         if fm and fm.format and isinstance(value, (int, float, decimal.Decimal)):
             return format_number(value=value, format_spec=fm.format)
@@ -809,7 +813,7 @@ class SlayerQueryEngine:
         return sql_dialect.model_copy(update={"server_profile": profile})
 
     async def _require_correlated_subqueries(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
     ) -> None:
         """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
         sql_dialect = get_dialect(dialect)
@@ -822,9 +826,9 @@ class SlayerQueryEngine:
             profile = await self._client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
-            reason = sql_dialect.correlated_subquery_refusal(ServerProfile())
+            reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), sql=sql)
             raise SlayerError(f"{lead} {reason}") from exc
-        reason = sql_dialect.correlated_subquery_refusal(profile)
+        reason = sql_dialect.correlated_subquery_refusal(profile, sql=sql)
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
@@ -1068,7 +1072,7 @@ class SlayerQueryEngine:
         root_planned = planned_list[-1]
         if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
-                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list,
+                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list, sql=sql,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
@@ -1795,6 +1799,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
+        findings_out: "Optional[List[ListRetypeFinding]]" = None,
     ) -> "List[ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
@@ -1811,6 +1816,7 @@ class SlayerQueryEngine:
                 sql_clients=self._sql_clients,
                 available_in_ds=available,
                 snapshot=snapshot,
+                findings_out=findings_out,
             )
 
     async def _maybe_raise_schema_drift(
@@ -1823,17 +1829,21 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
         models; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            entries = await self._validate_read_set(datasource=datasource, read_set=read_set)
+            findings: List[ListRetypeFinding] = []
+            entries = await self._validate_read_set(
+                datasource=datasource, read_set=read_set, findings_out=findings,
+            )
             # An "invalid_sql" entry is not drift evidence — it restates the
             # query failure itself, so the original error must propagate.
             filtered = [
                 e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
-            if filtered:
+            if filtered or findings:
                 raise SchemaDriftError(
-                    models=sorted({e.model_name for e in filtered}),
+                    models=sorted({e.model_name for e in [*filtered, *findings]}),
                     to_delete=filtered,
                     original=err,
+                    findings=[f.summary for f in findings],
                 )
         except SchemaDriftError:
             raise
@@ -2381,7 +2391,7 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
-            if isinstance(entry, NarrowedAccessFinding):
+            if isinstance(entry, REPORT_ONLY_FINDINGS):
                 continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
@@ -2428,7 +2438,7 @@ class SlayerQueryEngine:
             try:
                 residual.extend(
                     e for e in await self.validate_models(data_source=ds_name)
-                    if not isinstance(e, NarrowedAccessFinding)
+                    if not isinstance(e, REPORT_ONLY_FINDINGS)
                 )
             except Exception as inner:
                 logger.debug(
@@ -2703,13 +2713,16 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        retypes: List[ListRetypeFinding] = []
+        entries = await validate_datasource(
+            datasource=ds, models=models, sql_clients=self._sql_clients, findings_out=retypes,
+        )
         findings = [
             NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *retypes, *findings]
 
     def create_model_from_query_sync(
         self,

@@ -38,8 +38,9 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
+from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
 from slayer.core.join_walker import (
+    LIST_ELEMENT_COLUMN,
     resolved_terminal,
     aggregation_owner,
     canonical_path,
@@ -64,6 +65,7 @@ from slayer.core.time_points import is_time_point, parse_temporal_value
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
+    ArrayLit,
     Arith,
     BoolOp,
     Cast,
@@ -409,9 +411,29 @@ def _bind(
         return ArithmeticKey(op=parsed.op, operands=(sub(parsed.operand),))
     if isinstance(parsed, BoolOp):
         return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
+    if isinstance(parsed, ArrayLit):
+        return _bind_array_literal(parsed, sub=sub)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
+    """A literal list: every element a literal (its NULL / type-family rules are the checker's)."""
+    values = []
+    for element in parsed.elements:
+        key = sub(element)
+        if isinstance(key, ArithmeticKey) and key.op == "-" and len(key.operands) == 1 \
+                and isinstance(key.operands[0], LiteralKey) and isinstance(key.operands[0].value, Decimal):
+            key = LiteralKey(value=-key.operands[0].value)
+        if not isinstance(key, LiteralKey):
+            raise ScalarArgumentError(
+                summary=f"Every element of the list literal `{canonical_measure_text(parsed)}` must be a literal; "
+                f"`{canonical_measure_text(element)}` is not.",
+                suggestion="Compare a list with another list column through contains_any / contains_all instead.",
+            )
+        values.append(key)
+    return ArrayLiteralKey(values=tuple(values))
 
 
 def _bind_leaf(
@@ -706,10 +728,26 @@ def _walk_join_chain(
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
+    _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
         models_by_name=models_by_name,
     )
+
+
+def _reject_opaque_elements(
+    *, host: SlayerModel, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> None:
+    """A hop naming a list of opaque elements: they have no element access."""
+    owner = resolved_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name)
+    column = owner.get_column(hop_path[index]) if owner is not None else None
+    if column is not None and column.type is DataType.ARRAY:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="ModelScope",
+            scope_summary=f"list column {column.name!r} holds opaque (UNKNOWN) elements, which have no element access",
+            suggestion="Declare the column's element_type, or use length() / IS NULL on the list.",
+        )
 
 
 def _route_edgeless_hop(
@@ -802,14 +840,7 @@ def _resolve_dotted(
             return alias_map[dotted_text]
 
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -845,6 +876,23 @@ def _resolve_dotted(
         original_parts=original_parts, scope=scope, bundle=bundle,
         measure_ctx=measure_ctx,
     )
+
+
+def _stage_list_scope(
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str,
+) -> ModelScope:
+    """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
+    head = scope.resolve_flat_name(parts[0]) if len(parts) == 2 and parts[1] == leaf else None
+    if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
+        raise IllegalScopeReferenceError(
+            name=".".join(parts),
+            scope_kind="StageSchema",
+            reason=(
+                "downstream stages see a flat schema — dotted refs are not legal "
+                "bar a list column's elements (L.value, L.*). Use the flat column name."
+            ),
+        )
+    return ModelScope(source_model=bundle.source_model)
 
 
 def _resolve_terminal_leaf(
@@ -992,14 +1040,7 @@ def _resolve_dotted_star(
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
     assert isinstance(scope, ModelScope)
     host = scope.source_model
     if host is None:
@@ -1280,7 +1321,7 @@ def _bind_agg_source(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
             dim_alias_map=dim_alias_map,
         )
-        if isinstance(bound, SqlFragmentKey):
+        if isinstance(bound, (SqlFragmentKey, ArrayLiteralKey)):
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):
@@ -1569,6 +1610,8 @@ def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str
         f" For numbers stored as text, convert them: {agg}(TRY_CAST({leaf} AS DOUBLE))."
         if col.type is DataType.TEXT and agg in NUMERIC_ONLY_AGGREGATIONS else ""
     )
+    if col.type is DataType.ARRAY:
+        remedy = f" {leaf!r} is a list; aggregate its elements: {agg}({leaf}.value)."
     return (f"aggregation {agg!r} is not applicable to {col.type} column {leaf!r}; "
             f"default aggregations are {sorted(allowed)}.{remedy}")
 

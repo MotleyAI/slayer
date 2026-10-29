@@ -25,6 +25,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -351,6 +352,7 @@ class TestTotalityAndFailClosed:
             CastKey: CastKey(
                 source=ColumnKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
             ),
+            ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

@@ -509,3 +509,27 @@ class TestDerivedTableCorrelation:
         assert [(leak.kind, leak.reference) for leak in result.leaks] == [
             ("unbound_table", "other.id"),
         ]
+
+
+SQL_ARRAY_JOIN_IN_EXISTS = """
+SELECT a.id FROM assignments AS a
+WHERE EXISTS(
+  SELECT 1 FROM contractors AS c ARRAY JOIN c.skills AS s
+  WHERE a.contractor_id = c.id AND s.value = 'sql'
+)
+"""
+
+SQL_ARRAY_JOIN_ALIAS_OUTSIDE = """
+SELECT a.id FROM assignments AS a
+WHERE EXISTS(SELECT 1 FROM contractors AS c ARRAY JOIN c.skills AS s WHERE a.contractor_id = c.id)
+  AND s.value = 'sql'
+"""
+
+
+class TestClickHouseArrayJoin:
+    def test_an_array_join_alias_read_inside_its_exists_is_closed(self) -> None:
+        assert check_scope_closed(SQL_ARRAY_JOIN_IN_EXISTS, dialect="clickhouse").closed is True
+
+    def test_an_array_join_alias_read_outside_its_select_is_a_leak(self) -> None:
+        result = check_scope_closed(SQL_ARRAY_JOIN_ALIAS_OUTSIDE, dialect="clickhouse")
+        assert [(leak.kind, leak.reference) for leak in result.leaks] == [("unbound_table", "s.value")]

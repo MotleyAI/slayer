@@ -9,5 +9,6 @@ columns:
   - {name: tier, type: string}
   - {name: credit, type: number}
   - {name: discount, type: number}
+  - {name: tags, type: ARRAY, element_type: TEXT}
 joins:
   - {target_model: regions, join_pairs: [[region_id, id]], cardinality: many_to_one}

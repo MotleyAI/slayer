@@ -14,6 +14,7 @@ from slayer.core.keys import (
     OPTIONAL_KEY_FIELDS,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     CastKey,
     ColumnKey,
     ColumnSqlKey,
@@ -223,7 +224,9 @@ def _scalar_display(value: Any) -> str:
 
 
 def _arg_display(value: Any) -> str:
-    return key_display(value) if type(value) in _LEGACY_KEY_SPELLINGS else _scalar_display(value)
+    if isinstance(value, ArrayLiteralKey) or type(value) in _LEGACY_KEY_SPELLINGS:
+        return key_display(value)
+    return _scalar_display(value)
 
 
 def _grain_display_list(keys: Any) -> str:
@@ -310,6 +313,8 @@ def key_display(key: ValueKey) -> str:
         return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
     if isinstance(key, SqlFragmentKey):
         return _fragment_display(key)
+    if isinstance(key, ArrayLiteralKey):
+        return f"[{', '.join(key_display(v) for v in key.values)}]"
     raise TypeError(f"key_display has no rule for {type(key).__name__}")
 
 

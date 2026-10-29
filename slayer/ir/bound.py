@@ -77,6 +77,7 @@ class DeclaredMeasure(BaseModel):
     canonical_alias: Optional[str] = None
     name_is_explicit: bool = False
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
     format: Optional[NumberFormat] = None

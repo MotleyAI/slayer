@@ -111,6 +111,12 @@ class TupleLit(_BaseNode):
     elements: Tuple[Literal, ...]
 
 
+class ArrayLit(_BaseNode):
+    """A bracketed literal list ``['a', 'b']`` (``[]`` empty)."""
+
+    elements: Tuple[Any, ...] = ()
+
+
 class AggCall(_BaseNode):
     source: Any
     agg: str
@@ -171,7 +177,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit,
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit,
     AggCall, TransformCall, ScalarCall, Cast,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -742,7 +748,8 @@ _KEYWORD_LED = pp.FollowedBy(pp.Regex(
     r"|json_value)(?![A-Za-z0-9_])"
 )) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
       | _JSON_VALUE_RETURNING)
-_ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN
+_ARRAY = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: ArrayLit(elements=tuple(toks[0])))
+_ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN | _ARRAY
          | _CALL | _COLON_AGG | _REF)
 
 _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
@@ -1059,6 +1066,22 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     text_slots = _text_slot_ordinals(template, variables=variables)
     return _spliced(
         text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
+        list_slots=_list_slot_ordinals(template),
+    )
+
+
+#: Functions whose arguments are lists: a list variable there binds as a list literal.
+_LIST_ARG_FUNCTIONS = frozenset({"contains_any", "contains_all"})
+
+
+def _list_slot_ordinals(template: Any) -> frozenset[int]:
+    """Textual ordinals of the placeholders filling a list function's list argument."""
+    starts = sorted({n.start for n in _walk_parsed(template) if isinstance(n, Placeholder)})
+    return frozenset(
+        starts.index(arg.start)
+        for node in _walk_parsed(template)
+        if isinstance(node, ScalarCall) and node.name in _LIST_ARG_FUNCTIONS
+        for arg in node.args if isinstance(arg, Placeholder)
     )
 
 
@@ -1121,7 +1144,7 @@ def _check_slot(
 
 def _spliced(
     text: str, *, variables: Mapping[str, Any], regions: List[_Region], kinds: Tuple[str, ...], code_braces: bool,
-    text_slots: frozenset[int] = frozenset(),
+    text_slots: frozenset[int] = frozenset(), list_slots: frozenset[int] = frozenset(),
 ) -> str:
     out: List[str] = []
     cursor = 0
@@ -1134,7 +1157,7 @@ def _spliced(
             chunk = _ANY_BRACE_RE.sub(
                 partial(
                     _bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables,
-                    text_slots=text_slots, ordinal=ordinal,
+                    text_slots=text_slots, list_slots=list_slots, ordinal=ordinal,
                 ),
                 chunk,
             )
@@ -1169,7 +1192,7 @@ def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str
 
 def _bound_text(
     match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
-    text_slots: frozenset[int], ordinal: Iterator[int],
+    text_slots: frozenset[int], ordinal: Iterator[int], list_slots: frozenset[int] = frozenset(),
 ) -> str:
     whole = match.group(0)
     if whole in ("{{", "}}"):
@@ -1180,8 +1203,11 @@ def _bound_text(
     value = variables[name]
     if in_string:
         return _value_text(name, value).replace("'", "''")
-    if next(ordinal) in text_slots:
+    position = next(ordinal)
+    if position in text_slots:
         return _literal_text(name, value)
+    if position in list_slots and isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_literal_text(name, v) for v in value) + "]"
     start = region_start + match.start()
     if _opens_in_list(text, start=start, end=region_start + match.end()):
         values = value if isinstance(value, (list, tuple)) else [value]
@@ -1231,7 +1257,8 @@ def _literal_text(name: str, value: Any) -> str:
 def _bare_literal_text(name: str, value: Any) -> str:
     if isinstance(value, (list, tuple)):
         raise ValueError(
-            f"{_LITERAL_VALUES}: variable '{name}' holds a list, which fills only a whole IN list, e.g. x in ({{{name}}})."
+            f"{_LITERAL_VALUES}: variable '{name}' holds a list, which fills only a whole IN list or a list "
+            f"function's list, e.g. x in ({{{name}}}) or contains_any(tags, {{{name}}})."
         )
     if isinstance(value, str):
         stripped = value.strip()
@@ -1777,6 +1804,8 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
+    if isinstance(parsed, ArrayLit):
+        return f"[{', '.join(canonical_measure_text(e) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
         return _canonical_agg_text(parsed)
     if isinstance(parsed, TransformCall):

@@ -108,13 +108,17 @@ is the coercion from coarser to finer.
      search. Only aggregates and filters (Axiom 14) read across `×`; any other
      row-level read is a type error, so `×` never multiplies the population.
      [enforced: test:tests/test_unrelated_datasets.py]
+   - **3.2 List children.** A list column `L` of dataset `D` is a keyless
+     one-to-many child `D.L`: one row per non-NULL element, its value
+     `D.L.value`, each row determining its `D` row.
+     [enforced: test:tests/test_dev2137_list_children.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
    counting). A cell with no home rows takes the aggregation's **empty value**:
-   0 for the count family, NULL otherwise. A built-in aggregation skips NULL
+   0 for the count family, the empty list for `collect`, NULL otherwise. A built-in aggregation skips NULL
    inputs, so a cell whose inputs are all NULL takes the same empty value —
    wherever the aggregation is evaluated (locally, across a join, in a stage,
    window, partition or association) and whatever its input type.

@@ -17,7 +17,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import SqlDialect, TextFn, anon, case, lit, pad_fill
+from slayer.sql.dialects.base import LIST_ELEMENT, SqlDialect, TextFn, anon, case, is_not_null, lit, pad_fill
 from slayer.sql.dialects.patterns import RE2, RegexFlavour, emit_replacement
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
@@ -37,6 +37,14 @@ from slayer.sql.dialects.reflection import (
 
 #: ``json_type`` values that are not a scalar.
 _NON_SCALAR_JSON = ("OBJECT", "ARRAY", "NULL")
+
+
+def _compact(values: Expression) -> Expression:
+    """``[e FOR e IN values IF e IS NOT NULL]``: DuckDB 2 rejects the ``->`` lambda, 1.1–1.2 lack ``lambda e:``."""
+    element = exp.column(LIST_ELEMENT)
+    return exp.Array(expressions=[exp.Comprehension(
+        this=element, expression=element.copy(), iterator=values.copy(), condition=is_not_null(element.copy()),
+    )])
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:
@@ -81,6 +89,7 @@ class DuckdbDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
     regex_flavour: ClassVar[RegexFlavour] = RE2
+    database_name: ClassVar[str] = "DuckDB"
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
@@ -112,6 +121,18 @@ class DuckdbDialect(SqlDialect):
                                      expressions=[lit(t) for t in _NON_SCALAR_JSON]))
         read = case((scalar, anon("JSON_EXTRACT_STRING", value, text)))
         return case((anon("JSON_VALID", value), read))
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("LEN", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("LIST_CONTAINS", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ANY", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ALL", _compact(values), _compact(other))
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

@@ -76,7 +76,8 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
-| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
+| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date`, `ARRAY` |
+| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests) |
 | `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
@@ -100,6 +101,7 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 | `boolean` | True/false | BOOLEAN |
 | `time` | Timestamp | TIMESTAMP, DATETIME |
 | `date` | Date only | DATE |
+| `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
 
@@ -111,6 +113,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
 | `boolean` | the `number` set |
 | `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
+| `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
@@ -278,6 +281,7 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 | `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
 | `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
+| `collect` | `collect(name)` | The distinct non-NULL values as a sorted list; `[]` when there are none |
 
 `count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 

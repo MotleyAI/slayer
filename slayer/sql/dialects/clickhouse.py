@@ -9,30 +9,37 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
+import sqlglot
 from sqlalchemy.types import NullType
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    LIST_ELEMENT,
+    LIST_VALUE,
     ExtremumFn,
+    ListRelation,
     ServerProfile,
     SqlDialect,
     TextFn,
     anon,
     as_text,
     case,
+    element_lambda,
+    is_not_null,
     is_null,
     iso_text,
     lit,
     pad_fill,
 )
+from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
@@ -52,6 +59,13 @@ _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.U
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
 #: Types ClickHouse refuses inside ``Nullable``.
 _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY, exp.DataType.Type.JSON)
+
+
+def _compact(values: Expression) -> Expression:
+    """``arrayFilter(e -> e IS NOT NULL, values)`` (the lambda comes first here)."""
+    element = exp.to_identifier(LIST_ELEMENT)
+    keep = exp.Lambda(this=is_not_null(exp.Column(this=element.copy())), expressions=[element])
+    return exp.Anonymous(this="arrayFilter", expressions=[keep, values.copy()])
 
 
 def _utf8(node: Expression) -> Expression:
@@ -80,6 +94,7 @@ _CORRELATED_DEFAULT_ON_VERSION = (25, 8)
 _TIMEOUT_SETTING = "max_execution_time"
 _ABSENT = object()
 _BOOL_SETTING_VALUES = {"1": True, "true": True, "0": False, "false": False}
+_BOOL_TYPES = frozenset({"Bool", "Nullable(Bool)"})
 
 
 def _parse_clickhouse_version(raw: Any) -> tuple[int, int] | None:
@@ -109,6 +124,17 @@ def _parse_bool_setting(raw: Any) -> bool | None:
     if isinstance(raw, str):
         return _BOOL_SETTING_VALUES.get(raw.strip().lower())
     return None
+
+
+def _exists_beside_array_join(sql: str) -> bool:
+    """Whether a SELECT of ``sql`` both ``ARRAY JOIN``s and filters by ``EXISTS`` (ClickHouse < 25.8 cannot plan it)."""
+    if "ARRAY JOIN" not in sql.upper():
+        return False
+    return any(
+        any(j.args.get("kind") == "ARRAY" for j in select.args.get("joins") or [])
+        and select.args.get("where") is not None and select.args["where"].find(exp.Exists) is not None
+        for select in sqlglot.parse_one(sql, read="clickhouse").find_all(exp.Select)
+    )
 
 
 def _attach_ch_correlated_setting(ast: Expression) -> None:
@@ -166,6 +192,55 @@ class ClickhouseDialect(SqlDialect):
     regex_flavour: ClassVar[RegexFlavour] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
     like_escape_clause: ClassVar[bool] = False
+    database_name: ClassVar[str] = "ClickHouse"
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("length", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("has", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("hasAny", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("hasAll", values, _compact(other))
+
+    def empty_list(self, element: Optional[DataType]) -> Expression:
+        return exp.Array(expressions=[])
+
+    def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
+        """The HTTP driver returns ``Bool`` and ``Array(T)`` cells as their text."""
+        readers: dict[int, Callable[[Any], Any]] = {}
+        for i, d in enumerate(description):
+            type_code = d[1] if isinstance(d[1], str) else ""
+            reader = read_bool if type_code in _BOOL_TYPES else array_reader(type_code)
+            if reader is not None:
+                readers[i] = reader
+        return readers
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """``arrayExists(e -> predicate(e), values)``: no correlated subquery reads the outer row's list."""
+        return anon("arrayExists", element_lambda(predicate, alias=alias), _compact(values))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``ARRAY JOIN`` of one-field named tuples, so the element reads as ``alias.value``."""
+        element_name = exp.to_identifier(LIST_ELEMENT)
+        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {(element or DataType.UNKNOWN).value}>")
+        as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", exp.Column(this=element_name.copy())), to=row_type),
+                            expressions=[element_name])
+        kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)
+        rows = exp.Anonymous(this="arrayMap", expressions=[as_row, kept])
+        return ListRelation(relation=exp.Alias(this=rows, alias=alias.copy()), join_kind="ARRAY")
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """``groupUniqArray`` skips NULLs and returns ``[]`` over none."""
+        return anon("arraySort", anon("groupUniqArray", value))
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Character, not byte, semantics for substring / lower / upper / position."""
@@ -377,7 +452,7 @@ class ClickhouseDialect(SqlDialect):
         """``readonly = 1`` forbids every setting change; ``0`` and ``2`` allow it."""
         return profile.readonly != 1
 
-    def correlated_subquery_refusal(self, profile: ServerProfile) -> str | None:
+    def correlated_subquery_refusal(self, profile: ServerProfile, *, sql: str = "") -> str | None:
         version = profile.version
         if version is None or version < _CORRELATED_MIN_VERSION:
             detected = (
@@ -385,6 +460,11 @@ class ClickhouseDialect(SqlDialect):
                 else f"detected {version[0]}.{version[1]}. Upgrade the server."
             )
             return f"ClickHouse supports correlated subqueries only from server 25.4, but {detected}"
+        if version < _CORRELATED_DEFAULT_ON_VERSION and _exists_beside_array_join(sql):
+            return (
+                "ClickHouse runs a correlated subquery beside a list's ARRAY JOIN only from server 25.8, "
+                f"but detected {version[0]}.{version[1]}. Upgrade the server."
+            )
         if profile.correlated_subqueries or profile.readonly not in (None, 1):
             return None
         setting_state = (

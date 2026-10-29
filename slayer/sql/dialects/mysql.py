@@ -76,6 +76,8 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "MySQL"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[RegexFlavour] = ICU
@@ -308,6 +310,7 @@ class MariadbDialect(MysqlDialect):
     (lowerings: DEV-1975)."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+    database_name: ClassVar[str] = "MariaDB"
     sa_backend_names: frozenset[str] = frozenset({"mariadb"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:

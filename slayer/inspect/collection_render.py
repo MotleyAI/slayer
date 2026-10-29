@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from slayer.core.join_walker import addressable_token, neighbors
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerModel, column_type_text
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
 from slayer.inspect.model_render import (
     _markdown_table,
@@ -130,6 +130,7 @@ def _models_summary_json(
                     {
                         "name": c.name,
                         "type": str(c.type),
+                        **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                         "description": desc(c.description),
                     }
                     for c in m.columns if not c.hidden
@@ -198,7 +199,7 @@ def _append_verbose_model_lines(
     all_models: list[SlayerModel] | None = None,
 ) -> None:
     col_rows = [
-        {"name": c.name, "type": str(c.type), "description": desc(c.description)}
+        {"name": c.name, "type": column_type_text(c), "description": desc(c.description)}
         for c in m.columns if not c.hidden
     ]
     model_lines.append(f"**Columns ({len(col_rows)}):**")

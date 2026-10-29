@@ -292,7 +292,7 @@ class TestIngestionKeepsJsonDbType:
         assert (_db_type(getattr(sf, name)(), dialect="snowflake") or "").upper().startswith(name)
 
     def test_postgres_array_is_not_json(self) -> None:
-        assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") is None
+        assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") == "INTEGER[]"
 
     def test_clickhouse_column_the_driver_cannot_type_reads_its_catalog_type(self) -> None:
         inspector = MagicMock()

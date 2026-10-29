@@ -1351,6 +1351,7 @@ class SlayerQuery(BaseModel):
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
             "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
@@ -1413,7 +1414,8 @@ class SlayerQuery(BaseModel):
             "What happens when an aggregation is sliced by a dimension not "
             "attributable to it: broadcast (default — repeat the value across "
             "the cells, with a warning) | associate (aggregate per cell over "
-            "the distinct associated entities) | error (refuse)."
+            "the distinct associated entities, e.g. per list element "
+            "tags.value) | error (refuse)."
         ),
     )
 
