@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from slayer import usage_reporting
-from slayer.usage_reporting import control, sender, settings, spool
+from slayer.usage_reporting import control, recorder, sender, settings, spool
 from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
@@ -50,8 +50,10 @@ def store(usage_reporting_env) -> str:
 
 
 def _spool_one(token: str = "query") -> None:
+    """Spool one record without sending."""
     usage_reporting.start()
     usage_reporting.record(surface="mcp", token=token)
+    assert recorder._recorder.sending is None
     end_process()
 
 
@@ -362,12 +364,14 @@ def test_due_at_start_sends_spool(usage_reporting_env) -> None:
 
 
 def test_last_send_in_the_future_counts_as_due(usage_reporting_env) -> None:
-    quiet_config(last_sent=_T0 + datetime.timedelta(days=30))
+    quiet_config(last_sent=_T0)
     usage_reporting_env.set_now(_T0)
     _spool_one()
+    write_config(last_sent=_T0 + datetime.timedelta(days=30))
     usage_reporting.start()
     assert len(usage_reporting_env.capture.wait_for(count=1)) == 1
     end_process()
+    assert len(usage_reporting_env.capture.requests) == 1
 
 
 def test_clock_jump_forward_is_due(usage_reporting_env) -> None:
@@ -537,7 +541,7 @@ def test_install_id_created_on_first_use(usage_reporting_env) -> None:
 def test_install_id_rotation(usage_reporting_env, age_days: int, rotated: bool) -> None:
     old = uuid.uuid4()
     write_config(install_id=old, install_id_created=_T0.date())
-    quiet_config(last_sent=_T0)
+    quiet_config(last_sent=_T0 + datetime.timedelta(days=age_days))
     usage_reporting_env.set_now(_T0 + datetime.timedelta(days=age_days))
     _spool_one()
     current = config()
