@@ -64,6 +64,15 @@ from tests._dev2101_fixtures import (
     dev2101_models,
     seed_server as dev2101_seed_server,
 )
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    lib_model,
+    lib_query,
+    server_table_statements as dev2120_table_statements,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1627,3 +1636,46 @@ class TestMySQLModeBGrammar:
 
     async def test_filtered_aggregations(self, _mysql_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_mysql_dev2101_storage))
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in dev2120_table_statements(LIB, dialect="mysql"):
+                    cur.execute(stmt)
+                cur.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, payload JSON)")
+                cur.executemany("INSERT INTO docs VALUES (%s, %s)", DOCS_ROWS)
+        finally:
+            conn.close()
+        ds = _ds_config(mysql_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2120")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(lib_model(data_source="testmysql")))
+        for model in ingest_datasource(datasource=ds, include_tables=["docs"]):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLPortableLibrary:
+    async def test_library(self, _mysql_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+
+    async def test_native_json_column(self, _mysql_dev2120_storage) -> None:
+        await check_native_json(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+
+    async def test_comparisons_follow_the_column_collation(self, _mysql_dev2120_storage) -> None:
+        engine = SlayerQueryEngine(storage=_mysql_dev2120_storage)
+        for filt, expected in (("word = 'ada'", {3, 4}), ("word IN ('paid')", {1, 2}), ("word LIKE 'ada%'", {3, 4})):
+            resp = await engine.execute(lib_query(filters=[filt]))
+            assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)

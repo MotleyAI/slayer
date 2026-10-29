@@ -11,21 +11,39 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
+from typing import ClassVar, NoReturn
+
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.errors import UnsupportedServerFunctionError
+from slayer.core.json_path import JsonPath, json_path_text
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     FALSE_WORDS,
     NUMBER_TEXT_PATTERN,
     TRUE_WORDS,
+    ExtremumFn,
+    MathFn,
     SqlDialect,
+    TextFn,
+    anon,
+    any_null,
     as_text,
+    case,
+    lit,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
+
+
+def _match_type(case_insensitive: bool) -> Expression:
+    """ICU match type: always explicit, so a case-insensitive collation never decides."""
+    return lit("i" if case_insensitive else "c")
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -60,6 +78,75 @@ class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
+    regex_flavour: ClassVar[RegexFlavour] = ICU
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "chr":
+            utf32 = exp.Chr(expressions=[args[0].copy()], charset=exp.var("utf32"))
+            text = exp.Cast(this=utf32, to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+            return self._code_point_guard(args[0], text)
+        if fn == "ascii":
+            return exp.Unicode(this=args[0].copy())
+        return super().build_text_call(fn, args)
+
+    def binary_text(self, value: Expression) -> Expression:
+        """Read as ``utf8mb4`` (any column charset) under its binary collation."""
+        utf8 = exp.Cast(this=value.copy(), to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+        return exp.Collate(this=utf8, expression=exp.var("utf8mb4_bin"))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``SUBSTRING_INDEX`` twice; ``''`` past the last field."""
+        inner = anon("SUBSTRING_INDEX", value, delimiter, lit(index))
+        field = anon("SUBSTRING_INDEX", inner, delimiter, lit(-1 if index > 0 else 1))
+        beyond = exp.GT(this=lit(abs(index)), expression=self.field_count(value, delimiter))
+        return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "pi":
+            return anon("ACOS", lit(-1))  # PI() reaches the client rounded to 6 places
+        return super().build_math_call(fn, args)
+
+    def cube_root(self, value: Expression) -> Expression:
+        # A DOUBLE exponent: 1 / 3.0 is a DECIMAL cut to div_precision_increment places.
+        third = exp.Div(this=lit(1), expression=exp.Literal.number("3E0"))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=exp.Pow(this=exp.Abs(this=value.copy()), expression=third))
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        """``GREATEST`` / ``LEAST`` propagate NULL here."""
+        return self.coalesced_extremum(fn, args, spelling="upper")
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_LIKE", value, self.regex_text(pattern), _match_type(case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """The first match, then (for a group) that match re-read whole by the pattern."""
+        match = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _match_type(False))
+        if group == 0:
+            return match
+        return anon("REGEXP_REPLACE", match, self.regex_text(pattern, anchored=True), lit(f"${group}"), lit(1),
+                    lit(0), _match_type(False))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
+                    lit(0), _match_type(case_insensitive))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        def json_type(steps: tuple[str | int, ...]) -> Expression:
+            return anon("JSON_TYPE", anon("JSON_EXTRACT", value.copy(), lit(json_path_text(steps))))
+
+        # MySQL reads ``[n]`` on a non-array as the value itself; an index needs an array parent.
+        arrays = [exp.EQ(this=json_type(path.steps[:i]), expression=lit("ARRAY"))
+                  for i, step in enumerate(path.steps) if isinstance(step, int)]
+        readable: Expression = exp.Not(this=exp.In(this=json_type(path.steps),
+                                                   expressions=[lit("OBJECT"), lit("ARRAY"), lit("NULL")]))
+        for array in reversed(arrays):
+            readable = exp.And(this=array, expression=readable)
+        read = case((readable, anon("JSON_VALUE", value.copy(), lit(path.text))))
+        return case((anon("JSON_VALID", value), read))  # a nested CASE: JSON_EXTRACT raises on invalid text
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""
@@ -215,10 +302,45 @@ class MysqlDialect(SqlDialect):
 
 
 class MariadbDialect(MysqlDialect):
-    """MariaDB renders as MySQL; it names its statement timeout differently."""
+    """MariaDB renders as MySQL; it names its statement timeout differently. Library regex, numeric
+    ``TRY_CAST`` (so text-to-number coercion) and ``json_value`` are refused: MariaDB has no
+    ``REGEXP_LIKE``, shorter ``REGEXP_SUBSTR`` / ``REGEXP_REPLACE``, and reads JSON booleans as 1 / 0
+    (lowerings: DEV-1975)."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
     sa_backend_names: frozenset[str] = frozenset({"mariadb"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_statement_time = {timeout_seconds}"
+
+    def build_regexp_like(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_like and the ~ operators")
+
+    def build_regexp_extract(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_extract")
+
+    def build_regexp_replace(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        _unsupported("regexp_replace")
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        if to.is_type(*exp.DataType.NUMERIC_TYPES):
+            _unsupported("TRY_CAST to a number (and comparing or computing text with numbers)")
+        return super().build_try_cast(value, to)
+
+    def build_json_value(  # NOSONAR(S1172) — hook signature
+        self, value: Expression, path: JsonPath, native: bool,
+    ) -> Expression:
+        _unsupported("json_value and its spellings (->>, json_extract, …)")
+
+
+def _unsupported(what: str) -> NoReturn:
+    raise UnsupportedServerFunctionError(
+        summary=f"{what} is not supported on MariaDB yet.",
+        suggestion="Run it on MySQL, or express it in the model's own SQL (Column.sql).",
+    )

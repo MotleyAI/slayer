@@ -126,7 +126,7 @@ All code, old and new, MUST obey these.
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
     canonical function library, extended never forked. [review] Every Mode B
-    construct means the same on every dialect. [target: DEV-2120]
+    construct means the same on every dialect. [enforced: test:tests/test_dev2120_library_matrix.py]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]

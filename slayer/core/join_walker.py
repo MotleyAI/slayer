@@ -23,14 +23,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Dict, Iterable, Iterator, Literal, Optional, Sequence
+from typing import Callable, Dict, Iterable, Iterator, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
-from slayer.core.models import ModelJoin, SlayerModel, is_key_set_unique, join_key_error
+from slayer.core.models import Column, ModelJoin, SlayerModel, is_key_set_unique, join_key_error
 from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_column, is_spine, spine_joins
 
 __all__ = [
@@ -46,6 +46,7 @@ __all__ = [
     "incident_model_names",
     "is_product_edge",
     "is_unrelated_edge",
+    "join_key_columns",
     "matching_edges",
     "neighbors",
     "observe_traversals",
@@ -290,23 +291,30 @@ def edges_between(*, source: SlayerModel, target: SlayerModel) -> list[OrientedJ
     return out
 
 
-def physical_join_pairs(
+def join_key_columns(
     *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
-) -> list[tuple[str, str]]:
-    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+) -> list[tuple[Column, Column]]:
+    """``edge``'s key pairs as their declared columns; raises ``JoinKeyError`` on a non-base key."""
     declared_target = (edge.target_model if edge.declaring_model == edge.source_model
                        else edge.source_model)
 
-    def physical(key: str, model: SlayerModel) -> str:
+    def column(key: str, model: SlayerModel) -> Column:
         err = join_key_error(model=edge.declaring_model, target=declared_target, key=key,
                              side=model.name, columns=model.columns)
         if err is not None:
             raise err
         col = model.get_column(key)
         assert col is not None
-        return col.physical_name
+        return col
 
-    return [(physical(src, source), physical(tgt, target)) for src, tgt in edge.join_pairs]
+    return [(column(src, source), column(tgt, target)) for src, tgt in edge.join_pairs]
+
+
+def physical_join_pairs(
+    *, edge: OrientedJoin, source: SlayerModel, target: SlayerModel,
+) -> list[tuple[str, str]]:
+    """``edge``'s key pairs in physical spelling; raises ``JoinKeyError`` on a non-base key."""
+    return [(s.physical_name, t.physical_name) for s, t in join_key_columns(edge=edge, source=source, target=target)]
 
 
 def _virtual_spine_edges(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[OrientedJoin]:
@@ -640,9 +648,11 @@ def resolved_terminal(
     return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=True)
 
 
-def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
-    """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
-    def column_type(key: ValueKey) -> Optional[DataType]:
+def model_column_lookup(
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel],
+) -> Callable[[object], Optional[Column]]:
+    """The declared ``Column`` of a column leaf rooted at ``model``; ``None`` for anything unresolvable."""
+    def lookup(key: object) -> Optional[Column]:
         if isinstance(key, ColumnSqlKey):
             owner = model if key.model == model.name else models_by_name.get(key.model)
             leaf = key.column_name
@@ -651,7 +661,16 @@ def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerMod
             leaf = key.leaf
         else:
             return None
-        col = owner.get_column(leaf) if owner is not None else None
+        return owner.get_column(leaf) if owner is not None else None
+    return lookup
+
+
+def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
+    """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
+    lookup = model_column_lookup(model=model, models_by_name=models_by_name)
+
+    def column_type(key: ValueKey) -> Optional[DataType]:
+        col = lookup(key)
         return col.type if col is not None else None
     return column_type
 

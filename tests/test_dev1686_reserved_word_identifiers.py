@@ -188,6 +188,10 @@ class TestDialectReservedKeywords:
         ]
         assert not bare
 
+    @pytest.mark.parametrize("word", ["sample", "trigger"])
+    def test_snowflake_live_probed_words_are_quoted(self, word: str) -> None:
+        assert exp.to_identifier(word).sql(dialect="snowflake") == f'"{word}"'
+
     def test_dialect_words_stay_bare_elsewhere(self) -> None:
         assert exp.to_identifier("index").sql(dialect="postgres") == "index"
 

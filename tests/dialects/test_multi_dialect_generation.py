@@ -1,6 +1,6 @@
 """Multi-dialect SQL generation end-to-end tests.
 
-DEV-1542 cleanup: lifted from ``tests/test_sql_generator.py``. Each test
+Lifted from ``tests/test_sql_generator.py``. Each test
 class drives ``SQLGenerator`` across multiple dialects and asserts on the
 final emitted SQL — orthogonal to the per-dialect strategy-class tests in
 ``tests/dialects/test_<dialect>.py`` which pin emission from the
@@ -22,18 +22,18 @@ from slayer.sql.generator import SQLGenerator
 from tests.dialects.conftest import _generate, _norm
 
 
-# DEV-1337: per-alias allowlists for "natively supports single-arg log10/log2"
+# Per-alias allowlists for "natively supports single-arg log10/log2"
 # rendering. Outside these sets the current 2-arg LOG(base, x) form is kept.
 # Explicit hand-written sets — these are the spec; deriving from the dialect
 # flags would make the log-alias tests self-fulfilling.
 _LOG10_NATIVE_DIALECTS = frozenset({
     "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
+    "bigquery", "redshift",
     "trino", "presto", "databricks", "spark", "tsql",
 })
 _LOG2_NATIVE_DIALECTS = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
+    "sqlite", "duckdb", "mysql", "clickhouse",
+    "trino", "presto", "databricks", "spark",
 })
 
 
@@ -107,7 +107,7 @@ class TestMultiDialectGeneration:
 
     # Oracle is excluded: its native TRUNC(x,'WEEK') is Jan-1-anchored, so
     # neither WEEK nor WEEK_SUNDAY is truly Monday/Sunday there — Oracle
-    # Sunday-week correctness is explicitly out of scope (DEV-1572). The exact
+    # Sunday-week correctness is explicitly out of scope. The exact
     # per-dialect Sunday shape is pinned in tests/dialects/test_<dialect>.py;
     # SQLite runtime bucketing is pinned by execution there. This is an
     # emission-only smoke test guarding against a silent fallback to Monday
@@ -118,7 +118,7 @@ class TestMultiDialectGeneration:
     async def test_date_trunc_week_sunday_differs_from_week(
         self, dialect: str, orders_model: SlayerModel
     ) -> None:
-        """DEV-1572 emission smoke test: a WEEK_SUNDAY breakout must emit
+        """Emission smoke test: a WEEK_SUNDAY breakout must emit
         different SQL from a plain (Monday) WEEK breakout — a dialect-agnostic
         guard that WEEK_SUNDAY is genuinely shifted/overridden and never
         silently falls back to Monday-week bucketing. Exact Sunday-shape and
@@ -356,7 +356,7 @@ class TestMultiDialectGeneration:
         assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
         assert "DATEADD" in norm, f"Expected DATEADD in multi-unit T-SQL window:\n{sql}"
 
-    # DEV-1317: cross-dialect stat-agg generation. The exact SQL shape per
+    # Cross-dialect stat-agg generation. The exact SQL shape per
     # Tier-1 dialect is pinned in TestStatAggsPerDialect; here we just confirm
     # the generator produces parseable SQL on every supported dialect.
     # Assertions check the function-call SHAPE (qualified column refs in the
@@ -481,7 +481,7 @@ class TestMultiDialectGeneration:
 
 
 class TestLogAliasPreservation:
-    """DEV-1337 — user-written ``log10(x)`` / ``log2(x)`` must round-trip
+    """User-written ``log10(x)`` / ``log2(x)`` must round-trip
     verbatim in emitted SQL on dialects that natively support those single-arg
     aliases. sqlglot's default behaviour normalises both into a generic
     ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as
@@ -572,8 +572,10 @@ class TestLogAliasPreservation:
                 f"{dialect}: should not canonicalise to LOG(amount, 2):\n{sql}"
             )
         else:
-            # Fallback for tsql / oracle / redshift / snowflake (no native LOG2).
-            assert "LOG(2,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,2)" in upper_no_ws, (
+            # Fallback for postgres / tsql / oracle / redshift / snowflake (no native LOG2); Postgres's
+            # LOG(b, x) takes NUMERIC only.
+            assert ("LOG(2,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,2)" in upper_no_ws
+                    or "LOG(2,CAST(ORDERS.AMOUNTASDECIMAL))" in upper_no_ws), (
                 f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
             )
 
@@ -657,7 +659,8 @@ class TestLogAliasPreservation:
             f"{dialect}: must not invent LOG3() — only base 10 and 2 are aliased:\n{sql}"
         )
         # The 2-arg form must remain in some arg order.
-        assert "LOG(3,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,3)" in upper_no_ws, (
+        assert ("LOG(3,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,3)" in upper_no_ws
+                or "LOG(3,CAST(ORDERS.AMOUNTASDECIMAL))" in upper_no_ws), (
             f"{dialect}: expected 2-arg LOG(3, amount) preserved, got:\n{sql}"
         )
 
@@ -681,7 +684,7 @@ class TestLogAliasPreservation:
 
 
 class TestStringHygieneDialectTranslation:
-    """DEV-1378: lowercase string-hygiene operators are pass-through to
+    """Lowercase string-hygiene operators are pass-through to
     the emitted SQL string, then re-parsed by sqlglot under the target
     dialect at WHERE-assembly. sqlglot's per-dialect emitter chooses
     each dialect's preferred spelling. These tests pin the actual
@@ -696,7 +699,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "LOWER(orders.status) = 'active'"),
             ("mysql", "LOWER(orders.status) = 'active'"),
             ("duckdb", "LOWER(orders.status) = 'active'"),
-            ("clickhouse", "LOWER(orders.status) = 'active'"),
+            ("clickhouse", "lowerUTF8(orders.status) = 'active'"),
         ],
     )
     async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
@@ -717,9 +720,10 @@ class TestStringHygieneDialectTranslation:
         [
             ("sqlite", "INSTR(orders.status, ',')"),
             ("postgres", "POSITION(',' IN orders.status)"),
-            ("mysql", "LOCATE(',', orders.status)"),
+            ("mysql", "LOCATE(\n    CAST(',' AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin,\n"
+                      "    CAST(orders.status AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin\n  )"),
             ("duckdb", "STRPOS(orders.status, ',')"),
-            ("clickhouse", "POSITION(orders.status, ',')"),
+            ("clickhouse", "positionUTF8(orders.status, ',')"),
         ],
     )
     async def test_instr_translates_per_dialect(
@@ -744,7 +748,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
             ("mysql", "SUBSTRING(orders.status, 1, 5)"),
             ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "SUBSTRING(orders.status, 1, 5)"),
+            ("clickhouse", "substringUTF8(orders.status, 1, 5)"),
         ],
     )
     async def test_substr_translates_per_dialect(

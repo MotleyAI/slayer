@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name, ALL_TRANSFORMS
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.sql.dialects import dialect_for_ds_type
@@ -65,7 +65,7 @@ def _is_call(tokens: list[tokenize.TokenInfo], i: int) -> bool:
 def _count_call(tokens: list[tokenize.TokenInfo], i: int, out: QueryFeatures) -> None:
     """Count the call at ``tokens[i]`` as a transform or an aggregation; scalar functions are skipped."""
     name = tokens[i].string.lower()
-    if name in SCALAR_FUNCTIONS:
+    if name in RESERVED_SCALAR_NAMES:
         return
     wraps = _wraps_aggregate(tokens[i + 2:_close_paren(tokens, i + 1)])
     aggregation = _aggregation_token(tokens[i].string)

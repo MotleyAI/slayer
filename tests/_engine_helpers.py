@@ -39,6 +39,7 @@ from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 from slayer.sql import engine_factory
+from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Dialect → file extension for a seeded on-disk database (cosmetic; the
@@ -209,7 +210,9 @@ async def _engine_generate(
         response = await engine.execute(query, dry_run=True)
         sql = response.sql
         assert sql is not None, "engine.execute(dry_run=True) returned no SQL"
-        _assert_valid_sql(sql, dialect=dialect)
+        # A datasource type that is not a sqlglot name (``mariadb``) parses as its dialect's.
+        parse_dialect = dialect if dialect in SQLGLOT_NAMES else dialect_for_ds_type(dialect).sqlglot_name
+        _assert_valid_sql(sql, dialect=parse_dialect)
         return sql
 
 

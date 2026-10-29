@@ -261,7 +261,7 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
 
 
 def _is_cross_schema_fk(
-    fk: dict, schema: str | None, default_schema: str | None = None,
+    fk: dict, schema: str | None, default_schema: str | None = None, dialect: Any = None,
 ) -> bool:
     """Does this FK point outside the ingested schema (it would mis-bind by bare name)?"""
     referred_schema = fk.get("referred_schema")
@@ -271,7 +271,14 @@ def _is_cross_schema_fk(
     # Unknown ingested schema: skip rather than risk binding to the wrong table.
     if effective_schema is None:
         return True
-    return referred_schema != effective_schema
+    return _schema_key(referred_schema, dialect) != _schema_key(effective_schema, dialect)
+
+
+def _schema_key(name: str, dialect: Any) -> str:
+    """A case-folding dialect (Snowflake, Oracle) reports schema names normalised; compare them so."""
+    if dialect is not None and getattr(dialect, "requires_name_normalize", False):
+        return dialect.normalize_name(name)
+    return name
 
 
 def _fk_groups(
@@ -281,13 +288,14 @@ def _fk_groups(
     table_set: set[str],
     schema: str | None,
     default_schema: str | None,
+    dialect: Any = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
     """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per in-scope FK constraint."""
     result: list[tuple[str, list[tuple[str, str]]]] = []
     for fk in keys.foreign_keys:
         if fk.referred_table not in table_set or fk.referred_table == table_name:
             continue
-        if _is_cross_schema_fk(fk.model_dump(), schema=schema, default_schema=default_schema):
+        if _is_cross_schema_fk(fk.model_dump(), schema=schema, default_schema=default_schema, dialect=dialect):
             continue
         pairs = list(zip(fk.columns, fk.referred_columns))
         if pairs:
@@ -349,6 +357,7 @@ def _generate_joins(
         table_set=table_set,
         schema=schema_name if schema_name is not None else schema,
         default_schema=getattr(inspector, "default_schema_name", None),
+        dialect=getattr(inspector, "dialect", None),
     )
     joins = []
     seen_signatures: set[tuple] = set()
@@ -401,8 +410,18 @@ def _safe_get_table_comment(
         return None
 
 
-def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL)."""
+def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]) -> bool:
+    """A type in the dialect's ``json_types`` (``json_value`` reads it natively)."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    return any(n.split("(")[0].strip().upper() in json_types for n in (type(sa_type).__name__, str(sa_type)))
+
+
+def _introspected_column(
+    col: ReflectedColumn, *, name: str, primary_key: bool,
+    zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(),
+) -> IntrospectedColumn:
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL,
+    a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     col_type = col.type
     db_type: str | None = None
     if isinstance(col_type, DataType):
@@ -412,7 +431,9 @@ def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) 
     else:
         data_type = _sa_type_to_data_type(col_type)
         is_float = _sa_type_is_float(col_type)
-        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type):
+        if data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type, json_types=json_types) or (
+            type(col_type).__name__.upper() in zoned_types
+        ):
             db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
     return IntrospectedColumn(
         name=name, type=data_type, primary_key=primary_key, is_float=is_float,
@@ -433,9 +454,13 @@ def _introspect_query_columns_via_inspector(
             sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref,
         ).primary_key
     pk_columns = set(primary_key)
+    dialect = dialect_for_engine(sa_engine)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
     return [
-        _introspected_column(col, name=col.name, primary_key=col.name in pk_columns)
+        _introspected_column(
+            col, name=col.name, primary_key=col.name in pk_columns,
+            zoned_types=dialect.zoned_timestamp_db_types, json_types=dialect.json_db_types,
+        )
         for col in reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
         if "." not in col.name
     ]

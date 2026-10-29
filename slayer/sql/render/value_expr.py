@@ -57,10 +57,12 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     render_arithmetic,
     render_cast,
     render_in_predicate,
+    render_modulo,
     render_null_safe,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
+    render_scalar_key,
     temporal_comparison,
 )
 from slayer.sql.scope import ScopeFrame
@@ -406,6 +408,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             and op in _COMPARISON_OPS
         ):
             operands = [_paren_if_binary(o) for o in operands]
+        if op == "%":
+            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, column_type=_known_column_types(ctx))
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
@@ -423,9 +427,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
             )
-        return render_scalar_call(
-            name=key.name, args=args, dialect=ctx.dialect,
-        )
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx))
 
     if isinstance(key, InKey):
         (column,) = numeric_parts(
@@ -434,7 +436,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
 
     if isinstance(key, CastKey):
-        return render_cast(key=key, value=render_value_key(key=key.source, ctx=ctx), dialect=ctx.dialect)
+        return render_cast(
+            key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
+            direct=ctx.aliases is None or not _slot_available(key.source, ctx.aliases),
+        )
 
     if isinstance(key, AggregateKey):
         return _render_aggregate(key, ctx)

@@ -52,7 +52,7 @@ def test_snowflake_explain_postfix() -> None:
 
 def test_snowflake_log_native_flags() -> None:
     d = SnowflakeDialect()
-    assert d.should_use_native_log(10) is True
+    assert d.should_use_native_log(10) is False
     # Snowflake has no LOG2 — sqlglot would fall through to LOG(2, x).
     assert d.should_use_native_log(2) is False
 

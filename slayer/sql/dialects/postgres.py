@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import ServerProfile, SqlDialect, as_text
+from slayer.core.keys import CastKey, ScalarCallKey
+from slayer.sql.dialects.base import ServerProfile, SqlDialect, TextFn, anon, as_text, pad_fill
 from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
 
 #: The first Postgres major version with ``pg_input_is_valid``.
 _PG_INPUT_IS_VALID_SINCE = (16, 0)
+
+
+def _cast_log_arg_to_numeric(node: Expression) -> Expression:
+    """A based ``LOG(b, x)`` has only the ``numeric`` overload: cast ``x`` (Postgres has no ``log2``)."""
+    if not isinstance(node, exp.Log) or node.args.get("expression") is None:
+        return node
+    value = node.expression
+    if not (isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.DECIMAL)):
+        node.set("expression", exp.cast(value.copy(), "DECIMAL"))
+    return node
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -51,17 +62,38 @@ class PostgresDialect(SqlDialect):
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
-    log2_native: bool = True
+    log2_native: bool = False
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
-    try_cast_reads_profile: bool = True
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "JSONB"})
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
 
+    def profile_needed(self, keys: Iterable[object]) -> bool:
+        """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+."""
+        return any(
+            (isinstance(k, CastKey) and k.try_) or (isinstance(k, ScalarCallKey) and k.name == "json_value")
+            for k in keys
+        )
+
     def server_profile_sql(self) -> str | None:
         return "SELECT current_setting('server_version_num')"
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
+        if fn in ("left", "right", "lpad", "rpad", "repeat"):
+            fill = [pad_fill(args)] if fn in ("lpad", "rpad") and len(args) == 2 else []
+            return anon(fn.upper(), *args, *fill)
+        return super().build_text_call(fn, args)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``%`` has no DOUBLE overload: non-integers go through NUMERIC."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        numeric = exp.DataType.build("NUMERIC")
+        return anon("MOD", exp.Cast(this=left.copy(), to=numeric), exp.Cast(this=right.copy(), to=numeric))
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
@@ -120,5 +152,5 @@ class PostgresDialect(SqlDialect):
         return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
-        """Numeric-cast every 2-arg ROUND's first arg: Postgres has no ``round(double, int)``."""
-        return tree.transform(_cast_round_arg_to_numeric)
+        """Numeric-cast every 2-arg ROUND's and based LOG's value: their only overloads take ``numeric``."""
+        return tree.transform(_cast_round_arg_to_numeric).transform(_cast_log_arg_to_numeric)

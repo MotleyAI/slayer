@@ -415,6 +415,24 @@ class AggregationFilterError(QueryTypeError):
     """A ``FILTER (WHERE …)`` condition that is not a row-level predicate of its aggregation."""
 
 
+class ScalarArgumentError(QueryTypeError):
+    """A scalar function argument outside its contract: a pattern, path, flag or index the library does not
+    take, or a literal outside the function's domain."""
+
+
+class ScalarOperandTypeError(QueryTypeError):
+    """A scalar function or operator over an operand of a type it does not read (a number function over TEXT,
+    a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
+
+
+class ServerVersionError(QueryTypeError):
+    """A function the connected server's version does not provide."""
+
+
+class UnsupportedServerFunctionError(QueryTypeError):
+    """A library function the connected database cannot yet run with its portable meaning."""
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 
@@ -708,6 +726,10 @@ class MeasureCycleError(SlayerError, ValueError):
             summary="Cyclic reference in named-measure expansion.",
             extras=[("chain", " → ".join(self.chain))],
         ))
+
+
+class VariableError(SlayerError):
+    """A ``{name}`` placeholder whose name is invalid or whose variable is undefined."""
 
 
 class UnresolvedPlaceholderError(SlayerError):

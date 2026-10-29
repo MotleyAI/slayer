@@ -40,16 +40,18 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
     is_unrelated_edge,
+    join_key_columns,
     model_column_type,
-    physical_join_pairs,
     resolved_terminal,
 )
-from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
+from slayer.core.models import (
+    VALUE_PLACEHOLDER, Column, aggregation_definition, rendered_formula, reserved_value_param_message,
+)
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.column_expansion import (
@@ -74,7 +76,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import is_stat_agg1, is_stat_agg2
+from slayer.sql.dialects.base import bare_comparands, is_stat_agg1, is_stat_agg2
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     AliasAllocator,
@@ -188,6 +190,11 @@ class AggRenderSpec(BaseModel):
 
     #: An expression source's rendered value, never re-parsed from text.
     value: Optional[Expression] = None
+
+
+def _key_equality(left: Expression, right: Expression) -> exp.EQ:
+    left, right = bare_comparands(left, right)
+    return exp.EQ(this=left, expression=right)
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
@@ -625,13 +632,6 @@ def _is_host_grain(key) -> bool:
 # --- Transform-input shape classification, shared by the series-regime
 # time_shift selector and the consecutive_periods emitter. ---
 
-# SCALAR_PASSTHROUGH members whose result is a string (no defined truthiness);
-# length / instr return numbers and are intentionally excluded.
-_STRING_VALUED_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim",
-    "replace", "substr", "substring", "concat",
-})
-
 #: Argument-less rank-family window functions (``ntile`` carries its bucket count).
 _RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank": exp.PercentRank}
 
@@ -648,7 +648,7 @@ def _validate_consecutive_periods_input(*, op: str, inner) -> None:
     (a boolean anywhere a number is needed is its integer)."""
     if (
         isinstance(inner, ScalarCallKey)
-        and inner.name.lower() in _STRING_VALUED_SCALARS
+        and inner.name.lower() in TEXT_RESULT_SCALARS
     ):
         raise ValueError(
             f"{op!r} cannot use a string-valued predicate ({inner.name}(...)): a "
@@ -2780,10 +2780,10 @@ class SQLGenerator:
                 column_name=col.name, bundle=bundle,
             ))
         else:
-            expr = self._resolve_sql(
+            expr = self._dialect.read_column(self._resolve_sql(
                 sql=col.sql if col.sql else col.name, name=col.name,
                 model_name=root_relation, type=col.type,
-            )
+            ), zoned=self._dialect.is_zoned_db_type(col.db_type))
         for p in self._joined_paths_in_sql(
             sql_expr=expr, source_relation=root_relation,
             source_model=root_model, bundle=bundle,
@@ -4406,6 +4406,11 @@ class SQLGenerator:
                 prev_model = next_model
         return base_from, joins
 
+    def _join_key(self, *, column: Column, alias: str) -> Expression:
+        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
+        key = exp.Column(this=self._to_ident(column.physical_name), table=exp.to_identifier(alias))
+        return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(column.db_type))
+
     def _hop_join(
         self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
@@ -4413,18 +4418,11 @@ class SQLGenerator:
         if is_unrelated_edge(edge):
             raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
         join_on_parts = [
-            # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
-            exp.EQ(
-                this=exp.Column(
-                    this=self._to_ident(src_col),
-                    table=exp.to_identifier(current_alias),
-                ),
-                expression=exp.Column(
-                    this=self._to_ident(tgt_col),
-                    table=exp.to_identifier(next_alias),
-                ),
+            _key_equality(
+                self._join_key(column=src_col, alias=current_alias),
+                self._join_key(column=tgt_col, alias=next_alias),
             )
-            for src_col, tgt_col in physical_join_pairs(
+            for src_col, tgt_col in join_key_columns(
                 edge=edge, source=prev_model, target=next_model,
             )
         ]
@@ -4470,10 +4468,8 @@ class SQLGenerator:
                 f"Column {leaf!r} not found on joined model "
                 f"{current_model.name!r}.",
             )
-        return exp.Column(
-            this=exp.to_identifier(leaf),
-            table=exp.to_identifier(current_alias),
-        )
+        column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
+        return self._dialect.read_column(column, zoned=self._dialect.is_zoned_db_type(col_def.db_type))
 
     def _rank_family_window(
         self, *, fn: Expression, measure: Expression, partition_by: Iterable[Expression], descending: bool,
@@ -5360,10 +5356,8 @@ class SQLGenerator:
                 f"Column {leaf!r} not found on model "
                 f"{source_model.name!r}",
             )
-        return self._resolve_sql(
-            sql=col.sql, name=col.name, model_name=source_relation,
-            type=col.type,
-        )
+        resolved = self._resolve_sql(sql=col.sql, name=col.name, model_name=source_relation, type=col.type)
+        return self._dialect.read_column(resolved, zoned=self._dialect.is_zoned_db_type(col.db_type))
 
     def _bucket_source_expr(
         self, *, source: ValueKey, scope, source_model, source_relation: str, bundle,
@@ -5413,6 +5407,7 @@ class SQLGenerator:
                     owner_path=tuple(time_column.path),
                     cast=False,
                 )
+                owner = joined_model
             else:
                 expanded_sql = self._expand_derived_column_sql(
                     source_model=source_model,
@@ -5421,7 +5416,11 @@ class SQLGenerator:
                     bundle=bundle,
                     cast=False,
                 )
-            return self._parse(expanded_sql)
+                owner = source_model
+            declared = owner.get_column(time_column.column_name)
+            return self._dialect.read_column(
+                self._parse(expanded_sql), zoned=self._dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
+            )
         raise NotImplementedError(
             f"Unsupported TimeTruncKey column type: {type(time_column).__name__}",
         )
@@ -5780,9 +5779,15 @@ class SQLGenerator:
                 # The declared-type CAST is baked into sql_text (on the value), so
                 # the aggregate must not re-cast the whole expression.
                 column_type = None
+                zoned_value = None
             else:
                 sql_text = col.sql if col.sql else col.name
                 column_type = col.type
+                # A zoned physical column reads as the dialect's naive type inside the aggregate too.
+                zoned_value = self._dialect.read_column(
+                    self._resolve_sql(sql=sql_text, name=col.name, model_name=source_relation, type=column_type),
+                    zoned=True,
+                ) if self._dialect.is_zoned_db_type(col.db_type) else None
             formula = rendered_formula(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
@@ -5793,6 +5798,7 @@ class SQLGenerator:
                 type=slot_type,
                 column_type=column_type,
                 input_type=input_type,
+                value=zoned_value,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),

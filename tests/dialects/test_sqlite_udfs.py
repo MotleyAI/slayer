@@ -420,7 +420,7 @@ def test_log_udf_registered_unconditionally():
     registered: list[tuple[str, int]] = []
 
     class _SpyConn:
-        def create_function(self, name, narg, fn):  # noqa: ARG002
+        def create_function(self, name, narg, fn, **_kw):  # noqa: ARG002
             registered.append((name, narg))
 
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002

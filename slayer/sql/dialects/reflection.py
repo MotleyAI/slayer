@@ -146,13 +146,18 @@ def info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     return DataType.TEXT, False
 
 
-def column_from_type_string(*, name: str, data_type: str | None, comment: str | None = None) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept only for exact numerics."""
+def column_from_type_string(
+    *, name: str, data_type: str | None, comment: str | None = None, zoned_types: frozenset[str] = frozenset(),
+    json_types: frozenset[str] = frozenset(),
+) -> ReflectedColumn:
+    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (exact numerics,
+    a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
     mapped, is_float = info_schema_type(unwrapped)
+    word = unwrapped.split("(")[0].upper().strip()
+    lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
     return ReflectedColumn(
-        name=name, type=mapped, is_float=is_float,
-        db_type=unwrapped if is_exact_numeric_db_type(unwrapped) else None,
+        name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment),
     )
 

@@ -74,7 +74,7 @@ because no standard syntax works everywhere:
 | DuckDB | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
 | SQLite | yes | yes | yes | yes | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
 | ClickHouse | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
-| Snowflake | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. `LOG10` native; no native `LOG2` (falls through to `LOG(2, x)`). |
+| Snowflake | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
 | MySQL | **no** | **no** | yes | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
 | SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
 | Trino | yes (approximate) | yes (approximate) | yes | yes | sqlglot emits `APPROX_PERCENTILE(x, p)` — see "Trino caveats" below. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
@@ -172,6 +172,8 @@ treats backslash as an ordinary char; SLayer's entire sqlglot-based MySQL
 emission — not just variable substitution — assumes that mode is off, so
 backslash-bearing string values are not supported on such servers.
 
+**MariaDB** renders as MySQL, except that the portable library's regex functions and `~` operators, `TRY_CAST` to a number (and so comparing or computing text with numbers) and `json_value` with its spellings are refused at plan time.
+
 ### SQL Server (T-SQL) caveats
 
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
@@ -224,9 +226,9 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 - **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers joins like Postgres / MySQL / SQLite.
-- **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
-  canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
-  statistical functions are native.
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `Column.sql` fall
+  through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
+  the math / statistical functions are native.
 
 ### Trino caveats
 
@@ -283,6 +285,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older models), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
   `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
   explain=True)` returns the dry-run SQL unchanged rather than an execution

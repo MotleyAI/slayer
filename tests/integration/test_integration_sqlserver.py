@@ -103,6 +103,13 @@ from tests._dev2101_fixtures import (
     dev2101_models,
     seed_server as dev2101_seed_server,
 )
+from tests._dev2120_fixtures import (
+    LIB,
+    REGEX_NAMES,
+    check_library,
+    lib_model,
+    server_table_statements as dev2120_table_statements,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1651,3 +1658,49 @@ class TestSQLServerModeBGrammar:
 
     async def test_filtered_aggregations(self, _sqlserver_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def sqlserver_2025_container():
+    """SQL Server 2025, the first release with the regex functions."""
+    with SqlServerContainer("mcr.microsoft.com/mssql/server:2025-latest", password=_SA_PASSWORD) as c:
+        yield c
+
+
+def _dev2120_storage(container, tmp_path_factory, *, label: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_db_url(container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_dev2120_{label}")))
+        run_sync(storage.save_datasource(_ds_config(container, db_name)))
+        run_sync(storage.save_model(lib_model(data_source="testmssql")))
+        yield storage
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _sqlserver_2022_dev2120_storage(sqlserver_container, tmp_path_factory):
+    yield from _dev2120_storage(sqlserver_container, tmp_path_factory, label="2022")
+
+
+@pytest.fixture(scope="module")
+def _sqlserver_2025_dev2120_storage(sqlserver_2025_container, tmp_path_factory):
+    yield from _dev2120_storage(sqlserver_2025_container, tmp_path_factory, label="2025")
+
+
+@pytest.mark.integration
+class TestSQLServerPortableLibrary:
+    async def test_library_on_2022_refuses_regex(self, _sqlserver_2022_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_sqlserver_2022_dev2120_storage), gated=REGEX_NAMES,
+                            refusal="2025")
+
+    async def test_library_on_2025(self, _sqlserver_2025_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_sqlserver_2025_dev2120_storage))

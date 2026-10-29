@@ -790,9 +790,10 @@ examples:
     import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
     import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
     import_osi_parser.add_argument(
-        "--dialect", default="ANSI_SQL",
-        help="OSI expression dialect to read (default: ANSI_SQL). Falls back to "
-             "another SQL dialect when the requested one is absent.",
+        "--dialect", default=None,
+        help="OSI expression dialect to prefer over every other (default: none). Without it, "
+             "the order is top-level sql, OSSIE_SQL_2026, ANSI_SQL, the datasource's own "
+             "dialect, then any other readable SQL dialect.",
     )
     _add_storage_arg(import_osi_parser)
 

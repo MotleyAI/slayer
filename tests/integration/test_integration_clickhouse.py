@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+import requests
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
@@ -74,6 +75,15 @@ from tests._dev1737_fixtures import (
     matrix_cases,
     matrix_query,
     server_seed_statements,
+)
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
 )
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
@@ -305,18 +315,8 @@ class TestClickHouseQueries:
     async def test_string_hygiene_functions_execute(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """The typed pipeline emits string functions UPPERCASE
-        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
-        ClickHouse's native lowercase spelling. ClickHouse function names are
-        case-sensitive in general, so this pins that the standard SQL aliases
-        really do resolve on a live server rather than trusting that the
-        emitted SQL merely looks plausible.
-
-        ``substr`` now reaches the server as ``SUBSTRING``: routing every
-        scalar through one dialect-aware policy means sqlglot transpiles the
-        call to the target's own spelling instead of passing the DSL name
-        through verbatim.
-        """
+        """``lower`` / ``substr`` reach ClickHouse as its character-counting ``lowerUTF8`` /
+        ``substringUTF8``; ClickHouse names are case-sensitive, so this pins that they resolve live."""
         lowered = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
@@ -324,7 +324,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=lowered)
         assert result.data[0]["orders._count"] > 0
-        assert "LOWER(" in (result.sql or ""), result.sql
+        assert "lowerUTF8(" in (result.sql or ""), result.sql
 
         subs = SlayerQuery(
             source_model="orders",
@@ -333,7 +333,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=subs)
         assert result.data[0]["orders._count"] > 0
-        assert "SUBSTRING(" in (result.sql or ""), result.sql
+        assert "substringUTF8(" in (result.sql or ""), result.sql
 
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
@@ -1864,3 +1864,51 @@ def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
             ) == []
     finally:
         _drop_module_db(clickhouse_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+def _http(clickhouse_container, db_name: str, sql: str, **settings: str) -> None:
+    """Run one statement over HTTP, where per-query server settings ride as URL parameters."""
+    host = clickhouse_container.get_container_host_ip()
+    port = int(clickhouse_container.get_exposed_port(8123))
+    user = getattr(clickhouse_container, "username", "default") or "default"
+    password = getattr(clickhouse_container, "password", "") or ""
+    resp = requests.post(f"http://{host}:{port}/", params={"database": db_name, **settings}, data=sql.encode(),
+                         auth=(user, password), timeout=60)
+    assert resp.ok, resp.text
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="clickhouse"):
+                    conn.execute(sa.text(stmt))
+        _http(clickhouse_container, db_name, "CREATE TABLE docs (id Int32, payload JSON) ENGINE = MergeTree ORDER BY id",
+              allow_experimental_json_type="1")
+        rows = ", ".join(f"({rid}, {server_literal(doc or '{}', kind='TEXT', dialect='clickhouse')})"
+                         for rid, doc in DOCS_ROWS)
+        _http(clickhouse_container, db_name, f"INSERT INTO docs VALUES {rows}", allow_experimental_json_type="1")
+        ds = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(lib_model(data_source="testclickhouse")))
+        for model in ingest_datasource(datasource=ds, include_tables=["docs"]):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHousePortableLibrary:
+    async def test_library(self, _clickhouse_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+    async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
+        await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))

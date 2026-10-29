@@ -3715,6 +3715,57 @@ probes:
       query: {source_model: monthly_rev, measures: [{formula: "sum(rev)", name: v}]}
       options: {policy: north}
 
+  # ------------------------------------------------------------------ C9 portable expression library (SLayer)
+  - id: C9-slayer-regex
+    row: C9
+    title: regex filter and group extraction, one meaning on every engine
+    truth_sql: |
+      select name, regexp_extract(name, '^([A-Z])[a-z]+$', 1) from customers where regexp_matches(name, '^[A-E]')
+    compare: {keys: [name], values: [initial]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false, filters: ["name ~ '^[A-E]'"],
+              dimensions: [name, {expression: "regexp_extract(name, '^([A-Z])[a-z]+$', 1)", name: initial}]}
+
+  - id: C9-slayer-strings
+    row: C9
+    title: Postgres string semantics (negative left, truncating lpad, negative split_part)
+    truth_sql: |
+      select name, lpad(left(name, -1), 4, '.'), split_part(city, 'o', -1) from customers
+    compare: {keys: [name], values: [short, tail]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "lpad(left(name, -1), 4, '.')", name: short},
+                           {expression: "split_part(city, 'o', -1)", name: tail}]}
+
+  - id: C9-slayer-json
+    row: C9
+    title: json_value and the ->> arrow read a scalar out of JSON text
+    truth_sql: select name, city, length(city) from customers
+    compare: {keys: [name], values: [city_json, city_len]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "'{\"c\": \"' || city || '\"}' ->> 'c'", name: city_json},
+                           {expression: "json_value('{\"n\": ' || length(city) || '}', '$.n' RETURNING INT)",
+                            name: city_len}]}
+
+  - id: C9-slayer-text-number
+    row: C9
+    title: text compared with a number compares numerically (TRY_CAST)
+    truth_sql: select id from customers where id * 10 > 50
+    compare: {keys: [id], values: []}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false, dimensions: [id],
+              filters: ["id || '0' > 50"]}
+
+  - id: C9-slayer-greatest
+    row: C9
+    title: greatest ignores NULL arguments
+    truth_sql: select name, greatest(nullif(discount, 0) * 100, 250) from customers
+    compare: {keys: [name], values: [g]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "greatest(nullif(discount, 0) * 100, 250)", name: g}]}
+
   # ------------------------------------------------------------------ C11 curated semantic surfaces (SLayer)
   - id: C11-facade-listing
     row: C11
