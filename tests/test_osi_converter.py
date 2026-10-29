@@ -1241,7 +1241,8 @@ def staff_engine(tmp_path: Path) -> Iterator[sa.Engine]:
     with contextlib.closing(duckdb.connect(str(path))) as con:
         con.execute("CREATE TABLE staff (id INTEGER, skills VARCHAR[])")
         con.execute("INSERT INTO staff VALUES (1, ['go', 'sql'])")
-        con.execute("CREATE TABLE assignments (id INTEGER, staff_id INTEGER)")
+        con.execute("CREATE TABLE assignments (id INTEGER, staff_id INTEGER, role_id INTEGER)")
+        con.execute("CREATE TABLE roles (id INTEGER, staff_id INTEGER)")
     with disposable_engine(f"duckdb:///{path}") as engine:
         yield engine
 
@@ -1300,3 +1301,28 @@ def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine,
     cols = _staff_columns(staff_engine, source="staff",
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
     assert cols["skills"] == (DataType.ARRAY, DataType.TEXT)
+
+
+def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
+    def rel(name: str, frm: str, to: str, key: str) -> OSIRelationship:
+        return OSIRelationship.model_validate(
+            {"name": name, "from": frm, "to": to, "from_columns": [key], "to_columns": ["id"]})
+
+    doc = _mini_doc(
+        datasets=[  # the referrer first, so one pass would copy roles.skills_of before it is typed
+            OSIDataset(name="assignments", source="assignments",
+                       fields=[OSIField(name="role_id", expression=_expr("role_id")),
+                               OSIField(name="role_skills", expression=_expr("roles.skills_of"))]),
+            OSIDataset(name="roles", source="roles",
+                       fields=[OSIField(name="id", expression=_expr("id")),
+                               OSIField(name="staff_id", expression=_expr("staff_id")),
+                               OSIField(name="skills_of", expression=_expr("staff.skills"))]),
+            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
+                                                            OSIField(name="skills", expression=_expr("skills"))]),
+        ],
+        relationships=[rel("a2r", "assignments", "roles", "role_id"), rel("r2s", "roles", "staff", "staff_id")],
+    )
+    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
+    col = assignments.get_column("role_skills")
+    assert col is not None
+    assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)

@@ -678,12 +678,21 @@ class OsiToSlayerConverter:
             return None
 
     def _type_cross_model_columns(self) -> None:
-        """Type a derived column that is exactly one cross-model ref from its target column."""
-        for model in self._models.values():
-            for col in model.columns:
-                target = self._single_cross_model_ref_column(model=model, sql=col.sql) if col.sql else None
-                if target is not None:
+        """Type a derived column that is exactly one cross-model ref from its target column, until a chain of
+        such refs settles (each pass settles at least one more link, so the column count bounds the passes)."""
+        refs = [
+            (col, target)
+            for model in self._models.values() for col in model.columns
+            if col.sql and (target := self._single_cross_model_ref_column(model=model, sql=col.sql)) is not None
+        ]
+        for _ in range(len(refs)):
+            changed = False
+            for col, target in refs:
+                if (col.type, col.element_type) != (target.type, target.element_type):
                     col.type, col.element_type = target.type, target.element_type
+                    changed = True
+            if not changed:
+                return
 
     def _single_cross_model_ref_column(
         self, model: SlayerModel, sql: str
