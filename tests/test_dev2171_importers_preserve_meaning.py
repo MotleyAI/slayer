@@ -12,8 +12,8 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from tests._dev2171_fixtures import (
-    by_id, column, counts_by, cube_issues, entries, has_measure, import_cube, import_dbt, import_osi, models_of,
-    rows, seed,
+    by_id, column, counts_by, cube_issues, entries, has_column, has_measure, import_cube, import_dbt, import_osi,
+    models_of, rows, seed,
 )
 from tests._osi_helpers import ds, f, flat, m, rel, unconverted
 
@@ -26,8 +26,6 @@ CUBES = [
      "dimensions": [
          CUBE_ID,
          {"name": "status_upper", "sql": "UPPER({CUBE}.status)"},
-         {"name": "status", "sql": "{CUBE}.state"},
-         {"name": "customer_id", "sql": "{CUBE}.legacy_ref", "type": "number"},
          {"name": "tags", "sql": "{CUBE}.tags"},
          {"name": "amount_x2", "sql": "{CUBE}.amount * 2", "type": "number"},
      ],
@@ -45,6 +43,19 @@ CUBES = [
          {"name": "windowed", "type": "number", "sql": "SUM({CUBE}.amount) OVER ()"},
      ],
      "segments": [{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}]},
+    {"name": "orders_clash", "sql_table": "orders",
+     "joins": [{"name": "customers", "relationship": "many_to_one", "sql": "{CUBE}.customer_id = {customers}.id"}],
+     "dimensions": [
+         CUBE_ID,
+         {"name": "status_upper", "sql": "UPPER({CUBE}.status)"},
+         {"name": "status", "sql": "{CUBE}.state"},
+         {"name": "customer_id", "sql": "{CUBE}.legacy_ref", "type": "number"},
+     ],
+     "measures": [
+         {"name": "paid_cnt", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"},
+         {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID},
+     ],
+     "segments": [{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}]},
     {"name": "orders_self", "sql_table": "orders",
      "dimensions": [CUBE_ID, {"name": "status", "sql": "UPPER({CUBE}.status)"}],
      "measures": [{"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]},
@@ -58,9 +69,7 @@ DBT_MODELS = [
      "entities": [{"name": "order", "type": "primary", "expr": "id"},
                   {"name": "customer", "type": "foreign", "expr": "customer_id"}],
      "dimensions": [
-         {"name": "status", "type": "categorical", "expr": "state"},
          {"name": "status_upper", "type": "categorical", "expr": "UPPER(status)"},
-         {"name": "customer_id", "type": "categorical", "expr": "legacy_ref"},
          {"name": "tags", "type": "categorical"},
      ],
      "measures": [
@@ -69,6 +78,18 @@ DBT_MODELS = [
          {"name": "total", "agg": "sum", "expr": "amount"},
          {"name": "tag_cnt", "agg": "count", "expr": "tags"},
          {"name": "tag_kinds", "agg": "count_distinct", "expr": "tags"},
+     ]},
+    {"name": "orders_clash", "model": "orders",
+     "entities": [{"name": "order_clash", "type": "primary", "expr": "id"},
+                  {"name": "customer", "type": "foreign", "expr": "customer_id"}],
+     "dimensions": [
+         {"name": "status", "type": "categorical", "expr": "state"},
+         {"name": "status_upper", "type": "categorical", "expr": "UPPER(status)"},
+         {"name": "customer_id", "type": "categorical", "expr": "legacy_ref"},
+     ],
+     "measures": [
+         {"name": "paid_cnt", "agg": "sum", "expr": "CASE WHEN status = 'paid' THEN 1 ELSE 0 END"},
+         {"name": "paid_bool", "agg": "sum_boolean", "expr": "status = 'paid'"},
      ]},
     {"name": "orders_self", "model": "orders",
      "entities": [{"name": "order_self", "type": "primary", "expr": "id"}],
@@ -80,7 +101,7 @@ DBT_MODELS = [
 
 OSI_DOCUMENT = flat([
     ds("orders", fields=[
-        f("id"), f("status", "state"), f("status_upper", "UPPER(status)"), f("tags"), f("note"), f("amount"),
+        f("id"), f("status"), f("status_upper", "UPPER(status)"), f("tags"), f("note"), f("amount"),
         f("customer_id"),
         f("has_a", "ARRAY_CONTAINS(tags, 'a')"), f("n_tags", "CARDINALITY(tags)"),
     ], metrics=[
@@ -89,6 +110,7 @@ OSI_DOCUMENT = flat([
         m("doubled", "SUM(amount * 2)"), m("padded", "SUM(LENGTH(LPAD(status, 12, 'x')))"),
         m("tag_max", "MAX(tags)"), m("tag_kinds", "COUNT(DISTINCT tags)"),
     ]),
+    ds("orders_clash", source="orders", fields=[f("id"), f("status", "state"), f("status_upper", "UPPER(status)")]),
     ds("orders_self", source="orders", fields=[f("id"), f("status", "UPPER(status)")]),
     ds("customers", fields=[f("id"), f("name")]),
 ], relationships=[rel("o2c", src="orders", to="customers", from_columns=["customer_id"], to_columns=["id"])],
@@ -107,6 +129,7 @@ async def _values(*, models: Iterable[SlayerModel], db: Path, model: str, names:
 
 
 UPPER_COUNTS = {"PAID": 2, "OPEN": 1}
+STATE_COUNTS = {"open": 1, "paid": 1, "x": 1}
 
 
 async def test_cube(db: Path) -> None:
@@ -122,12 +145,18 @@ async def test_cube(db: Path) -> None:
                          "share": 10, "tag_cnt": 2})
     tags = column(models_of(result)["orders"], "tags")
     assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
-    assert await counts_by(models=models, db=db, model="orders_self", dimension="status") == UPPER_COUNTS
-    assert await counts_by(models=models, db=db, model="orders_view", dimension="status") == UPPER_COUNTS
+    assert await _values(models=models, db=db, model="orders_self", names=["paid_sum"]) == {"paid_sum": 30}
     assert await _values(models=models, db=db, model="orders_view", names=["paid_sum"]) == {"paid_sum": 30}
+    assert await counts_by(models=models, db=db, model="orders_clash", dimension="status") == STATE_COUNTS
     for refused in ("tag_kinds", "windowed"):
         assert not has_measure(result, "orders", refused)
         assert cube_issues(result, refused), refused
+    clash = models_of(result)["orders_clash"]
+    for member in ("status_upper", "paid_cnt", "paid_sum", "is_paid"):
+        assert clash.get_column(member) is None and clash.get_measure(member) is None, member
+        assert [i for i in cube_issues(result, member) if "status" in i.message], member
+    assert clash.joins == [] and [i for i in cube_issues(result, "customer_id") if i.cube == "orders_clash"]
+    assert not has_column(result, "orders_self", "status") and cube_issues(result, "status")
 
 
 async def test_dbt(db: Path) -> None:
@@ -139,9 +168,14 @@ async def test_dbt(db: Path) -> None:
         == {"paid_cnt": 2, "paid_bool": 2, "total": 35, "tag_cnt": 2}
     tags = column(models_of(result)["orders"], "tags")
     assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
-    assert await counts_by(models=models, db=db, model="orders_self", dimension="status") == UPPER_COUNTS
+    assert await counts_by(models=models, db=db, model="orders_clash", dimension="status") == STATE_COUNTS
     assert not has_measure(result, "orders", "tag_kinds")
     assert entries(result, "tag_kinds")
+    for member in ("status_upper", "paid_cnt", "paid_bool"):
+        assert not has_column(result, "orders_clash", member) and not has_measure(result, "orders_clash", member)
+        assert [e for e in entries(result, member) if "status" in e.message], member
+    assert models_of(result)["orders_clash"].joins == [] and entries(result, "customer_id")
+    assert not has_column(result, "orders_self", "status") and entries(result, "status")
 
 
 async def test_osi(db: Path) -> None:
@@ -155,6 +189,9 @@ async def test_osi(db: Path) -> None:
     ]) == {"with_b": 2, "tag_cnt": 2, "obrien": 1, "doubled": 70, "padded": 36, "plus_customer": 339}
     (statuses,) = (await _values(models=models, db=db, model="orders", names=["statuses"])).values()
     assert sorted(statuses) == ["OPEN", "PAID"]
-    assert await counts_by(models=models, db=db, model="orders_self", dimension="status") == UPPER_COUNTS
+    assert await counts_by(models=models, db=db, model="orders_clash", dimension="status") == STATE_COUNTS
     for refused in ("tag_max", "tag_kinds"):
         assert unconverted(result, refused), refused
+    assert not has_column(result, "orders_clash", "status_upper")
+    assert [e for e in entries(result, "status_upper") if "status" in e.message]
+    assert not has_column(result, "orders_self", "status") and entries(result, "status")

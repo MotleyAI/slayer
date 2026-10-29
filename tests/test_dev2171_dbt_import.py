@@ -13,7 +13,7 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
 from slayer.sql import engine_factory
 from tests._dev2171_fixtures import (
-    DS, column, counts_by, deletes, drift_entries, entries, has_column, has_measure, import_dbt, models_of,
+    DS, MASKED, column, counts_by, deletes, drift_entries, entries, has_column, has_measure, import_dbt, models_of,
     run_cli, save_datasource, seed, source_column, stored_model, value, write_yaml,
 )
 
@@ -50,27 +50,32 @@ def db(tmp_path: Path) -> Path:
 
 
 class TestPhysicalReferences:
+    @MASKED
     async def test_collision_in_a_measure_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum", "CASE WHEN status = 'paid' THEN 1 ELSE 0 END")])], db=db)
         assert await value(models=result.models, db=db, model="orders", formula="paid_cnt") == 2
 
+    @MASKED
     async def test_collision_in_sum_boolean(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum_boolean", "status = 'paid'")])], db=db)
         assert await value(models=result.models, db=db, model="orders", formula="paid_cnt") == 2
 
+    @MASKED
     async def test_collision_in_a_dimension_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS, dim("status_upper", "UPPER(status)")])], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
 
+    @MASKED
     async def test_entity_key_masked_by_a_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("customer_id", "legacy_ref")], entities=[ORDER, CUSTOMER_FK]),
                              CUSTOMERS], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="customers.name") == {
             "Ann": 2, "Bo": 1}
 
+    @MASKED
     async def test_self_named_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("status", "UPPER(status)")])], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == {

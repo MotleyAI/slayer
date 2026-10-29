@@ -14,7 +14,7 @@ from slayer.osi.parser import parse_osi_path
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ListFn
 from tests._dev2171_fixtures import (
-    by_id, column, convert_osi, counts_by, import_osi, models_of, rows, seed, value,
+    MASKED, by_id, column, convert_osi, counts_by, import_osi, models_of, rows, seed, value,
 )
 from tests._osi_helpers import ds, f, flat, legacy, m, mentions, unconverted, visible, write_yaml
 
@@ -43,6 +43,7 @@ def documents(kind: str, datasets: list[dict[str, Any]], *, directory: Path) -> 
 KINDS = pytest.mark.parametrize("kind", ["current", "legacy"])
 
 
+@MASKED
 class TestPhysicalReferences:
     @KINDS
     async def test_field_reading_a_column_another_field_has_taken(self, db: Path, tmp_path: Path,

@@ -12,7 +12,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.sql import engine_factory
 from tests._dev2171_fixtures import (
-    DS, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_measure,
+    DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_measure,
     import_cube, models_of, run_cli, save_datasource, seed, source_column, stored_model, typing_notes,
     value, write_yaml,
 )
@@ -57,6 +57,7 @@ async def _measure(result, db: Path, name: str, model: str = "orders") -> Any:
 
 # ── physical references ───────────────────────────────────────────────────
 
+@MASKED
 class TestPhysicalReferences:
     @pytest.mark.parametrize("dims", [[RENAMED_STATUS, STATUS_UPPER], [STATUS_UPPER, RENAMED_STATUS]],
                              ids=["status-first", "derived-first"])
@@ -110,6 +111,7 @@ class TestPhysicalReferences:
         assert await counts_by(models=result.models, db=db, model="orders", dimension="bucket") == {"P": 2, "O": 1}
 
 
+@MASKED
 class TestSelfNamed:
     async def test_self_named_dimension(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[SELF_NAMED])], db=db)
@@ -176,13 +178,13 @@ class TestMemberReferences:
 
 class TestCalculatedMeasures:
     @pytest.mark.parametrize(("sql", "dims", "expected"), [
-        ("SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)", [RENAMED_STATUS], 2),
+        pytest.param("SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)", [RENAMED_STATUS], 2, marks=MASKED),
         ("SUM(CASE WHEN {CUBE}.status = 'paid' THEN {CUBE}.amount END)", [], 30),
         ("SUM({CUBE}.amount)", [], 35),
         ("SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)", [], 10),
         ("MAX({CUBE}.amount) - MIN({CUBE}.amount)", [], 15),
-        ("COUNT(DISTINCT {CUBE}.status)", [RENAMED_STATUS], 2),
-        ("AVG({CUBE}.amount * 3)", [dim("amount", "{CUBE}.amount * 2", type="number")], 35),
+        pytest.param("COUNT(DISTINCT {CUBE}.status)", [RENAMED_STATUS], 2, marks=MASKED),
+        pytest.param("AVG({CUBE}.amount * 3)", [dim("amount", "{CUBE}.amount * 2", type="number")], 35, marks=MASKED),
         ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {CUBE}.amount)", [], 10),
     ], ids=["case-collision", "undeclared-column", "plain", "filter-clause", "arithmetic", "count-distinct",
             "masked-operand", "percentile"])
@@ -226,11 +228,13 @@ class TestJoinKeys:
     async def _by_customer(self, result, db: Path) -> dict[Any, int]:
         return await counts_by(models=result.models, db=db, model="orders", dimension="customers.name")
 
+    @MASKED
     async def test_key_masked_by_a_renamed_dimension(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[dim("customer_id", "{CUBE}.legacy_ref", type="number")],
                                    joins=[self.JOIN]), CUSTOMERS], db=db)
         assert await self._by_customer(result, db) == {"Ann": 2, "Bo": 1}
 
+    @MASKED
     async def test_composite_key_with_a_masked_side(self, db: Path) -> None:
         join = {**self.JOIN, "sql": "{CUBE}.customer_id = {customers}.id AND {CUBE}.region = {customers}.region"}
         result = import_cube([cube(dimensions=[dim("region", "UPPER({CUBE}.region)")], joins=[join]), CUSTOMERS],
@@ -271,6 +275,7 @@ class TestFilterParams:
 
 # ── views ─────────────────────────────────────────────────────────────────
 
+@MASKED
 class TestViews:
     async def test_view_over_a_self_named_dimension(self, db: Path) -> None:
         view = {"name": "orders_view", "cubes": [{"join_path": "orders", "includes": ["id", "status", "paid_sum"]}]}
@@ -388,6 +393,7 @@ class TestCli:
         assert absent.replace("missing_ds", "") != failed.replace("broken_ds", "")
 
 
+@MASKED
 async def test_query_backed_source_with_a_collision(db: Path) -> None:
     result = import_cube([cube(sql="SELECT * FROM orders", dimensions=[RENAMED_STATUS, STATUS_UPPER])], db=db)
     assert await counts_by(models=result.models, db=db, model="orders", dimension="status_upper") == {

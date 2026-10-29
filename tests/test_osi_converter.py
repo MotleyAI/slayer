@@ -633,9 +633,8 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     assert status.type == DataType.TEXT
 
 
-def test_derived_field_shadowing_physical_column_overlays(shop_engine):
-    # A derived OSI field whose name matches a physical column must overlay its
-    # expression onto that column, not be silently dropped.
+def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
+    # A self-named legacy overlay is dropped with a report; the physical column stays (DEV-2175 imports it).
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -646,9 +645,8 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     orders = {m.name: m for m in result.models}["orders"]
     status_cols = [c for c in orders.columns if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].sql == "LOWER(status)"
-    # the derived field inherits the shadowed column's known TEXT type, not DOUBLE
-    assert status_cols[0].type == DataType.TEXT
+    assert (status_cols[0].sql, status_cols[0].type) == (None, DataType.TEXT)
+    assert _reported(result)
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):

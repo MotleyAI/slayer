@@ -5,7 +5,7 @@
 - [x] 1.3 Cover the Codex gap list: optional and required FILTER_PARAMS bodies, quoted / case-folded identifiers and case-only ambiguity, composite and renamed join keys, root vs nested CTE / subquery scope, query-backed (sql-mode) sources, helper dedup by (operand, filter, type), current-spec vs legacy OSI overlays, facade name collisions and transitive helpers, unreachable datasource, probed lists with known vs unknown element types
 - [x] 1.4 Test that `validate_models` proposes no deletion for an imported Cube and dbt model with a measure over a list column (datasource reachable)
 - [x] 1.5 List every existing test that pins a behaviour this change reverses and get the user's consent before changing any of them
-- [ ] 1.6 Split the collision forms out to DEV-2175 (user-approved): strict xfails pointing at DEV-2175, interim collision-drop tests per importer, acceptance fixtures split into value-checked and dropped-with-report parts, the OSI shadowing test asserting the drop
+- [x] 1.6 Split the collision forms out to DEV-2175 (user-approved): strict xfails pointing at DEV-2175, interim collision-drop tests per importer, acceptance fixtures split into value-checked and dropped-with-report parts, the OSI shadowing test asserting the drop
 
 ## 2. Shared package
 
