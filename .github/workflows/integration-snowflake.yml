@@ -27,13 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip if Snowflake secret is unset
+      - name: Skip if Snowflake secrets are unset
         id: gate
         env:
           SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
         run: |
-          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" ]]; then
-            echo "Snowflake secret unset — skipping the integration suite."
+          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" || -z "$SNOWFLAKE_PRIVATE_KEY" ]]; then
+            echo "Snowflake secrets unset — skipping the integration suite."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -45,17 +46,20 @@ jobs:
           python-version: "3.11"
           install-args: "-E snowflake"
 
-      - name: Write ~/.snowflake/connections.toml from secret
+      - name: Write ~/.snowflake/connections.toml and the key-pair key from secrets
         if: steps.gate.outputs.skip != 'true'
         env:
           SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.snowflake
           # `printf '%s'` is literal — no backslash mangling, no extra trailing
           # newline. `chmod 600` is required: snowflake-connector-python
-          # refuses to load a TOML that's world-/group-readable.
+          # refuses to load a TOML that's world-/group-readable. The profile's
+          # `private_key_file = "~/.snowflake/slayer_ci_key.p8"` reads the key.
           printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
-          chmod 600 ~/.snowflake/connections.toml
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/slayer_ci_key.p8
+          chmod 600 ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8
 
       - name: Run Snowflake integration tests
         if: steps.gate.outputs.skip != 'true'
@@ -66,8 +70,8 @@ jobs:
         # `secrets.SNOWFLAKE_CONNECTIONS_TOML`.
         env:
           SLAYER_SNOWFLAKE_CONNECTION: slayer_test
-        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -m integration --timeout=300
+        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -rs -m integration --timeout=300
 
       - name: Wipe Snowflake credentials
         if: always()
-        run: rm -f ~/.snowflake/connections.toml
+        run: rm -f ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8
