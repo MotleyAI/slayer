@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
@@ -274,8 +275,29 @@ class TestColumnUnique:
         assert keys.unique_key_sets == [["slug"], ["ref"]]
 
 
+class _CaseFoldingDialect:
+    """Snowflake-like: reports unquoted identifiers normalised to lowercase."""
+
+    requires_name_normalize = True
+
+    def normalize_name(self, name: str) -> str:
+        return name.lower() if name.upper() == name else name
+
+
 class TestCrossSchemaFk:
     """A cross-schema FK has no model to bind to and must not be guessed."""
+
+    def test_case_folding_dialect_matches_normalised_schema(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "slayer_test_ab12"}
+        assert _is_cross_schema_fk(fk, "SLAYER_TEST_AB12", dialect=_CaseFoldingDialect()) is False
+
+    def test_case_folding_dialect_still_skips_another_schema(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, "SLAYER_TEST_AB12", dialect=_CaseFoldingDialect()) is True
+
+    def test_case_sensitive_dialect_compares_verbatim(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "myschema"}
+        assert _is_cross_schema_fk(fk, "MYSCHEMA", dialect=postgresql.dialect()) is True
 
     def test_cross_schema_fk_is_skipped(self) -> None:
         fk = {
