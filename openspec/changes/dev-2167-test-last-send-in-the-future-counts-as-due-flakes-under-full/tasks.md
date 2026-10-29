@@ -6,6 +6,6 @@
 
 ## 2. Verification (pr-implement stage)
 
-- [ ] 2.1 Re-create the probe plugin from the DEV-2167 root-cause comment in the session scratchpad; with it loaded (`PYTHONPATH=<scratchpad> pytest -p probe_plugin …`) the OLD test fails (`assert 0 == 1` after ~30 s) and the NEW test passes.
-- [ ] 2.2 Loaded repro loop: 128 runs of the fixed test, 32 in parallel, under 32 `while True: pass` CPU burners — 0 failures.
-- [ ] 2.3 Full unit suite `poetry run pytest -m "not integration" -n auto` green; `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) clean.
+- [x] 2.1 Re-create the probe plugin from the DEV-2167 root-cause comment in the session scratchpad; with it loaded (`PYTHONPATH=<scratchpad> pytest -p probe_plugin …`) the OLD test fails (`assert 0 == 1` after ~30 s) and the NEW test passes.
+- [x] 2.2 Loaded repro loop: 128 runs of the fixed test, 32 in parallel, under 32 `while True: pass` CPU burners — 0 failures.
+- [x] 2.3 Full unit suite `poetry run pytest -m "not integration" -n auto` green; `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) clean.
