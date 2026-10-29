@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import shutil
+import socket
 import time
 from collections.abc import Callable
 
@@ -12,7 +13,7 @@ import pytest
 
 from slayer import usage_reporting
 from slayer.usage_reporting import sender, settings
-from tests._usage_reporting_capture import RefusedEndpoint
+from tests._usage_reporting_capture import CaptureServer, RefusedEndpoint
 from tests._usage_reporting_helpers import (
     SENT,
     assert_no_sentinel,
@@ -113,6 +114,26 @@ def test_failures_leave_output_and_exit_code_unchanged(
     make_due()
     _FAILURES[failure](usage_reporting_env, monkeypatch)
     assert _outcomes(_commands(store)) == expected
+
+
+@pytest.mark.parametrize(("error", "printed"), [
+    (BrokenPipeError(32, "Broken pipe"), False),
+    (ConnectionResetError(104, "Connection reset by peer"), False),
+    (RuntimeError("handler bug"), True),
+])
+def test_capture_server_is_silent_only_about_a_client_that_went_away(
+    capsys: pytest.CaptureFixture[str], error: Exception, printed: bool,
+) -> None:
+    server = CaptureServer()
+    try:
+        with socket.socket() as request:
+            try:
+                raise error
+            except Exception:
+                server._server.handle_error(request, ("127.0.0.1", 0))
+    finally:
+        server._server.server_close()
+    assert ("Traceback" in capsys.readouterr().err) is printed
 
 
 def test_corrupt_config_leaves_stdout_and_exit_code_unchanged(

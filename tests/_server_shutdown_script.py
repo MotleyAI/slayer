@@ -49,6 +49,29 @@ def _startup(args) -> None:
     cli._serve_until_terminated(run=lambda: mark("RUNNING"), stop=lambda: mark("STOP"))
 
 
+def _startup_raised_into(args) -> None:
+    try:
+        os.kill(os.getpid(), args.sig)
+        _forever.wait(10)
+    except BaseException:
+        mark("RAISED_INTO_STARTUP")
+        raise
+
+
+def _serve_after_signal(args) -> None:
+    guard = cli._TerminationGuard.active
+    assert guard is not None
+    try:
+        os.kill(os.getpid(), args.sig)
+        deadline = time.monotonic() + 10
+        while guard.signum is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+    except BaseException:
+        mark("RAISED_INTO_STARTUP")
+        raise
+    cli._serve_until_terminated(run=lambda: mark("RUNNING"), stop=lambda: mark("STOP"))
+
+
 def _join(_args) -> None:
     run, stop = _blocking_until_stopped()
     cli._serve_until_terminated(run=run, stop=stop)
@@ -101,18 +124,6 @@ def _failing_stop(error: BaseException) -> Callable[[argparse.Namespace], None]:
         cli._serve_until_terminated(run=run, stop=stop)
 
     return scenario
-
-
-def _signal_inside_worker_start(args) -> None:
-    real_start = threading.Thread.start
-
-    def start(thread: threading.Thread) -> None:
-        if thread.name == "slayer-server":
-            signal.raise_signal(args.sig)
-        real_start(thread)
-
-    threading.Thread.start = start  # type: ignore[method-assign]
-    cli._serve_until_terminated(run=lambda: mark("RUNNING"), stop=lambda: mark("STOP"))
 
 
 def _main_thread_sleeping() -> bool:
@@ -233,12 +244,13 @@ def _disposition(_args) -> None:
 
 SCENARIOS: dict[str, Callable[[argparse.Namespace], None]] = {
     "startup": _startup,
+    "startup_raised_into": _startup_raised_into,
+    "serve_after_signal": _serve_after_signal,
     "join": _join,
     "early": _early,
     "stuck_stop": _stuck_stop,
     "failing_stop": _failing_stop(RuntimeError("stop-boom")),
     "failing_stop_exit": _failing_stop(SystemExit(3)),
-    "signal_inside_worker_start": _signal_inside_worker_start,
     "slow_unwind": _slow_unwind,
     "worker_thread_signalled": _worker_thread_signalled,
     "stop_thread_signalled": _stop_thread_signalled,
@@ -295,6 +307,17 @@ def _signal_on_cli_record() -> None:
     recorder.record = record
 
 
+def _signal_inside_command_start(sig: int) -> None:
+    real_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        if thread.name == "slayer-command":
+            signal.raise_signal(sig)
+        real_start(thread)
+
+    threading.Thread.start = start  # type: ignore[method-assign]
+
+
 def _stuck_shutdown() -> None:
     mark("SHUTTING_DOWN")
     _forever.wait()
@@ -308,6 +331,7 @@ def main() -> None:
     parser.add_argument("--signals-on-notice", type=int, default=0)
     parser.add_argument("--signal-on-cli-record", action="store_true")
     parser.add_argument("--stuck-shutdown", action="store_true")
+    parser.add_argument("--signal-inside-command-start", action="store_true")
     args = parser.parse_args()
     _install_prior(args.prior)
     if args.signals_on_notice:
@@ -316,6 +340,8 @@ def main() -> None:
         _signal_on_cli_record()
     if args.stuck_shutdown:
         usage_reporting.shutdown = _stuck_shutdown
+    if args.signal_inside_command_start:
+        _signal_inside_command_start(args.sig)
 
     def run_scenario(cli_args: argparse.Namespace) -> None:
         args.cli = cli_args
