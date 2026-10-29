@@ -87,10 +87,12 @@ class TestCaseResolution:
         aggs = [agg("Reverse"), agg("REVERSE", "MAX({value})")]
         async with stored_engine(models=[t_doc(aggregations=aggs)]) as engine:
             assert await engine.storage.get_model("t", data_source=DS) is not None
+            query = _query(measure("reverse(a)"))
             with pytest.raises(SlayerError) as info:
-                await engine.execute(_query(measure("reverse(a)")))
+                await engine.execute(query)
         msg = str(info.value)
-        assert "Reverse" in msg and "REVERSE" in msg, msg
+        assert "Reverse" in msg, msg
+        assert "REVERSE" in msg, msg
         assert "ambiguous" in msg.lower(), msg
 
 
@@ -119,8 +121,9 @@ class TestContainers:
 class TestLibraryErrorsKept:
     async def test_an_undefined_name_keeps_the_library_error(self) -> None:
         async with stored_engine(models=[t_doc()]) as engine:
+            query = _query(measure("left(a, n=2)"))
             with pytest.raises(UnknownReferenceError, match="scalar functions take positional arguments"):
-                await engine.execute(_query(measure("left(a, n=2)")))
+                await engine.execute(query)
 
     async def test_the_library_function_still_answers_without_a_definition(self) -> None:
         async with stored_engine(models=[t_doc()]) as engine:

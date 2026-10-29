@@ -1,6 +1,7 @@
 """Abstract storage protocol and factory."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -649,11 +650,6 @@ class StorageBackend(ABC):
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
-    async def _raw_datasource_dicts(self) -> dict[str, dict]:
-        """Every stored datasource dict verbatim; backends without raw access store none."""
-        await asyncio.sleep(0)
-        return {}
-
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         raise NotImplementedError
 
@@ -669,21 +665,31 @@ class StorageBackend(ABC):
         raise NotImplementedError
 
     async def _settle_library_granularities(self) -> None:
-        """Once per instance, before any document loads: rename each datasource granularity a library name
-        reserves (system P11.2), dependants persisted before their datasource so an interrupted run converges."""
+        """Once per instance, before any model or memory loads: load every datasource, which renames its library-named
+        granularities (an unloadable datasource is reported where it is used)."""
         if getattr(self, "_granularities_settled", False):
             return
         self._granularities_settled = True
         try:
-            for name, raw in (await self._raw_datasource_dicts()).items():
-                names = [g["name"] for g in raw.get("granularities") or [] if isinstance(g, dict)
-                         and isinstance(g.get("name"), str)]
-                renames = granularity_renames(names)
-                if renames:
-                    await self._rename_granularities(data_source=name, raw=raw, renames=renames)
+            for name in await self.list_datasources():
+                with contextlib.suppress(ValueError):
+                    await self.get_datasource(name)
         except BaseException:
             self._granularities_settled = False
             raise
+
+    async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
+        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        dependants persisted before it so an interrupted rename converges."""
+        if not isinstance(data, dict):
+            return data
+        names = [g["name"] for g in data.get("granularities") or [] if isinstance(g, dict)
+                 and isinstance(g.get("name"), str)]
+        renames = granularity_renames(names)
+        if not renames:
+            return data
+        await self._rename_granularities(data_source=name, raw=data, renames=renames)
+        return renamed_datasource(data, renames=renames)
 
     async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
         identities = await self._list_all_model_identities()

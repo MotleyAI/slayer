@@ -34,13 +34,13 @@ def _storage(*, backend: str, base: Path) -> StorageBackend:
 
 def _ordered_query() -> SlayerQuery:
     """Leaves every field added by this release unset: ``OrderItem.nulls``, ``TimeDimension.name``."""
-    return SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": "sum(amount)", "name": "rev"}],
-        dimensions=["status"],
-        time_dimensions=[TimeDimension(dimension="ordered_at", granularity="month")],
-        order=[OrderItem(column={"name": "status"}, direction="desc")],
-    )
+    return SlayerQuery.model_validate({
+        "source_model": "orders",
+        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "dimensions": ["status"],
+        "time_dimensions": [TimeDimension(dimension="ordered_at", granularity="month")],
+        "order": [OrderItem.model_validate({"column": {"name": "status"}, "direction": "desc"})],
+    })
 
 
 def _orders() -> SlayerModel:

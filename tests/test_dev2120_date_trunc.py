@@ -38,8 +38,9 @@ class TestParse:
             parse_expr(text)
 
     async def test_malformed_over_a_column_rejected_at_binding(self, engine: SlayerQueryEngine) -> None:
+        query = lib_query("date_trunc(word, ts)")
         with pytest.raises(ValueError, match="date_trunc"):
-            await engine.execute(lib_query("date_trunc(word, ts)"))
+            await engine.execute(query)
 
     def test_shadowable(self) -> None:
         assert Aggregation(name="date_trunc", formula="SUM({value})").name == "date_trunc"

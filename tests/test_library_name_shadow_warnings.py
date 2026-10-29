@@ -88,7 +88,8 @@ class TestEveryResponse:
     @pytest.mark.parametrize("mode", ["dry_run", "explain"])
     async def test_not_executed(self, mode: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
-            got = await _both(engine.execute(_query(), **{mode: True}))
+            flags: dict[str, Any] = {mode: True}
+            got = await _both(engine.execute(_query(), **flags))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_no_warning_without_a_shadowing_call(self) -> None:

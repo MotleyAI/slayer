@@ -338,9 +338,6 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         )
         self._forget_raw(data_source=data_source, name=name)
 
-    async def _raw_datasource_dicts(self) -> dict[str, dict]:
-        return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
-
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
 
@@ -419,11 +416,11 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # validation here keeps the public ABC contract uniform across
         # backends.
         _validate_path_component(name, kind="datasource name")
-        await self._settle_library_granularities()
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None
-        ds = DatasourceConfig.model_validate(json.loads(raw))
+        data = await self._with_library_granularities_renamed(name=name, data=json.loads(raw))
+        ds = DatasourceConfig.model_validate(data)
         return ds.resolve_env_vars()
 
     async def list_datasources(self) -> list[str]:

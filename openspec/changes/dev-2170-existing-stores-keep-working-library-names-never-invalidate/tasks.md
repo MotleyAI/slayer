@@ -12,28 +12,28 @@
 
 ## 2. Aggregation resolution and shadowing
 
-- [ ] 2.1 Introduce the single aggregation-definition resolver (exact, then unique case-fold, else ambiguity error) and route `aggregation_definition`, eligibility and binding through it. Verify: 1.2 case tests pass.
-- [ ] 2.2 Introduce the "built-in semantics iff no formula-backed definition" predicate and route every name-classification site through it (list typing/refusal, element typing, empty value, ranked dispatch, param order). Verify: 1.4 passes and the full suite stays green.
-- [ ] 2.3 Parser: keep the callee as written on parsed calls; emit deferred aggregation candidates (with the scalar's error attached) for scalar- or spelling-named calls that are ill-formed as scalars but well-formed as aggregation calls. Verify: parser unit tests, and no change for undefined names. Gotcha: `tests/test_dev2120_date_trunc.py` (`test_malformed_rejected`, `test_date_part_names_are_not_units`) expect `parse_expr` to raise; a deferred spelling error raises at bind instead, so check those still hold or move them to bind.
-- [ ] 2.4 Binding: resolve shadowing against the owning model; raise the attached scalar error when the name is not defined. Lift the `RESERVED_SCALAR_NAMES` ban in `Aggregation`. Verify: 1.2 passes.
-- [ ] 2.5 Add the structured `LibraryNameShadowWarning`; emit it on save and load, accumulate it during binding into the prepared warnings, and carry it through the cache-hit path. Verify: 1.3 passes.
+- [x] 2.1 Introduce the single aggregation-definition resolver (exact, then unique case-fold, else ambiguity error) and route `aggregation_definition`, eligibility and binding through it. Verify: 1.2 case tests pass.
+- [x] 2.2 Introduce the "built-in semantics iff no formula-backed definition" predicate and route every name-classification site through it (list typing/refusal, element typing, empty value, ranked dispatch, param order). Verify: 1.4 passes and the full suite stays green.
+- [x] 2.3 Parser: keep the callee as written on parsed calls; emit deferred aggregation candidates (with the scalar's error attached) for scalar- or spelling-named calls that are ill-formed as scalars but well-formed as aggregation calls. Verify: parser unit tests, and no change for undefined names. Gotcha: `tests/test_dev2120_date_trunc.py` (`test_malformed_rejected`, `test_date_part_names_are_not_units`) expect `parse_expr` to raise; a deferred spelling error raises at bind instead, so check those still hold or move them to bind.
+- [x] 2.4 Binding: resolve shadowing against the owning model; raise the attached scalar error when the name is not defined. Lift the `RESERVED_SCALAR_NAMES` ban in `Aggregation`. Verify: 1.2 passes.
+- [x] 2.5 Add the structured `LibraryNameShadowWarning`; emit it on save and load, accumulate it during binding into the prepared warnings, and carry it through the cache-hit path. Verify: 1.3 passes.
 
 ## 3. Stored-upgrade migrations
 
-- [ ] 3.1 DatasourceConfig v2→v3: deterministic granularity rename map; cross-document reference rewrite in the storage load path with dependants persisted before the datasource; rename warnings; the save-time ban kept. Verify: 1.5 passes on both backends.
-- [ ] 3.2 SlayerModel v17→18, SlayerQuery v8→9, Memory v6→7: the `agg(distinct)` rewrite. Bump `CURRENT_VERSIONS`. Verify: 1.6 passes and the upgrade corpus tests stay green.
-- [ ] 3.3 Old-grammar gate in the string migration (old colon pre-pass + `ast.parse(mode="eval")`), with a warning naming the document and field. Verify: 1.7 passes.
-- [ ] 3.4 Shared recursive `None` removal applied after each backend's shape conversion for all four kinds. Verify: 1.8 passes.
+- [x] 3.1 DatasourceConfig v2→v3: deterministic granularity rename map; cross-document reference rewrite in the storage load path with dependants persisted before the datasource; rename warnings; the save-time ban kept. Verify: 1.5 passes on both backends.
+- [x] 3.2 SlayerModel v17→18, SlayerQuery v8→9, Memory v6→7: the `agg(distinct)` rewrite. Bump `CURRENT_VERSIONS`. Verify: 1.6 passes and the upgrade corpus tests stay green.
+- [x] 3.3 Old-grammar gate in the string migration (old colon pre-pass + `ast.parse(mode="eval")`), with a warning naming the document and field. Verify: 1.7 passes.
+- [x] 3.4 Shared recursive `None` removal applied after each backend's shape conversion for all four kinds. Verify: 1.8 passes.
 
 ## 4. Schema drift
 
-- [ ] 4.1 A typed per-model element read set from the plan (dependency closure, join keys, joins, measures, aggregations), carried next to the model read set. Verify: unit tests on read-set extraction.
-- [ ] 4.2 Element-level attribution in `_maybe_raise_schema_drift` (`schema_drift` whole-model drops only; model filters always read). Verify: 1.9 attribution tests pass, and the existing schema-drift tests stay green.
-- [ ] 4.3 Dialect capability `temporal_text_compatible` (SQLite) used by the bucket rule. Verify: the 1.9 SQLite temporal test passes.
-- [ ] 4.4 Extend the re-type finding and `_retyped_list` to every non-`ARRAY` type. Verify: the 1.9 re-type tests pass.
+- [x] 4.1 A typed per-model element read set from the plan (dependency closure, join keys, joins, measures, aggregations), carried next to the model read set. Verify: unit tests on read-set extraction.
+- [x] 4.2 Element-level attribution in `_maybe_raise_schema_drift` (`schema_drift` whole-model drops only; model filters always read). Verify: 1.9 attribution tests pass, and the existing schema-drift tests stay green.
+- [x] 4.3 Dialect capability `temporal_text_compatible` (SQLite) used by the bucket rule. Verify: the 1.9 SQLite temporal test passes.
+- [x] 4.4 Extend the re-type finding and `_retyped_list` to every non-`ARRAY` type. Verify: the 1.9 re-type tests pass.
 
 ## 5. Architecture, docs, gates
 
-- [ ] 5.1 Apply the approved arc42 edits: 11.2 wording + `[enforced: test:tests/test_library_growth.py]`, and principle 14 "a non-list column". Verify: `poetry run la-arch-check` passes.
-- [ ] 5.2 Docs: `docs/concepts/schema-drift.md` (re-type finding, in-place re-type, error carrying the finding, element attribution, SQLite temporal, output shape), `docs/concepts/ingestion.md` (lines ~359/364), `docs/concepts/models.md` (§Schema versioning: versions 18/9/3/7, the upgrade list, shadow rule, granularity rename, `distinct`, the gate residue; the line-42 version and the aggregations reserved-name text), `docs/development.md` (one-sentence library-growth rule). Verify: grep finds no stale "never re-types" or old version numbers.
-- [ ] 5.3 Run the full unit suite, the CI integration suite invocation, `ruff`, `basedpyright` (ratchet) and `la-arch-check`. Verify: all green.
+- [x] 5.1 Apply the approved arc42 edits: 11.2 wording + `[enforced: test:tests/test_library_growth.py]`, and principle 14 "a non-list column". Verify: `poetry run la-arch-check` passes.
+- [x] 5.2 Docs: `docs/concepts/schema-drift.md` (re-type finding, in-place re-type, error carrying the finding, element attribution, SQLite temporal, output shape), `docs/concepts/ingestion.md` (lines ~359/364), `docs/concepts/models.md` (§Schema versioning: versions 18/9/3/7, the upgrade list, shadow rule, granularity rename, `distinct`, the gate residue; the line-42 version and the aggregations reserved-name text), `docs/development.md` (one-sentence library-growth rule). Verify: grep finds no stale "never re-types" or old version numbers.
+- [x] 5.3 Run the full unit suite, the CI integration suite invocation, `ruff`, `basedpyright` (ratchet) and `la-arch-check`. Verify: all green.

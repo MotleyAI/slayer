@@ -1043,7 +1043,7 @@ def _deferred_intervals(node: Any, *, message: str) -> Any:
         return tuple(_deferred_intervals(item, message=message) for item in node)
     if not isinstance(node, _BaseNode):
         return node
-    if _is_interval(node):
+    if isinstance(node, ScalarCall) and _is_interval(node):
         deferred = None if check_scalar_arity(name="interval", argc=len(node.args)) is None else (
             _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
         )
@@ -1536,7 +1536,7 @@ def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwa
     original = _STATE.text
     if name.lower() in RESERVED_SCALAR_NAMES:
         args, kwargs = _keyword_args(args, kwargs)
-    twin_args = (_onto_path(args[0], path=path), *args[1:]) if args else ()
+    twin_args: Tuple[Any, ...] = (_onto_path(args[0], path=path), *args[1:]) if args else ()
     reason = _method_call_refusal(name, args=args, kwargs=kwargs)
     message = (
         f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "

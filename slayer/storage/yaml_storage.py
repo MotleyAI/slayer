@@ -345,22 +345,6 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=name)
 
-    async def _raw_datasource_dicts(self) -> dict[str, dict]:
-        out: dict[str, dict] = {}
-        if not os.path.isdir(self.datasources_dir):
-            return out
-        for filename in sorted(os.listdir(self.datasources_dir)):
-            if not filename.endswith(".yaml"):
-                continue
-            try:
-                with open(os.path.join(self.datasources_dir, filename)) as f:  # NOSONAR(S7493) — local read
-                    data = yaml.safe_load(f)
-            except (OSError, yaml.YAMLError):
-                continue
-            if isinstance(data, dict):
-                out[filename[: -len(".yaml")]] = data
-        return out
-
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         self._datasource_cache.pop(path, None)
@@ -509,7 +493,6 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # Sanitize before composing the filesystem path.
         _validate_path_component(name, kind="datasource name")
-        await self._settle_library_granularities()
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
@@ -531,6 +514,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             else:
                 with open(path) as f:
                     data = yaml.safe_load(f)
+                data = await self._with_library_granularities_renamed(name=name, data=data)
                 ds = DatasourceConfig.model_validate(data)
                 admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
                 if admit is not None:

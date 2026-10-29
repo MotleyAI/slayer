@@ -174,8 +174,9 @@ class TestMethodCallExecuted:
         await assert_equivalent(engine, by_region(healed), by_region(canonical_text))
 
     async def test_a_library_function_shows_functional_spelling_at_binding(self, engine: SlayerQueryEngine) -> None:
+        query = by_region("order_items.round(price)")
         with pytest.raises(ValueError, match=re.escape("round(order_items.price)")):
-            await engine.execute(by_region("order_items.round(price)"))
+            await engine.execute(query)
 
     async def test_granularity_dimension_equals_functional_twin(self, engine: SlayerQueryEngine) -> None:
         def query(dimension: str) -> dict[str, Any]:
