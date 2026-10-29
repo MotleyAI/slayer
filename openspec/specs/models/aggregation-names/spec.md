@@ -1,7 +1,7 @@
 # models/aggregation-names Specification
 
 ## Purpose
-Defines which names are reserved and rejected for custom model aggregations so that the functional call form `name(col)` stays unambiguous across aggregations, scalars, transforms, and time granularities.
+Defines which names a custom model aggregation may take and how a name it shares with a library function resolves, so the functional call form `name(col)` has one meaning in each model.
 
 ## Requirements
 
