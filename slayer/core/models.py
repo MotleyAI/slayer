@@ -18,7 +18,7 @@ from pydantic import (
 from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
-from slayer.core.errors import GranularityDefinitionError, JoinKeyError
+from slayer.core.errors import AmbiguousAggregationError, GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import RESERVED_SCALAR_NAMES
@@ -488,16 +488,6 @@ class Aggregation(BaseModel):
                 f"transform function. Reserved names: "
                 f"{', '.join(sorted(transform_only))}"
             )
-        # Scalar-function names would shadow the scalar in functional
-        # form (``round(x)`` must stay the scalar call), so every legal
-        # aggregation stays reachable as ``agg(col)``. Case-insensitive to
-        # match the parser's scalar dispatch.
-        if self.name.lower() in RESERVED_SCALAR_NAMES:
-            raise ValueError(
-                f"Aggregation name '{self.name}' conflicts with a scalar "
-                f"function. Scalar-allowlist names are reserved: "
-                f"{', '.join(sorted(RESERVED_SCALAR_NAMES))}"
-            )
         if self.name.lower() in RESERVED_DATE_SYNTAX_NAMES:
             raise ValueError(
                 f"Aggregation name '{self.name}' is a reserved date function or "
@@ -515,10 +505,28 @@ class Aggregation(BaseModel):
 
 
 def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregation | None:
-    """``owner``'s declaration of ``agg``, else ``None``."""
+    """``owner``'s declaration of ``agg``: an exact-case match, else the unique case-insensitive one; ``None`` when
+    it declares none. Several case-insensitive matches and no exact one raise ``AmbiguousAggregationError``."""
     if owner is None:
         return None
-    return next((a for a in (owner.aggregations or []) if a.name == agg), None)
+    declared = owner.aggregations or []
+    exact = next((a for a in declared if a.name == agg), None)
+    if exact is not None:
+        return exact
+    folded = [a for a in declared if a.name.lower() == agg.lower()]
+    if len(folded) > 1:
+        raise AmbiguousAggregationError(model=owner.name, call=agg, candidates=[a.name for a in folded])
+    return folded[0] if folded else None
+
+
+def shadows_library_function(aggregation: Aggregation) -> bool:
+    """Whether ``aggregation`` takes a Mode-B function or function-spelling name."""
+    return aggregation.name.lower() in RESERVED_SCALAR_NAMES
+
+
+def builtin_semantics(definition: Aggregation | None) -> bool:
+    """Whether a call keeps its built-in aggregation's semantics: its owner declares no formula for it."""
+    return definition is None or definition.formula is None
 
 
 class EmptyList(BaseModel):
@@ -535,7 +543,7 @@ EmptyValue = int | EmptyList | None
 def empty_value(*, agg: str, definition: Aggregation | None, element_type: DataType | None = None) -> EmptyValue:
     """``agg``'s value over no rows (``element_type``: a list aggregation's input type); a declared ``formula``
     overrides the built-in's."""
-    if definition is not None and definition.formula is not None:
+    if not builtin_semantics(definition):
         return None
     if agg in LIST_AGGREGATIONS:
         return EmptyList(element_type=element_type)
@@ -544,7 +552,7 @@ def empty_value(*, agg: str, definition: Aggregation | None, element_type: DataT
 
 def rendered_formula(*, agg: str, definition: Aggregation | None) -> str | None:
     """The template ``agg`` renders through (a definition's override wins); ``None``: a built-in builder."""
-    if agg in RANKED_AGGREGATIONS:
+    if agg in RANKED_AGGREGATIONS and builtin_semantics(definition):
         return None
     return (definition.formula if definition else None) or BUILTIN_AGGREGATION_FORMULAS.get(agg)
 
@@ -1064,7 +1072,7 @@ class DatasourceConfig(BaseModel):
 
     def check_granularities(self) -> None:
         """Raise ``GranularityDefinitionError`` for the first entry breaking a save-time rule."""
-        reserved = _reserved_granularity_names()
+        reserved = reserved_granularity_names()
         seen: set[str] = set()
         for g in self.granularities:
             rule = definition_error(g, reserved=reserved)
@@ -1164,7 +1172,7 @@ class DatasourceConfig(BaseModel):
         return DatasourceConfig(**data)
 
 
-def _reserved_granularity_names() -> dict[str, str]:
+def reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
     out: dict[str, str] = dict.fromkeys(RESERVED_SCALAR_NAMES, "Mode-B function")
     out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))

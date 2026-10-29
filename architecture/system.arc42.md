@@ -131,9 +131,10 @@ All code, old and new, MUST obey these.
     carry `version`; migrations run automatically on load. [review]
     - **11.1** A load never writes; an upgraded document is persisted only by a
       save. [target: DEV-1844]
-    - **11.2** Library growth never invalidates a stored artefact: a name the
-      library newly reserves yields to a stored definition of it, or ships with
-      a migration. [target: DEV-2170]
+    - **11.2** Library growth never invalidates a stored artefact: a newly
+      reserved name yields to a model's own definition of it inside that model;
+      any other collision ships with a migration.
+      [enforced: test:tests/test_library_growth.py]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
 13. **One key kind per meaning**: a construct with an existing kind's shape and
     meaning reuses it; anything else is a new kind, never a reserved name
@@ -141,7 +142,7 @@ All code, old and new, MUST obey these.
     kind it does not handle. [review]
 14. **Ingestion is idempotent and additive-only**: user metadata is never
     overwritten by a re-ingest (documented exceptions: the `source_kind`
-    refresh, and a `TEXT` column re-typed to the list its live column is). [review]
+    refresh, and a non-list column re-typed to the list its live column is). [review]
 15. **Row-level security fails closed**: anything a session policy cannot
     confirm is rejected, never passed through unscoped. [review]
 16. **Logical names, physical once**: every model-level column reference —

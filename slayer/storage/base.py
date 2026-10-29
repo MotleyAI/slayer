@@ -32,8 +32,10 @@ from slayer.core.models import (
     _validate_column_name,
     is_base_column_sql,
     physical_column_sql,
+    shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
@@ -42,6 +44,14 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.granularity_rename import (
+    Renames,
+    granularity_renames,
+    memory_source_model,
+    rename_in_memory,
+    rename_in_model,
+    renamed_datasource,
+)
 from slayer.storage.legacy_backends import adapt_legacy_hooks
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
@@ -350,6 +360,15 @@ def _write_sample_fields(
         col["distinct_count"] = distinct_count
 
 
+def warn_library_shadows(model: SlayerModel) -> None:
+    """One warning per aggregation of ``model`` that shadows a library function."""
+    for agg in model.aggregations:
+        if shadows_library_function(agg):
+            warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
+                model=model.name, aggregation=agg.name, function=agg.name,
+            )), stacklevel=3)
+
+
 def without_none(value: Any) -> Any:
     """``value`` with every ``None`` mapping entry dropped, recursively: an unset field is never persisted."""
     if isinstance(value, dict):
@@ -463,6 +482,7 @@ class StorageBackend(ABC):
         """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
         if _validate:
             await self.validate_for_save(model, failures=failures)
+            warn_library_shadows(model)
         await self._save_model_impl(model)
         self._forget_raw(data_source=model.data_source, name=model.name)
 
@@ -629,6 +649,72 @@ class StorageBackend(ABC):
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        """Every stored datasource dict verbatim; backends without raw access store none."""
+        await asyncio.sleep(0)
+        return {}
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        """Every stored memory dict verbatim; backends without raw access store none."""
+        await asyncio.sleep(0)
+        return {}
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _settle_library_granularities(self) -> None:
+        """Once per instance, before any document loads: rename each datasource granularity a library name
+        reserves (system P11.2), dependants persisted before their datasource so an interrupted run converges."""
+        if getattr(self, "_granularities_settled", False):
+            return
+        self._granularities_settled = True
+        try:
+            for name, raw in (await self._raw_datasource_dicts()).items():
+                names = [g["name"] for g in raw.get("granularities") or [] if isinstance(g, dict)
+                         and isinstance(g.get("name"), str)]
+                renames = granularity_renames(names)
+                if renames:
+                    await self._rename_granularities(data_source=name, raw=raw, renames=renames)
+        except BaseException:
+            self._granularities_settled = False
+            raise
+
+    async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
+        identities = await self._list_all_model_identities()
+        own = {n for d, n in identities if d == data_source}
+        elsewhere = {n for d, n in identities if d != data_source}
+        renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
+        for name in sorted(own):
+            data = await self._load_raw_model_dict(name=name, data_source=data_source)
+            if isinstance(data, dict) and (new := rename_in_model(data, renames=renames)) != data:
+                await self._write_raw_model_dict(name=name, data_source=data_source, data=new)
+                renamed[("model", f"{data_source}.{name}")] = (data, new)
+        for memory_id, data in (await self._raw_memory_dicts()).items():
+            source = memory_source_model(data)
+            in_datasource = source in own and (
+                source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or [])
+            )
+            if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
+                await self._write_raw_memory_dict(memory_id=memory_id, data=new)
+                renamed[("memory", memory_id)] = (data, new)
+        await self._write_raw_datasource_dict(name=data_source, data=renamed_datasource(raw, renames=renames))
+        for old, new in renames.items():
+            logging.getLogger(__name__).warning(
+                "datasource %r: custom granularity %r is now a reserved library name; renamed to %r with every "
+                "reference to it", data_source, old, new,
+            )
+
+    def _renamed_since_read(self, data: Any, *, kind: str, key: str) -> Any:
+        """``data`` as the settle rewrote it, when it is the stored document read before that rewrite."""
+        original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
+        return new if original is not None and data == original else data
+
     async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
         """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
         memo = _RAW_PASS.get()
@@ -767,6 +853,8 @@ class StorageBackend(ABC):
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
+        await self._settle_library_granularities()
+        data = self._renamed_since_read(data, kind="model", key=f"{data_source}.{name}")
         write_back = False
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
@@ -790,6 +878,8 @@ class StorageBackend(ABC):
                     name=name, data=data, data_source=data_source,
                 )
         model = SlayerModel.model_validate(data)
+        if not caller_announces():
+            warn_library_shadows(model)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or
             # fanning refs a user needs to load to repair.
@@ -1160,8 +1250,9 @@ class StorageBackend(ABC):
 
     async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
         """Decode, repair and validate one stored memory inside its load boundary."""
+        await self._settle_library_granularities()
         with stored_document_boundary(kind="memory", name=memory_id):
-            data = _mig.stamp_stored(decode())
+            data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)

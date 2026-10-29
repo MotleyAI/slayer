@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_edges import JoinEdgeRef
 from slayer.core.join_walker import aggregation_owner, follow, resolved_terminal, with_list_children
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, ValueKey, walk_value_keys
@@ -74,7 +75,10 @@ def statement_reads(
 
 def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models: dict[str, SlayerModel]) -> None:
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
-        chain = follow(root=root, path=key.path, models_by_name=models) or []
+        try:
+            chain = follow(root=root, path=key.path, models_by_name=models) or []
+        except (AmbiguousJoinPathError, CircularJoinPathError):
+            chain = []
         for edge in chain:
             forward = edge.source_model == edge.declaring_model
             pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]

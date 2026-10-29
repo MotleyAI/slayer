@@ -124,6 +124,8 @@ class AggCall(_BaseNode):
     kwargs: Tuple[Tuple[str, Any], ...] = ()
     # ``FILTER (WHERE …)`` predicate.
     filter: Any = None
+    # A library-named call ill-formed as the library function: its error, raised unless the owner defines ``agg``.
+    library_error: Optional[str] = None
 
 
 class TransformCall(_BaseNode):
@@ -136,6 +138,14 @@ class TransformCall(_BaseNode):
 class ScalarCall(_BaseNode):
     name: str
     args: Tuple[Any, ...] = ()
+    # The callee as written (a function or spelling an owning model's aggregation may shadow); not part of identity.
+    written: Optional[str] = None
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ScalarCall) and (self.name, self.args) == (other.name, other.args)
+
+    def __hash__(self) -> int:
+        return hash(("ScalarCall", self.name, self.args))
 
 
 class Cast(_BaseNode):
@@ -1018,12 +1028,30 @@ def parse_expr(text: str) -> ParsedExpr:
         except pp.ParseBaseException as e:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
     if any(_is_interval(n) for n in _walk_parsed(parsed)):
-        raise ValueError(
+        return _deferred_intervals(parsed, message=(
             f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
-        )
+        ))
     return parsed
+
+
+def _deferred_intervals(node: Any, *, message: str) -> Any:
+    """``node`` with each standalone ``interval(…)`` a deferred aggregation candidate; raises ``message`` for one
+    that cannot be."""
+    if isinstance(node, tuple):
+        return tuple(_deferred_intervals(item, message=message) for item in node)
+    if not isinstance(node, _BaseNode):
+        return node
+    if _is_interval(node):
+        deferred = None if check_scalar_arity(name="interval", argc=len(node.args)) is None else (
+            _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
+        )
+        if deferred is None:
+            raise ValueError(message)
+        return deferred
+    update = {f: _deferred_intervals(getattr(node, f), message=message) for f in type(node).model_fields}
+    return node.model_copy(update=update)
 
 
 def _syntax_message(text: str, error: pp.ParseBaseException) -> str:
@@ -1503,16 +1531,59 @@ def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tupl
 
 
 def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> ParsedExpr:
-    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``."""
+    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``; a library name is
+    a deferred aggregation candidate."""
     original = _STATE.text
+    if name.lower() in RESERVED_SCALAR_NAMES:
+        args, kwargs = _keyword_args(args, kwargs)
     twin_args = (_onto_path(args[0], path=path), *args[1:]) if args else ()
     reason = _method_call_refusal(name, args=args, kwargs=kwargs)
+    message = (
+        f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
+        f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
+    )
+    if reason is not None and name.lower() in RESERVED_SCALAR_NAMES and (
+        _method_call_refusal("_", args=args, kwargs=kwargs) is None
+    ):
+        return AggCall(source=twin_args[0], agg=name, args=twin_args[1:], kwargs=kwargs, library_error=message)
     if reason is not None:
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
-            f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
-        )
+        raise ValueError(message)
     return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)
+
+
+def _keyword_args(
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...],
+) -> Tuple[Tuple[Any, ...], Tuple[Tuple[str, Any], ...]]:
+    """A scalar-parsed call's ``name = value`` arguments after the first as keyword arguments."""
+    positional = [args[0]] if args else []
+    keywords = list(kwargs)
+    for arg in args[1:]:
+        name = keyword_spelling(arg)
+        if name is None:
+            positional.append(arg)
+        else:
+            keywords.append((name, arg.right))
+    return tuple(positional), tuple(keywords)
+
+
+def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
+    """The aggregation call ``call`` reads as when its owning model defines ``call.written``; ``None`` when it has no
+    column-bearing value argument."""
+    if call.written is None:
+        return None
+    args, kwargs = _keyword_args(call.args, ())
+    return _aggregation_candidate(call.written, args=args, kwargs=kwargs, error=None)
+
+
+def _aggregation_candidate(
+    func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], error: Optional[str],
+) -> Optional[AggCall]:
+    """``func_name(args)`` as an aggregation call over a column-bearing value, else ``None``."""
+    if not args or not isinstance(args[0], _AGG_SOURCE_KINDS) or _contains_agg_or_transform(args[0]):
+        return None
+    if not any(isinstance(leaf, (Ref, DottedRef)) for leaf in _source_leaves(args[0])):
+        return None
+    return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs, library_error=error)
 
 
 _SCALAR_MIN_MAX = {"min": "least", "max": "greatest"}
@@ -1554,25 +1625,43 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
 
     spelling = _SPELLINGS.get(func_name.lower())
     if spelling is not None:
-        if kwargs:
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {func_name}() takes positional arguments only.")
-        _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         try:
-            return spelling(args)
+            if kwargs:
+                raise _Problem(f"{func_name}() takes positional arguments only.")
+            _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
+            built = spelling(args)
         except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {problem.detail}") from None
+            message = f"Invalid Mode-B expression {original!r}: {problem.detail}"
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
+            if deferred is None:
+                raise ValueError(message) from None
+            return deferred
+        return built.model_copy(update={"written": func_name}) if isinstance(built, ScalarCall) else built
 
     # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
-            raise ValueError(
+            message = (
                 f"Invalid Mode-B expression {original!r}: scalar function "
                 f"{func_name!r} does not accept keyword arguments. Pass "
                 f"values positionally."
             )
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
+            if deferred is None:
+                raise ValueError(message)
+            return deferred
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         name = func_name.lower()
-        return ScalarCall(name=name, args=_date_args(name=name, args=args, original=original))
+        try:
+            date_args = _date_args(name=name, args=args, original=original)
+        except ValueError as error:
+            deferred = None if check_scalar_arity(name=name, argc=len(args)) is None else _aggregation_candidate(
+                func_name, args=args, kwargs=kwargs, error=str(error),
+            )
+            if deferred is None:
+                raise
+            return deferred
+        return ScalarCall(name=name, args=date_args, written=func_name)
 
     part = DATE_PART_ALIASES.get(func_name.lower())
     if part is not None:
@@ -1909,6 +1998,7 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 __all__ = [
     "AggCall", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
     "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "bind_variables", "canonical_measure_text", "comparison_hint", "keyword_spelling", "measure_dependency_problems",
+    "aggregation_reading", "bind_variables", "canonical_measure_text", "comparison_hint", "keyword_spelling",
+    "measure_dependency_problems",
     "parse_expr", "placeholder_names", "positional_hint", "split_entity_agg_ref", "walk_parsed_refs",
 ]

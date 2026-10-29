@@ -121,8 +121,8 @@ def rewrite_model_texts(data: dict, fn: TextRewrite) -> dict:
     return data
 
 
-def rewrite_query_texts(data: dict, fn: TextRewrite) -> dict:
-    """Apply ``fn`` to every Mode-B field; mark an inline model as stored."""
+def rewrite_query_fields(data: dict, fn: TextRewrite) -> dict:
+    """Apply ``fn`` to every Mode-B field of the query itself."""
     for field, rewrite in (
         ("measures", _rewrite_measure), ("filters", _rewrite_text), ("dimensions", _rewrite_dimension),
         ("time_dimensions", _rewrite_time_dimension), ("order", _rewrite_order),
@@ -130,6 +130,12 @@ def rewrite_query_texts(data: dict, fn: TextRewrite) -> dict:
     ):
         if data.get(field) is not None:
             data[field] = _rewrite_items(data[field], lambda item, rewrite=rewrite: rewrite(item, fn))
+    return data
+
+
+def rewrite_query_texts(data: dict, fn: TextRewrite) -> dict:
+    """Apply ``fn`` to every Mode-B field; mark an inline model as stored."""
+    data = rewrite_query_fields(data, fn)
     source = data.get("source_model")
     if isinstance(source, dict):
         if "source_name" in source:

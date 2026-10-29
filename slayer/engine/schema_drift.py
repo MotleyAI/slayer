@@ -314,7 +314,7 @@ def _column_is_base(col_sql: str | None) -> bool:
 
 
 def _diff_sql_table_columns(
-    *, model: SlayerModel, live_table: LiveTable, temporal_text: bool,
+    *, model: SlayerModel, live_table: LiveTable, temporal_text: bool = False,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Per-column diff of a sql_table-mode model against live columns."""
     dropped: list[str] = []
@@ -472,7 +472,7 @@ def _sql_trial_failure_delete(
 
 
 def _diff_sql_model_columns(
-    *, model: SlayerModel, live_columns: dict[str, DataType], temporal_text: bool,
+    *, model: SlayerModel, live_columns: dict[str, DataType], temporal_text: bool = False,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Model columns missing from (or type-conflicting with) cursor metadata."""
     dropped_cols: list[str] = []

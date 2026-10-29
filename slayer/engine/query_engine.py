@@ -88,14 +88,17 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    LibraryNameShadowWarning,
     NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerLibraryNameShadowWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
+    announced_by_caller,
 )
 from slayer.core.refs import functional_agg_text
 from slayer.core.recommend import (
@@ -604,6 +607,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
         elif isinstance(w, UnrelatedDatasetWarningPayload):
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
+        elif isinstance(w, LibraryNameShadowWarning):
+            _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -936,21 +941,22 @@ class SlayerQueryEngine:
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
         run_input = resolve_run_input(query, refine)
-        main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
-            run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
-        )
-        response = await self._execute_pipeline(
-            query=main_query,
-            named_queries=named_queries,
-            splice_chain=splice_chain,
-            runtime_kwarg=runtime_kwarg,
-            dry_run=dry_run,
-            explain=explain,
-            prefer_data_source=prefer_data_source,
-            cache=cache,
-            original_input=run_input,
-            original_data_source=data_source,
-        )
+        with announced_by_caller():
+            main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
+                run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+            )
+            response = await self._execute_pipeline(
+                query=main_query,
+                named_queries=named_queries,
+                splice_chain=splice_chain,
+                runtime_kwarg=runtime_kwarg,
+                dry_run=dry_run,
+                explain=explain,
+                prefer_data_source=prefer_data_source,
+                cache=cache,
+                original_input=run_input,
+                original_data_source=data_source,
+            )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
         _emit_python_warnings(response)
@@ -1109,9 +1115,10 @@ class SlayerQueryEngine:
         """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
         with collect_bind_records() as records:
             rendered = await self._plan_and_render_statement(**kwargs)
-        return rendered.model_copy(update={"element_reads": statement_reads(
-            plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures,
-        )})
+        return rendered.model_copy(update={
+            "element_reads": statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures),
+            "warnings": [*rendered.warnings, *records.shadows.values()],
+        })
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
@@ -2850,6 +2857,12 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
         Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
+        with announced_by_caller():
+            return await self._save_model(model, warnings_out=warnings_out)
+
+    async def _save_model(
+        self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]],
+    ) -> SlayerModel:
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale

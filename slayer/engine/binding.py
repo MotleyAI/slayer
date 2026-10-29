@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
+from slayer.core.keys import is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -54,11 +54,15 @@ from slayer.core.join_walker import (
 )
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
+    Aggregation,
     SlayerModel,
     aggregation_definition,
+    builtin_semantics,
     is_identifier,
     reserved_value_param_message,
+    shadows_library_function,
 )
+from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine import dimension_routing
 from slayer.engine.key_metadata import scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
@@ -83,6 +87,7 @@ from slayer.core.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    aggregation_reading,
     canonical_measure_text,
     comparison_hint,
     keyword_spelling,
@@ -114,9 +119,11 @@ __all__ = [
 
 
 class BindRecords(BaseModel):
-    """What binding a statement resolved through, beyond its keys: saved measures ``(model, measure)``."""
+    """What binding a statement resolved through, beyond its keys: saved measures ``(model, measure)`` and library
+    functions its models' aggregations shadowed."""
 
     measures: Dict[Tuple[str, str], None] = {}
+    shadows: Dict[Tuple[str, str, str], LibraryNameShadowWarning] = {}
 
 
 _bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
@@ -1242,6 +1249,10 @@ def _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
             dim_alias_map=dim_alias_map,
         )
+    if parsed.library_error is not None and _owner_definition(
+        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is None:
+        raise ValueError(parsed.library_error)
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
     if granularity is not None:
         return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
@@ -1251,7 +1262,8 @@ def _bind_agg_call(
             parsed.source, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-        if is_attached_source(operand):
+        owner, _leaf = _resolve_agg_owner(operand, bundle)
+        if is_attached_source(operand) and builtin_semantics(aggregation_definition(owner=owner, agg=parsed.agg)):
             return _bind_transform_params(
                 op=op, inp=operand, args=parsed.args, kwargs=parsed.kwargs,
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
@@ -1289,7 +1301,7 @@ def _bind_filtered_agg(
     )
     if not isinstance(key, AggregateKey) or is_attached_source(key.source):
         raise _filter_error("applies only to an aggregation over rows.")
-    if key.agg in RANKED_AGGREGATIONS:
+    if is_ranked(key):
         return _carrying_filter(key, condition=condition)
     value = LiteralKey(value=normalize_scalar(1)) if isinstance(key.source, StarKey) else key.source
     masked = key.model_copy(update={
@@ -1434,13 +1446,44 @@ def _bind_agg(
             scope=scope, bundle=bundle, in_filter=False,
         ),
     )
+    owner, _leaf = _resolve_agg_owner(source, bundle)
     return AggregateKey(
         source=source,
         agg=effective_agg,
         args=args,
         kwargs=kwargs,
         partition_keys=partition_keys,
+        builtin=builtin_semantics(aggregation_definition(owner=owner, agg=effective_agg)),
     )
+
+
+def _owner_definition(
+    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> Optional[Aggregation]:
+    """The aggregation ``parsed.agg`` its column-reading source's owner declares, else ``None``."""
+    if not any(parsed.agg.lower() == a.name.lower() for m in _bundle_models(bundle) for a in m.aggregations):
+        return None
+    try:
+        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    except (ValueError, LookupError):
+        return None
+    if not any(isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(source)):
+        return None
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    return aggregation_definition(owner=owner, agg=parsed.agg)
+
+
+def _bundle_models(bundle: ResolvedSourceBundle) -> List[SlayerModel]:
+    return [*bundle.models_by_name.values(), *([bundle.source_model] if bundle.source_model is not None else [])]
+
+
+def _record_shadow(*, owner: SlayerModel, definition: Aggregation, written: str) -> None:
+    records = _bind_records.get()
+    if records is not None and shadows_library_function(definition):
+        records.shadows[(owner.name, definition.name, written)] = LibraryNameShadowWarning(
+            model=owner.name, aggregation=definition.name, function=written,
+        )
 
 
 def _resolve_agg_owner(
@@ -1512,7 +1555,8 @@ def _fold_positional_agg_args(
         return args, kwargs
     names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
     if not names:
-        if agg not in RANKED_AGGREGATIONS:
+        owner, _leaf = _resolve_agg_owner(source, bundle)
+        if agg not in RANKED_AGGREGATIONS or not builtin_semantics(aggregation_definition(owner=owner, agg=agg)):
             raise ValueError(
                 f"Aggregation {agg!r} takes no parameters; got {len(args)} "
                 f"positional value(s)."
@@ -1597,7 +1641,10 @@ def _validate_agg_eligibility(
         return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS, bundle=bundle)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
-    effective = agg if agg in custom_names else normalize_aggregation_name(agg)
+    definition = aggregation_definition(owner=owner_model, agg=agg)
+    if definition is not None:
+        _record_shadow(owner=owner_model, definition=definition, written=agg)
+    effective = definition.name if definition is not None else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
     _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names, bundle=bundle)
     col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
@@ -1890,7 +1937,15 @@ def _bind_scalar(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> ScalarCallKey:
+) -> ValueKey:
+    reading = aggregation_reading(parsed)
+    if reading is not None and _owner_definition(
+        reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is not None:
+        return _bind_agg_call(
+            reading, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
+        )
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
         raise UnknownFunctionError(

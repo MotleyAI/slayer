@@ -32,11 +32,14 @@ class TestParse:
     def test_unit_case_insensitive(self) -> None:
         assert parse_expr("DATE_TRUNC('MONTH', ts)") == parse_expr("month(ts)")
 
-    @pytest.mark.parametrize("text", ["date_trunc(word, ts)", "date_trunc('month')", "date_trunc('month', ts, 1)",
-                                      "date_trunc(1, ts)"])
+    @pytest.mark.parametrize("text", ["date_trunc('month')", "date_trunc('month', ts, 1)", "date_trunc(1, ts)"])
     def test_malformed_rejected(self, text: str) -> None:
         with pytest.raises(ValueError):
             parse_expr(text)
+
+    async def test_malformed_over_a_column_rejected_at_binding(self, engine: SlayerQueryEngine) -> None:
+        with pytest.raises(ValueError, match="date_trunc"):
+            await engine.execute(lib_query("date_trunc(word, ts)"))
 
     def test_shadowable(self) -> None:
         assert Aggregation(name="date_trunc", formula="SUM({value})").name == "date_trunc"

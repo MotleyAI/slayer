@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -155,7 +156,6 @@ class TestMethodCallParse:
         ("order_items.weighted_avg(price, qty)", "weighted_avg(order_items."),
         ("order_items.sum(products.price)", "sum(order_items."),
         ("order_items.sum(price, partition_by=region)", "sum(order_items.price"),
-        ("order_items.round(price)", "round(order_items.price)"),
         ("order_items.cumsum(price)", "cumsum("),
     ])
     def test_ambiguous_shapes_show_functional_spelling(self, expr: str, functional: str) -> None:
@@ -172,6 +172,10 @@ class TestMethodCallExecuted:
         self, engine: SlayerQueryEngine, healed: str, canonical_text: str,
     ) -> None:
         await assert_equivalent(engine, by_region(healed), by_region(canonical_text))
+
+    async def test_a_library_function_shows_functional_spelling_at_binding(self, engine: SlayerQueryEngine) -> None:
+        with pytest.raises(ValueError, match=re.escape("round(order_items.price)")):
+            await engine.execute(by_region("order_items.round(price)"))
 
     async def test_granularity_dimension_equals_functional_twin(self, engine: SlayerQueryEngine) -> None:
         def query(dimension: str) -> dict[str, Any]:
