@@ -261,7 +261,7 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
 
 
 def _is_cross_schema_fk(
-    fk: dict, schema: str | None, default_schema: str | None = None,
+    fk: dict, schema: str | None, default_schema: str | None = None, dialect: Any = None,
 ) -> bool:
     """Does this FK point outside the ingested schema (it would mis-bind by bare name)?"""
     referred_schema = fk.get("referred_schema")
@@ -271,7 +271,14 @@ def _is_cross_schema_fk(
     # Unknown ingested schema: skip rather than risk binding to the wrong table.
     if effective_schema is None:
         return True
-    return referred_schema != effective_schema
+    return _schema_key(referred_schema, dialect) != _schema_key(effective_schema, dialect)
+
+
+def _schema_key(name: str, dialect: Any) -> str:
+    """A case-folding dialect (Snowflake, Oracle) reports schema names normalised; compare them so."""
+    if dialect is not None and getattr(dialect, "requires_name_normalize", False):
+        return dialect.normalize_name(name)
+    return name
 
 
 def _fk_groups(
@@ -281,13 +288,14 @@ def _fk_groups(
     table_set: set[str],
     schema: str | None,
     default_schema: str | None,
+    dialect: Any = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
     """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per in-scope FK constraint."""
     result: list[tuple[str, list[tuple[str, str]]]] = []
     for fk in keys.foreign_keys:
         if fk.referred_table not in table_set or fk.referred_table == table_name:
             continue
-        if _is_cross_schema_fk(fk.model_dump(), schema=schema, default_schema=default_schema):
+        if _is_cross_schema_fk(fk.model_dump(), schema=schema, default_schema=default_schema, dialect=dialect):
             continue
         pairs = list(zip(fk.columns, fk.referred_columns))
         if pairs:
@@ -349,6 +357,7 @@ def _generate_joins(
         table_set=table_set,
         schema=schema_name if schema_name is not None else schema,
         default_schema=getattr(inspector, "default_schema_name", None),
+        dialect=getattr(inspector, "dialect", None),
     )
     joins = []
     seen_signatures: set[tuple] = set()

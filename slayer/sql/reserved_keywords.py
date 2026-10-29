@@ -89,7 +89,7 @@ DIALECT_RESERVED_KEYWORDS: dict[str, frozenset[str]] = {
     }),
     "snowflake": frozenset({
         "by", "connect", "current", "delete", "exists", "following", "minus", "nulls", "of", "row", "rows",
-        "set", "start", "top", "update", "values",
+        "sample", "set", "start", "top", "trigger", "update", "values",
     }),
 }
 
