@@ -31,6 +31,12 @@ Each dbt semantic model becomes one SLayer model:
 - `time` → `type: time`
 - `expr` → `sql` (omitted if same as name)
 - `label` and `description` preserved directly
+- an `expr` reading a physical column whose name another dimension holds, or its own name (`status: UPPER(status)`),
+  is dropped with a report
+- a column's type is the live database type when `--datasource` resolves (with or without
+  `--include-hidden-models`), else the `data_type` declared for it in `schema.yml` or the manifest (`array<string>`,
+  `text[]` and `ARRAY<INT64>` become lists of their element type), else the measure's aggregation; a `min`/`max`
+  measure that none of these types, or an aggregation SLayer refuses over a list, is dropped with a report
 
 ### Entities → Primary Keys + Joins
 

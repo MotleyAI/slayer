@@ -54,12 +54,16 @@ measures:
 ```
 
 - `count` with no `sql` → `count(*)`; `count_distinct_approx` → `count_distinct`.
-- Conditional `filters:` become a `CASE WHEN` on the column's `filter`. Two
-  measures over the same expression but different filters get distinct columns.
+- Conditional `filters:` become a `CASE WHEN` on the `filter` of a hidden `<measure>_col` column, shared by
+  measures with the same expression, filter and type.
 - A finite trailing `rolling_window` becomes a windowed aggregation
   (`sum(amount, window='30d')`).
 - Calculated measures (`type: number/string/time/boolean`) referencing other
   measures become a `ModelMeasure` formula (`{revenue} / {count}` → `revenue / count`).
+- A calculated measure with SQL aggregates (`SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)`)
+  is translated: a bare operand aggregates its column, any other operand and a `FILTER` go to a hidden column
+  holding Cube's SQL, and a window function, an undeclared member or an operand reading another cube drops
+  the measure with a report.
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
 
 ### Dimensions → columns
@@ -68,10 +72,19 @@ measures:
 `primary_key: true` carries over. A `case:` dimension becomes a `CASE WHEN`
 column.
 
+`{CUBE}.x` always reads the physical column `x`, and `{orders.member}` inside cube `orders` means `{member}`; a
+member whose SQL reads a physical column another member's name holds, or its own name
+(`status: UPPER({CUBE}.status)`), is dropped with a report.
+
+Column types come from the live datasource when `--datasource` resolves (a list column as a list of its element
+type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
+list, or a `min`/`max` over a column nothing types, drops the measure with a report, and an offline import notes
+that types were not checked against the database.
+
 ### Joins
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`join_pairs` keyed by member name (an operand naming no member becomes a hidden column, and a non-base member drops the join). Composite
+`join_pairs` naming the columns that read each side (a `{cube}.col` operand reads the physical column, through a hidden column when no member reads it; a `{cube.member}` operand names that member, which must be a base column; a physical column another member's name holds drops the join). Composite
 (`AND`-joined) keys are supported. All joins emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single
