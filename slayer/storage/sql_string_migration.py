@@ -21,7 +21,15 @@ _SKIP = frozenset({tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.IND
                    tokenize.ENDMARKER})
 # The old parser's pre-pass: ``x:agg`` / ``*:count`` refs and ``*`` sources become plain names.
 _COLON_REF = re.compile(r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\.\*)?|\*)\s*:\s*[A-Za-z_]\w*")
-_STAR_SOURCE = re.compile(r"(?<=[(.,])(\s*)\*(?=\s*[),])")
+
+
+def _star_sources_named(text: str) -> str:
+    """``text`` with each ``*`` standing as an argument or path tail (``count(*)``, ``t.*``) as ``_``."""
+    return "".join(
+        "_" if ch == "*" and text[:i].rstrip()[-1:] in ("(", ".", ",") and text[i + 1:].lstrip()[:1] in (")", ",")
+        else ch
+        for i, ch in enumerate(text)
+    )
 
 
 def sql_quote_strings(text: str) -> str:
@@ -47,7 +55,7 @@ def sql_quote_strings(text: str) -> str:
 def is_old_grammar(text: str) -> bool:
     """Whether the pre-SQL grammar could have held ``text``."""
     try:
-        ast.parse(_STAR_SOURCE.sub(r"\1_", _COLON_REF.sub("_", text)), mode="eval")
+        ast.parse(_star_sources_named(_COLON_REF.sub("_", text)), mode="eval")
     except SyntaxError:
         return False
     return True

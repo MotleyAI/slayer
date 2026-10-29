@@ -75,17 +75,7 @@ def statement_reads(
 
 def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models: dict[str, SlayerModel]) -> None:
     if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
-        try:
-            chain = follow(root=root, path=key.path, models_by_name=models) or []
-        except (AmbiguousJoinPathError, CircularJoinPathError):
-            chain = []
-        for edge in chain:
-            forward = edge.source_model == edge.declaring_model
-            pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
-            target = edge.target_model if forward else edge.source_model
-            reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
-            reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
-            reads.columns.update((target, t) for _, t in pairs)
+        _add_path(reads, path=key.path, root=root, models=models)
         terminal = resolved_terminal(root=root, path=key.path, models_by_name=models)
         if terminal is not None and not isinstance(key, StarKey):
             reads.columns.add((terminal.name, key.column_name if isinstance(key, ColumnSqlKey) else key.leaf))
@@ -93,6 +83,21 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models:
         owner = aggregation_owner(root=root, source=key.source, models_by_name=models)
         if owner is not None and aggregation_definition(owner=owner, agg=key.agg) is not None:
             reads.aggregations.add((owner.name, key.agg))
+
+
+def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerModel, models: dict[str, SlayerModel]) -> None:
+    """Every join ``path`` crosses, and its key columns on both sides."""
+    try:
+        chain = follow(root=root, path=path, models_by_name=models) or []
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = []
+    for edge in chain:
+        forward = edge.source_model == edge.declaring_model
+        pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
+        target = edge.target_model if forward else edge.source_model
+        reads.joins.add((edge.declaring_model, target, edge.name, frozenset(pairs)))
+        reads.columns.update((edge.declaring_model, s) for s, _ in pairs)
+        reads.columns.update((target, t) for _, t in pairs)
 
 
 def _all_models(plans: list, *, bundle: ResolvedSourceBundle) -> dict[str, SlayerModel]:

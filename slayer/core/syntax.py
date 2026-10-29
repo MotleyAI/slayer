@@ -1542,10 +1542,11 @@ def _method_call(*, path: Tuple[str, ...], name: str, args: Tuple[Any, ...], kwa
         f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
         f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
     )
-    if reason is not None and name.lower() in RESERVED_SCALAR_NAMES and (
+    if reason is not None and twin_args and name.lower() in RESERVED_SCALAR_NAMES and (
         _method_call_refusal("_", args=args, kwargs=kwargs) is None
     ):
-        return AggCall(source=twin_args[0], agg=name, args=twin_args[1:], kwargs=kwargs, library_error=message)
+        source, *rest = twin_args
+        return AggCall(source=source, agg=name, args=tuple(rest), kwargs=kwargs, library_error=message)
     if reason is not None:
         raise ValueError(message)
     return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)

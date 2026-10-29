@@ -1542,6 +1542,27 @@ def _check_agg_kwarg_names(
         )
 
 
+def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle, args: tuple) -> None:
+    """A parameterless aggregation's positionals: only a built-in ranked one's single row-level ranking key."""
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    if agg not in RANKED_AGGREGATIONS or not builtin_semantics(aggregation_definition(owner=owner, agg=agg)):
+        raise ValueError(
+            f"Aggregation {agg!r} takes no parameters; got {len(args)} "
+            f"positional value(s)."
+        )
+    if len(args) != 1:
+        raise ValueError(
+            f"Aggregation {agg!r} ranks by at most one column or row-level expression; got "
+            f"{len(args)} positional value(s)."
+        )
+    if not _is_row_level_ranking_key(args[0]):
+        raise ValueError(
+            f"Aggregation {agg!r} ranks by a column or a row-level expression of columns; got "
+            f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
+            f"as its ranking key."
+        )
+
+
 def _fold_positional_agg_args(
     *, agg: str, source, bundle: ResolvedSourceBundle, args: tuple, kwargs: tuple,
 ) -> "tuple[tuple, tuple]":
@@ -1555,23 +1576,7 @@ def _fold_positional_agg_args(
         return args, kwargs
     names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
     if not names:
-        owner, _leaf = _resolve_agg_owner(source, bundle)
-        if agg not in RANKED_AGGREGATIONS or not builtin_semantics(aggregation_definition(owner=owner, agg=agg)):
-            raise ValueError(
-                f"Aggregation {agg!r} takes no parameters; got {len(args)} "
-                f"positional value(s)."
-            )
-        if len(args) != 1:
-            raise ValueError(
-                f"Aggregation {agg!r} ranks by at most one column or row-level expression; got "
-                f"{len(args)} positional value(s)."
-            )
-        if not _is_row_level_ranking_key(args[0]):
-            raise ValueError(
-                f"Aggregation {agg!r} ranks by a column or a row-level expression of columns; got "
-                f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
-                f"as its ranking key."
-            )
+        _check_ranking_positional(agg=agg, source=source, bundle=bundle, args=args)
         return args, kwargs
     if len(args) > len(names):
         raise ValueError(
@@ -1946,38 +1951,8 @@ def _bind_scalar(
             reading, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
             dim_alias_map=dim_alias_map,
         )
-    if parsed.name not in SCALAR_FUNCTIONS:
-        # Defence in depth: direct ParsedExpr construction bypasses the parser.
-        raise UnknownFunctionError(
-            name=parsed.name,
-            location="(binder)",
-            suggestion=(
-                f"Mode-B scalar calls are restricted to "
-                f"{sorted(SCALAR_FUNCTIONS)}."
-            ),
-        )
-    # Check arity for every allowlisted scalar: sqlglot's handling is
-    # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
     spelled = [n for n in map(keyword_spelling, parsed.args) if n is not None]
-    arity_error = check_scalar_arity(
-        name=parsed.name, argc=len(parsed.args),
-    )
-    if arity_error is not None and spelled:
-        raise ValueError(f"{arity_error} Note: {positional_hint(spelled[0])}")
-    if arity_error is not None:
-        if parsed.name == "like":
-            raise ValueError(
-                f"Scalar function 'like' takes exactly 2 arguments "
-                f"(value, pattern); got {len(parsed.args)}."
-            )
-        raise ValueError(arity_error)
-    if parsed.name == "round" and len(parsed.args) == 2 and not _is_integer_literal(parsed.args[1]):
-        raise ValueError(
-            "'round' ndigits (2nd argument) must be an integer literal; got "
-            f"{canonical_measure_text(parsed.args[1])!r}."
-        )
-
-    _check_library_literals(parsed)
+    _check_scalar_call(parsed, spelled=spelled)
 
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
         key = _bind(
@@ -1999,6 +1974,40 @@ def _bind_scalar(
     if parsed.name == "json_value":
         args = (_json_input(args[0], scope=scope, bundle=bundle), *args[1:])
     return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str]) -> None:
+    """An allowlisted name, its arity and its literal-only arguments; ``spelled`` are ``name = value`` arguments."""
+    if parsed.name not in SCALAR_FUNCTIONS:
+        # Defence in depth: direct ParsedExpr construction bypasses the parser.
+        raise UnknownFunctionError(
+            name=parsed.name,
+            location="(binder)",
+            suggestion=(
+                f"Mode-B scalar calls are restricted to "
+                f"{sorted(SCALAR_FUNCTIONS)}."
+            ),
+        )
+    # Check arity for every allowlisted scalar: sqlglot's handling is
+    # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
+    arity_error = check_scalar_arity(
+        name=parsed.name, argc=len(parsed.args),
+    )
+    if arity_error is not None and spelled:
+        raise ValueError(f"{arity_error} Note: {positional_hint(spelled[0])}")
+    if arity_error is not None:
+        if parsed.name == "like":
+            raise ValueError(
+                f"Scalar function 'like' takes exactly 2 arguments "
+                f"(value, pattern); got {len(parsed.args)}."
+            )
+        raise ValueError(arity_error)
+    if parsed.name == "round" and len(parsed.args) == 2 and not _is_integer_literal(parsed.args[1]):
+        raise ValueError(
+            "'round' ndigits (2nd argument) must be an integer literal; got "
+            f"{canonical_measure_text(parsed.args[1])!r}."
+        )
+    _check_library_literals(parsed)
 
 
 def _text_literal(parsed: ScalarCall, pos: int) -> str:

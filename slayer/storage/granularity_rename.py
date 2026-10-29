@@ -42,27 +42,43 @@ def rename_in_text(text: str, *, renames: Renames) -> str:
     unit renamed; a call or suffix spelling a built-in aggregation or transform always was that, never ``g``."""
     pieces: list[str] = []
     last = 0
-    tokens = list(_TOKEN.finditer(text))
+    matches = list(_TOKEN.finditer(text))
+    tokens = [m.group() for m in matches]
     callees: list[str | None] = []
-    for i, match in enumerate(tokens):
-        token = match.group()
-        before = tokens[i - 1].group() if i > 0 else ""
-        after = tokens[i + 1].group() if i + 1 < len(tokens) else ""
-        replacement = None
-        if token == "(":
-            callees.append(before.lower() if before[:1].isalpha() or before[:1] == "_" else None)
-        elif token == ")" and callees:
-            callees.pop()
-        elif token[0] in "'\"":
-            replacement = _renamed_literal(token, renames=renames, callee=callees[-1] if callees else None)
-        elif token.casefold() in renames and not _always_callable(token) and (
-            (after == "(" and before != ".") or (before == ":" and (i < 2 or tokens[i - 2].group() != ":"))
-        ):
-            replacement = renames[token.casefold()]
+    for i, token in enumerate(tokens):
+        if _tracked_paren(callees, token=token, before=tokens[i - 1] if i > 0 else ""):
+            continue
+        replacement = _renamed_token(tokens, i, renames=renames, callee=callees[-1] if callees else None)
         if replacement is not None:
-            pieces.append(text[last:match.start()] + replacement)
-            last = match.end()
+            pieces.append(text[last:matches[i].start()] + replacement)
+            last = matches[i].end()
     return "".join(pieces) + text[last:]
+
+
+def _tracked_paren(callees: list[str | None], *, token: str, before: str) -> bool:
+    """Whether ``token`` is a parenthesis, pushing the callee it opens (``None`` for a bare group) or popping it."""
+    if token == "(":
+        callees.append(before.lower() if before[:1].isalpha() or before.startswith("_") else None)
+        return True
+    if token == ")":
+        if callees:
+            callees.pop()
+        return True
+    return False
+
+
+def _renamed_token(tokens: list[str], i: int, *, renames: Renames, callee: str | None) -> str | None:
+    """Token ``i`` renamed (a literal, a granularity call or a colon suffix), else ``None``."""
+    token = tokens[i]
+    if token[0] in "'\"":
+        return _renamed_literal(token, renames=renames, callee=callee)
+    if token.casefold() not in renames or _always_callable(token):
+        return None
+    before = tokens[i - 1] if i > 0 else ""
+    after = tokens[i + 1] if i + 1 < len(tokens) else ""
+    is_call = after == "(" and before != "."
+    is_suffix = before == ":" and (i < 2 or tokens[i - 2] != ":")
+    return renames[token.casefold()] if is_call or is_suffix else None
 
 
 def _always_callable(name: str) -> bool:
