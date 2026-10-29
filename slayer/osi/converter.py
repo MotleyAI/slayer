@@ -678,25 +678,27 @@ class OsiToSlayerConverter:
             return None
 
     def _type_cross_model_columns(self) -> None:
-        """Type a derived column that is exactly one cross-model ref from its target column, until a chain of
-        such refs settles (each pass settles at least one more link, so the column count bounds the passes)."""
-        refs = [
-            (col, target)
-            for model in self._models.values() for col in model.columns
-            if col.sql and (target := self._single_cross_model_ref_column(model=model, sql=col.sql)) is not None
-        ]
-        for _ in range(len(refs)):
-            changed = False
-            for col, target in refs:
-                if (col.type, col.element_type) != (target.type, target.element_type):
-                    col.type, col.element_type = target.type, target.element_type
-                    changed = True
-            if not changed:
-                return
+        """Type a derived column that is exactly one cross-model ref from the column its chain of such refs ends at."""
+        for model in self._models.values():
+            for col in model.columns:
+                end = self._ref_chain_end(model=model, col=col)
+                if end is not None:
+                    col.type, col.element_type = end.type, end.element_type
 
-    def _single_cross_model_ref_column(
-        self, model: SlayerModel, sql: str
-    ) -> Column | None:
+    def _ref_chain_end(self, *, model: SlayerModel, col: Column) -> Column | None:
+        """The column a chain of single cross-model refs from ``col`` ends at; ``None`` without a ref or on a cycle."""
+        seen = {id(col)}
+        end: Column | None = None
+        while col.sql and (hop := self._single_cross_model_ref(model=model, sql=col.sql)) is not None:
+            model, col = hop
+            if id(col) in seen:
+                return None
+            seen.add(id(col))
+            end = col
+        return end
+
+    def _single_cross_model_ref(self, model: SlayerModel, sql: str) -> tuple[SlayerModel, Column] | None:
+        """The model and column ``sql`` names when it is exactly one cross-model ref."""
         tree = self._parse_target(sql)
         if not isinstance(tree, exp.Column):
             return None
@@ -708,7 +710,8 @@ class OsiToSlayerConverter:
         target = self._walk_join_alias(host=model, alias=".".join(quals))
         if target is None:
             return None
-        return next((c for c in target.columns if c.name == parts[-1]), None)
+        column = next((c for c in target.columns if c.name == parts[-1]), None)
+        return None if column is None else (target, column)
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
         target = self._models.get(join.target_model)

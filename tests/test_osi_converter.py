@@ -14,6 +14,7 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
+from slayer.core.models import Column, SlayerModel
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
@@ -1326,3 +1327,13 @@ def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
     col = assignments.get_column("role_skills")
     assert col is not None
     assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+def test_a_cycle_of_cross_model_refs_has_no_end(staff_engine, monkeypatch):
+    model = SlayerModel(name="m", sql_table="m", data_source="testds", columns=[
+        Column(name=n, sql=f"x.{n}", type=DataType.DOUBLE) for n in ("a", "b", "c")])
+    nxt = {"a": "b", "b": "c", "c": "a"}
+    monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_model_ref",
+                        lambda self, model, sql: (model, model.get_column(nxt[sql.split(".")[1]])))
+    converter = OsiToSlayerConverter(documents=[], data_source="testds", sa_engine=staff_engine)
+    assert [converter._ref_chain_end(model=model, col=c) for c in model.columns] == [None, None, None]
