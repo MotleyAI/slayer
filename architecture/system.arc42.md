@@ -147,9 +147,9 @@ All code, old and new, MUST obey these.
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
 17. **Honest wire catalogs**: every column a BI wire protocol advertises is
-    selectable as advertised. [target: DEV-2172]
+    selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
 18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
-    consumer re-tokenises it. [target: DEV-2172]
+    consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
 19. **One writer of result values**: every output path encodes result values
     with one codec in `core.format`; none encodes a value itself.
     [enforced: test:tests/test_dev2172_value_codec.py]

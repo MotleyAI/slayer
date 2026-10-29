@@ -23,6 +23,7 @@ from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
@@ -1743,7 +1744,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         return
 
     if args.format == "json":
-        print(json.dumps(result.data, indent=2, default=str))
+        print(encode_json(result.data, indent=2))
     else:
         if args.explain:
             print(f"SQL:\n{result.sql}\n")

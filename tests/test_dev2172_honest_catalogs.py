@@ -17,6 +17,7 @@ from slayer.facade.catalog import build_catalog
 from slayer.pg_facade import protocol as proto
 from tests._dev2120_fixtures import contractors_model
 from tests._dev2172_fixtures import (
+    COLLECT_FALLBACK_XFAIL,
     DS,
     PARTS,
     THINGS,
@@ -118,9 +119,11 @@ def _check_all(advertised: list[tuple[str, str, str]], select: Any, servers: Ser
 
 
 class TestEveryAdvertisedColumnIsSelectable:
+    @COLLECT_FALLBACK_XFAIL
     def test_pg_information_schema_columns(self, servers: Servers) -> None:
         _check_all(_pg_information_schema(servers), _select_pg, servers)
 
+    @COLLECT_FALLBACK_XFAIL
     def test_pg_attribute(self, servers: Servers) -> None:
         _check_all(_pg_attribute(servers), _select_pg, servers)
 

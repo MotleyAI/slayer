@@ -47,10 +47,11 @@ class TestRawRows:
 
     @pytest.mark.parametrize("distinct", [False, True])
     async def test_ordering_by_a_list_is_refused(self, distinct: bool) -> None:
+        body = query(dimensions=["id"], distinct_dimension_values=distinct,
+                     order=[{"column": "skills", "direction": "asc"}])
         async with list_engine() as engine:
             with pytest.raises(ListTypeError, match="list"):
-                await engine.execute(query(dimensions=["id"], distinct_dimension_values=distinct,
-                                           order=[{"column": "skills", "direction": "asc"}]))
+                await engine.execute(body)
 
 
 class TestGrouping:
@@ -61,15 +62,16 @@ class TestGrouping:
         {"dimensions": [{"name": "s", "expression": "skills"}], "measures": ["count(*)"]},
     ])
     async def test_list_as_a_group_key_names_its_elements(self, body: dict[str, Any]) -> None:
+        request = query(**body)
         async with list_engine() as engine:
             with pytest.raises(ListTypeError, match=r"skills\.value"):
-                await engine.execute(query(**body))
+                await engine.execute(request)
 
     async def test_computed_dimension_checks_keep_their_precedence(self) -> None:
         """A raw-rows computed dimension holding an aggregation is refused for that, before any list rule."""
+        body = query(dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],
+                     distinct_dimension_values=False)
         async with list_engine() as engine:
             with pytest.raises(SlayerError, match="distinct_dimension_values") as caught:
-                await engine.execute(query(
-                    dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],
-                    distinct_dimension_values=False))
+                await engine.execute(body)
         assert not isinstance(caught.value, ListTypeError)

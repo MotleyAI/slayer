@@ -11,31 +11,31 @@
 
 ## 2. Value codec (principle 19)
 
-- [ ] 2.1 Implement the codec's JSON form and text form in `slayer/core/format.py` (own JSON writer for exact Decimals; edge rules per design decision 25); `list_json_text` and `_json_scalar` folded into it; verify 1.1's codec-level cases pass
-- [ ] 2.2 Route MCP `_format_json` / `_format_csv` and `SlayerResponse._format_value` through the codec; verify the MCP rows of 1.1 pass
-- [ ] 2.3 Route REST `/query` through a codec-rendered body, keeping `QueryResponse` as the response model; verify the REST rows of 1.1 pass and OpenAPI is unchanged
-- [ ] 2.4 Route the CLI query json and table output through the codec; verify the CLI rows of 1.1 pass
-- [ ] 2.5 Route pg-wire `value_to_text` / `value_to_binary` and Flight `_rewrite_row` through the codec (DOUBLE → float, INT → int from Decimal); verify the wire rows of 1.1 and 1.2 pass
+- [x] 2.1 Implement the codec's JSON form and text form in `slayer/core/format.py` (own JSON writer for exact Decimals; edge rules per design decision 25); `list_json_text` and `_json_scalar` folded into it; verify 1.1's codec-level cases pass
+- [x] 2.2 Route MCP `_format_json` / `_format_csv` and `SlayerResponse._format_value` through the codec; verify the MCP rows of 1.1 pass
+- [x] 2.3 Route REST `/query` through a codec-rendered body, keeping `QueryResponse` as the response model; verify the REST rows of 1.1 pass and OpenAPI is unchanged
+- [x] 2.4 Route the CLI query json and table output through the codec; verify the CLI rows of 1.1 pass
+- [x] 2.5 Route pg-wire `value_to_text` / `value_to_binary` and Flight `_rewrite_row` through the codec (DOUBLE → float, INT → int from Decimal); verify the wire rows of 1.1 and 1.2 pass
 
 ## 3. Selectable facade columns (principle 17)
 
-- [ ] 3.1 `check_list_dimension` takes the query's `will_group_by` at both call sites in `slayer/engine/bind_inputs.py`, computed-dimension checks first; refuse a list `order` key; verify 1.5 passes
-- [ ] 3.2 Facade translator: raw-rows classification (no aggregate / metric in the select list, no `GROUP BY` / `HAVING` / `DISTINCT`, no measure reference in resolved filters or order) sets `distinct_dimension_values: false`; `SELECT DISTINCT` selects grouped; verify 1.4 passes
-- [ ] 3.3 Facade catalog: no column × custom-aggregation metrics over list columns; verify 1.3 and 1.4's catalog case pass
+- [x] 3.1 `check_list_dimension` takes the query's `will_group_by` at both call sites in `slayer/engine/bind_inputs.py`, computed-dimension checks first; refuse a list `order` key; verify 1.5 passes
+- [x] 3.2 Facade translator: raw-rows classification (no aggregate / metric in the select list, no `GROUP BY` / `HAVING` / `DISTINCT`, no measure reference in resolved filters or order) sets `distinct_dimension_values: false`; `SELECT DISTINCT` selects grouped; verify 1.4 passes
+- [x] 3.3 Facade catalog: no column × custom-aggregation metrics over list columns; verify 1.3 and 1.4's catalog case pass
 
 ## 4. One reader of Mode B (principle 18)
 
-- [ ] 4.1 `slayer/core/syntax.py`: make the whole-tree walker public; verify the existing syntax tests pass
-- [ ] 4.2 Rewrite `slayer/usage_reporting/features` over the parse tree (every position; function lookup against the payload vocabulary, misses dropped); `payload.py` `Features.functions`, the four flags, `merge`; recorder accumulation; verify 1.6 and 1.7 pass
-- [ ] 4.3 Spool reader drops unknown fields / tokens before validating (`slayer/usage_reporting/spool.py`); verify the spool-tolerance tests pass
-- [ ] 4.4 `slayer/memories/resolver.py`: filters through `parse_expr` + `walk_parsed_refs`; delete the filter regexes and blacklist; verify 1.8 passes
+- [x] 4.1 `slayer/core/syntax.py`: make the whole-tree walker public; verify the existing syntax tests pass
+- [x] 4.2 Rewrite `slayer/usage_reporting/features` over the parse tree (every position; function lookup against the payload vocabulary, misses dropped); `payload.py` `Features.functions`, the four flags, `merge`; recorder accumulation; verify 1.6 and 1.7 pass
+- [x] 4.3 Spool reader drops unknown fields / tokens before validating (`slayer/usage_reporting/spool.py`); verify the spool-tolerance tests pass
+- [x] 4.4 `slayer/memories/resolver.py`: filters through `parse_expr` + `walk_parsed_refs`; delete the filter regexes and blacklist; verify 1.8 passes
 
 ## 5. Architecture and docs
 
-- [ ] 5.1 `architecture/system.arc42.md`: principle 17 → `[enforced: test:tests/test_dev2172_honest_catalogs.py]`, 18 → `[enforced: test:tests/test_dev2172_one_mode_b_reader.py]` (19 already applied); verify `poetry run la-arch-check` passes
-- [ ] 5.2 `docs/interfaces/pg-facade.md` + `docs/interfaces/flight-sql.md`: list / JSON values as JSON text, NULL list NULL, per-record vs grouped projection, `GROUP BY` list → `.value`, encodings; remove the issue numbers at `pg-facade.md:286`, `:302-308`
-- [ ] 5.3 `docs/reference/mcp.md:109` + `docs/reference/rest-api.md:47`: output encodings; REST `distinct_dimension_values: false` projects lists
-- [ ] 5.4 `docs/reference/usage-reporting.md`: the `functions` field and the four flags (privacy notice lists every field)
+- [x] 5.1 `architecture/system.arc42.md`: principle 17 → `[enforced: test:tests/test_dev2172_honest_catalogs.py]`, 18 → `[enforced: test:tests/test_dev2172_one_mode_b_reader.py]` (19 already applied); verify `poetry run la-arch-check` passes
+- [x] 5.2 `docs/interfaces/pg-facade.md` + `docs/interfaces/flight-sql.md`: list / JSON values as JSON text, NULL list NULL, per-record vs grouped projection, `GROUP BY` list → `.value`, encodings; remove the issue numbers at `pg-facade.md:286`, `:302-308`
+- [x] 5.3 `docs/reference/mcp.md:109` + `docs/reference/rest-api.md:47`: output encodings; REST `distinct_dimension_values: false` projects lists
+- [x] 5.4 `docs/reference/usage-reporting.md`: the `functions` field and the four flags (privacy notice lists every field)
 
 ## 6. Verification
 

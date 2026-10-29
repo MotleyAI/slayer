@@ -180,7 +180,8 @@ async def mcp_csv(server: Any) -> str:
 async def mcp_markdown(server: Any) -> str:
     text = await _mcp(server, "markdown")
     row = text.splitlines()[2]
-    assert row.startswith("| ") and row.endswith(" |"), row
+    assert row.startswith("| "), row
+    assert row.endswith(" |"), row
     return row[2:-2]
 
 
@@ -258,7 +259,8 @@ async def test_json_form(case: Case, path: str, serve: Callable[[Any], None], mc
     assert cell == case.json_form
     assert type(cell) is type(case.json_form) or case.json_form is None
     if case.raw is not None:
-        assert case.raw in raw and f'"{case.raw}"' not in raw, raw
+        assert case.raw in raw, raw
+        assert f'"{case.raw}"' not in raw, raw
 
 
 # --------------------------------------------------------------------------- #
@@ -346,7 +348,8 @@ class TestScenarios:
 
     def test_flight_int_column_reads_a_decimal_as_an_int(self) -> None:
         cell = flight_cell(Decimal("3"), column_type=DataType.INT)
-        assert cell == 3 and isinstance(cell, int)
+        assert cell == 3
+        assert isinstance(cell, int)
 
     def test_flight_double_column_keeps_a_native_nan(self) -> None:
         assert math.isnan(flight_cell(math.nan, column_type=DataType.DOUBLE))
@@ -356,7 +359,8 @@ class TestScenarios:
         serve(BIG)
         body = strict_json(rest_client.post("/query", json=QUERY).text)
         assert {"data", "row_count", "columns"} <= set(body)
-        assert body["row_count"] == 1 and body["columns"] == [COL]
+        assert body["row_count"] == 1
+        assert body["columns"] == [COL]
 
     def test_rest_openapi_still_declares_query_response(self, rest_client: TestClient) -> None:
         schema = rest_client.get("/openapi.json").json()

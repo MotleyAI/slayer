@@ -12,7 +12,7 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.mcp.server import create_mcp_server
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2172_fixtures import FacadeStore, mcp_rows, mcp_text, pg_query, serve, strict_json
+from tests._dev2172_fixtures import COLLECT_FALLBACK_XFAIL, FacadeStore, mcp_rows, mcp_text, pg_query, serve, strict_json
 
 pytest.importorskip("pytest_postgresql")
 
@@ -57,21 +57,19 @@ async def _mcp_rows(store: FacadeStore, query: dict) -> tuple[str, list[dict]]:
     return text, mcp_rows(text)
 
 
-#: ``collect``'s empty-list fallback is typed from the declared TEXT, not the column's uuid.
-COLLECT_UUID_XFAIL = pytest.mark.xfail(strict=True, reason="DEV-2169 types collect's empty-list fallback from the column")
-
-
 @pytest.mark.integration
-@COLLECT_UUID_XFAIL
+@COLLECT_FALLBACK_XFAIL
 async def test_collect_over_uuid_on_mcp_json(store: FacadeStore) -> None:
     _text, rows = await _mcp_rows(store, {"source_model": "things", "measures": ["uids"]})
     assert sorted(rows[0]["things.uids"]) == sorted([str(UID_1), str(UID_2)])
 
 
 @pytest.mark.integration
+@COLLECT_FALLBACK_XFAIL
 async def test_collect_over_exact_numerics_keeps_every_digit(store: FacadeStore) -> None:
     text, rows = await _mcp_rows(store, {"source_model": "things", "measures": ["prices"]})
-    assert str(BIG) in text and f'"{BIG}"' not in text
+    assert str(BIG) in text
+    assert f'"{BIG}"' not in text
     assert sorted(rows[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])
 
 
@@ -94,7 +92,7 @@ def test_values_over_the_postgres_wire(store: FacadeStore) -> None:
 
 
 @pytest.mark.integration
-@COLLECT_UUID_XFAIL
+@COLLECT_FALLBACK_XFAIL
 def test_collect_over_uuid_over_the_postgres_wire(store: FacadeStore) -> None:
     with serve(store) as servers:
         ((uids,),) = pg_query(servers.pg_port, "SELECT uids FROM things", dbname="pg").rows

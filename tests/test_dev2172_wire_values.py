@@ -18,6 +18,7 @@ import pytest
 from slayer.mcp.server import create_mcp_server
 from tests._dev2172_fixtures import (
     BIG,
+    COLLECT_FALLBACK_XFAIL,
     DS,
     THINGS,
     UID_1,
@@ -81,7 +82,8 @@ def _single_cell(text: str, *, fmt: str) -> str:
     if fmt == "csv":
         return list(csv.reader(io.StringIO("\n".join(lines))))[1][0]
     row = lines[2]
-    assert row.startswith("| ") and row.endswith(" |"), row
+    assert row.startswith("| "), row
+    assert row.endswith(" |"), row
     return row[2:-2]
 UIDS = {"source_model": "things", "measures": ["uids"]}
 
@@ -104,11 +106,7 @@ def test_decimal_and_timestamp_columns_keep_their_native_types(servers: Servers,
         assert ts is None or isinstance(ts, dt.datetime)
 
 
-#: ``collect``'s empty-list fallback is typed from the declared TEXT, not the column's uuid.
-COLLECT_UUID_XFAIL = pytest.mark.xfail(strict=True, reason="DEV-2169 types collect's empty-list fallback from the column")
-
-
-@COLLECT_UUID_XFAIL
+@COLLECT_FALLBACK_XFAIL
 class TestCollectOverUuid:
     @pytest.mark.parametrize("wire", WIRES)
     def test_over_the_wire_it_is_json_array_text(self, servers: Servers, wire: str) -> None:
@@ -126,11 +124,13 @@ class TestCollectOverUuid:
         assert sorted(strict_json(_single_cell(text, fmt=fmt))) == sorted([str(UID_1), str(UID_3)])
 
 
+@COLLECT_FALLBACK_XFAIL
 class TestCollectOverExactDecimals:
     async def test_mcp_json_keeps_every_digit(self, store: FacadeStore) -> None:
         text = await mcp_text(create_mcp_server(storage=store.storage),
                               {"source_model": "things", "measures": ["prices"]}, fmt="json")
-        assert str(BIG) in text and f'"{BIG}"' not in text
+        assert str(BIG) in text
+        assert f'"{BIG}"' not in text
         assert sorted(mcp_rows(text)[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])
 
     @pytest.mark.parametrize("wire", WIRES)

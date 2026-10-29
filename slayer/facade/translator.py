@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from collections.abc import Callable, Sequence, Set as AbstractSet
+from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 
 import sqlglot
 import sqlglot.errors
@@ -1210,35 +1210,31 @@ def _aggregate_alias_for_column(
     side: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
-) -> "_ProjectionItem | None":
-    """If ``side`` is a column reference whose dotted (strip_prefix-aware)
-    name matches an aggregate projection's ``projected_name``, return that
-    projection item; else ``None``.
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+) -> FacadeMetric | None:
+    """The metric a column reference names: a projected aggregate's alias, else a catalog metric by name.
 
-    Used by ``_try_aggregate_alias_filter`` to route Metabase-style
-    ``WHERE "<alias>" > <literal>`` and ``HAVING "<alias>" > <literal>``
-    conjuncts to aggregate filters. The ``item.metric`` guard
-    keeps dimension projections that happen to share a name with what
-    *would* be an aggregate alias from being treated as aggregates.
+    A projected dimension sharing the name wins, so it is never read as an aggregate.
     """
     if not isinstance(side, exp.Column):
         return None
     name = _column_to_dotted(side, strip_prefix=strip_prefix)
     item = items_by_projected_name.get(name)
-    if item is None or item.metric is None:
-        return None
-    return item
+    if item is not None:
+        return item.metric
+    return (metrics_by_name or {}).get(name)
 
 
 def _try_aggregate_alias_filter(
     conj: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
 ) -> str | None:
-    """If ``conj`` is ``<aggregate-alias-col> <cmp> <literal>`` (in either
-    order), return the aggregate filter string. If one side matches an
-    aggregate alias but the other side is not a literal, raise. Return
-    ``None`` if neither side matches an aggregate-alias column ref.
+    """If ``conj`` is ``<aggregate-alias-or-metric-col> <cmp> <literal>`` (in either
+    order), return the aggregate filter string. If one side names an aggregate
+    but the other side is not a literal, raise. Return ``None`` if neither side
+    names an aggregate.
 
     Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
     references to alias-bearing SQL — ``WHERE "count" > 1`` for filters and
@@ -1250,16 +1246,16 @@ def _try_aggregate_alias_filter(
     if op_sql is None:
         return None
     lhs, rhs = conj.this, conj.expression
-    alias_lhs = _aggregate_alias_for_column(lhs, items_by_projected_name, strip_prefix=strip_prefix)
-    alias_rhs = _aggregate_alias_for_column(rhs, items_by_projected_name, strip_prefix=strip_prefix)
-    if alias_lhs is None and alias_rhs is None:
+    metric_lhs = _aggregate_alias_for_column(
+        lhs, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name)
+    metric_rhs = _aggregate_alias_for_column(
+        rhs, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name)
+    if metric_lhs is None and metric_rhs is None:
         return None
-    if alias_lhs is not None and alias_rhs is None and isinstance(rhs, exp.Literal):
-        assert alias_lhs.metric is not None
-        return f"{alias_lhs.metric.measure_formula} {op_sql} {rhs.sql()}"
-    if alias_rhs is not None and alias_lhs is None and isinstance(lhs, exp.Literal):
-        assert alias_rhs.metric is not None
-        return f"{alias_rhs.metric.measure_formula} {_flip_comparator(op_sql)} {lhs.sql()}"
+    if metric_lhs is not None and metric_rhs is None and isinstance(rhs, exp.Literal):
+        return f"{metric_lhs.measure_formula} {op_sql} {rhs.sql()}"
+    if metric_rhs is not None and metric_lhs is None and isinstance(lhs, exp.Literal):
+        return f"{metric_rhs.measure_formula} {_flip_comparator(op_sql)} {lhs.sql()}"
     raise TranslationError(
         f"Aggregate-alias filter expects a literal on the other side; "
         f"got: {conj.sql()!r}"
@@ -1457,18 +1453,21 @@ def _apply_where(
     temporal_columns: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
-) -> None:
-    """Walk the WHERE chain; route aggregate-alias refs to aggregate
-    filters, lift time-dim filters, append verbatim rest."""
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+) -> bool:
+    """Walk the WHERE chain; route aggregate-alias / metric refs to aggregate
+    filters, lift time-dim filters, append verbatim rest. True when any conjunct reads an aggregate."""
     if where is None:
-        return
+        return False
+    reads_aggregate = False
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
         colon_form = _try_aggregate_alias_filter(
-            conj, items_by_projected_name, strip_prefix=strip_prefix,
+            conj, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name,
         )
         if colon_form is not None:
             filters_out.append(colon_form)
+            reads_aggregate = True
             continue
         lifted, verbatim = _classify_where_conjunct(
             conj, time_dim_names, temporal_columns=temporal_columns | time_dim_names,
@@ -1479,6 +1478,7 @@ def _apply_where(
             time_dims_built[name].date_range = [lo, hi]
         elif verbatim is not None:
             filters_out.append(verbatim)
+    return reads_aggregate
 
 
 def _apply_having(
@@ -2716,6 +2716,13 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
         )
 
 
+def _metrics_by_name(table: FacadeTable, overlays: "_JoinOverlays") -> dict[str, FacadeMetric]:
+    """The catalog metrics a WHERE may name; a dimension of the same name shadows a metric."""
+    dims = {d.name for d in table.dimensions} | set(overlays.extra_dims_by_name)
+    metrics = {m.name: m for m in table.metrics} | overlays.extra_metrics_by_name
+    return {n: m for n, m in metrics.items() if n not in dims}
+
+
 class _JoinOverlays(BaseModel):
     """Translator-state derived from a parsed ``_JoinPlan``: the alias
     rewrite map and the on-demand projection-lookup overlays for the
@@ -2854,11 +2861,12 @@ def _translate_slayer_select(
     _reject_lossy_cast_in_implicit_grouping(group, items)
 
     filters: list[str] = []
-    _apply_where(
+    where_reads_aggregate = _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
         temporal_columns=_temporal_column_names(table, overlays),
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
+        metrics_by_name=_metrics_by_name(table, overlays),
     )
     _apply_having(
         parsed.args.get("having"), table,
@@ -2887,6 +2895,11 @@ def _translate_slayer_select(
         "order": order_items or None,
         "limit": _parse_int_literal(parsed.args.get("limit")),
         "offset": _parse_int_literal(parsed.args.get("offset")),
+        # SQL row semantics: only an aggregate, a metric, GROUP BY, HAVING or DISTINCT groups.
+        "distinct_dimension_values": bool(
+            plan.measures or group or parsed.args.get("having") or parsed.args.get("distinct")
+            or where_reads_aggregate
+        ),
     })
 
     return QueryResult(
