@@ -23,7 +23,7 @@ _EXISTS_ALONE = f"SELECT p.id FROM p WHERE {_EXISTS}"
 _ARRAY_JOIN_ALONE = "SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE p.id > 1"
 
 
-def _profile(version: tuple[int, int] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
+def _profile(version: tuple[int, ...] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
     return ServerProfile(version=version, readonly=readonly, correlated_subqueries=correlated)
 
 
@@ -116,7 +116,7 @@ class TestParseServerProfile:
         assert CH.parse_server_profile(base_row=("25.4.1", 1), correlated_row=row).correlated_subqueries is None
 
     def test_full_profile(self) -> None:
-        assert CH.parse_server_profile(base_row=("25.8.3.1", "1"), correlated_row=("false",)) == _profile((25, 8), 1, False)
+        assert CH.parse_server_profile(base_row=("25.8.3.1", "1"), correlated_row=("false",)) == _profile((25, 8, 3), 1, False)
 
 
 class TestTimeoutPermitted:

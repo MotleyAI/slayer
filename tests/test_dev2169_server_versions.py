@@ -111,8 +111,9 @@ class TestMariadbKeepsItsRefusals:
     @pytest.mark.parametrize("version", [None, (10, 11, 6)])
     async def test_refused(self, monkeypatch, expr: str, version: Any) -> None:
         patch_profile(monkeypatch, version=version)
+        query = lib_query(expr)
         with pytest.raises(UnsupportedServerFunctionError, match="MariaDB"):
-            await emit_lib(lib_query(expr), dialect="mariadb")
+            await emit_lib(query, dialect="mariadb")
 
     def test_reads_the_version_as_mysql(self) -> None:
         assert MariadbDialect().parse_server_profile(base_row=("10.11.6-MariaDB",)).version == (10, 11, 6)

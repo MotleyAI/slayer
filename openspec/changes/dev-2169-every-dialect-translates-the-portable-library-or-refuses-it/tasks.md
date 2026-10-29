@@ -17,36 +17,36 @@
 
 ## 2. Support set and the one check
 
-- [ ] 2.1 `SqlDialect.library_functions` (empty default) and per-dialect sets per design D3; `require_library(dialect, name)` raising `UnsupportedServerFunctionError`. Verify: 1.1 sets agree.
-- [ ] 2.2 Call `require_library` at elaboration after every rewriting / coercion pass over the final keys, and at render dispatch in `render_library_call` and `render_cast`. Verify: 1.1, 1.2 pass.
-- [ ] 2.3 List refusal suggestion text names Presto. Verify: 1.3.
+- [x] 2.1 `SqlDialect.library_functions` (empty default) and per-dialect sets per design D3; `require_library(dialect, name)` raising `UnsupportedServerFunctionError`. Verify: 1.1 sets agree.
+- [x] 2.2 Call `require_library` at elaboration after every rewriting / coercion pass over the final keys, and at render dispatch in `render_library_call` and `render_cast`. Verify: 1.1, 1.2 pass.
+- [x] 2.3 List refusal suggestion text names Presto. Verify: 1.3.
 
 ## 3. Base class: neutral AST or refusal
 
-- [ ] 3.1 Move every Postgres spelling (text, math, JSON, regex, `TRY_CAST`, list, `collect`) from `SqlDialect` into `PostgresDialect`; vendor-primitive hooks on the base raise the typed error. Verify: 1.2 passes; the Tier-1 library matrix still passes.
-- [ ] 3.2 Give every Tier-1 dialect that inherited a Postgres spelling its own (DuckDB, BigQuery, Snowflake, ClickHouse, MySQL, T-SQL, SQLite). Verify: `tests/test_dev2120_library_matrix.py` and the dialect test files pass.
-- [ ] 3.3 `extremum_propagates_null` flag; remove the Trino family / MySQL `build_extremum` overrides; Oracle sets it. Verify: matrix `greatest` / `least` rows pass.
+- [x] 3.1 Move every Postgres spelling (text, math, JSON, regex, `TRY_CAST`, list, `collect`) from `SqlDialect` into `PostgresDialect`; vendor-primitive hooks on the base raise the typed error. Verify: 1.2 passes; the Tier-1 library matrix still passes.
+- [x] 3.2 Give every Tier-1 dialect that inherited a Postgres spelling its own (DuckDB, BigQuery, Snowflake, ClickHouse, MySQL, T-SQL, SQLite). Verify: `tests/test_dev2120_library_matrix.py` and the dialect test files pass.
+- [x] 3.3 `extremum_propagates_null` flag; remove the Trino family / MySQL `build_extremum` overrides; Oracle sets it. Verify: matrix `greatest` / `least` rows pass.
 
 ## 4. Presto and Tier 2
 
 - [ ] 4.1 Move the Trino library overrides and `regex_flavour = JAVA` to `PrestoFamilyDialect`; `TrinoDialect` keeps what differs; check each against prestodb docs and a throwaway local Presto container; leave out what Presto lacks. Verify: 1.5 passes; Trino live suite unchanged.
-- [ ] 4.2 Tier-2 translations for `like`, `ilike`, `trim`, `ltrim`, `rtrim`, `replace`, `instr` / `strpos`, `greatest`, `least` on Redshift, Databricks, Spark, Oracle, checked against vendor docs (references in the PR description). Verify: 1.1 Tier-2 rows pass.
+- [x] 4.2 Tier-2 translations for `like`, `ilike`, `trim`, `ltrim`, `rtrim`, `replace`, `instr` / `strpos`, `greatest`, `least` on Redshift, Databricks, Spark, Oracle, checked against vendor docs (references in the PR description). Verify: 1.1 Tier-2 rows pass.
 
 ## 5. Item fixes
 
-- [ ] 5.1 MySQL `server_profile_sql` / `parse_server_profile` / `profile_needed` and gates; `ServerProfile.version` normalised; Postgres / SQL Server parsers adapt. Verify: 1.6, 1.7.
-- [ ] 5.2 Postgres `contains_any` / `contains_all` canonical array casts. Verify: 1.8.
+- [x] 5.1 MySQL `server_profile_sql` / `parse_server_profile` / `profile_needed` and gates; `ServerProfile.version` normalised; Postgres / SQL Server parsers adapt. Verify: 1.6, 1.7.
+- [x] 5.2 Postgres `contains_any` / `contains_all` canonical array casts. Verify: 1.8.
 - [ ] 5.3 Per-dialect untyped `collect` fallback inside each `build_collect`; `empty_list` stays typed. Verify: 1.9; BigQuery CI job green.
-- [ ] 5.4 `_PG_OID_MAP` additions. Verify: 1.10.
-- [ ] 5.5 ClickHouse `_quoted` full escape set. Verify: 1.11.
-- [ ] 5.6 Domain guards (NULLed argument, after the log fix-up), SQLite UDFs return `None`, `check_domain` literal cases. Verify: 1.12.
-- [ ] 5.7 T-SQL `json_value` strict-reread guard (2022+ / unknown) and nested-`CHARINDEX` `split_part`; `ISJSON(…, VALUE)` on 2022+ / unknown, so a scalar document is JSON. Verify: 1.13 (SQL Server workflow or local Docker).
+- [x] 5.4 `_PG_OID_MAP` additions. Verify: 1.10.
+- [x] 5.5 ClickHouse `_quoted` full escape set. Verify: 1.11.
+- [x] 5.6 Domain guards (NULLed argument, after the log fix-up), SQLite UDFs return `None`, `check_domain` literal cases. Verify: 1.12.
+- [x] 5.7 T-SQL `json_value` strict-reread guard (2022+ / unknown) and nested-`CHARINDEX` `split_part`; `ISJSON(…, VALUE)` on 2022+ / unknown, so a scalar document is JSON. Verify: 1.13 (SQL Server workflow or local Docker).
 
 ## 6. Docs and architecture
 
-- [ ] 6.1 `docs/database-support.md`: per-dialect support table, SQL Server gates and the 4,000-character and scalar-document caveats below 2022, a Postgres section (TRY_CAST / coercion / `json_value` need 16+), SQLite `slayer_*` functions and plain-`sqlite3` caveat, Tier-2 + Presto refusals and Oracle `''` caveat, MySQL gates, ClickHouse re-ingest note, Snowflake untyped-ARRAY inference, BigQuery `count(list)`, `collect` aggregation row, list exclusions naming every refusing database. Verify: 1.4 passes.
-- [ ] 6.2 `docs/concepts/references.md`: out-of-domain list, overflow sentence, list-rejecting databases. Verify: matches 6.1 and the specs.
-- [ ] 6.3 `architecture/system.arc42.md` 10.2: `[target: DEV-2169]` → `[enforced: test:tests/test_dev2169_dialect_library_support.py]` (approved wording); `poetry run la-arch-check` passes.
+- [x] 6.1 `docs/database-support.md`: per-dialect support table, SQL Server gates and the 4,000-character and scalar-document caveats below 2022, a Postgres section (TRY_CAST / coercion / `json_value` need 16+), SQLite `slayer_*` functions and plain-`sqlite3` caveat, Tier-2 + Presto refusals and Oracle `''` caveat, MySQL gates, ClickHouse re-ingest note, Snowflake untyped-ARRAY inference, BigQuery `count(list)`, `collect` aggregation row, list exclusions naming every refusing database. Verify: 1.4 passes.
+- [x] 6.2 `docs/concepts/references.md`: out-of-domain list, overflow sentence, list-rejecting databases. Verify: matches 6.1 and the specs.
+- [x] 6.3 `architecture/system.arc42.md` 10.2: `[target: DEV-2169]` → `[enforced: test:tests/test_dev2169_dialect_library_support.py]` (approved wording); `poetry run la-arch-check` passes.
 
 ## 7. Gates
 

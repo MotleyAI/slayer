@@ -1948,10 +1948,7 @@ def _check_library_literals(parsed: ScalarCall) -> None:
         check_path(name, _text_literal(parsed, 1))
     elif name == "split_part":
         check_split_index(_fold_to_scalar(args[2]))
-    for pos, arg in enumerate(args):
-        value = _fold_to_scalar(arg)
-        if value is not _NOT_SCALAR:
-            check_domain(name, pos, value, text=canonical_measure_text(arg))
+    check_domain(name, [_fold_to_scalar(arg) for arg in args], texts=[canonical_measure_text(arg) for arg in args])
 
 
 def _json_input(arg: ValueKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> ValueKey:

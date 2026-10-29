@@ -19,12 +19,13 @@ from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGra
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    NativeFn,
     COMPARISON_NODES,
     LIST_ELEMENT,
     LIST_VALUE,
     ListRelation,
+    PORTABLE_LIBRARY,
     DottedAliasManglingMixin,
-    ExtremumFn,
     MathFn,
     SqlDialect,
     TemporalComparisonOp,
@@ -39,6 +40,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     lit,
     operand_copy,
+    text_try_cast,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -137,11 +139,20 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
-    regex_flavour: ClassVar[RegexFlavour] = RE2
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
 
     database_name: ClassVar[str] = "BigQuery"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
+    })
+    extremum_propagates_null: ClassVar[bool] = True
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
 
     def list_length(self, values: Expression) -> Expression:
         kept = _over_elements(values, _ELEMENT).where(is_not_null(exp.column(_ELEMENT)))
@@ -175,8 +186,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         ))
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """The untyped ``[]`` fallback takes the aggregate's own array type (a ``NUMERIC`` column's included)."""
         ordered = self.distinct_sorted(value)
-        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[self.empty_list(element)])
+        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[exp.Array(expressions=[])])
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "concat_ws":
@@ -210,10 +222,6 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                                                                                     expression=lit(0))))
         return exp.Paren(this=exp.Sub(this=operand_copy(left), expression=exp.Mul(this=operand_copy(right),
                                                                                  expression=quotient)))
-
-    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
-        """``GREATEST`` / ``LEAST`` return NULL when any argument is NULL."""
-        return self.coalesced_extremum(fn, args, spelling="upper")
 
     def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
         return anon("REGEXP_CONTAINS", value, self.regex_text(pattern, case_insensitive=case_insensitive))

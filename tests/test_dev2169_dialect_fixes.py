@@ -219,8 +219,9 @@ async def sqlite_engine():
     ("pow(0, -1)", "pow", ["0", "-1"]),
 ])
 async def test_literal_out_of_domain_rejected(sqlite_engine, expr: str, function: str, arguments: list[str]) -> None:
+    query = lib_query(expr)
     with pytest.raises(ScalarArgumentError) as info:
-        await sqlite_engine.execute(lib_query(expr))
+        await sqlite_engine.execute(query)
     msg = str(info.value)
     assert f"{function}(" in msg, msg
     assert any(a in msg for a in arguments), msg
@@ -235,8 +236,9 @@ async def test_literal_in_domain_accepted(sqlite_engine, expr: str) -> None:
 @pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("expr", ["ln(0)", "sqrt(-1)", "log(1, x)", "pow(-8, 0.5)"])
 async def test_literal_rejected_before_emission(dialect: str, expr: str) -> None:
+    query = lib_query(expr)
     with pytest.raises(ScalarArgumentError):
-        await emit_lib(lib_query(expr), dialect=dialect)
+        await emit_lib(query, dialect=dialect)
 
 
 @pytest.mark.parametrize("call", [

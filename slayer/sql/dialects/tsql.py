@@ -19,6 +19,9 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    PORTABLE_LIBRARY,
+    NativeFn,
+    REGEX_LIBRARY,
     DottedAliasManglingMixin,
     ExtremumFn,
     ServerProfile,
@@ -28,21 +31,24 @@ from slayer.sql.dialects.base import (
     any_null,
     case,
     either,
+    is_not_null,
+    is_null,
     lit,
     operand_copy,
     pad_fill,
+    text_try_cast,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 
-#: SQL Server major versions: 16 = 2022 (``GREATEST`` / ``LEAST``), 17 = 2025 (regex functions).
-_SQL_SERVER_2022 = (16, 0)
-_SQL_SERVER_2025 = (17, 0)
-_REGEX_FUNCTIONS = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
-_GATED_FUNCTIONS = _REGEX_FUNCTIONS | {"greatest", "least"}
+#: SQL Server major versions: 16 = 2022 (``GREATEST`` / ``LEAST``, ``JSON_PATH_EXISTS``), 17 = 2025 (regex).
+_SQL_SERVER_2022 = (16, 0, 0)
+_SQL_SERVER_2025 = (17, 0, 0)
+_GATED_FUNCTIONS = REGEX_LIBRARY | {"greatest", "least", "json_value"}
 _HIGH_SURROGATES = (55296, 56319)
+_NVARCHAR_MAX = exp.DataType.build("NVARCHAR(MAX)", dialect="tsql")
 #: Matching compares binary; counting needs a supplementary-character (``_SC``) collation, which no binary one is.
 _BINARY = "Latin1_General_100_BIN2"
 _CODE_POINTS = "Latin1_General_100_CS_AS_SC"
@@ -86,6 +92,21 @@ def _collated(value: Expression, collation: str) -> Expression:
     inner = value.this if isinstance(value, exp.Collate) else value
     operand = inner.copy() if isinstance(inner, (exp.Column, exp.Literal, exp.Paren)) else exp.Paren(this=inner.copy())
     return exp.Collate(this=operand, expression=exp.var(collation))
+
+
+def _units(text: Expression) -> Expression:
+    """The UTF-16 units of an ``NVARCHAR`` value, trailing spaces counted."""
+    return exp.Div(this=anon("DATALENGTH", text), expression=lit(2), typed=True)
+
+
+def _nth_field(text: Expression, sep: Expression, n: int) -> Expression:
+    """Field ``n`` (≥ 1) of ``text``, which has at least ``n`` fields; ``SUBSTRING`` stays unit-counted."""
+    start: Expression = lit(1)
+    for _ in range(n - 1):
+        start = exp.Add(this=anon("CHARINDEX", sep, text, start), expression=_units(sep))
+    rest = anon("SUBSTRING", text, start, anon("DATALENGTH", text))
+    end = anon("CHARINDEX", sep, anon("CONCAT", rest, sep))
+    return anon("SUBSTRING", rest, lit(1), exp.Sub(this=end, expression=lit(1)))
 
 
 def _negative_literal(node: Optional[Expression]) -> bool:
@@ -137,7 +158,6 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
@@ -158,12 +178,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
 
-    regex_flavour: ClassVar[RegexFlavour] = RE2  # a replacement's ``&`` is literal; ``\&`` would insert the match
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2  # a replacement's ``&`` is literal; ``\&`` would insert the match
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     like_brackets: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
-        """Regex needs SQL Server 2025 and ``greatest`` / ``least`` 2022: the version decides."""
+        """Regex needs SQL Server 2025, ``greatest`` / ``least`` and the strict ``json_value`` read 2022: the
+        version decides."""
         return any(isinstance(k, ScalarCallKey) and k.name in _GATED_FUNCTIONS for k in keys)
 
     def server_profile_sql(self) -> str | None:
@@ -174,7 +197,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> ServerProfile:
         major = base_row[0] if base_row else None
         try:
-            version = None if major is None else (int(str(major).strip()), 0)
+            version = None if major is None else (int(str(major).strip()),)
         except ValueError:
             version = None
         return ServerProfile(version=version)
@@ -215,6 +238,9 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             default=units,
         )
 
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
+
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
         return exp.DataType.build("DATETIME2", dialect="tsql") if data_type is DataType.TIMESTAMP else to
@@ -240,19 +266,20 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         )
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
-        """The fields as a JSON array (``STRING_ESCAPE``d), indexed by ``JSON_VALUE``; ``''`` past the end."""
-        escaped = anon("REPLACE", self.binary_text(anon("STRING_ESCAPE", value, lit("json"))),
-                       self.binary_text(anon("STRING_ESCAPE", delimiter, lit("json"))), lit('","'))
-        array = anon("CONCAT", lit('["'), escaped, lit('"]'))
-        def field(path: Expression) -> Expression:
-            return exp.Coalesce(this=anon("JSON_VALUE", array, path), expressions=[lit("")])
-
+        """Nested ``CHARINDEX`` over ``NVARCHAR(MAX)`` UTF-16 units; a negative index splits the reversed value.
+        ``''`` past the last field."""
+        text = self.binary_text(exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()))
+        sep = self.binary_text(exp.Cast(this=delimiter.copy(), to=_NVARCHAR_MAX.copy()))
         if index > 0:
-            return case((any_null(value, delimiter), exp.Null()), default=field(lit(f"$[{index - 1}]")))
-        position = exp.Add(this=self.field_count(value, delimiter), expression=lit(index))
-        # Before the first field the path would be ``$[-n]``, which JSON_VALUE rejects.
-        return case((any_null(value, delimiter), exp.Null()), (exp.LT(this=position, expression=lit(0)), lit("")),
-                    default=field(anon("CONCAT", lit("$["), position.copy(), lit("]"))))
+            field = _nth_field(text, sep, index)
+        else:
+            field = anon("REVERSE", _nth_field(anon("REVERSE", text), anon("REVERSE", sep), -index))
+        removed = anon("DATALENGTH", anon("REPLACE", text, sep, lit("")))
+        gap = exp.Paren(this=exp.Sub(this=anon("DATALENGTH", text), expression=removed))
+        per_field = exp.Nullif(this=anon("DATALENGTH", sep), expression=lit(0))
+        fields = exp.Add(this=exp.Div(this=gap, expression=per_field, typed=True), expression=lit(1))
+        beyond = exp.GT(this=lit(abs(index)), expression=fields)
+        return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
 
     def cube_root(self, value: Expression) -> Expression:
         magnitude = exp.Cast(this=exp.Abs(this=value.copy()), to=exp.DataType.build("FLOAT"))
@@ -294,8 +321,16 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                     self.replacement_text(replacement), lit(1), lit(0), lit("c"))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        valid = exp.EQ(this=anon("ISJSON", value), expression=lit(1))
-        return case((valid, anon("JSON_VALUE", value, lit(path.text))))
+        """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
+        4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document."""
+        lax = anon("JSON_VALUE", value, lit(path.text))
+        version = self.server_profile.version
+        if version is not None and version < _SQL_SERVER_2022:
+            return case((exp.EQ(this=anon("ISJSON", value), expression=lit(1)), lax))
+        scalar = exp.And(this=exp.EQ(this=anon("JSON_PATH_EXISTS", value, lit(path.text)), expression=lit(1)),
+                         expression=is_null(anon("JSON_QUERY", value, lit(path.text))))
+        read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", value, lit(f"strict {path.text}"))))
+        return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

@@ -1773,13 +1773,15 @@ class TestSQLServerLongJsonScalars:
     @pytest.mark.parametrize("expr", ["json_value(payload, '$.a')", "payload ->> 'a'",
                                       "json_value(payload, '$.a' RETURNING TEXT)"])
     async def test_long_scalar_fails_loud(self, _jdocs, expr: str) -> None:
+        engine, query = SlayerQueryEngine(storage=_jdocs), _jq("id", _v(expr))
         with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
-            await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+            await engine.execute(query)
 
     async def test_long_scalar_fails_loud_grouped(self, _jdocs) -> None:
         query = _jq(_v("json_value(payload, '$.a')"), measures=[{"formula": "count(*)", "name": "n"}])
+        engine = SlayerQueryEngine(storage=_jdocs)
         with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
-            await SlayerQueryEngine(storage=_jdocs).execute(query)
+            await engine.execute(query)
 
     async def test_short_missing_null_object_array_malformed(self, _jdocs) -> None:
         resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v("json_value(payload, '$.a')"), ids=_SHORT_IDS))

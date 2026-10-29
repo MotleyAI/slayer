@@ -251,8 +251,9 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=ds_type, host="localhost", database="db"))
         await storage.save_model(lib_model())
-        with pytest.raises(UnsupportedServerFunctionError, match=database(ds_type)):
-            await SlayerQueryEngine(storage=storage).execute(lib_query("json_value(payload, '$.a')"))
+        engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(payload, '$.a')"), database(ds_type)
+        with pytest.raises(UnsupportedServerFunctionError, match=name):
+            await engine.execute(query)
 
 
 class TestTier2Like:
@@ -324,13 +325,18 @@ _UNSUPPORTED = [SqlDialect(), OracleDialect()]
 def test_render_scalar_call_refuses(name: str, dialect: SqlDialect) -> None:
     if name in dialect.library_functions:
         pytest.skip(f"{type(dialect).__name__} translates {name}")
+    args = _args(name)
     with pytest.raises(UnsupportedServerFunctionError, match=dialect.database_name):
-        render_scalar_call(name=name, args=_args(name), dialect=dialect)
+        render_scalar_call(name=name, args=args, dialect=dialect)
 
 
 @pytest.mark.parametrize("name", sorted(LIBRARY_FUNCTIONS))
 def test_render_scalar_call_translates_on_postgres(name: str) -> None:
     render_scalar_call(name=name, args=_args(name), dialect=PostgresDialect())
+
+
+def _col_part(_key: object) -> Expression:
+    return _COL.copy()
 
 
 def _cast(*, try_: bool) -> CastKey:
@@ -339,13 +345,14 @@ def _cast(*, try_: bool) -> CastKey:
 
 @pytest.mark.parametrize("dialect", _UNSUPPORTED, ids=lambda d: type(d).__name__)
 def test_render_try_cast_refuses(dialect: SqlDialect) -> None:
+    key = _cast(try_=True)
     with pytest.raises(UnsupportedServerFunctionError):
-        render_cast(key=_cast(try_=True), part=lambda _k: _COL.copy(), dialect=dialect)
+        render_cast(key=key, part=_col_part, dialect=dialect)
 
 
 @pytest.mark.parametrize("dialect", _UNSUPPORTED, ids=lambda d: type(d).__name__)
 def test_render_plain_cast_renders(dialect: SqlDialect) -> None:
-    assert isinstance(render_cast(key=_cast(try_=False), part=lambda _k: _COL.copy(), dialect=dialect), exp.Cast)
+    assert isinstance(render_cast(key=_cast(try_=False), part=_col_part, dialect=dialect), exp.Cast)
 
 
 _X, _Y = exp.column("x"), exp.column("y")
@@ -360,8 +367,9 @@ _LIST_HOOKS: dict[str, Callable[[SqlDialect], Any]] = {
 
 @pytest.mark.parametrize("hook", sorted(_LIST_HOOKS))
 def test_base_list_hooks_refuse(hook: str) -> None:
+    build, dialect = _LIST_HOOKS[hook], SqlDialect()
     with pytest.raises((UnsupportedServerFunctionError, ListTypeError)):
-        _LIST_HOOKS[hook](SqlDialect())
+        build(dialect)
 
 
 def _passthrough_names() -> list[str]:
@@ -451,8 +459,9 @@ LIST_CASES = [
 @pytest.mark.parametrize("ds_type", NO_LIST)
 @pytest.mark.parametrize("case", LIST_CASES, ids=lambda c: c.case_id)
 async def test_list_construct_refused(case: ListCase, ds_type: str) -> None:
+    query, models = case.build(), all_models()
     with pytest.raises(ListTypeError) as info:
-        await emit(case.build(), dialect=ds_type, models=all_models())
+        await emit(query, dialect=ds_type, models=models)
     msg = str(info.value)
     assert database(ds_type) in msg, msg
     assert case.mentions in msg, msg
@@ -473,8 +482,9 @@ async def test_list_construct_emits(case: ListCase, ds_type: str) -> None:
 
 @pytest.mark.parametrize("ds_type", TIER2)
 async def test_list_refusal_suggests_presto(ds_type: str) -> None:
+    query, models = LIST_CASES[0].build(), all_models()
     with pytest.raises(ListTypeError, match="Presto"):
-        await emit(LIST_CASES[0].build(), dialect=ds_type, models=all_models())
+        await emit(query, dialect=ds_type, models=models)
 
 
 # --------------------------------------------------------------------------- #

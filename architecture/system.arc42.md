@@ -130,7 +130,7 @@ All code, old and new, MUST obey these.
       [enforced: test:tests/test_dev2120_library_matrix.py]
     - **10.2** A dialect without its own translation of a Mode B construct
       refuses it with a typed error; a base-class default is never another
-      dialect's SQL. [target: DEV-2169]
+      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]

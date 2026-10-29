@@ -14,8 +14,9 @@ from slayer.core.errors import SlayerError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    ExtremumFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit, non_null_elements,
-    unnest_elements,
+    PORTABLE_LIBRARY,
+    NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
+    non_null_elements, text_try_cast, unnest_elements,
 )
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
@@ -51,8 +52,21 @@ def _carries_credentials(url: URL) -> bool:
     )
 
 
+def _presto_path(path: JsonPath) -> str:
+    """The path in Presto-family JSONPath: a key that is not a plain identifier goes in ``["…"]``."""
+    out = ["$"]
+    for step in path.steps:
+        if isinstance(step, int):
+            out.append(f"[{step}]")
+        elif json_path_text((step,)) == f"$.{step}":
+            out.append(f".{step}")
+        else:
+            out.append(f'["{step}"]')
+    return "".join(out)
+
+
 class PrestoFamilyDialect(SqlDialect):
-    """Grammar shared by Trino, Presto and Athena."""
+    """Grammar and portable library shared by Trino, Presto and Athena."""
 
     sqlglot_name: str = "presto"
     explain_prefix: str | None = "EXPLAIN ANALYZE"
@@ -61,7 +75,51 @@ class PrestoFamilyDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
-    database_name: ClassVar[str] = "Trino"
+    native_lists: ClassVar[bool] = True
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = JAVA
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "PI", "CBRT", "GREATEST", "LEAST",
+    })
+    extremum_propagates_null: ClassVar[bool] = True
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
+
+    def text_repeat(self, value: Expression, count: Expression) -> Expression:
+        """``repeat`` builds an array here."""
+        return anon("ARRAY_JOIN", anon("REPEAT", value, count), lit(""))
+
+    def first_code_point(self, s: Expression) -> Expression:
+        first = exp.Cast(this=anon("SUBSTR", s, lit(1), lit(1)), to=exp.DataType.build("VARCHAR(1)"))
+        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("CODEPOINT", first))
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """The bare form strips every whitespace character."""
+        return anon(fn.upper(), s, lit(" "))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``element_at`` indexes from either end and is NULL past it."""
+        field = exp.Coalesce(this=anon("ELEMENT_AT", anon("SPLIT", value, delimiter), lit(index)),
+                             expressions=[lit("")])
+        return case((any_null(value, delimiter), exp.Null()), default=field)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_LIKE", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        extracted = anon("REGEXP_EXTRACT", value, self.regex_text(pattern), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", non_null_elements(values))
@@ -91,9 +149,10 @@ class PrestoFamilyDialect(SqlDialect):
         return exp.EQ(this=anon("CARDINALITY", missing), expression=lit(0))
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        """The untyped ``ARRAY[]`` fallback takes the aggregate's own array type."""
         kept = exp.Filter(this=exp.ArrayAgg(this=exp.Distinct(expressions=[value.copy()])),
                           expression=exp.Where(this=is_not_null(value)))
-        return exp.Coalesce(this=anon("ARRAY_SORT", kept), expressions=[self.empty_list(element)])
+        return exp.Coalesce(this=anon("ARRAY_SORT", kept), expressions=[exp.Array(expressions=[])])
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,
@@ -155,66 +214,14 @@ class PrestoFamilyDialect(SqlDialect):
         return select.where(exp.LT(this=value(), expression=exp.Literal.number(size)))
 
 
-def _trino_path(path: JsonPath) -> str:
-    """The path in Trino's JSONPath: a key that is not a plain identifier goes in ``["…"]``."""
-    out = ["$"]
-    for step in path.steps:
-        if isinstance(step, int):
-            out.append(f"[{step}]")
-        elif json_path_text((step,)) == f"$.{step}":
-            out.append(f".{step}")
-        else:
-            out.append(f'["{step}"]')
-    return "".join(out)
-
-
 class TrinoDialect(PrestoFamilyDialect):
     sqlglot_name: str = "trino"
     ds_type_aliases: frozenset[str] = frozenset({"trino"})
     sa_backend_names: frozenset[str] = frozenset({"trino"})
     url_scheme: str | None = "trino"
     install_extra: str | None = "trino"
-    regex_flavour: ClassVar[RegexFlavour] = JAVA
-
-    def text_repeat(self, value: Expression, count: Expression) -> Expression:
-        """``repeat`` builds an array here."""
-        return anon("ARRAY_JOIN", anon("REPEAT", value, count), lit(""))
-
-    def first_code_point(self, s: Expression) -> Expression:
-        first = exp.Cast(this=anon("SUBSTR", s, lit(1), lit(1)), to=exp.DataType.build("VARCHAR(1)"))
-        return case((exp.EQ(this=s.copy(), expression=lit("")), lit(0)), default=anon("CODEPOINT", first))
-
-    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
-        """The bare form strips every whitespace character."""
-        return anon(fn.upper(), s, lit(" "))
-
-    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
-        """``element_at`` indexes from either end and is NULL past it."""
-        field = exp.Coalesce(this=anon("ELEMENT_AT", anon("SPLIT", value, delimiter), lit(index)),
-                             expressions=[lit("")])
-        return case((any_null(value, delimiter), exp.Null()), default=field)
-
-    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
-        """``greatest`` / ``least`` return NULL when any argument is NULL."""
-        return self.coalesced_extremum(fn, args, spelling="upper")
-
-    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
-        return anon("REGEXP_LIKE", value, self.regex_text(pattern, case_insensitive=case_insensitive))
-
-    def build_regexp_extract(
-        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
-    ) -> Expression:
-        extracted = anon("REGEXP_EXTRACT", value, self.regex_text(pattern), lit(group))
-        return self.skipped_group_empty(value, pattern, group, extracted)
-
-    def build_regexp_replace(
-        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
-    ) -> Expression:
-        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
-                    self.replacement_text(replacement))
-
-    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        return anon("JSON_EXTRACT_SCALAR", value, lit(_trino_path(path)))
+    database_name: ClassVar[str] = "Trino"
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """``query_max_run_time`` as a client-session property: sent with the next statement only."""

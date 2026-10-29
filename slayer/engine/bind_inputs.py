@@ -20,7 +20,6 @@ from slayer.core.errors import (
 from slayer.core.format import NumberFormat
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine, is_spine_query, mentions_spine
 from slayer.core.join_walker import follow, resolve_hop, resolved_terminal, walk_terminal
-from slayer.sql.dialects import get_dialect
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -106,6 +105,7 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.home import row_expression_crossing
 from slayer.engine.join_safety import assert_partition_key_attributable
 from slayer.engine.key_metadata import (
+    bundle_dialect,
     key_element_type,
     measure_key_format_description,
     scope_column_element,
@@ -790,7 +790,7 @@ def _list_typing(*, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundl
             return False
         return chain is not None and any(e.lateral is not None for e in chain)
 
-    dialect = get_dialect(bundle.dialect)
+    dialect = bundle_dialect(bundle)
     return ListTyping(
         column_type=scope_column_type(scope=scope, bundle=bundle),
         column_element=scope_column_element(scope=scope, bundle=bundle),

@@ -214,11 +214,11 @@ Five consequences worth knowing:
 
 ## The portable function library
 
-Every library function, operator and pattern language means the same on SQLite, Postgres, DuckDB, MySQL, ClickHouse, SQL Server, Trino, Snowflake and BigQuery — Postgres's value where databases disagree — and is verified on each of them.
+Every library function, operator and pattern language means the same on SQLite, Postgres, DuckDB, MySQL, ClickHouse, SQL Server, Trino, Snowflake and BigQuery — Postgres's value where databases disagree — and is verified on each of them; any other database runs only the functions it translates and refuses the rest at plan time ([support table](../database-support.md#portable-library-support)).
 
-* **Out-of-domain arguments yield `NULL`** (`asin(2)` over a column, `div(a, 0)`, a surrogate `chr`), and a literal one is a plan-time error.
+* **Out-of-domain arguments yield `NULL`** (`asin(2)` over a column, `div(a, 0)`, a surrogate `chr`, `ln` / `log10` / `log2` / `log` of a value ≤ 0 or to a base ≤ 0 or 1, `sqrt` of a negative, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative one), and a literal one is a plan-time error; an overflowing result (`exp(1000)`) is the database's own (infinity or an error).
 * **Strings count characters, not bytes**; `left` / `right` with a negative count drop characters from the other end, `lpad` / `rpad` truncate, `split_part`'s index is a non-zero integer literal (negative from the end, `''` past it), `concat_ws` skips `NULL`s, `chr` / `ascii` speak Unicode code points; `div` truncates toward zero.
-* **A version-gated function fails at plan time** when the server reports an older version: regex needs SQL Server 2025, `greatest` / `least` SQL Server 2022; JSON reads and `TRY_CAST` return `NULL` on malformed input only on Postgres 16+.
+* **A version-gated function fails at plan time** when the server reports an older version: regex needs SQL Server 2025 and MySQL 8.0, `greatest` / `least` SQL Server 2022, `json_value` MySQL 8.0.21, numeric `TRY_CAST` MySQL 8.0; JSON reads and `TRY_CAST` return `NULL` on malformed input only on Postgres 16+.
 * **`date_trunc('month', x)` is the granularity call `month(x)`** in every position.
 
 ### Regular expressions
@@ -239,7 +239,7 @@ A TEXT operand meeting a number in a comparison, `IN`, `BETWEEN`, `IS [NOT] DIST
 
 ### Lists
 
-Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL and SQL Server every list construct is a plan-time error.
+Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle every list construct is a plan-time error.
 
 ## Date and time functions
 
