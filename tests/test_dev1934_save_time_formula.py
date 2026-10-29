@@ -389,7 +389,7 @@ class TestBlankAggregationFieldsMigration:
         (agg,) = model.aggregations
         assert agg.formula is None
         assert [p.name for p in agg.params] == ["w2"]
-        assert model.version == 17
+        assert model.version == 18
         assert raw["aggregations"][0]["formula"] == "  "
         assert len(raw["aggregations"][0]["params"]) == 2
 

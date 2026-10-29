@@ -2,11 +2,11 @@
 
 ### Requirement: A model aggregation may take a library function name
 
-A custom model aggregation SHALL be accepted when its name matches a Mode-B scalar or list function, or a function spelling the parser accepts (`strpos`, `date_trunc`, `json_extract`, …). Inside the model that defines it, a call whose value argument belongs to that model SHALL resolve to the aggregation in every spelling — functional (`reverse(amount)`), colon (`amount:reverse`) and method (`orders.amount.reverse()`), with or without arguments and parameters, in queries, stored measures, saved queries and memories — and SHALL keep resolving to the library function wherever the owning model does not define that name or the call has no owning model. A call is matched to the owning model's definitions exactly by case first, then by a unique case-insensitive match; several case-insensitive matches and no exact one SHALL be rejected as ambiguous, naming every candidate. A call that is not a valid library call and whose owning model does not define the name SHALL fail with the library function's own error.
+A custom model aggregation SHALL be accepted when its name matches a Mode-B scalar or list function, or a function spelling the parser accepts (`strpos`, `date_trunc`, `json_extract`, …). Inside the model that defines it, a call whose value argument belongs to that model SHALL resolve to the aggregation in every spelling — functional (`reverse(amount)`), colon (`amount:reverse`) and method (`orders.reverse(amount)`), with or without arguments and parameters, in queries, stored measures, saved queries and memories — and SHALL keep resolving to the library function wherever the owning model does not define that name or the call has no owning model. A call is matched to the owning model's definitions exactly by case first, then by a unique case-insensitive match; several case-insensitive matches and no exact one SHALL be rejected as ambiguous, naming every candidate. A call that is not a valid library call and whose owning model does not define the name SHALL fail with the library function's own error.
 
 #### Scenario: Stored custom aggregation named reverse answers
 
-- **WHEN** a stored model `t` defines the aggregation `reverse` with formula `SUM({value})` and a query asks for `reverse(a)`, `a:reverse` and `t.a.reverse()`
+- **WHEN** a stored model `t` defines the aggregation `reverse` with formula `SUM({value})` and a query asks for `reverse(a)`, `a:reverse` and `t.reverse(a)`
 - **THEN** the model loads and all three measures return the sum of `a`
 
 #### Scenario: Another model keeps the library function

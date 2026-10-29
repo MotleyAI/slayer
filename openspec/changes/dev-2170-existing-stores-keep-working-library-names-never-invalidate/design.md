@@ -55,14 +55,14 @@ One predicate decides whether a call has built-in semantics: the owner has no fo
 - At query time, binding records each shadow resolution into the prepared warnings, next to `slack_warnings`, so executed, dry-run, EXPLAIN and cache-hit responses all carry it (core P5: a Python warning plus `SlayerResponse.warnings`).
 
 ### D5. Datasource-wide collisions: a deterministic, crash-convergent rename (user + codex)
-- DatasourceConfig v2→v3, stored-only.
+- DatasourceConfig v2→v3, stored-only; the rename itself runs on every datasource load, whatever its version, and is a no-op when nothing collides, so a granularity colliding with a later library addition is renamed too.
 - The rename map is a pure function of the stored datasource's granularity set and the library vocabulary: `<name>_granularity`, else `<name>_granularity_<n>` with the smallest free `n` ≥ 2, compared case-insensitively.
 - In the storage load path (precedent: the v10/v11 cross-document steps), the datasource's dependants are rewritten and persisted **before** the datasource itself. A load interrupted at any point therefore recomputes the same map on the next load and converges. Once DEV-1844 makes loads non-writing, the same pure map is simply recomputed in memory on every load.
 - References are rewritten in every position the grammar accepts a granularity name. The pr-tests stage enumerates them from the grammar.
-- Every call by such a name in these documents is the granularity: a store with a colliding granularity cannot load on the stack, so no document mixes the two.
+- Every call by such a name in these documents is the granularity: the rename runs on the first load after the name becomes reserved, before any document can call the new function, so no document mixes the two.
 
 ### D6. Library-growth guard (user)
-`tests/test_library_growth.py` vendors a frozen snapshot of every reserved vocabulary. A name outside it fails unless it is a function or spelling (model-shadowable) or a registered migration covers it. The test also generates per-name stored-aggregation and stored-granularity cases. 11.2 is tagged `[enforced: test:tests/test_library_growth.py]`, and `docs/development.md` gets a one-sentence rule.
+`tests/test_library_growth.py` vendors a frozen snapshot of every reserved vocabulary. A name outside it fails unless it is a function or spelling (model-shadowable; a colliding stored granularity is renamed by D5 on load) or a registered migration covers it. The test also generates per-name stored-aggregation and stored-granularity cases. 11.2 is tagged `[enforced: test:tests/test_library_growth.py]`, and `docs/development.md` gets a one-sentence rule.
 
 ### D7. Rollback-safe serialisation (default + codex)
 - One shared operation, recursive `None` removal, is applied after each backend's own shape conversion for all four kinds. The YAML memory layout (id as file name, learning as body) is unchanged.

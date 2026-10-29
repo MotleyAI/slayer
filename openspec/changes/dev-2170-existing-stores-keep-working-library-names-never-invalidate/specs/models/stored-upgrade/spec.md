@@ -21,7 +21,7 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 ### Requirement: Stored granularities colliding with a library name are renamed
 
-On load, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. A client saving a custom granularity with a reserved name SHALL still be refused.
+On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. A client saving a custom granularity with a reserved name SHALL still be refused.
 
 #### Scenario: Granularity named left
 
@@ -42,6 +42,11 @@ On load, a stored datasource custom granularity whose name case-insensitively ma
 
 - **WHEN** a load is interrupted after some dependent documents were persisted with the new name and before the datasource was
 - **THEN** the next load renames the datasource's granularity to the same name and rewrites the remaining documents, leaving one consistent store
+
+#### Scenario: A granularity colliding with a later library addition
+
+- **WHEN** a datasource stored at the current version defines the granularity `left`, which a later library release reserves, and a stored query buckets by `left(created_at)`
+- **THEN** on load the granularity is `left_granularity`, the query reads `left_granularity(created_at)`, and it returns the rows it returned before
 
 #### Scenario: A new reserved-name granularity is refused
 
@@ -114,5 +119,5 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 
 #### Scenario: Text already in the current grammar is left alone
 
-- **WHEN** a stored model still marked with a version before this rewrite has the measures `sum(x::int)`, `sum(a || b)`, `sum(CAST(x AS INT))`, `sum(x) FILTER (WHERE y > 1)` and the filter `x BETWEEN 1 AND 2`
-- **THEN** each loads byte-for-byte unchanged and a warning names the model and each such field
+- **WHEN** a stored model still marked with a version before this rewrite has the measures `sum(x::int)`, `sum(a || b)`, `sum(CAST(x AS INT))` and `sum(x) FILTER (WHERE y > 1)`, and a stored query of the same era filters `x BETWEEN 1 AND 2`
+- **THEN** each loads byte-for-byte unchanged and a warning names the document and each such field

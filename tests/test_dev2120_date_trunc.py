@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pydantic
 import pytest
 
 from slayer.core.errors import UnknownFunctionError, UnknownGranularityError
@@ -39,9 +38,8 @@ class TestParse:
         with pytest.raises(ValueError):
             parse_expr(text)
 
-    def test_reserved(self) -> None:
-        with pytest.raises(pydantic.ValidationError, match="scalar"):
-            Aggregation(name="date_trunc", formula="SUM({value})")
+    def test_shadowable(self) -> None:
+        assert Aggregation(name="date_trunc", formula="SUM({value})").name == "date_trunc"
 
 
 class TestPositions:
