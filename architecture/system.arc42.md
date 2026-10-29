@@ -125,8 +125,12 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
-    canonical function library, extended never forked. [review] Every Mode B
-    construct means the same on every dialect. [enforced: test:tests/test_dev2120_library_matrix.py]
+    canonical function library, extended never forked. [review]
+    - **10.1** Every Mode B construct means the same on every dialect.
+      [enforced: test:tests/test_dev2120_library_matrix.py]
+    - **10.2** A dialect without its own translation of a Mode B construct
+      refuses it with a typed error; a base-class default is never another
+      dialect's SQL. [target: DEV-2169]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
