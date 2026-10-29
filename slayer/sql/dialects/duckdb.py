@@ -156,8 +156,7 @@ class DuckdbDialect(SqlDialect):
         return anon("LIST_HAS_ALL", _compact(values), _compact(other))
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
-        """The untyped ``[]`` fallback takes the aggregate's own list type."""
-        return self.filtered_collect(value, empty=exp.Array(expressions=[]))
+        return self.filtered_collect(value)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

@@ -211,9 +211,12 @@ class PostgresDialect(SqlDialect):
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         return exp.ArrayContainsAll(this=operand_copy(values), expression=anon("ARRAY_REMOVE", other, exp.Null()))
 
+    def empty_list(self) -> Expression:
+        """``'{}'``: an empty ``ARRAY[]`` has no type to take."""
+        return lit("{}")
+
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
-        """The untyped ``'{}'`` fallback takes the aggregate's own array type."""
-        return self.filtered_collect(value, empty=lit("{}"))
+        return self.filtered_collect(value)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         scope = (

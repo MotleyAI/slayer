@@ -8,7 +8,7 @@
 - [x] 1.6 MySQL version gates: regex functions / operators, numeric `TRY_CAST` and coercion need 8.0; `json_value` 8.0.21 (8.0.20 refuses, 8.0.21 emits); unknown emits; version parsing of `8.0.21-…`, `10.11.6-MariaDB`, malformed; MariaDB refusals intact; `profile_needed` true for implicit numeric `TRY_CAST`, aliases and regex operators.
 - [x] 1.7 `ServerProfile.version` as `(major, minor, patch)`: Postgres, SQL Server and MySQL parsers; the version error prints every part.
 - [ ] 1.8 Live Postgres (`pytest-postgresql`, unit suite): `VARCHAR[]` and `BIGINT[]` list columns × `contains` / `contains_any` / `contains_all` against text / integer literals and against another list column (`TEXT[]`, `INTEGER[]`).
-- [x] 1.9 `collect` over a column whose physical type differs from its declared DataType, all-NULL group → `[]`, on DuckDB and live Postgres; the `EmptyList` fallback still typed. The pre-seeded BigQuery `test_collect_over_exact_numerics` stays as written.
+- [x] 1.9 `collect` over a column whose physical type differs from its declared DataType, all-NULL group → `[]`, on DuckDB and live Postgres. The pre-seeded BigQuery `test_collect_over_exact_numerics` stays as written.
 - [x] 1.10 `_PG_OID_MAP` codes 1185, 1014, 2951, 199, 3807, 1001 → `list`, one assertion each.
 - [x] 1.11 ClickHouse cell reader round-trip over every escape, Windows paths, doubled / trailing backslash, malformed `\x`; unknown-escape expectation taken from a live ClickHouse round-trip (testcontainers) and pinned.
 - [x] 1.12 Library-matrix domain-edge rows (`tests/_dev2120_fixtures.py`): `ln` / `log10` / `log2` / `log(x)` / `log(2, x)` / `sqrt` over 1, 0, -1; `pow` / `power` over (-8, 0.5), (-8, 3), (0, -1), (4, 0.5) — NULL, never an error, on every Tier-1 matrix backend; literal out-of-domain calls (`ln(0)`, `sqrt(-1)`, `log(1, x)`, `pow(-8, 0.5)`) → `ScalarArgumentError`; SQLite `slayer_*` UDFs return NULL.
@@ -36,7 +36,7 @@
 
 - [x] 5.1 MySQL `server_profile_sql` / `parse_server_profile` / `profile_needed` and gates; `ServerProfile.version` normalised; Postgres / SQL Server parsers adapt. Verify: 1.6, 1.7.
 - [x] 5.2 Postgres `contains_any` / `contains_all` canonical array casts. Verify: 1.8.
-- [ ] 5.3 Per-dialect untyped `collect` fallback inside each `build_collect`; `empty_list` stays typed. Verify: 1.9; BigQuery CI job green.
+- [x] 5.3 One per-dialect untyped empty list, used by each `build_collect` and by the join-back `EmptyList` fallback; the typed `empty_list` goes. Verify: 1.9; BigQuery CI job green.
 - [x] 5.4 `_PG_OID_MAP` additions. Verify: 1.10.
 - [x] 5.5 ClickHouse `_quoted` full escape set. Verify: 1.11.
 - [x] 5.6 Domain guards (NULLed argument, after the log fix-up), SQLite UDFs return `None`, `check_domain` literal cases. Verify: 1.12.

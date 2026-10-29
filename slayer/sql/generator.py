@@ -1229,7 +1229,7 @@ class SQLGenerator:
     def _empty_value_expr(self, empty: EmptyValue) -> Optional[Expression]:
         """An aggregate's empty value as SQL (``None``: NULL)."""
         if isinstance(empty, EmptyList):
-            return self._dialect.empty_list(empty.element_type)
+            return self._dialect.empty_list()
         return None if empty is None else exp.Literal.number(empty)
 
     def _pick_once(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:

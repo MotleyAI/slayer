@@ -1032,11 +1032,9 @@ class SqlDialect(BaseModel):
     def build_array_literal(self, values: Sequence[Expression]) -> Expression:
         return exp.Array(expressions=[v.copy() for v in values])
 
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        """``[]`` of ``element`` elements, typed where the type is known."""
-        if element is None or element.is_opaque:
-            return exp.Array(expressions=[])
-        return exp.Cast(this=exp.Array(expressions=[]), to=exp.DataType.build(f"ARRAY<{element.value}>"))
+    def empty_list(self) -> Expression:
+        """An untyped ``[]``, which takes the type of the list it meets (``collect``'s empty value)."""
+        return exp.Array(expressions=[])
 
     def distinct_sorted(self, value: Expression) -> exp.Order:
         """``DISTINCT value ORDER BY value`` (NULLs where the engine puts them, so no NULLS clause is emitted)."""
@@ -1050,11 +1048,11 @@ class SqlDialect(BaseModel):
         """The distinct non-NULL values, sorted ascending; ``[]`` when there are none."""
         self.refuse("collect")
 
-    def filtered_collect(self, value: Expression, *, empty: Expression) -> Expression:
-        """``COALESCE(ARRAY_AGG(DISTINCT value ORDER BY value) FILTER (WHERE value IS NOT NULL), empty)``."""
+    def filtered_collect(self, value: Expression) -> Expression:
+        """``COALESCE(ARRAY_AGG(DISTINCT value ORDER BY value) FILTER (WHERE value IS NOT NULL), [])``."""
         aggregate = exp.Filter(this=exp.ArrayAgg(this=self.distinct_sorted(value)),
                                expression=exp.Where(this=is_not_null(value)))
-        return exp.Coalesce(this=aggregate, expressions=[empty])
+        return exp.Coalesce(this=aggregate, expressions=[self.empty_list()])
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

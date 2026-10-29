@@ -85,7 +85,7 @@ Live probes recorded during planning (local Postgres 16, DuckDB, SQL Server 2022
   BOOLEAN / DATE / TIMESTAMP likewise); differing element types keep `list_each`.
 - **`collect` fallback (item 5).** Each `build_collect` builds its own untyped empty-list fallback that takes the
   aggregate's type (Postgres `'{}'`, DuckDB / BigQuery `[]`, Trino `ARRAY[]`; ClickHouse / Snowflake aggregates
-  already return `[]`). `empty_list(element)` stays typed for the `EmptyList` fallback (`generator.py`).
+  already return `[]`). The join-back `EmptyList` fallback (`generator.py`) uses the same untyped empty list, so a cross-model `collect` takes the aggregate's type too; the typed `empty_list(element)` goes.
 - **Type codes (item 6).** `_PG_OID_MAP` maps `timestamptz[]` 1185, `bpchar[]` 1014, `uuid[]` 2951, `json[]` 199,
   `jsonb[]` 3807, `bytea[]` 1001 to `list`.
 - **ClickHouse escapes (item 7).** `_quoted` reads `\\`, `\'`, `\"`, `\n`, `\t`, `\r`, `\0`, `\b`, `\f`, `\a`, `\v`,
@@ -130,7 +130,7 @@ Live probes recorded during planning (local Postgres 16, DuckDB, SQL Server 2022
     (user, approved wording)
 17. The support check runs after every rewriting / coercion pass, over the final keys. (codex)
 18. One check called at elaboration and at render dispatch, so stored / planner keys cannot bypass it. (codex)
-19. `empty_list(element)` stays typed; `collect` builds its own untyped fallback. (codex)
+19. `collect` builds its own untyped fallback, and the join-back `EmptyList` fallback uses it too (the typed `empty_list` goes): a typed fallback there fails on UUID / exact numerics as the aggregate's did. (codex; amended in pr-implement, user)
 20. Domain guards NULL the argument, not only wrap the call; applied after the log-spelling fix-up. (codex)
 21. The all-dialect test covers the generator's `list_relation` / `list_exists` paths: list children, element
     access, child filters, nested hops, stages. (codex)

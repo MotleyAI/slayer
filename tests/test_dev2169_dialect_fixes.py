@@ -9,14 +9,12 @@ import re
 from typing import Any, Optional
 
 import pytest
-from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarArgumentError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.sql.client import _map_type_code
-from slayer.sql.dialects import DuckdbDialect, PostgresDialect
 from slayer.sql.dialects._clickhouse_cells import array_reader
 from slayer.sql.dialects.sqlite import register_sqlite_udfs
 from slayer.storage.sqlite_conn import open_connection
@@ -45,11 +43,6 @@ async def test_collect_fallback_is_untyped(dialect: str, formula: str) -> None:
     sql = await emit_contractors(query(dimensions=["team"], measures=[measure(formula, "c")]), dialect=dialect)
     typed = [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)]
     assert not typed, sql
-
-
-@pytest.mark.parametrize("dialect", [PostgresDialect(), DuckdbDialect()], ids=lambda d: type(d).__name__)
-def test_empty_list_stays_typed(dialect) -> None:
-    assert isinstance(dialect.empty_list(DataType.INT), exp.Cast)
 
 
 UUID_A, UUID_B = "00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"

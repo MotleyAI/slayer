@@ -241,10 +241,6 @@ class SnowflakeDialect(SqlDialect):
         found = exp.GT(this=anon("ARRAY_SIZE", matched), expression=lit(0))
         return exp.Coalesce(this=found, expressions=[exp.false()])
 
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        """An untyped ``[]``: a semi-structured ARRAY never meets a structured one."""
-        return exp.Array(expressions=[])
-
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
         """Skips NULLs and returns ``[]`` over none."""
         order = self.distinct_sorted(value)

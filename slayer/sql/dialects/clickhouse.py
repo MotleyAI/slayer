@@ -211,9 +211,6 @@ class ClickhouseDialect(SqlDialect):
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         return anon("hasAll", values, _compact(other))
 
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        return exp.Array(expressions=[])
-
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
         """The HTTP driver returns ``Bool`` and ``Array(T)`` cells as their text."""
         readers: dict[int, Callable[[Any], Any]] = {}

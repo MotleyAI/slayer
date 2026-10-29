@@ -186,9 +186,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         ))
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
-        """The untyped ``[]`` fallback takes the aggregate's own array type (a ``NUMERIC`` column's included)."""
         ordered = self.distinct_sorted(value)
-        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[exp.Array(expressions=[])])
+        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[self.empty_list()])
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "concat_ws":

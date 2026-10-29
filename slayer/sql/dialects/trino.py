@@ -149,10 +149,9 @@ class PrestoFamilyDialect(SqlDialect):
         return exp.EQ(this=anon("CARDINALITY", missing), expression=lit(0))
 
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
-        """The untyped ``ARRAY[]`` fallback takes the aggregate's own array type."""
         kept = exp.Filter(this=exp.ArrayAgg(this=exp.Distinct(expressions=[value.copy()])),
                           expression=exp.Where(this=is_not_null(value)))
-        return exp.Coalesce(this=anon("ARRAY_SORT", kept), expressions=[exp.Array(expressions=[])])
+        return exp.Coalesce(this=anon("ARRAY_SORT", kept), expressions=[self.empty_list()])
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,
