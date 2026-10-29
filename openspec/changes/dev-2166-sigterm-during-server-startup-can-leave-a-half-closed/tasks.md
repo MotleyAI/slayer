@@ -10,14 +10,15 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 `_TerminationGuard`: phases `before → running → closing → after`; `_handle` never raises; delete `_Terminated`; `_force` record gate `phase in ("before", "running")`; guard lock + registered `stop` + abandoned flag (design 2–4); verify 1.4 passes.
-- [ ] 2.2 `_guarded_dispatch`: run `_dispatch` in one daemon worker `slayer-command`; main waits for done / signalled; re-raise worker `BaseException`; skip dispatch when a signal was recorded before start; stop-or-abandon on a signal (design 1, 4); verify 1.2 and the existing `startup`, `worker_*` and `signal_*` scenarios pass.
-- [ ] 2.3 `_serve_until_terminated`: under the guard lock refuse to run after a recorded signal, else register `stop`; then call `run()` in the calling thread; no guard → `run()` (design 3); verify 1.3 and the `early`, `stuck_stop`, `failing_stop*`, `slow_unwind` scenarios pass.
-- [ ] 2.4 `finish`: `_exit_now` when the worker was abandoned, `sys.exit` when joined; remove the `stdio` parameter and its call-site argument in `_run_command` (design 5); remove `except _Terminated` in `_run_command`; verify 1.5 and the stdio MCP tests in `tests/test_usage_reporting_delivery.py` pass.
-- [ ] 2.5 Update the `_TerminationGuard` / `_serve_until_terminated` docstrings to the new phases (one line each).
+- [x] 2.1 `_TerminationGuard`: phases `before → running → closing → after`; `_handle` never raises; delete `_Terminated`; `_force` record gate `phase in ("before", "running")`; guard lock + registered `stop` + abandoned flag (design 2–4); verify 1.4 passes.
+- [x] 2.2 `_guarded_dispatch`: run `_dispatch` in one daemon worker `slayer-command`; main waits for done / signalled; re-raise worker `BaseException`; skip dispatch when a signal was recorded before start; stop-or-abandon on a signal (design 1, 4); verify 1.2 and the existing `startup`, `worker_*` and `signal_*` scenarios pass.
+- [x] 2.3 `_serve_until_terminated`: under the guard lock refuse to run after a recorded signal, else register `stop`; then call `run()` in the calling thread; no guard → `run()` (design 3); verify 1.3 and the `early`, `stuck_stop`, `failing_stop*`, `slow_unwind` scenarios pass.
+- [x] 2.4 `finish`: `_exit_now` when the worker was abandoned, `sys.exit` when joined; remove the `stdio` parameter and its call-site argument in `_run_command` (design 5); remove `except _Terminated` in `_run_command`; verify 1.5 and the stdio MCP tests in `tests/test_usage_reporting_delivery.py` pass.
+- [x] 2.5 Update the `_TerminationGuard` / `_serve_until_terminated` docstrings to the new phases (one line each).
 
 ## 3. Verification
 
-- [ ] 3.1 Full unit suite green: `poetry run pytest -m "not integration"`.
-- [ ] 3.2 Load verification on Python 3.11 and 3.12: run `tests/test_server_shutdown.py` and `tests/test_usage_reporting_delivery.py` repeatedly (≥ 20 rounds each) under `-n logical` alongside the full unit suite; no `Traceback` in any shutdown test's stderr, no failures (design 11; the issue's done-when). Record the counts in the PR description.
-- [ ] 3.3 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` all clean.
+- [x] 3.1 Full unit suite green: `poetry run pytest -m "not integration"`.
+- [x] 3.2 Load verification on Python 3.11 and 3.12: run `tests/test_server_shutdown.py` and `tests/test_usage_reporting_delivery.py` repeatedly (≥ 20 rounds each) under `-n logical` alongside the full unit suite; no `Traceback` in any shutdown test's stderr, no failures (design 11; the issue's done-when). Record the counts in the PR description.
+- [x] 3.3 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check` all clean.
+- [x] 3.4 `wait_for_port` (`tests/_usage_reporting_helpers.py`) takes the spawned process's `pid` and, on Linux, succeeds only once that process holds a listening socket on the port (LISTEN inode from `/proc/net/tcp{,6}` matched against `/proc/<pid>/fd`; other platforms keep the connect probe), so a port another test's server took is not mistaken for ours; update its three callers; add a test that a listener owned by another process does not satisfy it (fails on the old helper); then re-run the 3.11 load verification of 3.2.

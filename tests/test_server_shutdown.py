@@ -508,7 +508,7 @@ def test_signal_during_startup_stops_and_spools(
 def test_pg_serve_idle_client_does_not_block_stop(store: str, usage_reporting_env) -> None:
     port = free_port()
     proc = _Watched(_server_argv("pg-serve", store, port), env=usage_reporting_env.subprocess_env())
-    assert wait_for_port(port), proc.stderr
+    assert wait_for_port(port, pid=proc.proc.pid), proc.stderr
     client = psycopg2.connect(host="127.0.0.1", port=port, user="slayer", dbname="slayer", connect_timeout=30)
     try:
         proc.send(signal.SIGTERM)
