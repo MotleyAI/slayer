@@ -524,6 +524,9 @@ class SqlDialect(BaseModel):
     # Declared-INT columns may store non-integers (SQLite affinity): ingestion probes them.
     probes_integer_affinity: bool = False
 
+    # Dates live in TEXT columns: a stored DATE/TIMESTAMP over live TEXT is no drift.
+    temporal_text_compatible: bool = False
+
     # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
     primary_key_inspector_only: bool = False
 

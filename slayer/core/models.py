@@ -10,6 +10,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     field_validator,
     model_validator,
@@ -25,7 +26,7 @@ from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 
@@ -708,6 +709,12 @@ class SlayerModel(BaseModel):
     columns: list[Column] = Field(default_factory=list)
     measures: list[ModelMeasure] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
+        with migrating_document(data.get("name") if isinstance(data, dict) else None):
+            return handler(data)
 
     @model_validator(mode="before")
     @classmethod

@@ -267,9 +267,11 @@ def data_type_bucket(dt: DataType) -> str:
     return str(dt)
 
 
-def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); TEXT over a live list is a re-type finding, never a conflict."""
-    if persisted is DataType.TEXT and live is DataType.ARRAY:
+def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
+    if live is DataType.ARRAY and persisted is not DataType.ARRAY:
+        return False
+    if temporal_text and live is DataType.TEXT and persisted in (DataType.DATE, DataType.TIMESTAMP):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -279,20 +281,20 @@ def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
 
 
 def list_retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list[ListRetypeFinding]:
-    """One finding per stored TEXT base column whose live column is a list."""
+    """One finding per stored non-list base column whose live column is a list."""
     if live_table is None:
         return []
     out: list[ListRetypeFinding] = []
     for col in model.columns:
-        if col.type is not DataType.TEXT or not _column_is_base(col.sql):
+        if col.type is DataType.ARRAY or not _column_is_base(col.sql):
             continue
         live = physical_column_sql(sql=col.sql, name=col.name)
         if live_table.columns.get(live) is DataType.ARRAY:
             live_type = live_table.list_types.get(live, "ARRAY")
             out.append(ListRetypeFinding(
                 model_name=model.name, data_source=model.data_source, column=col.name, live_type=live_type,
-                summary=f"Column '{model.name}.{col.name}' is stored as TEXT but its live column is the list "
-                f"{live_type}; re-ingest datasource '{model.data_source}' to re-type it.",
+                summary=f"Column '{model.name}.{col.name}' is stored as {col.type.value} but its live column is "
+                f"the list {live_type}; re-ingest datasource '{model.data_source}' to re-type it.",
             ))
     return out
 
@@ -312,7 +314,7 @@ def _column_is_base(col_sql: str | None) -> bool:
 
 
 def _diff_sql_table_columns(
-    *, model: SlayerModel, live_table: LiveTable
+    *, model: SlayerModel, live_table: LiveTable, temporal_text: bool,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Per-column diff of a sql_table-mode model against live columns."""
     dropped: list[str] = []
@@ -332,7 +334,7 @@ def _diff_sql_table_columns(
             )
             continue
         live_dt = live_table.columns[bare_name]
-        if _type_buckets_conflict(persisted=col.type, live=live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt, temporal_text=temporal_text):
             dropped.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -393,6 +395,7 @@ def diff_sql_table_model(
     model: SlayerModel,
     live_table: LiveTable | None,
     available_models_in_ds: set[str],
+    temporal_text: bool = False,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql_table-mode model against live introspection → ``(entry_or_None, dropped_column_names)``; ``live_table is None`` → WholeModelDelete."""
     if live_table is None:
@@ -414,7 +417,7 @@ def diff_sql_table_model(
         )
 
     dropped_cols, col_reasons = _diff_sql_table_columns(
-        model=model, live_table=live_table
+        model=model, live_table=live_table, temporal_text=temporal_text,
     )
     dropped_joins, join_reasons = _diff_sql_table_joins(
         model=model,
@@ -469,7 +472,7 @@ def _sql_trial_failure_delete(
 
 
 def _diff_sql_model_columns(
-    *, model: SlayerModel, live_columns: dict[str, DataType]
+    *, model: SlayerModel, live_columns: dict[str, DataType], temporal_text: bool,
 ) -> tuple[list[str], list[DeleteReason]]:
     """Model columns missing from (or type-conflicting with) cursor metadata."""
     dropped_cols: list[str] = []
@@ -493,7 +496,7 @@ def _diff_sql_model_columns(
                     )
                 )
             continue
-        if _type_buckets_conflict(persisted=col.type, live=live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt, temporal_text=temporal_text):
             dropped_cols.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -512,12 +515,13 @@ def diff_sql_model(
     model: SlayerModel,
     live_columns: dict[str, DataType] | None,
     invalid_sql: bool = False,
+    temporal_text: bool = False,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql-mode model against cursor metadata; ``live_columns is None`` ⇒ WholeModelDelete, ``invalid_sql=True`` ⇒ the SQL itself is broken, not drift."""
     if live_columns is None:
         return _sql_trial_failure_delete(model=model, invalid_sql=invalid_sql)
     dropped_cols, reasons = _diff_sql_model_columns(
-        model=model, live_columns=live_columns
+        model=model, live_columns=live_columns, temporal_text=temporal_text,
     )
     if not dropped_cols:
         return None, set()
@@ -2329,6 +2333,7 @@ def _diff_one_sql_table_model(
     live_tables: dict[str, "LiveTable"],
     available_in_ds: set[str],
     probe_drifts: list[tuple[str, DataType, DeleteReason]],
+    temporal_text: bool,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Per-model body of ``_collect_sql_table_diffs``: resolve live table, diff, merge probe drifts."""
     live = _resolve_live_table(
@@ -2340,6 +2345,7 @@ def _diff_one_sql_table_model(
         model=model,
         live_table=live,
         available_models_in_ds=available_in_ds,
+        temporal_text=temporal_text,
     )
     return _merge_probe_drifts_into_diff(
         model=model, base_diff=base, probe_drifts=probe_drifts,
@@ -2397,6 +2403,7 @@ async def _collect_sql_table_diffs(
             live_tables=live_tables,
             available_in_ds=available_in_ds,
             probe_drifts=probe_drifts_by_model.get(m.name, []),
+            temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
         )
         for m in sql_table_models
     }
@@ -2469,7 +2476,8 @@ async def _collect_sql_diffs(
     for model in sql_models:
         trial = trials[model.sql or ""]
         out[model.name] = diff_sql_model(
-            model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql
+            model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
+            temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
         )
     return out
 

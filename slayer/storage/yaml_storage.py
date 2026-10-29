@@ -43,6 +43,7 @@ from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
+    without_none,
 )
 from slayer.storage.content_fingerprint import StatKey, stat_key, tree_fingerprint
 from slayer.storage.document_loading import Loaded, stored_document_boundary
@@ -79,10 +80,8 @@ def _memory_to_md(memory: Memory) -> str:
         data.pop("description", None)
     if not data.get("entities"):
         data.pop("entities", None)
-    if data.get("query") is None:
-        data.pop("query", None)
     fm = yaml.safe_dump(
-        data, sort_keys=True, default_flow_style=False, allow_unicode=True,
+        without_none(data), sort_keys=True, default_flow_style=False, allow_unicode=True,
     )
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
 
@@ -339,7 +338,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         target_dir = os.path.join(self.models_dir, model.data_source)
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
-        data = model.model_dump(mode="json", exclude_none=True)
+        data = without_none(model.model_dump(mode="json"))
         self._model_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
@@ -455,7 +454,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
-        data = datasource.model_dump(mode="json", exclude_none=True)
+        data = without_none(datasource.model_dump(mode="json"))
         self._datasource_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 

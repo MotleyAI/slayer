@@ -570,6 +570,7 @@ class SqliteDialect(SqlDialect):
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
     sa_backend_names: frozenset[str] = frozenset({"sqlite"})
     probes_integer_affinity: bool = True
+    temporal_text_compatible: bool = True
     primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""

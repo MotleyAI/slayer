@@ -1288,11 +1288,11 @@ class AdditiveMergeResult(BaseModel):
 
 
 def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
-    """A stored TEXT column whose live column is a list, re-typed to it (system P14's exception); a stored list's
+    """A stored non-list column whose live column is a list, re-typed to it (system P14's exception); a stored list's
     UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
     if fresh.type is not DataType.ARRAY:
         return None
-    if persisted.type is DataType.TEXT:
+    if persisted.type is not DataType.ARRAY:
         return persisted.model_copy(update={
             "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # A list's only aggregation is count.

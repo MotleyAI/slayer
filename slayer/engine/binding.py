@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import difflib
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
@@ -106,7 +109,28 @@ __all__ = [
     "bind_expr",
     "bind_filter",
     "bind_time_dimension",
+    "collect_bind_records",
 ]
+
+
+class BindRecords(BaseModel):
+    """What binding a statement resolved through, beyond its keys: saved measures ``(model, measure)``."""
+
+    measures: Dict[Tuple[str, str], None] = {}
+
+
+_bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
+
+
+@contextmanager
+def collect_bind_records() -> Iterator[BindRecords]:
+    """Collect the records of every binding inside the block."""
+    records = BindRecords()
+    token = _bind_records.set(records)
+    try:
+        yield records
+    finally:
+        _bind_records.reset(token)
 
 
 _DEFAULT_MEASURE_DEPTH = 32
@@ -1011,6 +1035,9 @@ def _resolve_saved_measure(
         raise MeasureRecursionLimitError(
             chain=_fmt_measure_chain(child.chain), limit=measure_ctx.depth_limit,
         )
+    records = _bind_records.get()
+    if records is not None:
+        records.measures[(terminal_model.name, measure.name)] = None
     parsed = parse_expr(measure.formula)
     _reject_placeholders(parsed, text=measure.formula)
     if not host_path:

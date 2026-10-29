@@ -350,6 +350,15 @@ def _write_sample_fields(
         col["distinct_count"] = distinct_count
 
 
+def without_none(value: Any) -> Any:
+    """``value`` with every ``None`` mapping entry dropped, recursively: an unset field is never persisted."""
+    if isinstance(value, dict):
+        return {k: without_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [without_none(v) for v in value]
+    return value
+
+
 def storage_base_dir(path: str) -> str:
     """The on-disk directory for a storage path: a SQLite file's parent, else the path itself (callers colocate auxiliary files beside storage)."""
     if path.endswith((".db", ".sqlite", ".sqlite3")):

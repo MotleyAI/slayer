@@ -145,6 +145,8 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
+from slayer.engine.statement_reads import StatementReads, statement_reads
+from slayer.engine.binding import collect_bind_records
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
@@ -666,6 +668,8 @@ class _Prepared(BaseModel):
     expected_columns: List[str]
     # The persisted models the statement reads (drift-attribution scope).
     touched: Set[str]
+    # The elements of those models it reads (drift attribution).
+    reads: StatementReads = PydanticField(default_factory=StatementReads)
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
@@ -690,6 +694,7 @@ class _Rendered(BaseModel):
     model: SlayerModel
     # Models whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
+    element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
@@ -1092,6 +1097,7 @@ class SlayerQueryEngine:
             attributes=attributes,
             expected_columns=list(expected_columns),
             touched=rendered.reads,
+            reads=rendered.element_reads,
             model=rendered.model,
             slack_warnings=rendered.warnings,
             population=rendered.population,
@@ -1099,7 +1105,15 @@ class SlayerQueryEngine:
             reads_clock=plans_read_clock(rendered.emitted_list),
         )
 
-    async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
+    async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
+        """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
+        with collect_bind_records() as records:
+            rendered = await self._plan_and_render_statement(**kwargs)
+        return rendered.model_copy(update={"element_reads": statement_reads(
+            plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures,
+        )})
+
+    async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
         *,
         query: SlayerQuery,
@@ -1430,7 +1444,8 @@ class SlayerQueryEngine:
                 explained = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                    err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                    reads=prepared.reads,
                 )
                 raise
             return SlayerResponse(
@@ -1483,7 +1498,8 @@ class SlayerQueryEngine:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                reads=prepared.reads,
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
@@ -1825,19 +1841,17 @@ class SlayerQueryEngine:
         err: BaseException,
         datasource: DatasourceConfig,
         read_set: "Set[str]",
+        reads: StatementReads,
     ) -> None:
-        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
-        models; else return so the caller re-raises. Attribution errors are swallowed."""
+        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
+        statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            findings: List[ListRetypeFinding] = []
+            found: List[ListRetypeFinding] = []
             entries = await self._validate_read_set(
-                datasource=datasource, read_set=read_set, findings_out=findings,
+                datasource=datasource, read_set=read_set, findings_out=found,
             )
-            # An "invalid_sql" entry is not drift evidence — it restates the
-            # query failure itself, so the original error must propagate.
-            filtered = [
-                e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
-            ]
+            filtered = [e for e in entries if reads.touched_by(e)]
+            findings = [f for f in found if reads.touched_by(f)]
             if filtered or findings:
                 raise SchemaDriftError(
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
