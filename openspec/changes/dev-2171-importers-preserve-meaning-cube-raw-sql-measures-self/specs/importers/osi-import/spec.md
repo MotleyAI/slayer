@@ -2,7 +2,7 @@
 
 ### Requirement: Current-spec models expose their declared fields
 
-For a current-spec document, each dataset's model SHALL expose exactly its declared fields as visible columns (plus any hidden helper columns the import needs: metric operands, and base columns through which a field reads a physical column whose name a field has taken). Source columns that no field declares SHALL NOT appear as visible columns of the model. A field expression SHALL still be able to read any column of the dataset's source, with the source's meaning. A dataset that declares no fields SHALL still import, with a warning that it exposes no columns.
+For a current-spec document, each dataset's model SHALL expose exactly its declared fields as visible columns (plus any hidden helper columns the import needs: metric operands). Source columns that no field declares SHALL NOT appear as visible columns of the model. A field expression SHALL still be able to read any column of the dataset's source, with the source's meaning, unless another field holds that column's name, in which case the reading field is dropped with a report. A dataset that declares no fields SHALL still import, with a warning that it exposes no columns.
 
 #### Scenario: Renamed field hides its source column
 - **WHEN** dataset `orders` has source columns `o_orderkey` and `o_totalprice` and declares fields `order_id: o_orderkey` and `total_amount: o_totalprice`
@@ -14,7 +14,7 @@ For a current-spec document, each dataset's model SHALL expose exactly its decla
 
 #### Scenario: Field reading a source column another field's name has taken
 - **WHEN** a dataset declares fields `status: state` and `status_upper: UPPER(status)` over source columns `status` and `state`
-- **THEN** the visible columns are exactly `status` and `status_upper`, and `status_upper` returns the upper-cased physical `status`
+- **THEN** `status_upper` is dropped with a report naming `status`, and the visible columns are exactly `status`
 
 #### Scenario: Dataset without fields
 - **WHEN** a current-spec dataset declares no fields

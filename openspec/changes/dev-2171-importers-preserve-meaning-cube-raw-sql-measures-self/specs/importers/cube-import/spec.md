@@ -24,7 +24,7 @@ A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `s
 
 #### Scenario: CASE inside an aggregate, with a colliding dimension
 - **WHEN** cube `orders` declares dimension `status` with `sql: {CUBE}.state` and calculated measure `paid_cnt: SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)`
-- **THEN** `paid_cnt` returns 2
+- **THEN** `paid_cnt` is dropped and the report names `status`
 
 #### Scenario: A column the cube does not declare
 - **WHEN** cube `orders` declares no member over `status` and calculated measure `paid_amount: SUM(CASE WHEN {CUBE}.status = 'paid' THEN {CUBE}.amount END)`
@@ -48,11 +48,11 @@ A Cube calculated measure (`type: number`, `string`, `time` or `boolean` with `s
 
 ### Requirement: Cube join keys read physical columns
 
-A Cube join whose `ON` is an equality, or a conjunction of equalities, between columns of the two cubes SHALL import with join keys that read exactly the physical columns the `ON` names on each side, whichever members the cubes declare; a side whose physical column is masked by a same-named derived member SHALL be read through a hidden base column. Any other `ON` SHALL drop the join with a report.
+A Cube join whose `ON` is an equality, or a conjunction of equalities, between columns of the two cubes SHALL import with join keys that read exactly the physical columns the `ON` names on each side, whichever members the cubes declare; a side whose physical column's name a different member holds SHALL drop the join with a report naming it. Any other `ON` SHALL drop the join with a report.
 
 #### Scenario: Key masked by a renamed dimension
 - **WHEN** cube `orders` declares dimension `customer_id` with `sql: {CUBE}.legacy_ref` and joins `customers` on `{CUBE}.customer_id = {customers}.id`
-- **THEN** a query across the join pairs each order with the customer whose `id` equals the order's physical `customer_id`
+- **THEN** the join is dropped and the report names `customer_id`
 
 ### Requirement: FILTER_PARAMS bodies read physical columns
 
@@ -60,7 +60,7 @@ The column references inside a FILTER_PARAMS pushdown body SHALL follow the same
 
 #### Scenario: Pushdown body over a masked column
 - **WHEN** a sql-mode cube's `sql` has `{FILTER_PARAMS.orders.status.filter('status')}`, and the cube declares dimension `status` with `sql: UPPER({CUBE}.status)`
-- **THEN** querying with the pushdown variable set to `paid` keeps only the source rows whose physical `status` is `paid` (ids 1 and 2), and omitting the variable keeps all three rows
+- **THEN** the self-named `status` dimension is dropped with a report, and querying with the pushdown variable set to `paid` keeps ids 1 and 2, and omitting the variable keeps all three rows
 
 ### Requirement: The datasource is used whenever it resolves
 
@@ -74,6 +74,6 @@ The column references inside a FILTER_PARAMS pushdown body SHALL follow the same
 
 A view facade column or measure copied from a cube SHALL bring along every hidden column of that cube its definition reads, transitively, so the facade reads the same values as the cube.
 
-#### Scenario: View over a self-named dimension
-- **WHEN** a view includes `orders.status`, where `orders` declares `status` with `sql: UPPER({CUBE}.status)`
-- **THEN** grouping the view by `status` returns `PAID` (2 rows) and `OPEN` (1 row)
+#### Scenario: View over a filtered measure
+- **WHEN** a view includes `orders.paid_sum` (`sum` over `{CUBE}.amount`, filter `{CUBE}.status = 'paid'`)
+- **THEN** `paid_sum` on the view returns 30

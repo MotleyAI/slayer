@@ -41,13 +41,16 @@ transpiles `'a' = ANY(tags)` and `CARDINALITY(tags)` unchanged to Snowflake / Bi
    differs, by span, keeping all other text verbatim.
 4. Resolve each FILTER_PARAMS `body_template` separately, then insert the required / optional blocks. Text holding
    sentinels or `{? ?}` blocks is never parsed.
-5. Physical `x` → (a) a same-named unfiltered base column reading `x`; (b) else another unfiltered base column reading
-   `x`, first declared; (c) else, with no column named `x`, bare `x` in Mode A (a Mode-B operand gets a base column
-   `x`); (d) else a hidden base column `x_raw` (`sql: x`, `_raw` repeated until free), one per model.
+5. Physical `x` → (a) a same-named unfiltered base column reading `x`; (b) else, when a different column holds the
+   name `x` (derived, filtered or renamed), the construct holding the reference is dropped with a report naming `x` — a
+   self-named member is dropped first, which frees its name; reading such an `x` is DEV-2175; (c) else another
+   unfiltered base column reading `x`, first declared; (d) else bare `x` in Mode A (a Mode-B operand gets a base column
+   `x`).
 6. Matching: quoted identifiers exactly; unquoted with the dialect's folding; more than one match → the construct is
    dropped with an ambiguity report. Emitted base-column SQL keeps the source's quoting.
-7. Join keys: a separate two-sided phase after all cubes are converted maps each physical `ON` operand to an existing or
-   hidden base column on its owning cube and writes those names into `join_pairs`.
+7. Join keys: a separate two-sided phase after all cubes are converted maps each physical `ON` operand by step 5 to an
+   existing base column, else a hidden one named after it; an operand step 5 drops drops the join with a report; it
+   writes those names into `join_pairs`.
 
 ### Typing order
 
@@ -82,7 +85,9 @@ best-effort; the offline report entry names why (absent / resolution failed / co
 10. OSI keeps its Mode-B inline operand policy — OSI's selected form is portable SQL; the library is its meaning.
     (default)
 11. Cube calc measures reuse the OSI aggregate translator, moved to `slayer.importers` — one code path. (default)
-12. Hidden raw base column spelled `<x>_raw`, not `x__raw` — `__` is the reserved legacy split-alias form. (default)
+12. Reading a physical name a different column holds (self-named transforms, renamed collisions) is split out to
+    DEV-2175; until it lands such constructs are dropped with a report (options: drop with a report / keep today's
+    behaviour behind xfails) — no wrong numbers ship and principle 17 still holds. (user)
 13. A filtered measure-source column never takes a physical name (`<measure>_col`). (default)
 14. Cube join `ON` brace-dot operands resolve physically — consistency with every other surface. (default)
 15. Cube views carry hidden dependency columns transitively. (default)

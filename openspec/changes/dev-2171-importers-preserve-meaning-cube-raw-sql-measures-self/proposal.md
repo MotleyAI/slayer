@@ -4,8 +4,8 @@ The Cube, dbt and OSI importers copy the source's physical column names into SLa
 
 ## What Changes
 
-- A shared physical-reference resolver rewrites every physical column reference an importer emits to a logical column reading that physical column, adding a hidden `<x>_raw` base column when the name is taken by a different column. Used by Cube (dimensions, CASE predicates, measure SQL and filters, segments, calc-measure operands, join keys), dbt (dimension, measure and entity `expr`s) and OSI (field expressions).
-- Self-named transforms (`status: UPPER(status)`) import in all three importers; a filtered column never takes a physical column's name.
+- A shared physical-reference resolver rewrites every physical column reference an importer emits to a logical column reading that physical column; a reference whose name a different column holds drops its construct with a report (reading it is DEV-2175). Used by Cube (dimensions, CASE predicates, measure SQL and filters, segments, calc-measure operands, join keys), dbt (dimension, measure and entity `expr`s) and OSI (field expressions).
+- A self-named transform (`status: UPPER(status)`) is dropped with a report instead of failing the whole model's save (importing it is DEV-2175); a filtered column never takes a physical column's name.
 - Cube calculated measures containing raw SQL aggregates are translated by the shared aggregate translator (moved from the OSI importer): bare operands aggregate their column, other operands become hidden verbatim Mode-A columns, `FILTER` becomes the helper's filter; untranslatable measures are dropped with a report.
 - Cube `{<own cube>.member}` and `{CUBE.member}` resolve like `{member}`; Cube view facades carry the hidden columns their SQL reads.
 - Import-time measure validation looks inside aggregations: an aggregation reading no model column or join path drops its measure with a report.
@@ -27,6 +27,6 @@ The Cube, dbt and OSI importers copy the source's physical column names into SLa
 ## Impact
 
 - Code: new package `slayer/importers/` (resolver, aggregate translator, typing helper) claimed in `architecture/model.c4`; `slayer/cube/*`, `slayer/dbt/*`, `slayer/osi/*`; `slayer/core/syntax.py` (`measure_dependency_problems` gains column and join-path context); `slayer/cli.py` (datasource resolution for `import-cube` / `import-dbt`).
-- Behaviour: imported models change shape (hidden `<x>_raw` columns, `<measure>_col` filtered helpers, list types); some previously imported measures are now dropped with a report (untyped `min` / `max` offline, list aggregations SLayer refuses, untranslatable Cube calc measures).
+- Behaviour: imported models change shape (`<measure>_col` filtered helpers, list types); some previously imported constructs are now dropped with a report (collisions and self-named transforms, untyped `min` / `max` offline, list aggregations SLayer refuses, untranslatable Cube calc measures).
 - arc42: principle 17 flips to `[enforced: test:tests/test_dev2171_importers_preserve_meaning.py]`.
 - Closes DEV-1363.

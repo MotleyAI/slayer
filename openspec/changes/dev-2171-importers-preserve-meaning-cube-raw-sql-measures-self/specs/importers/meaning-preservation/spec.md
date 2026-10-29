@@ -8,43 +8,43 @@ Scenarios below use a table `orders(id, status, state, amount, tags)` with rows 
 
 ### Requirement: Physical references read the physical column
 
-Every column reference an importer takes from the source's own SQL (a reference to a column of the source table, as opposed to a reference to a source-defined member) SHALL read that physical column in the imported model, whatever logical columns the model declares. When a logical column shares the physical column's name but reads something else (a derived, filtered or renamed column), the import SHALL read the physical column through a hidden base column instead, and the shared name SHALL keep its own definition. Resolution SHALL NOT depend on the order in which the source declares its members. References inside nested scopes (subqueries, CTEs, `UNION` branches) SHALL be left as written, and the rest of the source's SQL text SHALL be kept verbatim.
+Every column reference an importer takes from the source's own SQL (a reference to a column of the source table, as opposed to a reference to a source-defined member) SHALL read that physical column in the imported model, whatever logical columns the model declares. When a different column of the model holds the physical column's name (a derived, filtered or renamed column), the construct holding the reference SHALL be dropped with a report naming the reference, and the shared name SHALL keep its own definition. Resolution SHALL NOT depend on the order in which the source declares its members. References inside nested scopes (subqueries, CTEs, `UNION` branches) SHALL be left as written, and the rest of the source's SQL text SHALL be kept verbatim.
 
-#### Scenario: A renamed dimension does not capture a physical reference
+#### Scenario: A renamed dimension holding a physical name
 - **WHEN** a Cube cube over `orders` declares dimension `status` with `sql: {CUBE}.state` and dimension `status_upper` with `sql: UPPER({CUBE}.status)`
-- **THEN** a query grouping by `status_upper` returns groups `PAID` (2 rows) and `OPEN` (1 row)
+- **THEN** `status_upper` is dropped and the report names `status`; grouping by `status` returns `open`, `paid` and `x`
 
 #### Scenario: The same collision in dbt
 - **WHEN** a dbt semantic model over `orders` declares dimension `status` with `expr: state` and measure `paid_cnt` with `agg: sum` and `expr: CASE WHEN status = 'paid' THEN 1 ELSE 0 END`
-- **THEN** `paid_cnt` returns 2
+- **THEN** `paid_cnt` is dropped and the report names `status`
 
 #### Scenario: The same collision in OSI
 - **WHEN** an OSI dataset over `orders` declares field `status: state` and field `status_upper: UPPER(status)`
-- **THEN** a query grouping by `status_upper` returns groups `PAID` (2 rows) and `OPEN` (1 row)
+- **THEN** `status_upper` is dropped and the report names `status`
 
 #### Scenario: Declaration order does not matter
 - **WHEN** the Cube cube above declares `status_upper` before `status`
-- **THEN** the query returns the same groups
+- **THEN** the same construct is dropped
 
 #### Scenario: Nested scopes are left alone
-- **WHEN** a Cube dimension is `({CUBE}.amount - (SELECT MIN(amount) FROM orders))` and the cube also declares a dimension `amount` with `sql: {CUBE}.amount * 2`
-- **THEN** the outer reference reads the physical `amount` and the subquery's `amount` is kept as written
+- **WHEN** a Cube dimension `min_amount` is `(SELECT MIN(amount) FROM orders)` and the cube also declares dimension `amount` with `sql: {CUBE}.amount * 2`
+- **THEN** `min_amount` imports with the subquery kept as written and returns 5 on every row
 
-### Requirement: Self-named transforms import
+### Requirement: Self-named transforms are dropped with a report
 
-A source member whose definition reads the physical column of its own name (`status: UPPER(status)`) SHALL import, with the member computed over the physical column, in every importer; the model SHALL save without a column cycle.
+A source member whose definition reads the physical column of its own name SHALL be dropped with a report naming it, in every importer; the rest of the model SHALL import and save.
 
 #### Scenario: Cube self-named dimension
 - **WHEN** a Cube cube over `orders` declares dimension `status` with `sql: UPPER({CUBE}.status)`
-- **THEN** the cube imports and saves, and grouping by `status` returns `PAID` (2 rows) and `OPEN` (1 row)
+- **THEN** the member is dropped with a report and the rest of the model saves
 
 #### Scenario: dbt self-named dimension
 - **WHEN** a dbt semantic model declares dimension `status` with `expr: UPPER(status)`
-- **THEN** the model saves and grouping by `status` returns `PAID` and `OPEN`
+- **THEN** the member is dropped with a report and the rest of the model saves
 
 #### Scenario: OSI self-named field
 - **WHEN** an OSI dataset declares field `status: UPPER(status)`
-- **THEN** the model saves and grouping by `status` returns `PAID` and `OPEN`
+- **THEN** the member is dropped with a report and the rest of the model saves
 
 ### Requirement: A filtered helper never masks its source column
 
