@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
-from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -80,7 +79,7 @@ def test_array_length_stays_custom() -> None:
 # Memory tagging reads the parse tree
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-async def storage(tmp_path: Path) -> AsyncIterator[YAMLStorage]:
+async def storage(tmp_path: Path) -> YAMLStorage:
     store = YAMLStorage(base_dir=str(tmp_path))
     await store.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
     await store.save_model(SlayerModel(
@@ -88,7 +87,7 @@ async def storage(tmp_path: Path) -> AsyncIterator[YAMLStorage]:
         columns=[Column(name="id", type=DataType.INT, primary_key=True),
                  Column(name="region", type=DataType.TEXT), Column(name="amount", type=DataType.DOUBLE)],
     ))
-    yield store
+    return store
 
 
 async def test_quoted_identifier_in_a_filter_is_tagged(storage: YAMLStorage) -> None:

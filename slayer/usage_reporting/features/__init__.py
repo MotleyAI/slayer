@@ -31,17 +31,21 @@ def _wraps_aggregate(node: AggCall) -> bool:
     return any(isinstance(n, (AggCall, TransformCall)) for n in walk_parsed(node.source))
 
 
+def _count_agg_call(node: AggCall, out: QueryFeatures) -> None:
+    if node.agg.lower() in GRANULARITY_NAMES:
+        return
+    name = normalize_aggregation_name(node.agg)
+    if name in ALL_TRANSFORMS and _wraps_aggregate(node):
+        out.transforms.append(name)
+    else:
+        out.aggregations.append(name if name in BUILTIN_AGGREGATIONS else CUSTOM)
+    if node.filter is not None:
+        out.flags.append("aggregate_filter")
+
+
 def _count_node(node: Any, out: QueryFeatures) -> None:
     if isinstance(node, AggCall):
-        name = normalize_aggregation_name(node.agg)
-        if node.agg.lower() in GRANULARITY_NAMES:
-            return
-        if name in ALL_TRANSFORMS and _wraps_aggregate(node):
-            out.transforms.append(name)
-        else:
-            out.aggregations.append(name if name in BUILTIN_AGGREGATIONS else CUSTOM)
-        if node.filter is not None:
-            out.flags.append("aggregate_filter")
+        _count_agg_call(node, out)
     elif isinstance(node, TransformCall):
         out.transforms.append(node.op)
     elif isinstance(node, ScalarCall):

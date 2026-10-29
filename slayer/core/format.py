@@ -270,8 +270,9 @@ def encode_text(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (float, decimal.Decimal)) and _is_non_finite(value):
-        is_nan = value.is_nan() if isinstance(value, decimal.Decimal) else math.isnan(value)
-        return "NaN" if is_nan else ("Infinity" if value > 0 else "-Infinity")
+        if value.is_nan() if isinstance(value, decimal.Decimal) else math.isnan(value):
+            return "NaN"
+        return "Infinity" if value > 0 else "-Infinity"
     if isinstance(value, decimal.Decimal):
         return str(value)
     if isinstance(value, dt.datetime):
