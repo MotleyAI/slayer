@@ -14,8 +14,8 @@ from slayer.core.keys import (
     ScalarSpec,
 )
 from slayer.core.models import Aggregation, SlayerModel
-from slayer.osi import expression as osi_expression
-from slayer.osi.expression import convert_expression
+from slayer.importers import aggregates as osi_expression
+from slayer.importers.aggregates import convert_expression
 from slayer.core.enums import DataType
 from slayer.core.models import Column
 from slayer.core.scope import ModelScope

@@ -34,7 +34,8 @@ def test_resolvable_inputs(formula: str) -> None:
 ])
 def test_unresolvable_input_names_the_reference(formula: str, name: str) -> None:
     problem = _problem(formula)
-    assert problem is not None and name in problem
+    assert problem is not None
+    assert name in problem
 
 
 def test_without_columns_aggregation_inputs_are_not_checked() -> None:
@@ -44,4 +45,5 @@ def test_without_columns_aggregation_inputs_are_not_checked() -> None:
 def test_a_peer_with_an_unresolvable_input_poisons_its_dependants() -> None:
     problems = measure_dependency_problems([("a", "sum(missing)"), ("b", "a * 2")], columns=COLUMNS,
                                            join_path=_joins)
-    assert problems[0] is not None and problems[1] is not None
+    assert problems[0] is not None
+    assert problems[1] is not None

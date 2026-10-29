@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.osi.models import OSIDocument
 from slayer.osi.parser import parse_osi_path
@@ -124,7 +125,7 @@ class TestArrayFunctions:
         ("CARDINALITY(tags)", "length", (exp.column("tags"),)),
     ], ids=["contains", "length"])
     def test_field_rendered_as_slayers_own_sql_for_the_target(self, db: Path, target: str, sql: str, fn: ListFn,
-                                                              args: tuple[exp.Expr, ...]) -> None:
+                                                              args: tuple[Expression, ...]) -> None:
         dialect = dialect_for_ds_type(target)
         result = import_osi(flat([orders([*LIST_FIELDS, f("listed", sql)])]), db=db, target_dialect=target)
         stored = column(models_of(result)["orders"], "listed").sql
@@ -144,5 +145,6 @@ async def test_quote_and_backslash_in_a_literal(db: Path) -> None:
     metric = m("obrien", "COUNT(*) FILTER (WHERE note = 'O''Brien\\x')")
     result = import_osi(flat([orders(LIST_FIELDS, metrics=[metric])]), db=db)
     found = models_of(result)["orders"].get_measure("obrien")
-    assert found is not None and "O''Brien\\x" in found.formula
+    assert found is not None
+    assert "O''Brien\\x" in found.formula
     assert await value(models=result.models, db=db, model="orders", formula="obrien") == 1

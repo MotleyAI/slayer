@@ -645,7 +645,8 @@ def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
     orders = {m.name: m for m in result.models}["orders"]
     status_cols = [c for c in orders.columns if c.name == "status"]
     assert len(status_cols) == 1
-    assert (status_cols[0].sql, status_cols[0].type) == (None, DataType.TEXT)
+    assert status_cols[0].is_base
+    assert (status_cols[0].physical_name, status_cols[0].type) == ("status", DataType.TEXT)
     assert _reported(result)
 
 

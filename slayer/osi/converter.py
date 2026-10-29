@@ -31,10 +31,11 @@ from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_targe
 from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
+from slayer.importers.aggregates import MaterializedColumn, contains_args, convert_expression, outermost_aggregates
+from slayer.importers.physical import unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.sql.client import CATEGORY_DATA_TYPES, get_column_types_sync
-from slayer.osi.dialects import Selection, read, render, select_expression
-from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
+from slayer.osi.dialects import Selection, is_native, read, render, select_expression
 from slayer.osi.models import (
     OSIAIContext,
     OSICustomExtension,
@@ -193,8 +194,9 @@ class OsiToSlayerConverter:
         self.dialect = dialect
         self.target_dialect = target_dialect
         # sqlglot name of the datasource dialect every stored raw SQL is rendered in.
-        self._target = (dialect_for_ds_type(target_dialect) if target_dialect
-                        else dialect_for_sa_backend(sa_engine.dialect.name)).sqlglot_name
+        self._dialect = (dialect_for_ds_type(target_dialect) if target_dialect
+                         else dialect_for_sa_backend(sa_engine.dialect.name))
+        self._target = self._dialect.sqlglot_name
         self._models: dict[str, SlayerModel] = {}
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
@@ -317,6 +319,7 @@ class OsiToSlayerConverter:
             self._overlay_fields(base, ds)
         else:
             self._declare_fields(base, ds)
+        self._drop_unreadable_fields(base)
         self._apply_dataset_metadata(base, ds, doc)
         self._models[ds.name] = base
 
@@ -348,6 +351,22 @@ class OsiToSlayerConverter:
         model.columns = columns
         self._apply_primary_key(model, ds)
         model.default_time_dimension = _first_time_dimension(model)
+
+    def _drop_unreadable_fields(self, model: SlayerModel) -> None:
+        """Drop each field reading a source column another field's name holds (a legacy overlay reverts)."""
+        dropped = unreadable_columns(model.columns, dialect=self._target, live=self._physical[model.name])
+        for name, problem in dropped.items():
+            col = next(c for c in model.columns if c.name == name)
+            original = self._shadowed.pop((model.name, name), None)
+            if original is not None:
+                model.columns[model.columns.index(col)] = original
+            else:
+                model.columns.remove(col)
+            self._warn(f"Field {name!r} on {model.name!r} dropped: {problem}"
+                       f"{'; the source column is kept' if original is not None else ''}.",
+                       model_name=model.name, category="masked_column")
+        if model.default_time_dimension in dropped and model.get_column(model.default_time_dimension) is None:
+            model.default_time_dimension = _first_time_dimension(model)
 
     def _apply_primary_key(self, model: SlayerModel, ds: OSIDataset) -> None:
         """A valid declared key replaces the inherited flags; an empty or unresolved one clears them."""
@@ -417,7 +436,29 @@ class OsiToSlayerConverter:
             self._warn(f"{label} has an unparseable expression {selection.candidate.text!r}; skipping.",
                        model_name=ds.name, category="expression")
             return None
-        return render(selection.candidate, tree, target=self._target), tree
+        rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
+        return render(selection.candidate, rendered, target=self._target), tree
+
+    def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
+        """``tree`` with array functions as SLayer's own list SQL for the target."""
+        dialect = self._dialect
+        physical = self._physical[ds.name]
+
+        def is_list(node: exp.Expr) -> bool:
+            col = physical.get(node.name) if isinstance(node, exp.Column) and not node.table else None
+            return col is not None and col.type is DataType.ARRAY
+
+        def rewrite(node: exp.Expr) -> exp.Expr:
+            if isinstance(node, exp.ArrayContains):
+                return dialect.build_list_call("contains", contains_args(node, is_list=is_list))
+            if isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any):
+                return dialect.build_list_call("contains", (node.expression.this, node.this))
+            if isinstance(node, exp.ArraySize) or (
+                    isinstance(node, exp.Anonymous) and node.name.lower() in ("cardinality", "array_length")):
+                (values,) = node.expressions if isinstance(node, exp.Anonymous) else [node.this]
+                return dialect.build_list_call("length", (values,))
+            return node
+        return tree.transform(rewrite)
 
     def _field_column(self, field: OSIField, ds: OSIDataset, model: SlayerModel) -> Column | None:
         """The Column one field maps to, or ``None`` on a reported clean-fail."""
@@ -871,7 +912,7 @@ class OsiToSlayerConverter:
         result = convert_expression(
             tree, entity_name=metric.name, owner_of=owner_of, ref_of=self._make_ref_of(anchor=anchor),
             percentile_unsupported=self._target in _NO_PERCENTILE_DIALECTS,
-            name_taken=self._model_has_name, target=self._target,
+            name_taken=self._model_has_name, target=self._target, is_list=self._make_is_list(owner_of),
         )
         if not result.ok or result.formula is None:
             self._unconv(
@@ -956,6 +997,13 @@ class OsiToSlayerConverter:
             matches = [name for name in scope if self._model_has_column(name, column)]
             return matches[0] if len(matches) == 1 else None
         return owner_of
+
+    def _make_is_list(self, owner_of: OwnerOf) -> Callable[[Optional[str], str], bool]:
+        def is_list(qualifier: Optional[str], column: str) -> bool:
+            owner = owner_of(qualifier, column)
+            col = self._models[owner].get_column(column) if owner is not None else None
+            return col is not None and col.type is DataType.ARRAY
+        return is_list
 
     def _min_hops_root(self, *, candidates: list[str], mentioned: set[str], to_one: set[str]) -> str | None:
         """Among ``candidates`` routing to every ``mentioned`` model (``to_one`` ones without

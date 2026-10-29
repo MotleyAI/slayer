@@ -1,4 +1,4 @@
-"""OSI metric/field expression -> SLayer formula transform (slayer/osi/expression.py).
+"""OSI metric/field expression -> SLayer formula transform (slayer/importers/aggregates.py).
 
 ``convert_expression`` walks a SQL aggregation expression with sqlglot and emits a
 SLayer functional-syntax formula, materializing hidden derived Columns for non-bare
@@ -16,7 +16,7 @@ from slayer.core.enums import DataType
 from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.syntax import parse_expr
-from slayer.osi.expression import convert_expression
+from slayer.importers.aggregates import convert_expression
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
 OWNER = lambda q, c: "orders"          # noqa: E731

@@ -24,7 +24,6 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.syntax import measure_dependency_problems
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -34,6 +33,7 @@ from slayer.core.models import (
     physical_column_sql,
 )
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE, functional_agg_text
+from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
 from slayer.dbt.models import (
@@ -51,11 +51,27 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.importers.column_types import (
+    LiveSource,
+    Typed,
+    connect_source,
+    contradiction_note,
+    contradicts,
+    declared_type,
+    implied_type,
+    list_refusal,
+    offline_note,
+    refused_over_list,
+    untyped_message,
+)
+from slayer.importers.measures import measure_problems
+from slayer.importers.physical import unreadable_columns
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
 from slayer.ingest_report import ConversionResult, ConversionWarning
+from slayer.sql.dialects import dialect_for_ds_type
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +151,17 @@ def _free_key_name(*, expr: str, cols: list[Column], taken: set) -> str | None:
     return phys if phys and phys not in taken and all(c.name != phys for c in cols) else None
 
 
+def _aggregated_column(formula: str) -> tuple[str, str] | None:
+    """``(column, aggregation)`` of a single-aggregation formula over one column."""
+    try:
+        parsed = parse_expr(formula)
+    except ValueError:
+        return None
+    if isinstance(parsed, AggCall) and isinstance(parsed.source, Ref):
+        return parsed.source.name, parsed.agg.lower()
+    return None
+
+
 def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
     """Extract ``config.meta`` (or ``None``)."""
     if config is not None and config.meta:
@@ -191,6 +218,7 @@ class DbtToSlayerConverter:
         sa_engine: sa.Engine | None = None,
         include_hidden_models: bool = False,
         target_dialect: str | None = None,
+        offline_reason: str | None = None,
     ) -> None:
         self.project = project
         self.data_source = data_source
@@ -199,6 +227,13 @@ class DbtToSlayerConverter:
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
+        self.offline_reason = offline_reason
+        self._dialect = dialect_for_ds_type(target_dialect).sqlglot_name if target_dialect else None
+        # {dbt model: {column: declared data_type}}
+        self._declared: dict[str, dict[str, str]] = {
+            rm.name: {c.name: c.data_type for c in rm.columns if c.data_type} for rm in project.regular_models
+        }
+        self._offline_noted: set[str] = set()
         self.entity_registry = EntityRegistry()
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
@@ -261,10 +296,7 @@ class DbtToSlayerConverter:
             self._prune_model_measures(model)
 
     def _prune_model_measures(self, model: SlayerModel) -> None:
-        problems = measure_dependency_problems(
-            [(m.name, m.formula) for m in model.measures],
-            aggregations=frozenset(a.name for a in model.aggregations),
-        )
+        problems = measure_problems(model, models_by_name=self._models_by_name)
         for m, problem in zip(model.measures, problems):
             if problem is not None:
                 self._unconverted.append(ConversionWarning(
@@ -377,7 +409,8 @@ class DbtToSlayerConverter:
         if sm.label:
             model_meta.setdefault("label", sm.label)
 
-        cols: list[Column] = [_convert_dimension(d) for d in sm.dimensions]
+        live = self._live_source(sm, sql_table=sql_table, sql=sql_source)
+        cols = self._drop_masked(sm, [_convert_dimension(d) for d in sm.dimensions], live=live)
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
                 self._declare_primary_key(sm_name=sm.name, entity=entity, cols=cols)
@@ -391,6 +424,7 @@ class DbtToSlayerConverter:
             model_meta=model_meta,
         )
         cols.extend(measure_cols)
+        cols, measures = self._settle_columns(sm=sm, cols=cols, measures=measures, live=live)
 
         joins = self._declare_join_keys(
             sm_name=sm.name, cols=cols, measure_names={m.name for m in measures},
@@ -413,6 +447,91 @@ class DbtToSlayerConverter:
             joins=joins,
             meta=model_meta or None,
         )
+
+    def _live_source(self, sm: DbtSemanticModel, *, sql_table: str | None, sql: str | None) -> LiveSource | None:
+        """The semantic model's live schema; ``None`` (noted once per reason) when the database is not reachable."""
+        live = connect_source(engine=self.sa_engine, offline_reason=self.offline_reason, data_source=self.data_source,
+                              db_type=self.target_dialect, dialect=self._dialect, sql_table=sql_table, sql=sql)
+        if isinstance(live, LiveSource):
+            return live
+        if live not in self._offline_noted:
+            self._offline_noted.add(live)
+            self._warnings.append(ConversionWarning(category="typing", severity="info", message=offline_note(live)))
+        return None
+
+    def _settle_columns(
+        self, *, sm: DbtSemanticModel, cols: list[Column], measures: list[ModelMeasure], live: LiveSource | None,
+    ) -> tuple[list[Column], list[ModelMeasure]]:
+        """Drop columns reading a masked physical column, type the rest, and drop measures SLayer cannot read."""
+        cols = self._drop_masked(sm, cols, live=live)
+        dbt_aggs = {m.name: m.agg.lower() for m in sm.measures}
+        sources = {m.name or "": src for m in measures if (src := _aggregated_column(m.formula)) is not None}
+        aggs_of: dict[str, list[str]] = defaultdict(list)
+        for name, (col_name, agg) in sources.items():
+            aggs_of[col_name].append("sum_boolean" if dbt_aggs.get(name) == "sum_boolean" else agg)
+        dims = {d.name for d in sm.dimensions}
+        untyped = {c.name for c in cols if not self._type_column(
+            sm=sm, col=c, live=live, aggs=aggs_of.get(c.name, []), dimension=c.name in dims)}
+        kept: list[ModelMeasure] = []
+        for m in measures:
+            name = m.name or ""
+            col_name, agg = sources.get(name, (None, ""))
+            col = next((c for c in cols if c.name == col_name), None)
+            if col is not None and col.type is DataType.ARRAY and refused_over_list(agg):
+                problem = list_refusal(name, agg=agg, column=col.name)
+            elif col_name in untyped and implied_type(agg) is None:
+                problem = untyped_message(name, agg=agg, column=col_name)
+            else:
+                kept.append(m)
+                continue
+            self._unconverted.append(ConversionWarning(
+                model_name=sm.name, metric_name=m.name, category="typing", severity="dropped", message=problem))
+        used = {sources[m.name][0] for m in kept if m.name in sources}
+        return [c for c in cols if c.name not in untyped or c.name in used], kept
+
+    def _drop_masked(self, sm: DbtSemanticModel, cols: list[Column], *, live: LiveSource | None) -> list[Column]:
+        """``cols`` without those reading a physical column another column's name holds (or their own name)."""
+        dropped = unreadable_columns(cols, dialect=self._dialect, live=live.columns if live is not None else ())
+        for name, problem in dropped.items():
+            self._warnings.append(ConversionWarning(
+                model_name=sm.name, category="masked_column", severity="dropped",
+                message=f"Column {name!r} on '{sm.name}' dropped: {problem}."))
+        return [c for c in cols if c.name not in dropped]
+
+    def _type_column(self, *, sm: DbtSemanticModel, col: Column, live: LiveSource | None, aggs: list[str],
+                     dimension: bool) -> bool:
+        """Type ``col`` from the database, then its declared ``data_type``, then its aggregations; ``False`` if none."""
+        physical = col.physical_name if col.is_base else None
+        if "sum_boolean" in aggs:
+            return True  # our own CASE WHEN … THEN 1 ELSE 0 END
+        found: Typed | None = None
+        if live is not None:
+            found = live.column(physical) if physical is not None else live.probe(col.sql or col.name)
+        declared = self._declared_type(sm=sm, physical=physical)
+        if found is not None and declared is not None and contradicts(declared, found):
+            self._warnings.append(ConversionWarning(
+                model_name=sm.name, category="typing", severity="info",
+                message=contradiction_note(col.name, declared=declared, live=found)))
+        found = found or declared or next((t for a in aggs if (t := implied_type(a)) is not None and
+                                           t[0] is not DataType.TEXT), None) or next(
+            (t for a in aggs if (t := implied_type(a)) is not None), None)
+        if found is None:
+            return dimension or not aggs
+        col.type, col.element_type = found
+        if col.type not in (DataType.INT, DataType.DOUBLE):
+            col.format = None
+        return True
+
+    def _declared_type(self, *, sm: DbtSemanticModel, physical: str | None) -> Typed | None:
+        raw = self._declared.get(sm.model or sm.name, {}).get(physical) if physical is not None else None
+        if raw is None:
+            return None
+        found = declared_type(raw, dialect=self._dialect)
+        if found is None:
+            self._warnings.append(ConversionWarning(
+                model_name=sm.name, category="typing", severity="info",
+                message=f"Column {physical!r} declares data_type {raw!r}, which has no SLayer type; ignoring it."))
+        return found
 
     def _model_source(self, sm: DbtSemanticModel) -> tuple[str | None, str | None]:
         """``(sql_table, sql)``: a regular dbt model's refs inlined as SQL, else the physical table."""

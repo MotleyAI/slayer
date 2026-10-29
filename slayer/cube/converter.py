@@ -7,10 +7,14 @@ on the ``CubeConversionReport``.
 
 import logging
 import re
+from collections import defaultdict
 from typing import Any
 
+import sqlalchemy as sa
 import sqlglot
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import (
     DataType,
@@ -19,9 +23,9 @@ from slayer.core.enums import (
     invert_cardinality,
 )
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.syntax import measure_dependency_problems
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import render_probe_text
+from slayer.core.syntax import measure_dependency_problems
 from slayer.core.refs import IDENTIFIER_RE, functional_agg_text
 from slayer.cube.extends import flatten_cube_extends, flatten_view_extends
 from slayer.cube.filter_params import (
@@ -35,13 +39,29 @@ from slayer.cube.models import (
     CubeMeasure,
     CubeView,
 )
-from slayer.cube.refs import is_bare_identifier, parse_join_on, translate_cube_refs
+from slayer.cube.refs import CubeSql, JoinSide, classify_cube_refs, parse_join_keys, translate_cube_refs
 from slayer.cube.report import (
     CubeConversionIssue,
     CubeConversionReport,
     CubeConversionResult,
     CubeIssueCategory,
 )
+from slayer.importers.aggregates import OperandPolicy, Unconvertible, convert_aggregates
+from slayer.importers.column_types import (
+    LiveSource,
+    Typed,
+    connect_source,
+    contradiction_note,
+    contradicts,
+    implied_type,
+    list_refusal,
+    offline_note,
+    refused_over_list,
+    untyped_message,
+)
+from slayer.importers.measures import measure_problems
+from slayer.importers.physical import PhysicalIndex, root_physical_columns, unreadable_columns
+from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
 
 logger = logging.getLogger(__name__)
 
@@ -161,18 +181,6 @@ def _drop_inverse_half(
         peer.joins.remove(back)
 
 
-def _declare_key(*, member: str, columns: list[Column], names: set[str]) -> bool:
-    """``member`` is usable as a join key: a base column, or synthesised as a hidden one."""
-    col = next((c for c in columns if c.name == member), None)
-    if col is not None:
-        return col.is_base and col.filter is None
-    if member in names or not IDENTIFIER_RE.match(member):
-        return False
-    names.add(member)
-    columns.append(Column(name=member, hidden=True))
-    return True
-
-
 def _map_relationship(relationship: str | None) -> JoinCardinality | None:
     """Map a Cube join ``relationship`` onto cardinality; unknown → None."""
     if relationship is None:
@@ -224,12 +232,71 @@ def _window_from_rolling(rolling, report, *, cube, member) -> str | None:
     return f"{m.group(1)}{unit}"
 
 
+def _implied(aggs: list[str]) -> Typed | None:
+    """The type a column's aggregations imply: numeric over a count's ``TEXT``."""
+    implied = [t for a in aggs if (t := implied_type(a)) is not None]
+    return next((t for t in implied if t[0] is not DataType.TEXT), implied[0] if implied else None)
+
+
+class _CubeOperands(OperandPolicy):
+    """Cube: a bare operand aggregates its column; any other operand, and a FILTER, go to a Mode-A helper column."""
+
+    sql_residual = True
+
+    def __init__(self, *, converter: "CubeToSlayerConverter", build: "_CubeBuild", measure: str) -> None:
+        super().__init__()
+        self.converter = converter
+        self.build = build
+        self.measure = measure
+        self._measures = {m.name for m in build.cube.measures}
+
+    def operand(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
+        if isinstance(operand, exp.Column) and mask is None:
+            return self.converter._bare_source(self.build, operand, agg=agg)
+        other = sorted({c.table for node in (operand, mask) if node is not None
+                        for c in node.find_all(exp.Column) if c.table})
+        if other:
+            raise Unconvertible(f"an aggregate operand reads another cube ({', '.join(other)})")
+        dialect = self.converter._dialect
+        return self.converter._helper(self.build, measure=self.measure, sql=operand.sql(dialect=dialect),
+                                      predicate=mask.sql(dialect=dialect) if mask is not None else None, agg=agg)
+
+    def residual(self, node: exp.Column) -> str | None:
+        member = self.build.markers.get(node.name) if not node.table else None
+        return self.build.measure_names[member] if member in self._measures else None
+
+
+class _CubeBuild(BaseModel):
+    """One cube's columns and measures while they are built; column SQL holds member markers until resolved."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    cube: CubeCube
+    names: _Names
+    emitted: dict[str, str]  # member reference -> emitted name (a dimension before a same-named measure)
+    measure_names: dict[str, str]
+    segment_names: dict[str, str]
+    offline: str | None = None  # why types are not checked against the database
+    columns: list[Column] = Field(default_factory=list)
+    measures: list[ModelMeasure] = Field(default_factory=list)
+    info: dict[str, _MeasureInfo] = Field(default_factory=dict)
+    markers: dict[str, str] = Field(default_factory=dict)  # marker -> source member
+    unknown: dict[str, list[str]] = Field(default_factory=dict)  # column -> undeclared members it reads
+    declared: dict[str, Typed] = Field(default_factory=dict)  # column -> Cube dimension type
+    column_aggs: dict[str, list[str]] = Field(default_factory=lambda: defaultdict(list))
+    sources: dict[str, list[tuple[str, str]]] = Field(default_factory=lambda: defaultdict(list))
+    helpers: dict[tuple[str, str | None, Typed | None], str] = Field(default_factory=dict)
+    fixed: set[str] = Field(default_factory=set)  # columns whose type no probe changes (segments, CASE labels)
+    dimensions: set[str] = Field(default_factory=set)
+
+
 class CubeToSlayerConverter:
     """Convert a CubeProject into SLayer models + a structured report."""
 
     def __init__(
         self, project, data_source: str, parse_issues=None,
-        *, honor_required_meta: bool = True,
+        *, honor_required_meta: bool = True, sa_engine: sa.Engine | None = None,
+        target_dialect: str | None = None, offline_reason: str | None = None,
     ) -> None:
         self.project = project
         self.data_source = data_source
@@ -238,10 +305,19 @@ class CubeToSlayerConverter:
         # FILTER_PARAMS pushdown as a required (raise-on-missing) variable rather
         # than an optional block. ``--ignore-required-meta`` flips this off.
         self.honor_required_meta = honor_required_meta
+        self.sa_engine = sa_engine
+        self.offline_reason = offline_reason
+        self.target_dialect = target_dialect or (sa_engine.dialect.name if sa_engine is not None else None)
+        dialect = (dialect_for_ds_type(target_dialect) if target_dialect
+                   else dialect_for_sa_backend(sa_engine.dialect.name) if sa_engine is not None else None)
+        self._dialect = dialect.sqlglot_name if dialect is not None else None
+        self._offline_noted: set[str] = set()
         self._cubes: dict[str, CubeCube] = {}
         self._models: dict[str, SlayerModel] = {}
         # model name → {measure name → _MeasureInfo}
         self._measure_info: dict[str, dict[str, _MeasureInfo]] = {}
+        # cube → [(join target, relationship, key sides)], resolved once every cube is built
+        self._pending_joins: dict[str, list[tuple[str, str | None, str, list[tuple[JoinSide, JoinSide]]]]] = {}
         # Per-cube FILTER_PARAMS state (set in _convert_cube, consumed by the
         # Mode-A translate helpers).
         self._active_refs: list[CubeFilterParamRef] = []
@@ -264,7 +340,9 @@ class CubeToSlayerConverter:
             if model is not None:
                 models.append(model)
                 self._models[model.name] = model
-        self._resolve_join_targets(models, report)
+        self._resolve_joins(models, report)
+        for model in models:
+            self._validate_measures(model, report)
 
         for view in views:
             model = self._convert_view(view, report)
@@ -299,27 +377,26 @@ class CubeToSlayerConverter:
             return None
 
         meta, unmapped = self._build_meta_and_unmapped(cube, refs, report)
-
-        names = _Names()
-        columns: list[Column] = []
-        measures: list[ModelMeasure] = []
-        info: dict[str, _MeasureInfo] = {}
+        dims, measure_names, segment_names = self._reserve_names(cube)
+        build = _CubeBuild(cube=cube, names=_Names(), emitted={**segment_names, **measure_names, **dims},
+                           measure_names=measure_names, segment_names=segment_names)
+        build.names.used.update([*dims.values(), *measure_names.values(), *segment_names.values()])
 
         for dim in cube.dimensions:
-            self._convert_dimension(cube, dim, columns, names, unmapped, report)
-        dedup: dict[tuple, str] = {}
-        for meas in cube.measures:
-            self._convert_measure(cube, meas, columns, measures, names, dedup, info, report)
+            self._convert_dimension(build, dim, unmapped, report)
         for seg in cube.segments:
-            self._convert_segment(cube, seg, columns, names, report)
+            self._convert_segment(build, seg, report)
+        for meas in cube.measures:
+            self._convert_measure(build, meas, report)
 
-        columns, measures = self._validate_offline(cube.name, columns, measures, info, report)
-        self._dedisambiguate_namespace(columns, measures, report, cube=cube.name)
-        joins = self._convert_joins(cube, columns, names, report)
-        # Keep _measure_info in sync with what actually survived validation, so
-        # view facades never re-export a measure the model no longer has.
-        surviving = {m.name for m in measures}
-        info = {k: v for k, v in info.items() if v.emitted_name in surviving}
+        live = self._live_source(source)
+        if isinstance(live, str):
+            build.offline, live = live, None
+        self._drop_unreadable(build, live=live, report=report)
+        self._resolve_markers(build)
+        self._type_columns(build, live=live, report=report)
+        columns, measures = self._validate_offline(build, report)
+        self._pending_joins[cube.name] = self._join_keys(cube, report)
 
         if unmapped:
             meta["cube_unmapped"] = unmapped
@@ -328,7 +405,7 @@ class CubeToSlayerConverter:
             model = SlayerModel(
                 name=cube.name, data_source=self.data_source,
                 hidden=not cube.public, description=cube.description,
-                meta=meta or None, columns=columns, measures=measures, joins=joins,
+                meta=meta or None, columns=columns, measures=measures, joins=[],
                 **source,
             )
         # Illegal model name etc. → report, don't crash the run.
@@ -338,9 +415,34 @@ class CubeToSlayerConverter:
                 cube=cube.name, message=f"Could not build model: {exc}",
             ))
             return None
-        self._measure_info[cube.name] = info
+        surviving = {m.name for m in measures}
+        self._measure_info[cube.name] = {k: v for k, v in build.info.items() if v.emitted_name in surviving}
         self._report_filter_param_variables(cube, refs, report)
         return model
+
+    @staticmethod
+    def _reserve_names(cube: CubeCube) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        """Each dimension's, measure's and segment's emitted name, fixed before any SQL is translated."""
+        names = _Names()
+        dims = {d.name: names.take(d.name) for d in cube.dimensions
+                if d.type not in ("switch", "geo") and not d.sub_query}
+        measures = {m.name: names.take(m.name, suffix="_measure") for m in cube.measures}
+        segments = {s.name: names.take(s.name, suffix="_seg") for s in cube.segments}
+        return dims, measures, segments
+
+    def _live_source(self, source: dict) -> LiveSource | str:
+        """The cube's live schema, or why its types are not checked against the database."""
+        sql = source.get("sql")
+        return connect_source(engine=self.sa_engine, offline_reason=self.offline_reason, data_source=self.data_source,
+                              db_type=self.target_dialect, dialect=self._dialect, sql_table=source.get("sql_table"),
+                              sql=render_probe_text(sql) if sql else None)
+
+    def _note_offline(self, build: _CubeBuild, report) -> None:
+        """Report, once per reason, that a type was inferred without the database."""
+        if build.offline is not None and build.offline not in self._offline_noted:
+            self._offline_noted.add(build.offline)
+            report.add(CubeConversionIssue(category=CubeIssueCategory.TYPING, severity="info",
+                                           message=offline_note(build.offline)))
 
     def _build_meta_and_unmapped(
         self, cube: CubeCube, refs, report: CubeConversionReport
@@ -558,9 +660,25 @@ class CubeToSlayerConverter:
         ))
         return None
 
+    # ── member SQL ─────────────────────────────────────────────────────────
+
+    def _refs(self, build: _CubeBuild, text: str) -> CubeSql:
+        """``text``'s Cube refs classified, its markers recorded on ``build``."""
+        found = classify_cube_refs(text, cube=build.cube.name, members=build.emitted, start=len(build.markers))
+        build.markers.update(found.members)
+        return found
+
+    def _mode_a(self, build: _CubeBuild, column: str, text: str) -> str:
+        """Mode-A SQL (member markers kept, FILTER_PARAMS resolved), noting undeclared members ``column`` reads."""
+        found = self._refs(build, text)
+        if found.unknown:
+            build.unknown.setdefault(column, []).extend(found.unknown)
+        return self._resolve_fp(found.text)
+
     # ── dimensions ─────────────────────────────────────────────────────────
 
-    def _convert_dimension(self, cube, dim: CubeDimension, columns, names, unmapped, report) -> None:
+    def _convert_dimension(self, build: _CubeBuild, dim: CubeDimension, unmapped, report) -> None:
+        cube = build.cube
         if dim.type == "switch":
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.DEFERRED_STAGE2, severity="warning",
@@ -587,37 +705,54 @@ class CubeToSlayerConverter:
                 cube=cube.name, member=dim.name,
                 message="Custom granularities are query-time in SLayer; base column kept."))
 
+        name = build.emitted[dim.name]
         if dim.case:
-            sql = self._build_case_sql(cube, dim.case)
+            sql: str | None = self._build_case_sql(build, name, dim.case)
+            build.fixed.add(name)
         elif dim.sql:
-            translated = self._resolve_fp(
-                translate_cube_refs(dim.sql, mode="sql", cube=cube.name))
-            sql = None if translated == dim.name else translated
+            sql = self._mode_a(build, name, dim.sql)
+            sql = None if sql == name else sql
         else:
             sql = None
-
-        name = names.take(dim.name)
-        columns.append(Column(
-            name=name, sql=sql, type=_DIM_TYPE_MAP.get(dim.type, DataType.TEXT),
+        declared = _DIM_TYPE_MAP.get(dim.type, DataType.TEXT)
+        build.dimensions.add(name)
+        if "type" in dim.model_fields_set:
+            build.declared[name] = (declared, None)
+        build.columns.append(Column(
+            name=name, sql=sql, type=declared,
             primary_key=dim.primary_key, hidden=not dim.public,
             label=dim.title, description=dim.description, meta=dim.meta,
             format=_map_format(dim.format, report, cube=cube.name, member=dim.name),
         ))
 
-    def _build_case_sql(self, cube, case: dict) -> str:
+    def _build_case_sql(self, build: _CubeBuild, column: str, case: dict) -> str:
         parts = ["CASE"]
         for when in case.get("when", []):
-            cond = self._resolve_fp(
-                translate_cube_refs(when.get("sql", ""), mode="sql", cube=cube.name))
+            cond = self._mode_a(build, column, when.get("sql", ""))
             parts.append(f"WHEN {cond} THEN {_sql_str_literal(when.get('label', ''))}")
         if case.get("else"):
             parts.append(f"ELSE {_sql_str_literal(case['else'].get('label', ''))}")
         parts.append("END")
         return " ".join(parts)
 
+    # ── segments ───────────────────────────────────────────────────────────
+
+    def _convert_segment(self, build: _CubeBuild, seg, report) -> None:
+        name = build.segment_names[seg.name]
+        build.fixed.add(name)
+        build.columns.append(Column(
+            name=name, sql=self._mode_a(build, name, seg.sql),
+            type=DataType.BOOLEAN, hidden=not seg.public,
+            label=seg.title, description=seg.description, meta=seg.meta))
+        report.add(CubeConversionIssue(
+            category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info",
+            cube=build.cube.name, member=seg.name,
+            message=f"Segment '{seg.name}' mapped to a boolean column."))
+
     # ── measures ───────────────────────────────────────────────────────────
 
-    def _convert_measure(self, cube, meas: CubeMeasure, columns, measures, names, dedup, info, report) -> None:
+    def _convert_measure(self, build: _CubeBuild, meas: CubeMeasure, report) -> None:
+        cube = build.cube
         if meas.type in _DEFERRED_MEASURE_TYPES or meas.case is not None:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.DEFERRED_STAGE2, severity="warning",
@@ -634,18 +769,18 @@ class CubeToSlayerConverter:
                 cube=cube.name, member=meas.name,
                 message="multi_stage/time_shift/grain/filter on measure deferred to Stage 2; "
                         "emitted as plain aggregation if possible."))
+        try:
+            if meas.type in _CALC_TYPES and meas.sql:
+                self._convert_calc_measure(build, meas, report)
+            else:
+                self._convert_agg_measure(build, meas, report)
+        except Unconvertible as exc:
+            report.add(CubeConversionIssue(
+                category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning", cube=cube.name, member=meas.name,
+                message=f"Measure '{meas.name}' dropped: {exc}."))
 
-        # Reserve the measure's name BEFORE creating its underlying column, so a
-        # bare-identifier column yields (`rate` → `rate_col`) and the measure keeps
-        # the Cube name (dbt-importer idiom). Collision with a dimension column
-        # falls through to the `_measure` suffix.
-        final_name = names.take(meas.name, suffix="_measure")
-        if meas.type in _CALC_TYPES and meas.sql:
-            self._convert_calc_measure(cube, meas, measures, names, final_name, info, report)
-            return
-        self._convert_agg_measure(cube, meas, columns, measures, names, dedup, info, report, final_name)
-
-    def _convert_agg_measure(self, cube, meas, columns, measures, names, dedup, info, report, final_name) -> None:
+    def _convert_agg_measure(self, build: _CubeBuild, meas: CubeMeasure, report) -> None:
+        cube = build.cube
         agg = "count_distinct" if meas.type == "count_distinct_approx" else meas.type
         if meas.type == "count_distinct_approx":
             report.add(CubeConversionIssue(
@@ -655,120 +790,277 @@ class CubeToSlayerConverter:
 
         window = _window_from_rolling(meas.rolling_window, report, cube=cube.name, member=meas.name) \
             if meas.rolling_window else None
+        suffix = _windowed(agg, window)
+        name = build.measure_names[meas.name]
 
         if meas.type == "count" and not meas.sql:
-            suffix = _windowed("count", window)
-            formula = functional_agg_text(source="*", suffix=suffix)
-            if self._emit_measure(measures=measures, names=names, final_name=final_name,
-                                  formula=formula, meas=meas, report=report, cube_name=cube.name):
-                info[meas.name] = _MeasureInfo(kind="star_count", suffix=suffix,
-                                               emitted_name=final_name)
+            if self._emit_measure(build, name=name, formula=functional_agg_text(source="*", suffix=suffix),
+                                  meas=meas, report=report):
+                build.info[meas.name] = _MeasureInfo(kind="star_count", suffix=suffix, emitted_name=name)
             return
 
-        translated = self._resolve_fp(
-            translate_cube_refs(meas.sql, mode="sql", cube=cube.name))
-        filter_pred = self._measure_filter(cube, meas)
-        col_name = self._get_or_create_column(
-            meas, translated, filter_pred, columns, names, dedup, report, cube)
-        suffix = _windowed(agg, window)
-        formula = functional_agg_text(source=col_name, suffix=suffix)
-        if self._emit_measure(measures=measures, names=names, final_name=final_name,
-                              formula=formula, meas=meas, report=report, cube_name=cube.name):
-            info[meas.name] = _MeasureInfo(
-                kind="agg", underlying_col=col_name, suffix=suffix, emitted_name=final_name)
-
-    def _convert_calc_measure(self, cube, meas, measures, names, final_name, info, report) -> None:
-        formula = translate_cube_refs(meas.sql, mode="dsl", cube=cube.name)
-        # Pass `names` (not None) so a failed calc measure releases its reserved
-        # name, matching the aggregate path — otherwise a later same-named member
-        # gets an unnecessary suffix.
-        if self._emit_measure(measures=measures, names=names, final_name=final_name,
-                              formula=formula, meas=meas, report=report, cube_name=cube.name,
-                              result_type=_DIM_TYPE_MAP.get(meas.type)):
-            info[meas.name] = _MeasureInfo(kind="calc", emitted_name=final_name)
-
-    def _measure_filter(self, cube, meas) -> str | None:
-        if not meas.filters:
-            return None
-        preds = [self._resolve_fp(translate_cube_refs(f.sql, mode="sql", cube=cube.name))
-                 for f in meas.filters]
-        return " AND ".join(preds) if preds else None
-
-    def _get_or_create_column(self, meas, translated_sql, filter_pred, columns, names, dedup, report, cube) -> str:
-        key = (translated_sql, filter_pred)
-        if key in dedup:
-            return dedup[key]
-        base = translated_sql if is_bare_identifier(translated_sql) else f"{meas.name}_col"
-        col_name = names.take(base)
-        columns.append(Column(
-            name=col_name,
-            sql=None if col_name == translated_sql else translated_sql,
-            type=DataType.DOUBLE, filter=filter_pred,
-            format=_map_format(meas.format, report, cube=cube.name, member=meas.name),
-        ))
-        dedup[key] = col_name
-        return col_name
-
-    def _emit_measure(self, measures, names, final_name, formula, meas, report, cube_name, *, result_type=None) -> bool:
+        operand = self._refs(build, meas.sql or meas.name)
+        filters = [self._refs(build, f.sql) for f in meas.filters]
+        if unknown := [*operand.unknown, *(m for f in filters for m in f.unknown)]:
+            raise Unconvertible(f"it references undeclared member(s) {sorted(set(unknown))}")
+        fmt = _map_format(meas.format, report, cube=cube.name, member=meas.name)
         try:
-            measures.append(ModelMeasure(
-                name=final_name, formula=formula, label=meas.title,
+            parsed: exp.Expr | None = self._parse(operand.text)
+        except Unconvertible:
+            parsed = None  # kept as a helper column, dropped (and reported) with it
+        if not filters and isinstance(parsed, exp.Column):
+            col_name = self._bare_source(build, parsed, agg=agg, fmt=fmt)
+        else:
+            predicate = " AND ".join(self._resolve_fp(f.text) for f in filters) or None
+            col_name = self._helper(build, measure=meas.name, sql=self._resolve_fp(operand.text), predicate=predicate,
+                                    agg=agg, fmt=fmt)
+        build.sources[name].append((col_name, agg))
+        if self._emit_measure(build, name=name, formula=functional_agg_text(source=col_name, suffix=suffix),
+                              meas=meas, report=report):
+            build.info[meas.name] = _MeasureInfo(kind="agg", underlying_col=col_name, suffix=suffix,
+                                                 emitted_name=name)
+
+    def _convert_calc_measure(self, build: _CubeBuild, meas: CubeMeasure, report) -> None:
+        name = build.measure_names[meas.name]
+        found = self._refs(build, meas.sql or "")
+        if found.unknown:
+            raise Unconvertible(f"it references undeclared member(s) {sorted(set(found.unknown))}")
+        if "\x00" in found.text:
+            raise Unconvertible("FILTER_PARAMS in a calculated measure has no formula form")
+        policy = _CubeOperands(converter=self, build=build, measure=meas.name)
+        result = convert_aggregates(found.text, policy=policy, dialect=self._dialect)
+        if not result.ok or result.formula is None:
+            raise Unconvertible(f"its SQL {meas.sql!r} has no formula form ({result.reason})")
+        if self._emit_measure(build, name=name, formula=result.formula, meas=meas, report=report,
+                              result_type=_DIM_TYPE_MAP.get(meas.type)):
+            build.info[meas.name] = _MeasureInfo(kind="calc", emitted_name=name)
+
+    def _parse(self, text: str) -> exp.Expr:
+        try:
+            return sqlglot.parse_one(render_probe_text(self._resolve_fp(text)), read=self._dialect)
+        except SqlglotError as exc:
+            raise Unconvertible(f"its SQL does not parse ({exc})") from exc
+
+    def _bare_source(self, build: _CubeBuild, node: exp.Column, *, agg: str, fmt: NumberFormat | None = None) -> str:
+        """The column ``agg`` aggregates for one bare reference (a member, a joined cube's column, or physical)."""
+        member = build.markers.get(node.name) if not node.table else None
+        if member is not None:
+            col = build.emitted.get(member)
+            if col is None or not any(c.name == col for c in build.columns):
+                raise Unconvertible(f"it aggregates {member!r}, which is not a column of the cube")
+            return col
+        if node.table:
+            return f"{node.table}.{node.name}"
+        index = PhysicalIndex(build.columns, dialect=self._dialect)
+        reader = index.reader(node.this)
+        if reader is not None:
+            build.column_aggs[reader.name].append(agg)
+            return reader.name
+        if (problem := index.problem(node.this)) is not None:
+            raise Unconvertible(problem)
+        physical = node.this
+        name = build.names.take(physical.name) if physical.name not in build.names.used \
+            else build.names.take(f"{physical.name}_col")
+        sql = None if name == physical.name and not physical.quoted else physical.sql(dialect=self._dialect)
+        build.columns.append(Column(name=name, sql=sql, type=DataType.DOUBLE, format=fmt))
+        build.column_aggs[name].append(agg)
+        return name
+
+    def _helper(self, build: _CubeBuild, *, measure: str, sql: str, predicate: str | None, agg: str,
+                fmt: NumberFormat | None = None) -> str:
+        """A hidden Mode-A column holding ``sql`` over the rows ``predicate`` keeps, shared per (sql, filter, type)."""
+        implied = implied_type(agg)
+        key = (sql, predicate, implied)
+        name = build.helpers.get(key)
+        if name is None:
+            name = build.helpers[key] = build.names.take(f"{measure}_col")
+            build.columns.append(Column(name=name, sql=sql, filter=predicate, format=fmt,
+                                        type=implied[0] if implied else DataType.DOUBLE))
+        build.column_aggs[name].append(agg)
+        return name
+
+    def _emit_measure(self, build: _CubeBuild, *, name: str, formula: str, meas, report, result_type=None) -> bool:
+        try:
+            build.measures.append(ModelMeasure(
+                name=name, formula=formula, label=meas.title,
                 description=meas.description, type=result_type, meta=meas.meta))
             return True
         except Exception as exc:  # noqa: BLE001
-            if names is not None:
-                names.used.discard(final_name)
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
-                cube=cube_name, member=meas.name,
+                cube=build.cube.name, member=meas.name,
                 message=f"Measure '{meas.name}' could not be built: {exc}"))
             return False
 
-    # ── segments ───────────────────────────────────────────────────────────
+    # ── meaning + typing ───────────────────────────────────────────────────
 
-    def _convert_segment(self, cube, seg, columns, names, report) -> None:
-        name = names.take(seg.name, suffix="_seg")
-        columns.append(Column(
-            name=name,
-            sql=self._resolve_fp(translate_cube_refs(seg.sql, mode="sql", cube=cube.name)),
-            type=DataType.BOOLEAN, hidden=not seg.public,
-            label=seg.title, description=seg.description, meta=seg.meta))
-        report.add(CubeConversionIssue(
-            category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info",
-            cube=cube.name, member=seg.name,
-            message=f"Segment '{seg.name}' mapped to a boolean column."))
+    def _drop_unreadable(self, build: _CubeBuild, *, live: LiveSource | None, report) -> None:
+        """Drop columns reading a masked physical column or an undeclared member, then whatever reads a dropped one."""
+        problems = unreadable_columns(build.columns, dialect=self._dialect,
+                                      live=live.columns if live is not None else (),
+                                      logical=frozenset(build.markers), prepare=render_probe_text)
+        problems.update({c: f"it references undeclared member(s) {sorted(set(m))}" for c, m in build.unknown.items()})
+        member_of = {v: k for k, v in build.emitted.items()}
+        while True:
+            dropped_members = {member_of.get(n, n) for n in problems}
+            more = {c.name: f"it reads the dropped member {member!r}" for c in build.columns
+                    if c.name not in problems
+                    for member in [next((build.markers[mk] for mk in build.markers
+                                         if mk in f"{c.sql} {c.filter}" and build.markers[mk] in dropped_members),
+                                        None)]
+                    if member is not None}
+            if not more:
+                break
+            problems.update(more)
+        for name, problem in problems.items():
+            report.add(CubeConversionIssue(
+                category=CubeIssueCategory.COMPLEX_SQL, severity="warning", cube=build.cube.name,
+                member=member_of.get(name, name), message=f"Column {name!r} dropped: {problem}."))
+        build.columns = [c for c in build.columns if c.name not in problems]
+
+    def _resolve_markers(self, build: _CubeBuild) -> None:
+        """Replace member markers with their members' emitted names."""
+        found = CubeSql(text="", members=build.markers)
+        for col in build.columns:
+            col.sql = found.model_copy(update={"text": col.sql}).resolved(build.emitted) if col.sql else col.sql
+            col.filter = found.model_copy(update={"text": col.filter}).resolved(build.emitted) \
+                if col.filter else col.filter
+
+    def _type_columns(self, build: _CubeBuild, *, live: LiveSource | None, report) -> None:
+        """Type each column from the database, then the Cube dimension type, then its aggregations; drop the measures
+        SLayer cannot read over the result."""
+        index = PhysicalIndex(build.columns, dialect=self._dialect)
+        untyped: set[str] = set()
+        for col in build.columns:
+            if col.name in build.fixed:
+                continue
+            found = self._live_type(col, live=live)
+            declared = build.declared.get(col.name) or self._dimension_type(build, index, col)
+            if found is not None and declared is not None and contradicts(declared, found):
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.TYPING, severity="info", cube=build.cube.name,
+                    member=col.name, message=contradiction_note(col.name, declared=declared, live=found)))
+            aggs = build.column_aggs.get(col.name, [])
+            if found is None and declared is None:
+                self._note_offline(build, report)
+            found = found or declared or _implied(aggs)
+            if found is None:
+                if col.name not in build.dimensions:
+                    untyped.add(col.name)
+                continue
+            col.type, col.element_type = found
+            if col.type not in (DataType.INT, DataType.DOUBLE):
+                col.format = None
+        kept: list[ModelMeasure] = []
+        for m in build.measures:
+            problem = next((p for col_name, agg in build.sources.get(m.name or "", [])
+                            if (p := self._source_problem(build, m.name or "", col_name, agg, untyped)) is not None),
+                           None)
+            if problem is None:
+                kept.append(m)
+                continue
+            report.add(CubeConversionIssue(category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
+                                           cube=build.cube.name, member=m.name, message=problem))
+        build.measures = kept
+        used = {col for m in kept for col, _ in build.sources.get(m.name or "", [])}
+        build.columns = [c for c in build.columns if c.name not in untyped or c.name in used]
+
+    def _live_type(self, col: Column, *, live: LiveSource | None) -> Typed | None:
+        if live is None:
+            return None
+        if col.is_base and col.filter is None:
+            return live.column(col.physical_name)
+        return live.probe(render_probe_text(col.sql)) if col.sql else None
+
+    @staticmethod
+    def _dimension_type(build: _CubeBuild, index: PhysicalIndex, col: Column) -> Typed | None:
+        """The declared type of a dimension reading the same physical column as ``col``."""
+        if not col.is_base or col.filter is not None:
+            return None
+        reader = index.reader(exp.to_identifier(col.physical_name))
+        return build.declared.get(reader.name) if reader is not None else None
+
+    @staticmethod
+    def _source_problem(build: _CubeBuild, measure: str, col_name: str, agg: str, untyped: set[str]) -> str | None:
+        col = next((c for c in build.columns if c.name == col_name), None)
+        if col is not None and col.type is DataType.ARRAY and col.name not in untyped and refused_over_list(agg):
+            return list_refusal(measure, agg=agg, column=col_name)
+        if col_name in untyped and implied_type(agg) is None:
+            return untyped_message(measure, agg=agg, column=col_name)
+        return None
 
     # ── joins ──────────────────────────────────────────────────────────────
 
-    def _convert_joins(self, cube, columns, names, report) -> list[ModelJoin]:
-        joins: list[ModelJoin] = []
+    def _join_keys(self, cube: CubeCube, report) -> list[tuple[str, str | None, str, list[tuple[JoinSide, JoinSide]]]]:
+        """Each join's key sides, parsed now and resolved once every cube is built."""
+        out = []
         for cj in cube.joins:
-            if cj.name not in self._cubes:
+            keys = parse_join_keys(cj.sql, source_cube=cube.name, target_cube=cj.name)
+            if keys is None:
                 report.add(CubeConversionIssue(
-                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
-                    cube=cube.name, member=cj.name,
-                    message=f"Join target cube '{cj.name}' is not available; dropped."))
+                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning", cube=cube.name, member=cj.name,
+                    message=f"Join ON '{cj.sql}' is not an equality of columns; dropped."))
                 continue
-            pairs = parse_join_on(cj.sql, source_cube=cube.name, target_cube=cj.name)
-            if not pairs or not all(
-                    _declare_key(member=src, columns=columns, names=names.used)
-                    for src, _ in pairs):
-                report.add(CubeConversionIssue(
-                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
-                    cube=cube.name, member=cj.name,
-                    message=f"Join ON '{cj.sql}' is not an equality of base columns; dropped."))
-                continue
-            cardinality = _map_relationship(cj.relationship)
-            if cardinality is None:
-                report.add(CubeConversionIssue(
-                    category=CubeIssueCategory.LOSSY_MAPPING, severity="warning",
-                    cube=cube.name, member=cj.name,
-                    message=(f"Unrecognized join relationship {cj.relationship!r}; "
-                             f"cardinality left unset (metrics crossing it broadcast).")))
-            joins.append(ModelJoin(
-                target_model=cj.name, join_pairs=[[s, t] for s, t in pairs],
-                join_type=JoinType.LEFT, cardinality=cardinality))
-        return joins
+            out.append((cj.name, cj.relationship, cj.sql, keys))
+        return out
+
+    def _resolve_joins(self, models: list[SlayerModel], report) -> None:
+        """Map each join's key sides to base columns of both cubes, adding a hidden one for a free physical name."""
+        by_name = {m.name: m for m in models}
+        for model in models:
+            for target_name, relationship, on_sql, keys in self._pending_joins.get(model.name, []):
+                target = by_name.get(target_name)
+                if target is None:
+                    report.add(CubeConversionIssue(
+                        category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
+                        cube=model.name, member=target_name,
+                        message=f"Join target cube '{target_name}' is not available; dropped."))
+                    continue
+                pairs = [(self._join_key(model, src), self._join_key(target, tgt)) for src, tgt in keys]
+                problem = next((p for pair in pairs for _, p in pair if p is not None), None)
+                if problem is not None:
+                    report.add(CubeConversionIssue(
+                        category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
+                        cube=model.name, member=target_name,
+                        message=f"Join ON '{on_sql}' dropped: {problem}."))
+                    continue
+                for (src, _), (tgt, _) in pairs:
+                    self._declare_hidden_key(model, src)
+                    self._declare_hidden_key(target, tgt)
+                cardinality = _map_relationship(relationship)
+                if cardinality is None:
+                    report.add(CubeConversionIssue(
+                        category=CubeIssueCategory.LOSSY_MAPPING, severity="warning",
+                        cube=model.name, member=target_name,
+                        message=(f"Unrecognized join relationship {relationship!r}; "
+                                 f"cardinality left unset (metrics crossing it broadcast).")))
+                model.joins.append(ModelJoin(
+                    target_model=target_name, join_pairs=[[s, t] for (s, _), (t, _) in pairs],
+                    join_type=JoinType.LEFT, cardinality=cardinality))
+
+    def _join_key(self, model: SlayerModel, side: JoinSide) -> tuple[str, str | None]:
+        """``(column name, problem)`` for one join key side of ``model``."""
+        cube = self._cubes.get(model.name)
+        if not side.physical and cube is not None and side.name in self._reserve_names(cube)[0]:
+            col = model.get_column(self._reserve_names(cube)[0][side.name])
+            if col is None or not col.is_base or col.filter is not None:
+                return side.name, f"member {side.name!r} of {model.name!r} is not a base column"
+            return col.name, None
+        index = PhysicalIndex(model.columns, dialect=self._dialect)
+        ident = exp.to_identifier(side.name)
+        reader = index.reader(ident)
+        if reader is not None:
+            return reader.name, None
+        if (problem := index.problem(ident)) is not None:
+            return side.name, problem
+        if model.get_measure(side.name) is not None or not IDENTIFIER_RE.match(side.name):
+            return side.name, f"no column of {model.name!r} can read the physical column {side.name!r}"
+        return side.name, None
+
+    @staticmethod
+    def _declare_hidden_key(model: SlayerModel, name: str) -> None:
+        if model.get_column(name) is None:
+            model.columns.append(Column(name=name, hidden=True))
 
     def _dedup_inverse_joins(self, models: list[SlayerModel]) -> None:
         """Collapse each mutually-inverse declaration pair to its to-one edge."""
@@ -780,31 +1072,12 @@ class CubeToSlayerConverter:
                     continue  # visit each unordered pair once
                 _drop_inverse_half(model=model, join=join, peer=peer)
 
-    def _resolve_join_targets(self, models: list[SlayerModel], report) -> None:
-        """Declare each join's target keys on its target model; drop a join keyed on a non-base member."""
-        by_name = {m.name: m for m in models}
-        for model in models:
-            for join in list(model.joins):  # NOSONAR(S7504) — materialised before in-place removal
-                target = by_name.get(join.target_model)
-                if target is None or all(
-                        _declare_key(member=t, columns=target.columns,
-                                     names={m.name for m in target.measures if m.name})
-                        for _, t in join.join_pairs):
-                    continue
-                model.joins.remove(join)
-                report.add(CubeConversionIssue(
-                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
-                    cube=model.name, member=join.target_model,
-                    message=(f"Join to '{join.target_model}' is keyed on a member that is "
-                             f"not a base column there; dropped.")))
+    # ── offline validation ─────────────────────────────────────────────────
 
-    # ── offline validation + namespace safety ──────────────────────────────
-
-    def _validate_offline(self, cube_name, columns, measures, info, report):
-        good_cols, dropped = self._validate_columns(cube_name, columns, report)
-        good_measures = self._drop_measures_over(
-            cube_name=cube_name, measures=measures, info=info, dropped=dropped, report=report)
-        return good_cols, self._drop_unparseable_measures(cube_name, good_measures, report)
+    def _validate_offline(self, build: _CubeBuild, report) -> tuple[list[Column], list[ModelMeasure]]:
+        good_cols, dropped = self._validate_columns(build.cube.name, build.columns, report)
+        return good_cols, self._drop_measures_over(
+            cube_name=build.cube.name, measures=build.measures, info=build.info, dropped=dropped, report=report)
 
     def _validate_columns(self, cube_name, columns, report) -> tuple[list[Column], set[str]]:
         good_cols = []
@@ -840,25 +1113,27 @@ class CubeToSlayerConverter:
                 good_measures.append(m)
         return good_measures
 
-    def _drop_unparseable_measures(self, cube_name, good_measures, report) -> list[ModelMeasure]:
-        # Only measures are bare-referenceable; a bare column needs an aggregation.
-        problems = measure_dependency_problems([(m.name, m.formula) for m in good_measures])
-        for m, problem in zip(good_measures, problems):
+    def _drop_unparseable_measures(self, cube_name, measures, report, *, model: SlayerModel | None = None
+                                   ) -> list[ModelMeasure]:
+        """``measures`` that resolve among their peers (and, given ``model``, its columns and join paths)."""
+        if model is not None:
+            problems = measure_problems(model.model_copy(update={"measures": measures}), models_by_name=self._models)
+        else:
+            problems = measure_dependency_problems([(m.name, m.formula) for m in measures])
+        for m, problem in zip(measures, problems):
             if problem is not None:
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
                     cube=cube_name, member=m.name,
                     message=f"Measure formula does not resolve ({problem}); dropped: {m.formula!r}"))
-        return [m for m, problem in zip(good_measures, problems) if problem is None]
+        return [m for m, problem in zip(measures, problems) if problem is None]
 
-    def _dedisambiguate_namespace(self, columns, measures, report, *, cube) -> None:
-        # The allocator already guarantees uniqueness; this is a defensive check.
-        col_names = {c.name for c in columns}
-        for m in measures:
-            if m.name in col_names:  # pragma: no cover — allocator prevents this
-                report.add(CubeConversionIssue(
-                    category=CubeIssueCategory.COMPLEX_MEASURE, severity="info",
-                    cube=cube, member=m.name, message="measure/column name overlap auto-resolved."))
+    def _validate_measures(self, model: SlayerModel, report) -> None:
+        """Drop measures that do not resolve among the model's measures, columns and join paths."""
+        model.measures = self._drop_unparseable_measures(model.name, model.measures, report, model=model)
+        surviving = {m.name for m in model.measures}
+        info = self._measure_info.get(model.name, {})
+        self._measure_info[model.name] = {k: v for k, v in info.items() if v.emitted_name in surviving}
 
     # ── views → facade models ──────────────────────────────────────────────
 
@@ -972,7 +1247,7 @@ class CubeToSlayerConverter:
 
         for dname in dim_names:
             self._facade_dimension(cube, cube_model, dname, prefix, is_root,
-                                   columns, names)
+                                   columns, names, view, report)
         for mname in meas_names:
             self._facade_measure(view, cube_name, cube_model, mname, prefix, is_root,
                                  columns, measures, names, report)
@@ -1016,12 +1291,15 @@ class CubeToSlayerConverter:
                 names.append(name)
         return names
 
-    def _facade_dimension(self, cube, cube_model, dname, prefix, is_root, columns, names) -> None:
+    def _facade_dimension(self, cube, cube_model, dname, prefix, is_root, columns, names, view, report) -> None:
         col = cube_model.get_column(dname)
         if col is None:
             return
         if is_root:
             sql = col.sql if col.sql else col.name
+            if not self._carry(cube_model=cube_model, sql=[col.sql], columns=columns, names=names,
+                               view=view, member=dname, report=report):
+                return
         else:
             sql = f"{cube.name}.{col.name}"
         exported = names.take(f"{prefix}{dname}")
@@ -1035,8 +1313,11 @@ class CubeToSlayerConverter:
         if info is None:
             return
         exported = names.take(f"{prefix}{mname}", suffix="_measure")
-        formula = self._facade_measure_formula(
-            info=info, cube_name=cube_name, cube_model=cube_model, is_root=is_root, columns=columns)
+        if is_root and info.kind == "agg" and info.underlying_col and not self._carry(
+                cube_model=cube_model, sql=[info.underlying_col], columns=columns, names=names,
+                view=view, member=mname, report=report):
+            return
+        formula = self._facade_measure_formula(info=info, cube_name=cube_name, is_root=is_root)
         if formula is None:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="info",
@@ -1051,7 +1332,7 @@ class CubeToSlayerConverter:
                 view=view.name, member=mname, message=f"Facade measure failed: {exc}"))
 
     @staticmethod
-    def _facade_measure_formula(*, info, cube_name, cube_model, is_root, columns) -> str | None:
+    def _facade_measure_formula(*, info, cube_name, is_root) -> str | None:
         """Functional facade formula for a base measure; ``None`` for a calc measure."""
         if not info.suffix:
             return None
@@ -1059,12 +1340,37 @@ class CubeToSlayerConverter:
             return functional_agg_text(source="*" if is_root else f"{cube_name}.*", suffix=info.suffix)
         if info.kind != "agg" or not info.underlying_col:
             return None
-        if is_root:
-            src_col = cube_model.get_column(info.underlying_col)
-            if src_col is not None and not any(c.name == info.underlying_col for c in columns):
-                columns.append(src_col.model_copy())  # carry the underlying column onto the facade
         source = info.underlying_col if is_root else f"{cube_name}.{info.underlying_col}"
         return functional_agg_text(source=source, suffix=info.suffix)
+
+    def _carry(self, *, cube_model: SlayerModel, sql: list[str | None], columns: list[Column], names: _Names,
+               view, member: str, report) -> bool:
+        """Copy onto the facade, hidden, every cube column ``sql`` reads (transitively); ``False`` when one's name
+        is already taken there by a different column."""
+        pending = list(sql)
+        while pending:
+            text = pending.pop()
+            if not text:
+                continue
+            try:
+                refs = root_physical_columns(sqlglot.parse_one(render_probe_text(text), read=self._dialect))
+            except SqlglotError:
+                continue
+            for ref in refs:
+                col = cube_model.get_column(ref.name)
+                taken = next((c for c in columns if c.name == ref.name), None)
+                if col is None or (taken is not None and (taken.sql, taken.filter) == (col.sql, col.filter)):
+                    continue
+                if taken is not None:
+                    report.add(CubeConversionIssue(
+                        category=CubeIssueCategory.COMPLEX_SQL, severity="warning", view=view.name, member=member,
+                        message=f"'{member}' reads {cube_model.name}.{col.name}, whose name the view already "
+                                f"uses for another member; skipped."))
+                    return False
+                names.reserve(col.name)
+                columns.append(col.model_copy(update={"hidden": True}))
+                pending += [col.sql, col.filter]
+        return True
 
     def _view_default_filters(self, view, root_cube_name, report) -> list[str]:
         filters: list[str] = []

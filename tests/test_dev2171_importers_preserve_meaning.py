@@ -153,10 +153,13 @@ async def test_cube(db: Path) -> None:
         assert cube_issues(result, refused), refused
     clash = models_of(result)["orders_clash"]
     for member in ("status_upper", "paid_cnt", "paid_sum", "is_paid"):
-        assert clash.get_column(member) is None and clash.get_measure(member) is None, member
+        assert clash.get_column(member) is None, member
+        assert clash.get_measure(member) is None, member
         assert [i for i in cube_issues(result, member) if "status" in i.message], member
-    assert clash.joins == [] and [i for i in cube_issues(result, "customer_id") if i.cube == "orders_clash"]
-    assert not has_column(result, "orders_self", "status") and cube_issues(result, "status")
+    assert clash.joins == []
+    assert [i for i in cube_issues(result, "customer_id") if i.cube == "orders_clash"]
+    assert not has_column(result, "orders_self", "status")
+    assert cube_issues(result, "status")
 
 
 async def test_dbt(db: Path) -> None:
@@ -172,10 +175,13 @@ async def test_dbt(db: Path) -> None:
     assert not has_measure(result, "orders", "tag_kinds")
     assert entries(result, "tag_kinds")
     for member in ("status_upper", "paid_cnt", "paid_bool"):
-        assert not has_column(result, "orders_clash", member) and not has_measure(result, "orders_clash", member)
+        assert not has_column(result, "orders_clash", member)
+        assert not has_measure(result, "orders_clash", member)
         assert [e for e in entries(result, member) if "status" in e.message], member
-    assert models_of(result)["orders_clash"].joins == [] and entries(result, "customer_id")
-    assert not has_column(result, "orders_self", "status") and entries(result, "status")
+    assert models_of(result)["orders_clash"].joins == []
+    assert entries(result, "customer_id")
+    assert not has_column(result, "orders_self", "status")
+    assert entries(result, "status")
 
 
 async def test_osi(db: Path) -> None:
@@ -194,4 +200,5 @@ async def test_osi(db: Path) -> None:
         assert unconverted(result, refused), refused
     assert not has_column(result, "orders_clash", "status_upper")
     assert [e for e in entries(result, "status_upper") if "status" in e.message]
-    assert not has_column(result, "orders_self", "status") and entries(result, "status")
+    assert not has_column(result, "orders_self", "status")
+    assert entries(result, "status")

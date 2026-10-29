@@ -57,10 +57,10 @@ async def _measure(result, db: Path, name: str, model: str = "orders") -> Any:
 
 # ── physical references ───────────────────────────────────────────────────
 
-@MASKED
 class TestPhysicalReferences:
     @pytest.mark.parametrize("dims", [[RENAMED_STATUS, STATUS_UPPER], [STATUS_UPPER, RENAMED_STATUS]],
                              ids=["status-first", "derived-first"])
+    @MASKED
     async def test_renamed_dimension_does_not_capture(self, db: Path, dims: list[dict[str, Any]]) -> None:
         result = import_cube([cube(dimensions=dims)], db=db)
         models = result.models
@@ -72,11 +72,13 @@ class TestPhysicalReferences:
     @pytest.mark.parametrize("sql", [
         'UPPER({CUBE}."status")', "UPPER({CUBE}.STATUS)", "UPPER({orders}.status)", "UPPER(status)",
     ], ids=["quoted", "case-folded", "own-cube-brace", "bare"])
+    @MASKED
     async def test_every_physical_spelling(self, db: Path, sql: str) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS, dim("status_upper", sql)])], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
 
+    @MASKED
     def test_quoting_is_kept_on_the_hidden_base_column(self) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS, dim("status_upper", 'UPPER({CUBE}."status")')])])
         hidden = [c for c in models_of(result)["orders"].columns if c.hidden and c.physical_name == "status"]
@@ -93,17 +95,20 @@ class TestPhysicalReferences:
         assert kept in (column(models_of(result)["orders"], "spread").sql or "")
         assert await by_id(models=result.models, db=db, model="orders", dimension="spread") == [5, 15, 0]
 
+    @MASKED
     async def test_measure_filter_reads_the_physical_column(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS],
                                    measures=[meas("paid_amount", "sum", "{CUBE}.amount", filters=PAID)])], db=db)
         assert await _measure(result, db, "paid_amount") == 30
 
+    @MASKED
     async def test_segment_reads_the_physical_column(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS],
                                    segments=[{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}])], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="is_paid") == {
             True: 2, False: 1}
 
+    @MASKED
     async def test_case_predicate_reads_the_physical_column(self, db: Path) -> None:
         bucket = {"name": "bucket", "case": {"when": [{"sql": "{CUBE}.status = 'paid'", "label": "P"}],
                                              "else": {"label": "O"}}}
@@ -184,7 +189,7 @@ class TestCalculatedMeasures:
         ("SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)", [], 10),
         ("MAX({CUBE}.amount) - MIN({CUBE}.amount)", [], 15),
         pytest.param("COUNT(DISTINCT {CUBE}.status)", [RENAMED_STATUS], 2, marks=MASKED),
-        pytest.param("AVG({CUBE}.amount * 3)", [dim("amount", "{CUBE}.amount * 2", type="number")], 35, marks=MASKED),
+        ("AVG({CUBE}.amount * 3)", [dim("amount", "{CUBE}.amount * 2", type="number")], 35),
         ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {CUBE}.amount)", [], 10),
     ], ids=["case-collision", "undeclared-column", "plain", "filter-clause", "arithmetic", "count-distinct",
             "masked-operand", "percentile"])
@@ -204,7 +209,9 @@ class TestCalculatedMeasures:
         found = model.get_measure("total")
         assert found is not None
         parsed = parse_expr(found.formula)
-        assert isinstance(parsed, AggCall) and parsed.agg.lower() == "sum" and isinstance(parsed.source, Ref)
+        assert isinstance(parsed, AggCall)
+        assert parsed.agg.lower() == "sum"
+        assert isinstance(parsed.source, Ref)
         col = column(model, parsed.source.name)
         assert (col.physical_name, col.filter, col.is_base) == ("amount", None, True)
 
@@ -234,7 +241,6 @@ class TestJoinKeys:
                                    joins=[self.JOIN]), CUSTOMERS], db=db)
         assert await self._by_customer(result, db) == {"Ann": 2, "Bo": 1}
 
-    @MASKED
     async def test_composite_key_with_a_masked_side(self, db: Path) -> None:
         join = {**self.JOIN, "sql": "{CUBE}.customer_id = {customers}.id AND {CUBE}.region = {customers}.region"}
         result = import_cube([cube(dimensions=[dim("region", "UPPER({CUBE}.region)")], joins=[join]), CUSTOMERS],
@@ -389,7 +395,8 @@ class TestCli:
         assert code == 0
         stored_model(store, "orders")
         (failed,) = typing_notes(i["message"] for i in cube_report_messages(store) if i["severity"] == "info")
-        assert "missing_ds" in absent and "broken_ds" in failed
+        assert "missing_ds" in absent
+        assert "broken_ds" in failed
         assert absent.replace("missing_ds", "") != failed.replace("broken_ds", "")
 
 

@@ -59,7 +59,7 @@ model {
     }
     importers = bucket 'Importers' {
       metadata {
-        packages ['slayer.dbt', 'slayer.cube', 'slayer.osi', 'slayer.ingest_report']
+        packages ['slayer.dbt', 'slayer.cube', 'slayer.osi', 'slayer.ingest_report', 'slayer.importers']
         specs ['importers']
       }
     }

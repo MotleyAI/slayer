@@ -52,7 +52,8 @@ class TestCube:
         result = import_cube([cube], db=db)
         model = models_of(result)["orders"]
         for name in ("status_upper", "bucket", "is_paid", "paid_amount", "paid_cnt"):
-            assert model.get_column(name) is None and model.get_measure(name) is None, name
+            assert model.get_column(name) is None, name
+            assert model.get_measure(name) is None, name
             assert _reported(cube_issues(result, name), "status"), name
         assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
         assert await value(models=result.models, db=db, model="orders", formula="total") == 35
@@ -62,7 +63,8 @@ class TestCube:
                 "dimensions": [ID, {"name": "status", "sql": "UPPER({CUBE}.status)"}],
                 "measures": [{"name": "paid_amount", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
         result = import_cube([cube], db=db)
-        assert not has_column(result, "orders", "status") and cube_issues(result, "status")
+        assert not has_column(result, "orders", "status")
+        assert cube_issues(result, "status")
         assert await value(models=result.models, db=db, model="orders", formula="paid_amount") == 30
 
     def test_masked_join_key_drops_the_join(self) -> None:
@@ -99,7 +101,8 @@ class TestDbt:
                            {"name": "total", "agg": "sum", "expr": "amount"}]}
         result = import_dbt([sm], db=db)
         for name in ("status_upper", "paid_cnt", "paid_bool"):
-            assert not has_column(result, "orders", name) and not has_measure(result, "orders", name), name
+            assert not has_column(result, "orders", name), name
+            assert not has_measure(result, "orders", name), name
             assert _reported(entries(result, name), "status"), name
         assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
         assert await value(models=result.models, db=db, model="orders", formula="total") == 35
@@ -113,8 +116,10 @@ class TestDbt:
         customers = {"name": "customers", "model": "customers",
                      "entities": [{"name": "customer", "type": "primary", "expr": "id"}]}
         result = import_dbt([orders, customers])
-        assert not has_column(result, "orders", "status") and entries(result, "status")
-        assert models_of(result)["orders"].joins == [] and entries(result, "customer_id")
+        assert not has_column(result, "orders", "status")
+        assert entries(result, "status")
+        assert models_of(result)["orders"].joins == []
+        assert entries(result, "customer_id")
 
 
 @pytest.mark.parametrize("kind", ["current", "legacy"])
@@ -128,5 +133,6 @@ async def test_osi_collisions_are_dropped(db: Path, tmp_path: Path, kind: str) -
     assert _reported(entries(result, "status_upper"), "status")
     assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
     self_status = models_of(result)["orders_self"].get_column("status")
-    assert self_status is None if kind == "current" else (self_status is not None and self_status.sql is None)
+    assert self_status is None if kind == "current" else (
+        self_status is not None and self_status.is_base and self_status.physical_name == "status")
     assert entries(result, "status")

@@ -1276,20 +1276,34 @@ def _bare_literal_text(name: str, value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _MeasureScope(BaseModel):
+    """What a saved measure's names resolve against."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    names: frozenset[str]
+    aggregations: frozenset[str]
+    columns: Optional[frozenset[str]] = None
+    join_path: Optional[Callable[[Tuple[str, ...]], bool]] = None
+
+
 def measure_dependency_problems(
     formulas: List[Tuple[Optional[str], str]], *, aggregations: frozenset[str] = frozenset(),
+    columns: Optional[frozenset[str]] = None, join_path: Optional[Callable[[Tuple[str, ...]], bool]] = None,
 ) -> List[Optional[str]]:
     """Per ``(name, formula)``: why the saved measure cannot resolve among its peers, else ``None``.
 
     Outside an aggregation a bare name must be a peer measure; an aggregation must be built-in
-    or one of ``aggregations``; a measure on a cycle, or reading one that cannot resolve, cannot
+    or one of ``aggregations``, and, given ``columns``, read only those columns or paths
+    ``join_path`` accepts; a measure on a cycle, or reading one that cannot resolve, cannot
     resolve either."""
-    names = {name for name, _ in formulas if name}
+    scope = _MeasureScope(names=frozenset(name for name, _ in formulas if name), aggregations=aggregations,
+                          columns=columns, join_path=join_path)
     own: Dict[int, Optional[str]] = {}
     deps: Dict[int, set] = {}
     for i, (_name, formula) in enumerate(formulas):
         try:
-            refs, problem = _measure_refs(parse_expr(formula), names=names, aggregations=aggregations)
+            refs, problem = _measure_refs(parse_expr(formula), scope=scope)
         except ValueError as e:
             refs, problem = set(), str(e)
         own[i], deps[i] = problem, refs
@@ -1314,12 +1328,12 @@ def _resolution_problem(
     return None
 
 
-def _measure_refs(node: Any, *, names: set, aggregations: frozenset[str]) -> Tuple[set, Optional[str]]:
+def _measure_refs(node: Any, *, scope: _MeasureScope) -> Tuple[set, Optional[str]]:
     """The peer measures ``node`` reads outside aggregations, and the first problem found."""
     if isinstance(node, Ref):
-        if node.name in names:
+        if node.name in scope.names:
             return {node.name}, None
-        match = difflib.get_close_matches(word=node.name, possibilities=sorted(names), n=1)
+        match = difflib.get_close_matches(word=node.name, possibilities=sorted(scope.names), n=1)
         hint = f" Did you mean '{match[0]}'?" if match else ""
         return set(), (
             f"'{node.name}' is not a saved measure.{hint} Reference a saved measure by its bare name, or "
@@ -1329,16 +1343,29 @@ def _measure_refs(node: Any, *, names: set, aggregations: frozenset[str]) -> Tup
         dotted = ".".join(node.parts)
         return set(), f"Cross-model measure '{dotted}' must include an aggregation (e.g., 'sum({dotted})')."
     if isinstance(node, AggCall):
-        known = normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS or node.agg in aggregations
-        return set(), None if known else f"unknown aggregation {node.agg!r}"
+        known = normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS or node.agg in scope.aggregations
+        return set(), _aggregation_input_problem(node, scope=scope) if known else f"unknown aggregation {node.agg!r}"
     children = [node.input] if isinstance(node, TransformCall) else _operands(node)
     refs: set = set()
     for child in children:
-        found, problem = _measure_refs(child, names=names, aggregations=aggregations)
+        found, problem = _measure_refs(child, scope=scope)
         if problem is not None:
             return refs, problem
         refs |= found
     return refs, None
+
+
+def _aggregation_input_problem(node: AggCall, *, scope: _MeasureScope) -> Optional[str]:
+    """The first name an aggregation reads that is neither a column nor a join path; unchecked without columns."""
+    if scope.columns is None:
+        return None
+    inputs = [node.source, node.filter, *node.args, *(v for _, v in node.kwargs)]
+    for leaf in (ref for value in inputs if value is not None for ref in walk_parsed_refs(value)):
+        if isinstance(leaf, Ref) and leaf.name not in scope.columns:
+            return f"aggregation {node.agg!r} reads {leaf.name!r}, which is not a column of the model"
+        if isinstance(leaf, DottedRef) and not (scope.join_path is not None and scope.join_path(tuple(leaf.parts))):
+            return f"aggregation {node.agg!r} reads {'.'.join(leaf.parts)!r}, which no join path reaches"
+    return None
 
 
 # ---------------------------------------------------------------------------

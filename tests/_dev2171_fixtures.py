@@ -122,7 +122,8 @@ def source_column(model: SlayerModel, measure: str) -> Column:
     found = model.get_measure(measure)
     assert found is not None, f"measure {measure!r} missing on {model.name}"
     parsed = parse_expr(found.formula)
-    assert isinstance(parsed, AggCall) and isinstance(parsed.source, Ref), found.formula
+    assert isinstance(parsed, AggCall), found.formula
+    assert isinstance(parsed.source, Ref), found.formula
     return column(model, parsed.source.name)
 
 
