@@ -146,6 +146,9 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
+17. **Importers preserve meaning**: an importer emits a construct only when
+    SLayer reads it with the source's meaning, up to SLayer's documented NULL
+    conventions; anything else is dropped with a report. [target: DEV-2171]
 
 ## 4. Enforcement
 
