@@ -123,11 +123,15 @@ On SQLite, MySQL and SQL Server, every list construct — a list function over a
 
 ### Requirement: Re-ingest re-types TEXT list columns
 
-When a stored column is `TEXT` and its live column is a native list, re-ingest SHALL change it to `type: ARRAY` with the live `element_type` and `db_type`, keeping every other stored attribute (description, label, `allowed_aggregations`, meta). A stored `ARRAY` column's `element_type` SHALL NOT be overwritten, except a Snowflake `UNKNOWN` being re-inferred.
+When a stored column is `TEXT` and its live column is a native list, re-ingest SHALL change it to `type: ARRAY` with the live `element_type` and `db_type`, keeping every other stored attribute (description, label, meta) and keeping `allowed_aggregations` only as far as it names `count`. A stored `ARRAY` column's `element_type` SHALL NOT be overwritten, except a Snowflake `UNKNOWN` being re-inferred.
 
 #### Scenario: Re-typing keeps metadata
 - **WHEN** a stored model has `skills: TEXT` with a description, the live column is `VARCHAR[]`, and the datasource is re-ingested
 - **THEN** `skills` is `type: ARRAY`, `element_type: TEXT`, and keeps its description
+
+#### Scenario: Re-typing keeps only the count aggregation
+- **WHEN** a stored `skills: TEXT` has `allowed_aggregations: [count, count_distinct]`, its live column is `VARCHAR[]`, and the datasource is re-ingested
+- **THEN** `skills` is `type: ARRAY` with `allowed_aggregations: [count]`
 
 #### Scenario: A user's element type survives
 - **WHEN** a stored `ARRAY` column has `element_type: TEXT` set by the user over a live `INTEGER[]` column, and the datasource is re-ingested

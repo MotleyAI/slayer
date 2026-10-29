@@ -74,7 +74,7 @@ An aggregate over `L.value` and an aggregate over `M`'s own rows SHALL be comput
 
 ### Requirement: List children compose like any child
 
-Element access SHALL work at the end of a to-one join path (`contractors.skills.value` from a model joined to-one to `contractors`), on derived list columns, and on list-typed columns of query stages, including a stage's `collect` result.
+Element access SHALL work at the end of a to-one join path (`contractors.skills.value` from a model joined to-one to `contractors`), on derived list columns, and on list-typed columns of query stages, including a stage's `collect` result. An aggregate over `L.value` SHALL accept a filter across another to-many hop of `M`, which keeps the `M` rows it keeps for `M`'s own aggregates.
 
 #### Scenario: Through a to-one join
 - **WHEN** `assignments` joins `contractors` to-one and a query on `assignments` filters `contractors.skills.value = 'sql'`
@@ -83,6 +83,10 @@ Element access SHALL work at the end of a to-one join path (`contractors.skills.
 #### Scenario: A collected list in a later stage
 - **WHEN** stage `s` groups `contractors` by `team` with `collect(skills.value)` named `team_skills`, and the next stage filters `contains(team_skills, 'go')`
 - **THEN** both teams are kept, and `team_skills.value` is usable as a dimension of that stage
+
+#### Scenario: Element aggregates filtered across another to-many hop
+- **WHEN** `contractors` joins `assignments` one-to-many, only Ann has assignment 1, and a query with the dimension `team` measures `count(skills.*)` and `collect(skills.value)` with the filter `assignments.id = 1`
+- **THEN** team A returns 3 and `['go', 'sql']`, and team B is not returned
 
 ### Requirement: List column names do not collide with hop names
 
