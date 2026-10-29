@@ -277,7 +277,13 @@ def list_child_name(*, parent: str, column: str) -> str:
 
 
 def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
-    """The element child of ``parent``'s list ``column``: one row per non-NULL element, its value ``value``."""
+    """The element child of ``parent``'s list ``column``: one row per non-NULL element, its value ``value``.
+    Cached on ``parent`` under everything the child is built from, so a copied or edited parent never reuses a
+    stale one."""
+    key = (parent.name, parent.data_source, column.name, column.element_type)
+    cached = parent._list_children.get(key)
+    if cached is not None:
+        return cached
     name = list_child_name(parent=parent.name, column=column.name)
     # Built valid, then renamed: the name validator refuses the reserved prefix. Never a relation of its own.
     child = SlayerModel(
@@ -285,7 +291,7 @@ def list_child(*, parent: SlayerModel, column: Column) -> SlayerModel:
         columns=[Column(name=LIST_ELEMENT_COLUMN, type=column.element_type or DataType.UNKNOWN)],
     ).model_copy(update={"name": name, "sql_table": name, "data_source": parent.data_source})
     child._list_of = (parent.name, column.name)
-    return child
+    return parent._list_children.setdefault(key, child)
 
 
 def with_list_children(models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:

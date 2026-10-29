@@ -10,7 +10,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.join_walker import with_list_children
+from slayer.core.join_walker import list_child, with_list_children
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.sql.client import SlayerSQLClient
@@ -60,6 +60,38 @@ class TestTheChild:
 
         models = with_list_children({"a__b": listed("a__b", "c"), "a": listed("a", "b__c")})
         assert {m.list_of for m in models.values() if m.list_of} == {("a__b", "c"), ("a", "b__c")}
+
+    def test_a_child_is_built_once_per_parent_and_column(self) -> None:
+        parent = contractors_model()
+        skills = parent.get_column("skills")
+        assert skills is not None
+        assert list_child(parent=parent, column=skills) is list_child(parent=parent, column=skills)
+
+    def test_a_changed_parent_gets_a_fresh_child(self) -> None:
+        parent = contractors_model()
+        skills = parent.get_column("skills")
+        assert skills is not None
+        first = list_child(parent=parent, column=skills)
+        retyped = skills.model_copy(update={"element_type": DataType.INT})
+        changed = parent.model_copy(update={
+            "data_source": "other", "columns": [retyped if c is skills else c for c in parent.columns]})
+        child = list_child(parent=changed, column=retyped)
+        assert child is not first
+        value = child.get_column("value")
+        assert value is not None
+        assert (child.data_source, value.type) == ("other", DataType.INT)
+
+    def test_a_column_edited_in_place_gets_a_fresh_child(self) -> None:
+        parent = contractors_model()
+        skills = parent.get_column("skills")
+        assert skills is not None
+        first = list_child(parent=parent, column=skills)
+        skills.element_type = DataType.INT
+        child = list_child(parent=parent, column=skills)
+        value = child.get_column("value")
+        assert child is not first
+        assert value is not None
+        assert value.type is DataType.INT
 
     async def test_element_type_is_the_columns(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({

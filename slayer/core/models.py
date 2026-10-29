@@ -768,6 +768,9 @@ class SlayerModel(BaseModel):
     _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
     # Runtime-only: a list child's ``(parent model, list column)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
+    # Runtime-only: the list children built from this model (``join_walker.list_child``).
+    _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerModel"] = PrivateAttr(
+        default_factory=dict)
 
     @field_validator("filters")
     @classmethod
