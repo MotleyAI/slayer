@@ -29,7 +29,7 @@
 
 ## 4. Presto and Tier 2
 
-- [ ] 4.1 Move the Trino library overrides and `regex_flavour = JAVA` to `PrestoFamilyDialect`; `TrinoDialect` keeps what differs; check each against prestodb docs and a throwaway local Presto container; leave out what Presto lacks. Verify: 1.5 passes; Trino live suite unchanged.
+- [x] 4.1 Move the Trino library overrides and `regex_flavour = JAVA` to `PrestoFamilyDialect`; `TrinoDialect` keeps what differs; check each against the prestodb docs (the container check dropped, user); leave out what Presto lacks. Verify: 1.5 passes; Trino live suite unchanged.
 - [x] 4.2 Tier-2 translations for `like`, `ilike`, `trim`, `ltrim`, `rtrim`, `replace`, `instr` / `strpos`, `greatest`, `least` on Redshift, Databricks, Spark, Oracle, checked against vendor docs (references in the PR description). Verify: 1.1 Tier-2 rows pass.
 
 ## 5. Item fixes
@@ -50,4 +50,4 @@
 
 ## 7. Gates
 
-- [ ] 7.1 Full unit suite, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all pass.
+- [x] 7.1 Full unit suite, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all pass.
