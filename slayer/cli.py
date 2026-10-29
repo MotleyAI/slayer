@@ -277,20 +277,25 @@ class _TerminationGuard:
         """Run ``command`` in a worker the main thread waits on; a signal stops its server or abandons it."""
         self.phase = "running"
         failure: list[BaseException] = []
+        began = threading.Event()
         done = threading.Event()
 
         def target() -> None:
             try:
-                command()
+                if self.signum is None:  # a signal can land during ``start()``
+                    began.set()
+                    command()
             except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — re-raised on the main thread
                 failure.append(exc)
             finally:
                 done.set()
 
-        if self.signum is None:
-            threading.Thread(target=target, name="slayer-command", daemon=True).start()
-            _wait_for(done, interrupt=self.signalled)
         if self.signum is not None:
+            return
+        threading.Thread(target=target, name="slayer-command", daemon=True).start()
+        _wait_for(done, interrupt=self.signalled)
+        if self.signum is not None:
+            _wait_for(done, interrupt=began)  # a worker that skipped the command ends at once
             with self.lock:
                 stop = self.stop
             if not done.is_set():

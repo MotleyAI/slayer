@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import IO, Literal, NoReturn
 
@@ -204,6 +205,14 @@ def test_signal_inside_command_worker_start_never_serves(quiet: dict[str, str], 
     returncode = proc.finish(timeout=10)
     _assert_signal_stop(proc, returncode, sig)
     assert not {"RUNNING", "STOP"} & set(proc.out)
+
+
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_inside_command_worker_start_never_runs_the_command(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "served", sig=sig, flags=("--signal-inside-command-start",))
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, sig)
+    assert "SERVED" not in proc.out
 
 
 @_linux_only
@@ -438,6 +447,38 @@ def test_finish_exits_hard_only_for_an_abandoned_worker(monkeypatch: pytest.Monk
     finally:
         guard.restore()
     assert exc.value.args[0] == 128 + signal.SIGTERM
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
+@pytest.mark.parametrize("when", ["before_run", "inside_start"])
+def test_signal_before_the_command_runs_abandons_nothing(
+    monkeypatch: pytest.MonkeyPatch, when: Literal["before_run", "inside_start"],
+) -> None:
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    ran: list[bool] = []
+    guard = slayer_cli._TerminationGuard(token=None)
+    real_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        guard._handle(signal.SIGTERM, None)
+        real_run = thread.run
+
+        def late_run() -> None:  # the main thread looks before the worker does
+            time.sleep(0.3)
+            real_run()
+
+        thread.run = late_run  # type: ignore[method-assign]
+        real_start(thread)
+
+    try:
+        if when == "before_run":
+            guard._handle(signal.SIGTERM, None)
+        else:
+            monkeypatch.setattr(threading.Thread, "start", start)
+        guard.run(lambda: ran.append(True))
+    finally:
+        guard.restore()
+    assert (ran, guard.abandoned) == ([], False)
     assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
 
 
