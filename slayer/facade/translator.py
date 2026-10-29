@@ -1210,6 +1210,7 @@ def _aggregate_alias_for_column(
     side: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
 ) -> FacadeMetric | None:
     """The metric a column reference names: a projected aggregate's alias, else a catalog metric by name.
@@ -1218,7 +1219,7 @@ def _aggregate_alias_for_column(
     """
     if not isinstance(side, exp.Column):
         return None
-    name = _column_to_dotted(side, strip_prefix=strip_prefix)
+    name = _column_to_dotted(side, strip_prefix=strip_prefix, alias_map=alias_map)
     item = items_by_projected_name.get(name)
     if item is not None:
         return item.metric
@@ -1229,6 +1230,7 @@ def _try_aggregate_alias_filter(
     conj: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
 ) -> str | None:
     """If ``conj`` is ``<aggregate-alias-or-metric-col> <cmp> <literal>`` (in either
@@ -1247,9 +1249,9 @@ def _try_aggregate_alias_filter(
         return None
     lhs, rhs = conj.this, conj.expression
     metric_lhs = _aggregate_alias_for_column(
-        lhs, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name)
+        lhs, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map, metrics_by_name=metrics_by_name)
     metric_rhs = _aggregate_alias_for_column(
-        rhs, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name)
+        rhs, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map, metrics_by_name=metrics_by_name)
     if metric_lhs is None and metric_rhs is None:
         return None
     if metric_lhs is not None and metric_rhs is None and isinstance(rhs, exp.Literal):
@@ -1463,7 +1465,8 @@ def _apply_where(
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
         colon_form = _try_aggregate_alias_filter(
-            conj, items_by_projected_name, strip_prefix=strip_prefix, metrics_by_name=metrics_by_name,
+            conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name,
         )
         if colon_form is not None:
             filters_out.append(colon_form)
@@ -1507,7 +1510,7 @@ def _apply_having(
         # alias-ref form (``HAVING "rev" > 1000``). Symmetric with
         # the WHERE pre-pass; tries first so it wins before the agg-call form.
         colon_form = _try_aggregate_alias_filter(
-            conj, items_by_projected_name, strip_prefix=strip_prefix,
+            conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if colon_form is not None:
             filters_out.append(colon_form)

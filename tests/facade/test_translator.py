@@ -2222,6 +2222,18 @@ def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
     assert result.query.filters == ["stores.name = 'Acme'"]
 
 
+def test_left_join_subquery_where_on_joined_metric_groups(dialect) -> None:
+    """A joined catalog metric named through the join alias in WHERE is an aggregate filter."""
+    sql = _metabase_join_sql(
+        projection='"public"."orders"."status"',
+        where='"Stores"."tax_rate_avg" > 0.1',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["stores.tax_rate:avg > 0.1"]
+    assert result.query.distinct_dimension_values is True
+
+
 def test_left_join_subquery_aggregate_on_joined_col_blocked_by_local_metric_guard(dialect) -> None:
     """AVG(Stores.tax_rate) maps to a cross-model measure, but the local-metric guard
     rejects cross-model metric projection in flat SELECT."""
