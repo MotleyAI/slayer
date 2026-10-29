@@ -2,20 +2,20 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
 
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Nav-coverage guard test: every `.md` / `.ipynb` under `docs/` is in the `zensical.toml` nav. Allowlist: `docs/CLAUDE.md`, `docs/api_gaps.md`, and `docs/getting-started/flight-sql.md` with a forward pointer to DEV-2103. Verify: red today on the orphans.
-- [ ] 1.2 Issue-number guard test: no `DEV-<n>` in any file under `docs/` (all file types) except `docs/CLAUDE.md`, plus the exact baseline of the (path, token) pairs in `docs/interfaces/pg-facade.md` today, with a forward pointer to DEV-2172. Verify: red today.
-- [ ] 1.3 Doc-example parse guard: the schema-aware extractor and parse test described in design.md (Structural guards §3), with extractor fixture tests. Verify: the fixture tests pass and the guard runs green or red on real findings only.
-- [ ] 1.4 Idiom execution tests: one executable test per new bullet and scenario in `specs/mcp/tool-surface/spec.md`, each with concrete rows and expected output. The new ones: year-over-year `time_shift`, `ntile` order, `FILTER`, granularity calls, the fixed-grain computed dimension, time points, regex braces, null-aware tests, list filters, quoted / list / empty-list variables. Bullets already covered by `tests/test_mcp_surface_budget.py` / `tests/_mcp_idiom_fixtures.py` are left as they are. Verify: behaviour that exists passes; any red result is investigated before implementation.
-- [ ] 1.5 Marker tests: add the new guidance markers to `MARKER_OWNERS` (`FILTER (WHERE` → `measures`; `IS DISTINCT FROM` and `contains_any` → `filters`; the whole-`IN` binding marker → the `SlayerQuery.variables` field; the per-query-expression marker → `source_model`). Add a check that no query text advises inline-extension `columns` for a per-query column. Verify: red until 4.x lands.
-- [ ] 1.6 Retarget `tests/test_help_seed.py:472` / `:477` to `docs/reference/cli.md` / `docs/reference/mcp.md` (same assertions), and drop `interfaces/mcp.md` from `_MCP_DOCS` in `tests/test_docs_dev_1560.py`. Verify: red until 3.x folds the help sections in.
-- [ ] 1.7 Escape-regime test cleanup:
+- [x] 1.1 Nav-coverage guard test: every `.md` / `.ipynb` under `docs/` is in the `zensical.toml` nav. Allowlist: `docs/CLAUDE.md`, `docs/api_gaps.md`, and `docs/getting-started/flight-sql.md` with a forward pointer to DEV-2103. Verify: red today on the orphans.
+- [x] 1.2 Issue-number guard test: no `DEV-<n>` in any file under `docs/` (all file types) except `docs/CLAUDE.md`, plus the exact baseline of the (path, token) pairs in `docs/interfaces/pg-facade.md` today, with a forward pointer to DEV-2172. Verify: red today.
+- [x] 1.3 Doc-example parse guard: the schema-aware extractor and parse test described in design.md (Structural guards §3), with extractor fixture tests. Verify: the fixture tests pass and the guard runs green or red on real findings only.
+- [x] 1.4 Idiom execution tests: one executable test per new bullet and scenario in `specs/mcp/tool-surface/spec.md`, each with concrete rows and expected output. The new ones: year-over-year `time_shift`, `ntile` order, `FILTER`, granularity calls, the fixed-grain computed dimension, time points, regex braces, null-aware tests, list filters, quoted / list / empty-list variables. Bullets already covered by `tests/test_mcp_surface_budget.py` / `tests/_mcp_idiom_fixtures.py` are left as they are. Verify: behaviour that exists passes; any red result is investigated before implementation.
+- [x] 1.5 Marker tests: add the new guidance markers to `MARKER_OWNERS` (`FILTER (WHERE` → `measures`; `IS DISTINCT FROM` and `contains_any` → `filters`; the whole-`IN` binding marker → the `SlayerQuery.variables` field; the per-query-expression marker → `source_model`). Add a check that no query text advises inline-extension `columns` for a per-query column. Verify: red until 4.x lands.
+- [x] 1.6 Retarget `tests/test_help_seed.py:472` / `:477` to `docs/reference/cli.md` / `docs/reference/mcp.md` (same assertions), and drop `interfaces/mcp.md` from `_MCP_DOCS` in `tests/test_docs_dev_1560.py`. Verify: red until 3.x folds the help sections in.
+- [x] 1.7 Escape-regime test cleanup:
   - delete the python-specific tests (`tests/test_models.py::TestSubstituteVariables`, `tests/test_query_optional_blocks.py:131`, the invalid-regime check);
   - drop `escape=` from the regime-agnostic tests, running them with `backslash_escapes=False`;
   - drop every `escape="sql"` argument;
   - confirm SQL-only contract coverage (mandatory `backslash_escapes`, optional blocks, empty-list error, per-dialect escaping) and add what's missing.
 
   Verify: red only on the removed parameter.
-- [ ] 1.8 Update the `match=` strings at `tests/test_mode_b_placeholder_parse.py:71` and `tests/test_mode_b_variables_construction.py:64` to the new brace-error stem. Verify: red until 6.2.
+- [x] 1.8 Update the `match=` strings at `tests/test_mode_b_placeholder_parse.py:71` and `tests/test_mode_b_variables_construction.py:64` to the new brace-error stem. Verify: red until 6.2.
 
 ## 2. Docs: wrong statements (A)
 

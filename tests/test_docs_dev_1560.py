@@ -1,17 +1,4 @@
-"""DEV-1560: docs surface must not advertise the dropped reachable-fields
-section.
-
-The `inspect_model` rendering surface lost `## Reachable via joins`,
-`reachable_fields` as a section token, and the `reachable_fields_depth`
-kwarg. Docs that say otherwise will mislead agents. This test pins the
-documented MCP-tool surface and the example notebook against the
-post-removal contract.
-
-Codex finding 4 from the test-vs-plan review surfaced an additional
-pre-existing doc bug: the documented sections enumeration was missing
-`learnings`. Fixed in the same pass and pinned here so it doesn't drift
-again.
-"""
+"""The docs must not advertise the dropped reachable-fields section of `inspect_model`."""
 from __future__ import annotations
 
 import json
@@ -22,7 +9,6 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MCP_DOCS = [
-    _REPO_ROOT / "docs" / "interfaces" / "mcp.md",
     _REPO_ROOT / "docs" / "reference" / "mcp.md",
 ]
 _NOTEBOOK = _REPO_ROOT / "docs" / "examples" / "08_mcp_introspect" / "mcp_introspect_nb.ipynb"
@@ -48,10 +34,9 @@ def test_mcp_doc_drops_reachable_fields_tokens(path: Path) -> None:
 @pytest.mark.parametrize("path", _MCP_DOCS, ids=lambda p: str(p.relative_to(_REPO_ROOT)))
 def test_mcp_doc_sections_list_matches_code(path: Path) -> None:
     """The documented `sections` enumeration must list every accepted
-    token, including `learnings` (which the pre-DEV-1560 docs accidentally
-    omitted) and excluding `reachable_fields`."""
+    token, including `learnings` and excluding `reachable_fields`."""
     text = path.read_text()
-    # The post-DEV-1560 vocabulary, in canonical order.
+    # The vocabulary, in canonical order.
     expected_substring = (
         '["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]'
     )
