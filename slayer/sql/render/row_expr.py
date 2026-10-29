@@ -333,41 +333,52 @@ def _number(node: Expression) -> Optional[Decimal]:
     return -Decimal(inner.this) if negative else Decimal(inner.this)
 
 
+def _guarded(x: Expression, condition: Expression, *, holds: bool) -> Expression:
+    return x if holds else case((condition, x.copy()))
+
+
+def _positive(x: Expression) -> Expression:
+    value = _number(x)
+    return _guarded(x, exp.GT(this=operand_copy(x), expression=lit(0)), holds=value is not None and value > 0)
+
+
+def _log_base(base: Expression) -> Expression:
+    value = _number(base)
+    valid = exp.And(this=exp.GT(this=operand_copy(base), expression=lit(0)),
+                    expression=exp.NEQ(this=operand_copy(base), expression=lit(1)))
+    return _guarded(base, valid, holds=value is not None and value > 0 and value != 1)
+
+
+def _non_negative(x: Expression) -> Expression:
+    value = _number(x)
+    return _guarded(x, exp.GTE(this=operand_copy(x), expression=lit(0)), holds=value is not None and value >= 0)
+
+
+def _power_args(base: Expression, exponent: Expression, *, dialect: SqlDialect) -> List[Expression]:
+    b, e = _number(base), _number(exponent)
+    if (b is not None and b > 0) or (e is not None and e >= 0 and e == e.to_integral_value()):
+        return [base, exponent]
+    fractional = exp.NEQ(this=operand_copy(exponent), expression=dialect.truncate(exponent))
+    undefined = either(
+        exp.And(this=exp.LT(this=operand_copy(base), expression=lit(0)), expression=fractional),
+        exp.And(this=exp.EQ(this=operand_copy(base), expression=lit(0)),
+                expression=exp.LT(this=operand_copy(exponent), expression=lit(0))),
+    )
+    return [case((undefined, exp.Null()), default=base.copy()), exponent]
+
+
 def in_domain(name: str, args: List[Expression], *, dialect: SqlDialect) -> List[Expression]:
     """``args`` with an argument outside the function's domain read as NULL, so the call yields NULL; NULLing the
     argument (not wrapping the call) holds on an engine that evaluates every CASE branch. A literal already in
     the domain stays as written."""
-    def guarded(x: Expression, condition: Expression, *, holds: bool) -> Expression:
-        return x if holds else case((condition, x.copy()))
-
-    def positive(x: Expression) -> Expression:
-        value = _number(x)
-        return guarded(x, exp.GT(this=operand_copy(x), expression=lit(0)), holds=value is not None and value > 0)
-
     if name in ("ln", "log10", "log2") or (name == "log" and len(args) == 1):
-        return [positive(args[0])]
+        return [_positive(args[0])]
     if name == "log":
-        base, x = args
-        value = _number(base)
-        valid = exp.And(this=exp.GT(this=operand_copy(base), expression=lit(0)),
-                        expression=exp.NEQ(this=operand_copy(base), expression=lit(1)))
-        return [guarded(base, valid, holds=value is not None and value > 0 and value != 1), positive(x)]
+        return [_log_base(args[0]), _positive(args[1])]
     if name == "sqrt":
-        value = _number(args[0])
-        return [guarded(args[0], exp.GTE(this=operand_copy(args[0]), expression=lit(0)),
-                        holds=value is not None and value >= 0)]
+        return [_non_negative(args[0])]
     if name in ("pow", "power"):
-        base, exponent = args
-        b, e = _number(base), _number(exponent)
-        if (b is not None and b > 0) or (e is not None and e >= 0 and e == e.to_integral_value()):
-            return args
-        fractional = exp.NEQ(this=operand_copy(exponent), expression=dialect.truncate(exponent))
-        undefined = either(
-            exp.And(this=exp.LT(this=operand_copy(base), expression=lit(0)), expression=fractional),
-            exp.And(this=exp.EQ(this=operand_copy(base), expression=lit(0)),
-                    expression=exp.LT(this=operand_copy(exponent), expression=lit(0))),
-        )
-        return [case((undefined, exp.Null()), default=base.copy()), exponent]
+        return _power_args(args[0], args[1], dialect=dialect)
     return args
 
 

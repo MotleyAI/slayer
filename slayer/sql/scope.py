@@ -132,6 +132,8 @@ class ScopeFrame(BaseModel):
     attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
     #: Temporal types of placeholders substituted for attached aggregates.
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
+    #: Element types of the list-valued ones.
+    placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -499,7 +501,7 @@ class ScopeFrame(BaseModel):
     def column_element(self, ref: Ref) -> Optional[DataType]:
         """The element type of the list column ``ref`` names, or ``None`` when unknown."""
         if ref in self.placeholder_types:
-            return None
+            return self.placeholder_elements.get(ref)
         return model_column_element(model=self.root_model, models_by_name=self._models_by_name())(ref)
 
     def _model_for(self, name: str) -> SlayerModel:

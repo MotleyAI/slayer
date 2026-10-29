@@ -90,6 +90,17 @@ def _bool_as_int(cast: Expression, to: exp.DataType) -> Expression:
     """A boolean as 0 / 1, like ClickHouse's own predicates: the HTTP driver returns ``Bool`` as text."""
     return anon("toUInt8", cast) if to.is_type(exp.DataType.Type.BOOLEAN) else cast
 
+
+def _based_log(node: Expression) -> Expression:
+    """``LOG(b, x)`` as ``log2(x) / log2(b)`` (``log`` takes one argument); base 2 or 10 stays for its native alias."""
+    if not isinstance(node, exp.Log) or node.args.get("expression") is None:
+        return node
+    base = node.this
+    if isinstance(base, exp.Literal) and base.is_number and float(base.this) in (2, 10):
+        return node
+    return exp.Div(this=anon("log2", node.expression), expression=anon("log2", base))
+
+
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4, 0)
 _CORRELATED_DEFAULT_ON_VERSION = (25, 8, 0)
@@ -247,6 +258,9 @@ class ClickhouseDialect(SqlDialect):
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Character, not byte, semantics for substring / lower / upper / position."""
         return tree.transform(_utf8)
+
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        return tree.transform(_based_log)
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "left":

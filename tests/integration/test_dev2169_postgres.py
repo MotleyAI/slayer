@@ -9,7 +9,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2137_fixtures import as_list, by, measure
+from tests._dev2137_fixtures import by, measure
 
 pytest.importorskip("pytest_postgresql")
 
@@ -86,7 +86,7 @@ async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) 
 async def test_collect_over_numeric(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": ["team"],
                                                         "measures": [measure("collect(amount)", "c")]}))
-    got = {k: [float(x) for x in as_list(v) or []] for k, v in by(resp, "team", "c", model="typed").items()}
+    got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", "c", model="typed").items()}
     assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
@@ -94,5 +94,16 @@ async def test_collect_over_numeric(pg) -> None:
 async def test_collect_over_uuid(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": ["team"],
                                                         "measures": [measure("collect(uid)", "c")]}))
-    got = {k: [str(x) for x in as_list(v) or []] for k, v in by(resp, "team", "c", model="typed").items()}
+    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "c", model="typed").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fn", ["contains_any", "contains_all"])
+async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
+    # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
+    hit = f"{fn}(collect(uid, partition_by=team), collect(uid || '', partition_by=team))"
+    resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": [
+        "id", {"expression": hit, "name": "hit"}]}))
+    assert {int(r["typed.id"]): r["typed.hit"] for r in resp.data} == {
+        1: True, 2: True, 3: True, 4: fn == "contains_all"}, resp.sql

@@ -880,14 +880,14 @@ class SqlDialect(BaseModel):
     def replacement_text(self, replacement: RegexReplacement) -> Expression:
         return lit(emit_replacement(replacement, self._flavour()))
 
-    def build_regexp_like(  # NOSONAR(S1172) — hook signature
-        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,
+    def build_regexp_like(
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """Whether ``pattern`` matches anywhere in ``value``."""
         self.refuse("regexp_like")
 
-    def build_regexp_extract(  # NOSONAR(S1172) — hook signature
-        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """The first match (``group`` 0) or its ``group``; NULL on no match, ``''`` for a group that did not
         take part."""
@@ -902,8 +902,8 @@ class SqlDialect(BaseModel):
         matched = self.build_regexp_like(value, pattern, False)
         return case((matched, exp.Coalesce(this=extracted, expressions=[lit("")])))
 
-    def build_regexp_replace(  # NOSONAR(S1172) — hook signature
-        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """``value`` with every match replaced."""
         self.refuse("regexp_replace")
@@ -931,8 +931,8 @@ class SqlDialect(BaseModel):
 
     # JSON
 
-    def build_json_value(  # NOSONAR(S1172) — hook signature
-        self, value: Expression, path: JsonPath, native: bool,
+    def build_json_value(
+        self, value: Expression, path: JsonPath, native: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """The scalar at ``path`` as TEXT; NULL when missing, JSON null, an object or an array."""
         self.refuse("json_value")
@@ -1042,8 +1042,8 @@ class SqlDialect(BaseModel):
         return exp.Order(this=exp.Distinct(expressions=[value.copy()]),
                          expressions=[self.build_ordered(value.copy(), descending=False, nulls=nulls)])
 
-    def build_collect(  # NOSONAR(S1172) — hook signature
-        self, value: Expression, element: Optional[DataType],
+    def build_collect(
+        self, value: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """The distinct non-NULL values, sorted ascending; ``[]`` when there are none."""
         self.refuse("collect")

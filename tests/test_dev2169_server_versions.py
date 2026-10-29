@@ -30,7 +30,7 @@ class TestProfileVersion:
         assert ServerProfile(version=given).version == normalised
 
     @pytest.mark.parametrize(("row", "version"), [(("160004",), (16, 4, 0)), ((150012,), (15, 12, 0)),
-                                                  (("garbage",), None)])
+                                                  ((90624,), (9, 6, 24)), (("garbage",), None)])
     def test_postgres(self, row: tuple, version: Any) -> None:
         assert get_dialect("postgres").parse_server_profile(base_row=row).version == version
 

@@ -40,6 +40,13 @@ _CANONICAL_ARRAYS = {
 }
 
 
+def _server_version(number: int) -> tuple[int, int, int]:
+    """``server_version_num`` as ``(major, minor, patch)``: ``MMmmpp`` before 10, ``MM00mm`` after."""
+    if number < 100000:
+        return number // 10000, number // 100 % 100, number % 100
+    return number // 10000, number % 10000, 0
+
+
 def _numeric(value: Expression) -> Expression:
     """``value`` as ``numeric``: a number literal already converts, a ``DECIMAL`` cast already is."""
     if (isinstance(value, exp.Literal) and value.is_number) or (
@@ -140,7 +147,7 @@ class PostgresDialect(SqlDialect):
             version_num = int(number) if number is not None else None
         except (TypeError, ValueError):
             version_num = None
-        return ServerProfile(version=None if version_num is None else (version_num // 10000, version_num % 10000))
+        return ServerProfile(version=None if version_num is None else _server_version(version_num))
 
     def validates_input(self) -> bool:
         """Whether ``pg_input_is_valid`` can check a conversion's input (Postgres 16+)."""

@@ -27,7 +27,7 @@ from tests._dev2120_fixtures import (
     lib_query,
     patch_profile,
 )
-from tests._dev2137_fixtures import as_list, by, measure, query
+from tests._dev2137_fixtures import by, measure, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -72,7 +72,7 @@ async def test_collect_over_exact_numerics_on_duckdb() -> None:
             "measures": [measure("collect(n)", "cn"), measure("collect(big)", "cbig")],
         }))
     for name in ("cn", "cbig"):
-        got = {k: [float(x) for x in as_list(v) or []] for k, v in by(resp, "team", name, model="amounts").items()}
+        got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, model="amounts").items()}
         assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
@@ -81,7 +81,7 @@ async def test_collect_over_uuid_on_duckdb() -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "source_model": "amounts", "dimensions": ["team"], "measures": [measure("collect(u)", "cu")],
         }))
-    got = {k: [str(x) for x in as_list(v) or []] for k, v in by(resp, "team", "cu", model="amounts").items()}
+    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", model="amounts").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 
 
@@ -173,7 +173,7 @@ async def _tsql(monkeypatch, expr: str, version: Optional[tuple[int, ...]]) -> s
                                   "json_value(payload, '$.qty' RETURNING INT)"])
 async def test_tsql_json_value_rereads_strict(monkeypatch, expr: str, version: Any) -> None:
     sql = await _tsql(monkeypatch, expr, version)
-    assert "'strict $." in sql, sql
+    assert "'strict $[0]." in sql, sql
     assert "JSON_PATH_EXISTS(" in sql.upper(), sql
 
 
@@ -187,6 +187,14 @@ async def test_tsql_json_value_before_2022_stays_lax(monkeypatch) -> None:
 async def test_tsql_json_value_takes_a_scalar_document(monkeypatch, version: Any) -> None:
     sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
     assert re.search(r"ISJSON\(\s*lib\.payload\s*,\s*VALUE\s*\)", sql, re.I), sql
+
+
+@pytest.mark.parametrize("version", [(16, 0, 0), None])
+async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch, version: Any) -> None:
+    # JSON_VALUE / JSON_QUERY refuse a scalar document even where ISJSON(…, VALUE) accepts it.
+    sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
+    assert "JSON_VALUE(CONCAT('[', CAST(lib.payload AS NVARCHAR(MAX)), ']'), '$[0]')" in sql, sql
+    assert "JSON_VALUE(lib.payload" not in sql, sql
 
 
 @pytest.mark.parametrize("expr", ["split_part(s, '/', 2)", "split_part(s, '/', -1)", "split_part(s, tag, 3)"])

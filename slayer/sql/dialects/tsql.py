@@ -15,7 +15,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.core.json_path import JsonPath
+from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
@@ -322,14 +322,17 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
-        4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document."""
-        lax = anon("JSON_VALUE", value, lit(path.text))
+        4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
+        ``JSON_VALUE`` reads only wrapped as ``[document]``."""
         version = self.server_profile.version
         if version is not None and version < _SQL_SERVER_2022:
-            return case((exp.EQ(this=anon("ISJSON", value), expression=lit(1)), lax))
-        scalar = exp.And(this=exp.EQ(this=anon("JSON_PATH_EXISTS", value, lit(path.text)), expression=lit(1)),
-                         expression=is_null(anon("JSON_QUERY", value, lit(path.text))))
-        read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", value, lit(f"strict {path.text}"))))
+            return case((exp.EQ(this=anon("ISJSON", value), expression=lit(1)), anon("JSON_VALUE", value, lit(path.text))))
+        document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
+        text = json_path_text((0, *path.steps))
+        lax = anon("JSON_VALUE", document, lit(text))
+        scalar = exp.And(this=exp.EQ(this=anon("JSON_PATH_EXISTS", document, lit(text)), expression=lit(1)),
+                         expression=is_null(anon("JSON_QUERY", document, lit(text))))
+        read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", document, lit(f"strict {text}"))))
         return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
 
     def build_null_safe_eq(

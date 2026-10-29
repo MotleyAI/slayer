@@ -367,6 +367,18 @@ class TestClickHouseLowering:
         assert "log2(CASE WHEN lib.x > 0 THEN lib.x END) * 0.6931471805599453" in sql, sql
         assert "LN(" not in sql.upper(), sql
 
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("log(x, 8)", "log2(8) / log2(CASE WHEN lib.x > 0 AND lib.x <> 1 THEN lib.x END)"),
+        ("log(3, x)", "log2(CASE WHEN lib.x > 0 THEN lib.x END) / log2(3)"),
+    ])
+    async def test_based_log_is_a_ratio_of_log2(self, expr: str, expected: str) -> None:
+        sql = await _clickhouse(expr)
+        assert expected in sql, sql
+        assert "LOG(" not in sql.upper(), sql
+
+    async def test_base_two_log_stays_native(self) -> None:
+        assert "log2(CASE WHEN lib.x > 0 THEN lib.x END)" in await _clickhouse("log(2, x)")
+
     async def test_negative_right_keeps_a_length(self) -> None:
         sql = await _clickhouse("right(s, -1)")
         assert "rightUTF8(lib.s, CASE WHEN -1 < 0 THEN greatest(lengthUTF8(lib.s) + -1, 0) ELSE -1 END)" in sql, sql
