@@ -213,14 +213,12 @@ def test_ln_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "ln(NULL)") is None
 
 
-def test_ln_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(0)")
+def test_ln_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "ln(0)") is None
 
 
-def test_ln_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(-1)")
+def test_ln_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "ln(-1)") is None
 
 
 # --- log10 -----------------------------------------------------------------
@@ -234,9 +232,8 @@ def test_log10_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "log10(NULL)") is None
 
 
-def test_log10_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log10(0)")
+def test_log10_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log10(0)") is None
 
 
 # --- log2 ------------------------------------------------------------------
@@ -253,14 +250,12 @@ def test_log2_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "log2(NULL)") is None
 
 
-def test_log2_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(0)")
+def test_log2_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(0)") is None
 
 
-def test_log2_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(-1)")
+def test_log2_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(-1)") is None
 
 
 # --- log(B, X) -------------------------------------------------------------
@@ -327,9 +322,8 @@ def test_sqrt_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "sqrt(NULL)") is None
 
 
-def test_sqrt_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT sqrt(-1)")
+def test_sqrt_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "sqrt(-1)") is None
 
 
 # --- pow / power -----------------------------------------------------------
@@ -346,10 +340,8 @@ def test_pow_null_propagation(sqlite_conn):
     assert _scalar(sqlite_conn, "pow(2, NULL)") is None
 
 
-def test_pow_zero_to_negative_raises(sqlite_conn):
-    # 0 ** -1 = ZeroDivisionError in Python; surfaces as OperationalError.
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(0, -1)")
+def test_pow_zero_to_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "pow(0, -1)") is None
 
 
 def test_power_alias_known_value(sqlite_conn):
@@ -362,19 +354,9 @@ def test_power_alias_null_propagation(sqlite_conn):
     assert _scalar(sqlite_conn, "power(NULL, 2)") is None
 
 
-def test_pow_negative_base_fractional_exponent_raises(sqlite_conn):
-    """`pow(-2, 0.5)` is undefined in the reals. With Python's ``**`` it
-    silently returns a complex number, which sqlite3 then errors on at
-    marshalling time (clobbering the function's role boundary). With
-    ``math.pow`` it raises ValueError up-front, surfacing as
-    OperationalError — same shape as ln(0)/sqrt(-1) and the rest of the
-    math-domain-error policy. CodeRabbit major on PR #82 round 3.
-    """
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(-2, 0.5)")
-    # `power` alias goes through the same wrapper.
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT power(-2, 0.5)")
+def test_pow_negative_base_fractional_exponent_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "pow(-2, 0.5)") is None
+    assert _scalar(sqlite_conn, "power(-2, 0.5)") is None
 
 
 def test_pow_huge_exponent_overflows_cleanly():

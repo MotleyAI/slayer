@@ -47,6 +47,7 @@ import statistics
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 import pytest
 import sqlalchemy as sa
@@ -1704,3 +1705,108 @@ class TestSQLServerPortableLibrary:
 
     async def test_library_on_2025(self, _sqlserver_2025_dev2120_storage) -> None:
         await check_library(SlayerQueryEngine(storage=_sqlserver_2025_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# JSON scalars over 4,000 characters and long split_part fields (spec: queries/json › Long scalar on SQL Server)
+# ---------------------------------------------------------------------------
+
+_LONG = "x" * 5000
+_LONG_FIELD = "y" * 5000
+_JDOCS: dict[int, tuple[str, str | None]] = {
+    1: (f'{{"a": "{_LONG}"}}', f"{_LONG_FIELD}/tail"),
+    2: ('{"a": "short"}', "a/b"),
+    3: ('{"a": {"k": 1}}', None),
+    4: ('{"a": [1]}', None),
+    5: ('{"a": null}', None),
+    6: ("{}", None),
+    7: ("not json", None),
+    8: ('{"b": {"c": "nested"}, "q k": "quoted", "n": 42}', None),
+    9: ('"rootscalar"', None),
+}
+_SHORT_IDS = sorted(set(_JDOCS) - {1})
+
+
+def _jdocs_storage(container, tmp_path_factory, *, label: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_db_url(container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text("CREATE TABLE jdocs (id INT PRIMARY KEY, payload NVARCHAR(MAX), "
+                                     "txt NVARCHAR(MAX))"))
+                for rid, (payload, txt) in _JDOCS.items():
+                    conn.execute(sa.text("INSERT INTO jdocs VALUES (:id, :payload, :txt)"),
+                                 {"id": rid, "payload": payload, "txt": txt})
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_jdocs_{label}")))
+        run_sync(storage.save_datasource(_ds_config(container, db_name)))
+        run_sync(storage.save_model(SlayerModel(name="jdocs", sql_table="jdocs", data_source="testmssql", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True), Column(name="payload", type=DataType.TEXT),
+            Column(name="txt", type=DataType.TEXT),
+        ])))
+        yield storage
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module", params=["2022", "2025"])
+def _jdocs(request, tmp_path_factory):
+    container = request.getfixturevalue("sqlserver_container" if request.param == "2022" else "sqlserver_2025_container")
+    yield from _jdocs_storage(container, tmp_path_factory, label=request.param)
+
+
+def _jq(*dims: Any, ids: Optional[list[int]] = None, **body: Any) -> SlayerQuery:
+    filters = [f"id IN ({', '.join(map(str, ids))})"] if ids else []
+    filters += body.pop("filters", [])
+    return SlayerQuery.model_validate({"source_model": "jdocs", "dimensions": list(dims), "filters": filters, **body})
+
+
+def _per_id(resp, name: str = "v") -> dict[int, Any]:
+    return {int(r["jdocs.id"]): r[f"jdocs.{name}"] for r in resp.data}
+
+
+def _v(expr: str) -> dict[str, str]:
+    return {"expression": expr, "name": "v"}
+
+
+@pytest.mark.integration
+class TestSQLServerLongJsonScalars:
+    @pytest.mark.parametrize("expr", ["json_value(payload, '$.a')", "payload ->> 'a'",
+                                      "json_value(payload, '$.a' RETURNING TEXT)"])
+    async def test_long_scalar_fails_loud(self, _jdocs, expr: str) -> None:
+        with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
+            await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+
+    async def test_long_scalar_fails_loud_grouped(self, _jdocs) -> None:
+        query = _jq(_v("json_value(payload, '$.a')"), measures=[{"formula": "count(*)", "name": "n"}])
+        with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
+            await SlayerQueryEngine(storage=_jdocs).execute(query)
+
+    async def test_short_missing_null_object_array_malformed(self, _jdocs) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v("json_value(payload, '$.a')"), ids=_SHORT_IDS))
+        assert _per_id(resp) == {rid: "short" if rid == 2 else None for rid in _SHORT_IDS}, resp.sql
+
+    async def test_grouped_having_ordered(self, _jdocs) -> None:
+        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, measures=[{"formula": "count(*)", "name": "n"}],
+                    filters=["n >= 1"], order=[{"column": "v"}])
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(query)
+        assert {r["jdocs.v"]: int(r["jdocs.n"]) for r in resp.data} == {"short": 1, None: len(_SHORT_IDS) - 1}, resp.sql
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("json_value(payload, '$.b.c')", {8: "nested"}),
+        ("json_value(payload, '$.\"q k\"')", {8: "quoted"}),
+        ("json_value(payload, '$')", {9: "rootscalar"}),
+        ("json_value(payload, '$.n' RETURNING INT)", {8: 42}),
+    ])
+    async def test_paths(self, _jdocs, expr: str, expected: dict[int, Any]) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+        assert _per_id(resp) == {rid: expected.get(rid) for rid in _JDOCS}, resp.sql
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("split_part(txt, '/', 1)", {1: _LONG_FIELD, 2: "a"}),
+        ("split_part(txt, '/', -1)", {1: "tail", 2: "b"}),
+        ("split_part(txt, '/', 2)", {1: "tail", 2: "b"}),
+        ("split_part(txt, '/', 3)", {1: "", 2: ""}),
+    ])
+    async def test_split_part_has_no_length_limit(self, _jdocs, expr: str, expected: dict[int, Any]) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+        assert _per_id(resp) == {rid: expected.get(rid) for rid in _JDOCS}, resp.sql

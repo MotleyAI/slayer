@@ -98,6 +98,8 @@ Live probes recorded during planning (local Postgres 16, DuckDB, SQL Server 2022
 - **SQL Server (item 9).** `json_value`: the strict re-read guard above on 2022+ and unknown version (the AST builds
   the `'strict …'` path literal from the parsed path); before 2022 the lax read stays, documented. `split_part`:
   nested `CHARINDEX` over `NVARCHAR(MAX)` (literal index → fixed depth; negative index via the field count).
+  `json_value` also reads a JSON scalar document: `ISJSON(x, VALUE)` on 2022+ and unknown version; before 2022
+  `ISJSON` takes only objects and arrays, so a scalar document reads NULL there, documented.
 - **Docs (item 9).** `docs/database-support.md` per the issue's list, plus a per-dialect support table parsed by a
   unit test against every dialect's `library_functions`; `docs/concepts/references.md` out-of-domain list, overflow
   sentence and list-rejecting databases.
@@ -144,6 +146,8 @@ Live probes recorded during planning (local Postgres 16, DuckDB, SQL Server 2022
 27. Rejected (codex): an unknown server version should refuse — the issue and the existing scalar-functions
     requirement say unknown emits and the database decides. Folded: `profile_needed` sees implicit numeric
     `TRY_CAST`s, aliases and regex operators. (codex, rejected)
+28. SQL Server `json_value` over a JSON scalar document (`"x"`): `ISJSON` without a type rejects it, found live
+    in pr-tests — options: fix here / leave; taken: fix here via `ISJSON(x, VALUE)` on 2022+. (user)
 
 ## Risks / Trade-offs
 

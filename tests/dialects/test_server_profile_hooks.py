@@ -74,14 +74,14 @@ class TestParseServerProfile:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ("25.4.1.100", (25, 4)),  # NOSONAR(S1313) — ClickHouse version, not an IP
-            ("25.4", (25, 4)),
-            ("24.8.14.10459", (24, 8)),
-            ("25.4.1-lts", (25, 4)),
-            ("v25.4.1", (25, 4)),
+            ("25.4.1.100", (25, 4, 1)),  # NOSONAR(S1313) — ClickHouse version, not an IP
+            ("25.4", (25, 4, 0)),
+            ("24.8.14.10459", (24, 8, 14)),
+            ("25.4.1-lts", (25, 4, 1)),
+            ("v25.4.1", (25, 4, 1)),
         ],
     )
-    def test_version_valid(self, raw: str, expected: tuple[int, int]) -> None:
+    def test_version_valid(self, raw: str, expected: tuple[int, int, int]) -> None:
         assert CH.parse_server_profile(base_row=(raw, 0)).version == expected
 
     @pytest.mark.parametrize("raw", ["", "   ", "garbage", None, "abc.def", 25])

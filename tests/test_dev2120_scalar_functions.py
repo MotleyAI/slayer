@@ -163,7 +163,7 @@ class TestVersionGating:
         assert "SERVERPROPERTY('ProductMajorVersion')" in probe
 
     @pytest.mark.parametrize(("row", "version"), [
-        (("16",), (16, 0)), (("17",), (17, 0)), ((15,), (15, 0)), (("garbage",), None), ((None,), None),
+        (("16",), (16, 0, 0)), (("17",), (17, 0, 0)), ((15,), (15, 0, 0)), (("garbage",), None), ((None,), None),
     ])
     def test_sql_server_profile_parse(self, row: tuple, version) -> None:
         assert get_dialect("tsql").parse_server_profile(base_row=row).version == version

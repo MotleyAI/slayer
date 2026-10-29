@@ -14,6 +14,11 @@
 - **WHEN** a dimension is `json_value(payload, '$.ok')` over a row holding `{"ok": true}`
 - **THEN** it yields `'true'`
 
+#### Scenario: Scalar document on SQL Server
+
+- **WHEN** a query on SQL Server 2022 or later has the dimension `json_value(payload, '$')` over a row holding `"x"`
+- **THEN** it yields `'x'`
+
 #### Scenario: Long scalar on SQL Server
 
 - **WHEN** a query on SQL Server 2022 or later groups by `json_value(payload, '$.a')` over rows holding a 5,000-character string at `a`, a short string, an object, JSON `null` and no `a`

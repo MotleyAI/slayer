@@ -107,7 +107,7 @@ class TestCorrelatedProbeFailure:
             profile = _profile(client)
         assert result.warnings == []
         assert fake.params_for("SELECT 1")[0][CH_TIMEOUT_KEY] == 30
-        assert profile.version == (25, 8)
+        assert profile.version == (25, 8, 3)
         assert profile.readonly == 0
         assert profile.correlated_subqueries is None
 
