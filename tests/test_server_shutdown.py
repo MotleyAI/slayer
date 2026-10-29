@@ -6,8 +6,9 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal, NoReturn
 
 import psycopg2
 import pytest
@@ -108,7 +109,7 @@ def _scenario(
 
 def _assert_signal_stop(proc: _Watched, returncode: int, sig: int) -> None:
     assert returncode == 128 + sig, proc.stderr
-    assert "Traceback" not in proc.stderr
+    assert "Traceback" not in proc.stderr, proc.stderr
     assert usage(show(), "cli:serve") == _CLEAN
 
 
@@ -122,6 +123,22 @@ def test_signal_during_startup_stops_before_serving(quiet: dict[str, str], sig: 
     _assert_signal_stop(proc, returncode, sig)
     assert "NOT_INTERRUPTED" not in proc.out
     assert "RUNNING" not in proc.out
+
+
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_during_startup_raises_nothing_into_startup(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "startup_raised_into", sig=sig)
+    returncode = proc.finish()
+    _assert_signal_stop(proc, returncode, sig)
+    assert "RAISED_INTO_STARTUP" not in proc.out
+
+
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_no_server_starts_after_a_signal(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "serve_after_signal", sig=sig)
+    returncode = proc.finish()
+    _assert_signal_stop(proc, returncode, sig)
+    assert not {"RAISED_INTO_STARTUP", "RUNNING", "STOP"} & set(proc.out)
 
 
 @pytest.mark.parametrize("sig", _SIGNALS)
@@ -183,11 +200,19 @@ def test_failing_stop_still_exits_on_first_signal(
 
 
 @pytest.mark.parametrize("sig", _SIGNALS)
-def test_signal_inside_worker_start_stops_once(quiet: dict[str, str], sig: signal.Signals) -> None:
-    proc = _scenario(quiet, "signal_inside_worker_start", sig=sig)
+def test_signal_inside_command_worker_start_never_serves(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "join", sig=sig, flags=("--signal-inside-command-start",))
     returncode = proc.finish(timeout=10)
     _assert_signal_stop(proc, returncode, sig)
-    assert proc.out.count("STOP") == 1
+    assert not {"RUNNING", "STOP"} & set(proc.out)
+
+
+@pytest.mark.parametrize("sig", _SIGNALS)
+def test_signal_inside_command_worker_start_never_runs_the_command(quiet: dict[str, str], sig: signal.Signals) -> None:
+    proc = _scenario(quiet, "served", sig=sig, flags=("--signal-inside-command-start",))
+    returncode = proc.finish(timeout=10)
+    _assert_signal_stop(proc, returncode, sig)
+    assert "SERVED" not in proc.out
 
 
 @_linux_only
@@ -395,11 +420,103 @@ def test_guard_stays_installed_after_signal_races_restore(monkeypatch: pytest.Mo
     monkeypatch.setattr(guard, "restore", restore)
     try:
         with pytest.raises(SystemExit) as exc:
-            guard.finish(stdio=False)
+            guard.finish()
         assert exc.value.code == 128 + signal.SIGTERM
         assert signal.getsignal(signal.SIGTERM) == guard._handle
     finally:
         real_restore(guard)
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
+@pytest.mark.parametrize("abandoned", [True, False])
+def test_finish_exits_hard_only_for_an_abandoned_worker(monkeypatch: pytest.MonkeyPatch, abandoned: bool) -> None:
+    class _ExitedNow(Exception):
+        pass
+
+    def exit_now(code: int) -> NoReturn:
+        raise _ExitedNow(code)
+
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    monkeypatch.setattr(slayer_cli, "_exit_now", exit_now)
+    guard = slayer_cli._TerminationGuard(token=None)
+    try:
+        guard.signum = signal.SIGTERM
+        guard.abandoned = abandoned
+        with pytest.raises(_ExitedNow if abandoned else SystemExit) as exc:
+            guard.finish()
+    finally:
+        guard.restore()
+    assert exc.value.args[0] == 128 + signal.SIGTERM
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
+@pytest.mark.parametrize("when", ["before_run", "inside_start"])
+def test_signal_before_the_command_runs_abandons_nothing(
+    monkeypatch: pytest.MonkeyPatch, when: Literal["before_run", "inside_start"],
+) -> None:
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    ran: list[bool] = []
+    guard = slayer_cli._TerminationGuard(token=None)
+    real_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        guard._handle(signal.SIGTERM, None)
+        real_run = thread.run
+
+        def late_run() -> None:  # the main thread looks before the worker does
+            time.sleep(0.3)
+            real_run()
+
+        thread.run = late_run  # type: ignore[method-assign]
+        real_start(thread)
+
+    try:
+        if when == "before_run":
+            guard._handle(signal.SIGTERM, None)
+        else:
+            monkeypatch.setattr(threading.Thread, "start", start)
+        guard.run(lambda: ran.append(True))
+    finally:
+        guard.restore()
+    assert (ran, guard.abandoned) == ([], False)
+    assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
+@pytest.mark.parametrize("second", _SIGNALS)
+@pytest.mark.parametrize("first", _SIGNALS)
+@pytest.mark.parametrize("phase", ["before", "running", "closing", "after"])
+def test_guard_handler_never_raises(
+    monkeypatch: pytest.MonkeyPatch, phase: Literal["before", "running", "closing", "after"],
+    first: signal.Signals, second: signal.Signals,
+) -> None:
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    prior_calls: list[int] = []
+    forced: list[int] = []
+    recorded: list[dict[str, object]] = []
+
+    def prior(signum: int, _frame: object) -> None:
+        prior_calls.append(signum)
+        raise RuntimeError("prior handler failed")
+
+    monkeypatch.setattr(slayer_cli, "_exit_now", forced.append)
+    monkeypatch.setattr(slayer_cli.usage_reporting, "record", lambda **kwargs: recorded.append(kwargs))
+    for sig in _SIGNALS:
+        signal.signal(sig, prior)
+    guard = None
+    try:
+        guard = slayer_cli._TerminationGuard(token="serve")
+        guard.phase = phase
+        guard._handle(first, None)
+        assert (guard.signum, guard.signalled.is_set(), forced, recorded) == (first, True, [], [])
+        guard._handle(second, None)
+    finally:
+        if guard is not None:
+            guard.restore()
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
+    assert prior_calls == [first]
+    assert forced == ([] if phase == "closing" else [128 + second])
+    assert recorded == ([{"surface": "cli", "token": "serve"}] if phase in ("before", "running") else [])
     assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
 
 
@@ -425,14 +542,14 @@ def test_signal_during_startup_stops_and_spools(
     proc.send(sig)
     returncode = proc.finish()
     assert returncode == 128 + sig, proc.stderr
-    assert "Traceback" not in proc.stderr
+    assert "Traceback" not in proc.stderr, proc.stderr
     assert usage(show(), f"cli:{command}") == _CLEAN
 
 
 def test_pg_serve_idle_client_does_not_block_stop(store: str, usage_reporting_env) -> None:
     port = free_port()
     proc = _Watched(_server_argv("pg-serve", store, port), env=usage_reporting_env.subprocess_env())
-    assert wait_for_port(port), proc.stderr
+    assert wait_for_port(port, pid=proc.proc.pid), proc.stderr
     client = psycopg2.connect(host="127.0.0.1", port=port, user="slayer", dbname="slayer", connect_timeout=30)
     try:
         proc.send(signal.SIGTERM)

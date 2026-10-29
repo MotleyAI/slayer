@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,13 @@ class CaptureBehaviour(BaseModel):
     stall_first: float = 0.0
 
 
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # A client that gave up on a delayed reply is expected; the traceback would land in a captured CLI stderr.
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
+
+
 class CaptureServer:
     """Records every POST; ``behaviour`` sets status and delays."""
 
@@ -45,7 +53,7 @@ class CaptureServer:
         self.hold = threading.Event()  # cleared: arrived requests wait unrecorded until set
         self.hold.set()
         self._lock = threading.Lock()
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        self._server = _Server(("127.0.0.1", 0), self._handler_class())
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
