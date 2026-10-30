@@ -138,8 +138,10 @@ class TransformCall(_BaseNode):
 class ScalarCall(_BaseNode):
     name: str
     args: Tuple[Any, ...] = ()
-    # The callee as written (a function or spelling an owning model's aggregation may shadow); not part of identity.
+    # The callee and arguments as written (a function or spelling an owning model's aggregation may shadow; a
+    # spelling rewrites its arguments); not part of identity.
     written: Optional[str] = None
+    written_args: Optional[Tuple[Any, ...]] = None
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, ScalarCall) and (self.name, self.args) == (other.name, other.args)
@@ -1493,7 +1495,8 @@ def _onto_path(node: Any, *, path: Tuple[str, ...]) -> Any:
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
-        return node.model_copy(update={"args": tuple(_onto_path(a, path=path) for a in node.args)})
+        written = None if node.written_args is None else tuple(_onto_path(a, path=path) for a in node.written_args)
+        return node.model_copy(update={"args": tuple(_onto_path(a, path=path) for a in node.args), "written_args": written})
     if isinstance(node, Cast):
         return node.model_copy(update={"source": _onto_path(node.source, path=path)})
     if isinstance(node, (Arith, Cmp)):
@@ -1570,7 +1573,8 @@ def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
     column-bearing value argument."""
     if call.written is None:
         return None
-    return _aggregation_candidate(call.written, args=call.args, kwargs=(), error=None)
+    args = call.written_args if call.written_args is not None else call.args
+    return _aggregation_candidate(call.written, args=args, kwargs=(), error=None)
 
 
 def _aggregation_candidate(
@@ -1636,7 +1640,9 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             if deferred is None:
                 raise ValueError(message) from None
             return deferred
-        return built.model_copy(update={"written": func_name}) if isinstance(built, ScalarCall) else built
+        if isinstance(built, ScalarCall):
+            return built.model_copy(update={"written": func_name, "written_args": args})
+        return built
 
     # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:

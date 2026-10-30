@@ -188,6 +188,12 @@ class TestSqlMode:
         async with _env(stale_sql_model(sql=sql, column="scores", data_source="ds")) as (engine, ds):
             await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INT)
 
+    async def test_re_ingest_skips_a_parameterized_model(self) -> None:
+        sql = "SELECT id, scores FROM players WHERE id > {min_id}"
+        async with _env(stale_sql_model(sql=sql, column="scores", data_source="ds")) as (engine, ds):
+            result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, include_tables=["players"])
+        assert [e for e in result.errors if e.model_name == MODEL] == []
+
     async def test_re_ingest_keeps_an_edit_made_meanwhile(self) -> None:
         model = stale_sql_model(sql="SELECT id, scores FROM players", column="scores", data_source="ds")
         async with _env(model) as (engine, ds):

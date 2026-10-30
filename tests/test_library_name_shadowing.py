@@ -68,6 +68,22 @@ class TestStoredShadow:
             resp = await engine.execute(_query(measure(formula)))
         assert float(value(resp)) == expected
 
+    async def test_a_parser_spelling_keeps_its_written_arguments(self) -> None:
+        formula = "SUM({value}) * 0 + MAX({k1}) + MAX({k2})"
+        own = agg("json_extract_path_text", formula, k1="id", k2="id")
+        twin = agg("twin", formula, k1="id", k2="id")
+        async with stored_engine(models=[t_doc(aggregations=[own]), t_doc(name="u", aggregations=[twin])]) as engine:
+            spelled = await engine.execute(_query(measure("json_extract_path_text(a, 'id', 'cust_id')")))
+            expected = await engine.execute(_query(measure("twin(a, 'id', 'cust_id')"), source="u"))
+        assert float(value(spelled)) == float(value(expected))
+
+    async def test_a_spelling_inside_a_method_call_reads_through_its_path(self) -> None:
+        formula = "customers.max(strpos(id, '1'))"
+        async with stored_engine(models=[t_doc(aggregations=[agg("strpos")]), t_doc(name="u")]) as engine:
+            shadowing = await engine.execute(_query(measure(formula)))
+            plain = await engine.execute(_query(measure(formula), source="u"))
+        assert value(shadowing) == value(plain)
+
     @pytest.mark.parametrize("name", ["date_part", "interval"])
     @pytest.mark.parametrize("call", ["{name}(a, 2)", "{name}(a, k = 2)"], ids=["positional", "keyword"])
     async def test_a_date_function_name_with_the_library_arity(self, name: str, call: str) -> None:

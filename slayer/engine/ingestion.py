@@ -28,6 +28,7 @@ from slayer.core.models import (
     sanitize_model_name,
 )
 from slayer.core.join_edges import edge_reference
+from slayer.core.query import extract_variable_refs
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
@@ -1804,7 +1805,11 @@ async def _retype_sql_models(
     ``({model: re-typed columns}, {model: error})``."""
     retyped: dict[str, list[str]] = {}
     errors: dict[str, str] = {}
-    sql_models = [m for m in failures.skip(await storage.load_models(data_source=datasource.name)) if m.sql]
+    # A parameterized query only runs with its variables bound.
+    sql_models = [
+        m for m in failures.skip(await storage.load_models(data_source=datasource.name))
+        if m.sql and not any(extract_variable_refs(m.sql))
+    ]
     if not sql_models:
         return retyped, errors
     client = SlayerSQLClient(datasource=datasource)
