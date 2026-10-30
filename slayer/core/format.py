@@ -261,20 +261,22 @@ def encode_json(value: object, *, indent: int | None = None) -> str:
     return _write_json(value, indent=indent, depth=0)
 
 
+def _non_finite_text(value: float | decimal.Decimal) -> str:
+    if value.is_nan() if isinstance(value, decimal.Decimal) else math.isnan(value):
+        return "NaN"
+    return "Infinity" if value > 0 else "-Infinity"
+
+
 def encode_text(value: object) -> str:
     """The text form of one result cell; NULL is the empty string."""
     if value is None:
         return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (list, tuple, dict)):
+    if isinstance(value, (bool, list, tuple, dict)):
         return encode_json(value)
     if isinstance(value, str):
         return value
     if isinstance(value, (float, decimal.Decimal)) and _is_non_finite(value):
-        if value.is_nan() if isinstance(value, decimal.Decimal) else math.isnan(value):
-            return "NaN"
-        return "Infinity" if value > 0 else "-Infinity"
+        return _non_finite_text(value)
     if isinstance(value, decimal.Decimal):
         return str(value)
     if isinstance(value, dt.datetime):
