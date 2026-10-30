@@ -194,6 +194,15 @@ class TestOldGrammarGate:
         assert [m for m in messages if "filters[0]" in m], messages
         assert [m for m in messages if "filters[2]" in m], messages
 
+    def test_the_warning_omits_the_stored_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        secret = "alice@example.com"
+        doc = _model_doc(version=15, name="gate_probe", measures=[
+            {"name": "m_secret", "formula": f"count(*) FILTER (WHERE email = '{secret}' || '')"}])
+        with _messages(caplog) as messages:
+            SlayerModel.model_validate(doc)
+        assert _warned(messages, document="gate_probe", field=("m_secret",)), messages
+        assert not [m for m in messages if secret in m], messages
+
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
     def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
         query = _query(version=6, filters=[f'{pad}status == "paid"'])

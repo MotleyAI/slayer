@@ -107,9 +107,9 @@ def _gated(document: str | None) -> Callable[[str, str], str]:
     def rewrite(text: str, field: str) -> str:
         if is_old_grammar(text):
             return sql_quote_strings(text)
+        # The text itself is not logged: it may hold sensitive literals.
         logger.warning(
-            "stored document %r, field %s: `%s` is not in the grammar its version claims; left unchanged",
-            document, field, text,
+            "stored document %r, field %s: not in the grammar its version claims; left unchanged", document, field,
         )
         return text
     return rewrite

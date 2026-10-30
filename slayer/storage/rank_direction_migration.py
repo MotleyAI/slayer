@@ -81,9 +81,15 @@ def _rewrite_key(item: Any, key: str, fn: FieldRewrite, where: str) -> Any:
     return item
 
 
+def _item(where: str, index: int, item: Any) -> str:
+    """``where['name']`` for a named item, else ``where[index]``."""
+    name = item.get("name") if isinstance(item, dict) else None
+    return f"{where}[{name!r}]" if isinstance(name, str) and name else f"{where}[{index}]"
+
+
 def _rewrite_items(value: Any, rewrite, where: str) -> Any:
     if isinstance(value, list):
-        return [rewrite(v, f"{where}[{i}]") for i, v in enumerate(value)]
+        return [rewrite(v, _item(where, i, v)) for i, v in enumerate(value)]
     return rewrite(value, where)
 
 
@@ -119,7 +125,7 @@ def _text_only(fn: TextRewrite) -> FieldRewrite:
 
 
 def _measure_formulas(measures: list, fn: FieldRewrite, where: str) -> list:
-    return [_rewrite_key(m, "formula", fn, f"{where}[{i}]") for i, m in enumerate(measures)]
+    return [_rewrite_key(m, "formula", fn, _item(where, i, m)) for i, m in enumerate(measures)]
 
 
 def rewrite_model_texts_at(data: dict, fn: FieldRewrite) -> dict:
