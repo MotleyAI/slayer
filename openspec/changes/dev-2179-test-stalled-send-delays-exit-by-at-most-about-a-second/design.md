@@ -10,6 +10,8 @@ Production matches `openspec/specs/usage-reporting/delivery/spec.md` ("Backgroun
 
 Arc42: `python.usage_reporting.arc42.md` principle 1 (fail-silent; the one bounded send wait, enforced by this test file) stays enforced and unchanged; `system.arc42.md` §3 has no principle this test-only change touches.
 
+`test_stdio_mcp_broken_pipe_spools` races two shutdown paths. The MCP SDK cancels in-flight handlers when stdin hits EOF (`Server.run`), so if EOF is read before request 99's response is written, no write fails and the server takes the clean end-of-input path (exit 0, `cli:mcp` ok = 1). Probe (a `-c` wrapper delaying the second `list_datasources` call; no production edit): the old protocol fails at a 0 s and a 1 s delay. The server does not exit on a broken pipe while stdin stays open (its stdin reader blocks in a worker thread), so the test must keep sending lines rather than wait.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -34,6 +36,7 @@ Arc42: `python.usage_reporting.arc42.md` principle 1 (fail-silent; the one bound
 8. **No lower bound**: the spec says "at most about one second"; a lower bound would pin the implementation. (default)
 9. **The helper is private to the test module** (single caller). (default)
 10. **Rejected (codex): keep an end-to-end parent-observed exit check against several unstalled samples** — it reintroduces the two-noisy-samples comparison (teardown noise 0.3–1.4 s) that decision 3 rules out. rejected (codex)
+11. **`test_stdio_mcp_broken_pipe_spools` never sends EOF while a response is pending.** After request 99 it sends a `ping` request every 0.1 s until the server exits (30 s deadline, stopping on `BrokenPipeError`); each ping forces another response write, and the next line read lets the cancelled stdin reader return. Assertions unchanged. (user: scope; default: approach)
 
 ## Risks / Trade-offs
 
