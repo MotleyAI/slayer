@@ -59,7 +59,7 @@ slayer_data/
   memories/                # agent memories, one <id>.md file each (optional)
     1.md
     help.intro.md
-  embeddings.db            # SQLite sidecar for embedding rows (DEV-1405)
+  embeddings.db            # SQLite sidecar for embedding rows
 ```
 
 **Layout note:** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
@@ -68,9 +68,9 @@ slayer_data/
 
 **Name collisions:** Because names become filenames here, two ids differing only by letter case (`Orders` vs `orders`) would address the same file on macOS / Windows. Saving a datasource, model, or memory whose id differs only by case from an existing one therefore raises `IdCollisionError` — on every platform, so a YAML store created on Linux stays portable. Re-saving the exact same id is still a normal upsert. On the read side, lookups compare the exact filename, so `get_model("Orders")` when only `orders.yaml` exists returns "not found" instead of the wrong model (and a delete is a no-op). The layout migrations apply the same check up front and refuse to run — legacy files untouched — if migrating would collide. This is YAML-specific: SQLite keys are case-sensitive and store case-variant ids distinctly (which also means such a SQLite store cannot be exported to the YAML layout without renaming).
 
-**Embeddings sidecar (DEV-1405):** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A pre-DEV-1405 `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
+**Embeddings sidecar:** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A legacy `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
 
-**Memory id allocation (DEV-1658):** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
+**Memory id allocation:** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
 
 ### SQLiteStorage
 

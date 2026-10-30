@@ -61,5 +61,5 @@ def test_granularity_or_column_placeholder_rejected(time_dimension, what: str) -
 
 
 def test_multi_element_set_dimension_still_rejected() -> None:
-    with pytest.raises(ValueError, match="unsupported AST node Set"):
+    with pytest.raises(ValueError, match="': a brace expression is not a variable placeholder"):
         build(dimensions=["amount * {a, b}"])

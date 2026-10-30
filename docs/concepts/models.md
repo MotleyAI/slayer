@@ -9,9 +9,9 @@ name: orders
 sql_table: public.orders
 data_source: my_postgres
 columns:
-  - {name: id, type: number, primary_key: true}
-  - {name: status, type: string}
-  - {name: revenue, sql: amount, type: number}
+  - {name: id, type: INT, primary_key: true}
+  - {name: status, type: TEXT}
+  - {name: revenue, sql: amount, type: DOUBLE}
 measures:
   - {name: aov, formula: "sum(revenue) / count(*)"}
 ```
@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
-A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Fields
 
@@ -76,8 +76,9 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
-| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date`, `ARRAY` |
-| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests) |
+| `type` | string | No | `TEXT` | `TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `UNKNOWN`, `ARRAY` |
+| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests); rejected on any other type |
+| `db_type` | string | No | — | The raw database type, recorded by ingestion where `type` loses information: `UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
 | `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
@@ -87,8 +88,12 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `granularity` | string | No | — | Time bucket a temporal column is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed models stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer datasources refresh-samples`), not at ingest time |
-| `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
+| `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical values only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal columns |
+
+A list column is profiled over its non-NULL elements: `sampled_values` and `distinct_count` for `TEXT` / `BOOLEAN` elements, a `min .. max` range for numeric and temporal ones; a whole list is never sampled, and a list with `UNKNOWN` elements is never profiled.
+
+A JSON function reads a native JSON column (Postgres `json` / `jsonb`, `JSON`, Snowflake `VARIANT`) in its native form only when its `db_type` is recorded; a column without one is read as `TEXT`.
 
 A column's `sql` is rendered into the executed statement, which reaches the database verbatim — `:name` is never read as a bind parameter, nor `%` as a format directive — so regex literals (`(?:…)`) and date formats (`%Y-%m`) pass through unchanged.
 
@@ -96,11 +101,13 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 
 | Type | Description | SQL examples |
 |------|-------------|--------------|
-| `string` | Text values | VARCHAR, TEXT, CHAR |
-| `number` | Numeric values | INTEGER, FLOAT, NUMERIC |
-| `boolean` | True/false | BOOLEAN |
-| `time` | Timestamp | TIMESTAMP, DATETIME |
-| `date` | Date only | DATE |
+| `TEXT` | Text values | VARCHAR, TEXT, CHAR |
+| `INT` | Integers | INTEGER, BIGINT, SMALLINT |
+| `DOUBLE` | Floating-point and decimal numbers | FLOAT, DOUBLE, REAL |
+| `BOOLEAN` | True/false | BOOLEAN |
+| `TIMESTAMP` | Date and time | TIMESTAMP, DATETIME |
+| `DATE` | Date only | DATE |
+| `UNKNOWN` | Opaque: stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
 | `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
@@ -109,15 +116,16 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 | Type | Default eligible aggregations |
 |------|-------------------------------|
-| `number` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop |
-| `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
-| `boolean` | the `number` set |
-| `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
+| `INT` / `DOUBLE` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop, collect |
+| `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
+| `BOOLEAN` | the `INT` set |
+| `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
+| `UNKNOWN` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
-`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
+`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). A model's sole primary-key column is always restricted to `count` / `count_distinct` / `count_distinct_approx` / `min` / `max` regardless of type, and is skipped by sampling and profiling; composite primary-key members aggregate by their type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check. On a list column it may name only `count`, and a custom aggregation over a list is rejected.
 
 ### Filtered columns
 
@@ -127,11 +135,11 @@ A column can carry a `filter` — a SQL condition applied as a `CASE WHEN` value
 columns:
   - name: active_revenue
     sql: amount
-    type: number
+    type: DOUBLE
     filter: "status = 'active'"
   - name: completed_count
     sql: id
-    type: number
+    type: INT
     filter: "status = 'completed'"
 ```
 
@@ -148,18 +156,18 @@ A `Column.sql` may reference any other column on the same model or on a joined m
 columns:
   - name: foo_raw                 # base column
     sql: "foo_raw"
-    type: number
+    type: DOUBLE
 
   - name: foo_normalized          # derived on stations
     sql: "foo_raw / 100.0"
-    type: number
+    type: DOUBLE
 
 # Model: telescopes — joined to stations
 columns:
   - name: aoi_ratio               # derived on telescopes, references the
                                   # *derived* stations.foo_normalized
     sql: "telescopes.aperture / stations.foo_normalized"
-    type: number
+    type: DOUBLE
 joins:
   - target_model: stations
     join_pairs: [["station_id", "id"]]
@@ -190,10 +198,10 @@ Bare column names auto-qualify against the model's own table — single referenc
 ```yaml
 columns:
   - name: tier
-    type: string
+    type: TEXT
     sql: "json_extract(payload, '$.tier')"
   - name: is_gold
-    type: number
+    type: INT
     sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
 ```
 
@@ -291,10 +299,10 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 
 ```yaml
 columns:
-  - {name: balance, sql: balance, type: number}
+  - {name: balance, sql: balance, type: DOUBLE}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a time/date dimension in that order.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated column or expression → the model's `default_time_dimension` (its only DATE / TIMESTAMP column when unset). Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
 Not to be confused with the [`last()` formula function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -493,7 +501,7 @@ Rules:
 - **Same precedence** as everywhere else (runtime kwarg > stage > outer query > `model.query_variables`), and the same `{{`/`}}` literal-brace escaping.
 - **Raise on missing — once any variable is in play.** As soon as at least one variable is supplied (a `query_variables` default, or a caller/stage/runtime value), every `{var}` placeholder must resolve or execution raises `Undefined variable` — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
 - **Variable-free executions treat braces as literals.** When there is *no* variable in play at all (no `query_variables` and no caller variables), the four surfaces are left untouched: a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) survives verbatim, and a placeholder-shaped token like `'{status}'` is emitted as-is rather than raising. This is the deliberate contract that lets brace-bearing SQL coexist with the feature. If a model *does* use variables, escape any literal braces as `{{`/`}}`. Two kinds of model are exempt and always run substitution — one carrying an optional `{? ... ?}` block (so the block collapses), and a **generated** model that declares its variables in `meta.cube_variables` (an importer wrote the template, so there is no brace-literal ambiguity to protect and a missing variable raises normally).
-- **String escaping is Mode-A- and dialect-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are escaped so it stays inside that literal. The regime follows the datasource dialect: standard backends (SQLite, Postgres, DuckDB, …) double the quote (`''`); backslash-escaping backends (MySQL, ClickHouse, Snowflake, Redshift, BigQuery, Databricks, Spark) also escape backslashes, so a value like `a\'b` can't break out of the literal (DEV-1727). Numbers (including booleans) insert verbatim; non-finite floats are rejected.
+- **String escaping is Mode-A- and dialect-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are escaped so it stays inside that literal. The regime follows the datasource dialect: standard backends (SQLite, Postgres, DuckDB, …) double the quote (`''`); backslash-escaping backends (MySQL, ClickHouse, Snowflake, Redshift, BigQuery, Databricks, Spark) also escape backslashes, so a value like `a\'b` can't break out of the literal. Numbers (including booleans) insert verbatim; non-finite floats are rejected.
 - **List values render an `IN`-list.** A `list` (or `tuple`) variable renders a comma-separated, injection-safe `IN`-list body. Write the parentheses yourself and **omit** per-element quotes — each string element is auto-quoted for you (the opposite of the scalar-string rule above, because a single placeholder can't carry per-element quotes):
 
     ```json
@@ -512,11 +520,9 @@ Rules:
 
 **Scope:** substitution applies to the **direct source model**, each stage's own source model, and every stage of a query-backed source (spliced into the statement); join-target and cross-model-target models are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
 
-**Saved measure formulas** (`ModelMeasure.formula`) on those same models substitute too, with the query-filter escaping and no optional blocks, and inspection lists their placeholders as required unless defaulted.
+**Saved measure formulas** (`ModelMeasure.formula`) on those same models take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
 
-**Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is now dialect-aware (DEV-1727): it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
-
-**Known limitation:** a string value containing a backslash does not round-trip through **SQLite** end-to-end (its driver does not unescape backslashes) — a pre-existing dialect quirk, independent of variable substitution and out of scope for DEV-1727.
+**Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is dialect-aware: it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 
 ### Variable precedence
 

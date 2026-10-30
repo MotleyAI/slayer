@@ -1,7 +1,8 @@
 # Aggregations
 
 An aggregation is a function call over a column, a joined column (dotted path) or a
-same-model row-level expression. It is valid in every expression position: measures,
+row-level expression, which may reach across to-one joins (`sum(amount * customers.credit)`
+from `orders`). It is valid in every expression position: measures,
 filters, order, and computed dimensions.
 
 ## Catalogue
@@ -11,11 +12,14 @@ filters, order, and computed dimensions.
 `percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
-latest record's value in each group), plus the model's custom aggregations
+latest record's value in each group), `collect(x)` (the distinct sorted values in each
+group, as a list), plus the model's custom aggregations
 (`inspect` the model to list them). Any column argument may be a row-level expression:
 `weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
-`name=value` is a keyword argument in an aggregation or transform but a comparison in a
-scalar function (`iif(status = 'paid', …)`); write `==` for a comparison in a keyword slot.
+After an aggregation's or transform's first argument, `name = value` is a keyword
+argument (`first(x, a = b)` binds the keyword `a`), so a comparison there needs `==`; a
+keyword's value may itself be a single-`=` comparison. In a scalar function
+(`iif(status = 'paid', …)`) `=` compares.
 
 A sole primary-key column only takes `count`, `count_distinct`,
 `count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
@@ -26,12 +30,13 @@ restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 `sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
 A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
 conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
-it a `name`.
+it a `name`. `agg(x) FILTER (WHERE c)` aggregates only the rows where the row-level
+condition `c` holds: `sum(amount) FILTER (WHERE status = 'paid')`.
 
 ## Empty input
 
 An aggregate over no rows (a parent without joined rows, an empty window) is 0 for the
-`count` family and NULL for everything else, `sum(iif(...))` included.
+`count` family, `[]` for `collect`, and NULL for everything else, `sum(iif(...))` included.
 
 ## Result names
 

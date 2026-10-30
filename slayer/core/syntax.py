@@ -255,10 +255,7 @@ def _mask_code(chunk: str) -> str:
         lambda m: f"{_PH_OPEN}{m.group(1)}{_PH_CLOSE}" if m.group(1) else m.group(0), chunk,
     )
     if "{" in chunk or "}" in chunk:
-        raise _Problem(
-            "unsupported AST node Set: a brace expression is not a variable placeholder; "
-            "write a variable as {name}."
-        )
+        raise _Problem("a brace expression is not a variable placeholder; write a variable as {name}.")
     return chunk
 
 

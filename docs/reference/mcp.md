@@ -78,6 +78,8 @@ claude mcp list
 | `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
 | `edit_datasource` | Edit an existing datasource config. |
 | `delete_datasource` | Remove a datasource config. |
+| `set_datasource_priority` | Set the datasource priority list (most preferred first; `[]` clears it): a bare model name that exists in several datasources resolves to the first listed datasource that has it, else errors as ambiguous. Params: `priority`. |
+| `get_datasource_priority` | Return the datasource priority list, or `[]` when none is set. |
 | `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. Reports `Skipped` objects and `Hidden` [recognised internals](cli.md#recognised-internals) alongside the models it created — including on a no-op re-ingest. Use `edit_model("<model>", data_source="<datasource>", hidden=False)` to surface a hidden one — internals collide across datasources, so the bare form can un-hide the wrong model. |
 
 ### Model Management
@@ -88,8 +90,10 @@ claude mcp list
 | `inspect` | Single-entity point lookup: returns the rendered detail for **exactly one** entity by `reference` + required `entity_type` (`datasource`/`model`/`column`/`measure`/`aggregation`/`memory`). No fusion/ranking/cypher and no bundled memories — use `search` instead when you want an entity surfaced *in context*. `reference` accepts canonical ids, bare names, join paths (`orders.customers.region` → resolved to the owning model), and `memory:<id>`; it is normalised via the shared resolver and the normalised id is echoed in the JSON shape. `entity_type` disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the resolved kind (mismatch → detailed error). Renders hidden entities. Params: `reference`, `entity_type`, `compact` (default true), `format` (`"markdown"` default, `"json"`), and the model-only `num_rows`/`show_sql`/`sections`/`descriptions_max_chars` (applied for `entity_type="model"`; `descriptions_max_chars` applies to every kind; the others are ignored with a warning for non-model kinds, `show_sql` a silent no-op for column/measure/aggregation). **`compact=True`** renders description-only for leaf/datasource/memory kinds (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (column/measure/aggregation **names** + join targets, **zero DB calls**) for the `model` kind — markdown always emits the four `Columns:`/`Measures:`/`Aggregations:`/`Joins to:` lines (`_(none)_` when empty); JSON always carries `column_names`/`measure_names`/`aggregation_names`/`joins_to`. **`compact=False`** reuses the full `inspect_model` rendering (sample rows, SQL, sections) for the `model` kind, and renders a per-model skeleton for each visible model (sorted by name; `models: [...]` in JSON) for the `datasource` kind. JSON `text` is present **iff non-empty** (omitted under `compact=True` for every kind except a `help.*` memory). Three-tier escalation: `models_summary(compact)` (column count) < `inspect(model, compact=True)` (column names) < `inspect(model, compact=False)` (full). **Batch:** `reference` also accepts a **list** of ids — a homogeneous-kind batch (one `entity_type` for all). A single `str` keeps single-id output byte-for-byte; a list returns one block per id in input order, each echoing its resolved canonical id (a `## <canonical>` header per block in markdown, a JSON array under `format="json"`). A one-element list is still batch-framed. Per-id resolution errors are isolated (in JSON a failed id is a `{"reference", "error"}` object). **Collection:** omit `reference` (or pass `null`/`[]`) to list a whole kind. `entity_type="model"` lists all models grouped by datasource — `compact=True` (default) is a terse one-liner per model (`- \`name\` (N cols; joins: ...)` under a `# Datasource: \`<ds>\` — <N> model(s)` header); `compact=False` is the full `models_summary` block per datasource. `entity_type="datasource"` lists all datasources (`compact=True` == `list_datasources`; `compact=False` adds descriptions + per-model skeletons). Only `model`/`datasource` support the collection view; other kinds raise. This subsumes `models_summary` / `list_datasources` (kept as thin aliases). JSON collection form is `{"entity_type", "collection": true, "datasources": [...], "warnings": []}`. |
 | `inspect_model` | **DEPRECATED — use `inspect`.** Complete view of a single model: metadata with row count (and a `**meta:**` bullet when the model has `meta` set), any model-level or column-level filters, **columns table** (with a `sampled` column — distinct values for string/boolean columns, `min .. max` for number/date/time columns — and a `meta` cell when set), **measures table** of named formulas (with `formula`, `label`, `description`, `meta`), custom aggregations (with `meta`), direct joins, and a sample-data table. Every Markdown table auto-prunes all-empty columns (so the `meta` column is hidden when no entity has meta) and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false — include SQL for the sample-data query, the custom-SQL block, model-level filters, and aggregation formulas/param SQL), `format` (default `"markdown"`; also `"json"`), `sections` (subset of `["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]` — default `None`/`[]` renders all seven; sections in the first four collapse to a one-line backticked CSV of names when omitted, `samples`/`learnings`/`saved_queries` are dropped entirely, unknown names emit a footer warning. A non-empty list of *only* unknown names resolves to no sections — "all seven" is reserved for `None`/`[]` so a typo can't silently trigger the full payload), `descriptions_max_chars` (when set, truncate each description longer than this with the suffix `"... [truncated]"` (prefixed by a space); applies to model, columns, measures, and aggregations; must be `>= 0`). When any section is trimmed, a quoted-Markdown footer at the end of the response lists what was shown / names-only / omitted, with a hint on how to fetch more. The JSON form mirrors this: trimmed sections appear as `<section>_names: [...]` siblings, fully omitted ones are absent, and top-level `omitted_sections`, `names_only_sections`, `unknown_sections` arrays are added when non-empty. For multi-hop reachability use the `search` tool. |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `columns` (and optional named-formula `measures` and custom `aggregations`) for table-based, or pass `query` (a SLayer query dict) to save it as a query-backed model whose `columns` are populated by a save-time dry-run; `access_tags` sets the access groups allowed to see it. |
-| `edit_model` | Edit an existing model in one call. Supports upsert for columns, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
+| `edit_model` | Edit an existing model in one call. Upserts `columns`, `measures` (named formulas), `aggregations` and `joins` by name (only the given fields change). Also accepts `description`, `data_source` (required when the name exists in several datasources), `new_data_source`, `default_time_dimension`, `sql_table` / `sql` / `source_queries`, `query_variables`, `hidden`, `access_tags`, `meta`, `add_filters` / `remove_filters`, and `remove: {"columns": [...], "measures": [...], "aggregations": [...], "joins": [...], "join_edges": [...]}`, applied before the upserts. See [Customize a model](#customize-a-model). |
 | `delete_model` | Delete a model entirely. |
+| `validate_models` | Diff the stored models against the live database schemas (read-only) and return, as JSON, the deletes needed to keep them valid. Params: `data_source` (omit for all). See [Schema Drift](../concepts/schema-drift.md). |
+| `recommend_root_model` | Recommend the root model (`source_model`) for a set of items, with each item's reference path from it. Params: `items`, `data_source`, `root_hint`, `format` (`"markdown"` / `"json"`). See [Choosing a root model](../concepts/queries.md#choosing-a-root-model). |
 
 ### Querying
 
@@ -102,7 +106,7 @@ claude mcp list
 | Param | Type | Description |
 |-------|------|-------------|
 | `query` | string \| object \| list[object] | A model name, a single query object (fields below), or a list of query objects forming a multi-stage DAG (each stage takes the same fields plus an optional `name`); an invalid argument reports only the errors of the form its JSON type selects. Required. |
-| `variables` | dict | Values for `{var}` placeholder substitution in filters. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
+| `variables` | dict | Values for `{var}` placeholders in every query expression (measures, dimensions, time dimensions, filters, order, `date_range` bounds) and in a model's SQL; a placeholder binds a literal value only. Precedence: runtime > named-stage > outer-query > model `query_variables`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run the database's EXPLAIN and return the query plan |
@@ -114,11 +118,11 @@ claude mcp list
 |-------|------|-------------|
 | `source_model` | string \| ModelExtension \| SlayerModel | Model name (string), inline `ModelExtension` dict (`{"source_name": "orders", "columns": [...], "joins": [...], "measures": [...]}` — extend a saved model with extras for this query), or inline `SlayerModel` dict (`{"name": "ad_hoc", "sql_table": "...", "data_source": "...", "columns": [...]}` — define a model ad-hoc). Required. |
 | `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}, "cumsum(sum(revenue))"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(sum(revenue)))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
-| `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
-| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
-| `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display and a [`date_range`](../concepts/time.md#date_range): one time point or a `[lower, upper]` pair. |
+| `dimensions` | list | Dimension names or dotted paths, e.g. `["status", "customers.regions.name"]`, or computed dimensions `{"expression": "month(created_at)", "name": "month"}`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
+| `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`, `IS [NOT] TRUE` / `FALSE`, `IS [NOT] DISTINCT FROM`, `LIKE`, `ILIKE`, regex `~`, JSON `->>`, `CAST(x AS type)`), the list functions `contains` / `contains_any` / `contains_all`, boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
+| `time_dimensions` | list[dict \| str] | Time grouping. Each entry is a dict whose `dimension` may be any DATE / TIMESTAMP expression, with an optional `name`, or the string form `"month(created_at)"`; it also supports an optional `label` for display and a [`date_range`](../concepts/time.md#date_range): one time point or a `[lower, upper]` pair. |
 | `main_time_dimension` | string | Name of the time dimension transforms (`change` / `lag` / …) key off, overriding auto-detection when a query has multiple time dimensions. |
-| `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
+| `order` | list[dict] | Sorting, e.g. `[{"column": "count(*)", "direction": "desc", "nulls": "last"}]`; `column` is a result name or any aggregate or transform expression, and `nulls` (`"first"` / `"last"`) is optional |
 | `limit` | int | Max rows, trusted verbatim; without it the response is capped at 20 rows with a truncation notice |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](../concepts/time.md#whole_periods_only) |
@@ -192,6 +196,21 @@ MATCH (d:Datasource {name: 'mydb'})-[:CONTAINS]->(m:Model)-[:CONTAINS]->(c:Model
 RETURN c.id AS id
 ```
 
+## Help memories
+
+SLayer's conceptual help is not a tool: it ships as a predefined set of **help memories** seeded into storage on server startup. Read the entry point with `inspect(reference="memory:help.intro", entity_type="memory")`; it lists the deep-dive topics, each read the same way, and `search(question="…")` also surfaces the relevant one. `compact` never shortens a `help.*` memory in `inspect`; `descriptions_max_chars` still does.
+
+| Topic id | Covers |
+|----------|--------|
+| `memory:help.intro` | What SLayer is, the judgment calls queries require, and the deep-dive topics (the query syntax itself is on the `query` tool's schema fields) |
+| `memory:help.models` | Authoring [models](../concepts/models.md): source, columns, saved measures, custom aggregations, joins, model filters, result keys, query-backed models |
+| `memory:help.workflow` | Discovery, query method, filter literals, building and verifying a result, common-error decoder, connecting a database |
+| `memory:help.aggregations` | Every aggregation, expressions and booleans, empty-input values, result names, `partition_by`, `window`, nesting |
+| `memory:help.transforms` | Every transform, the time axis, ranking, limits |
+| `memory:help.time` | Time points, `date_range` and look-back, granularity calls |
+| `memory:help.joins` | Dotted paths, choosing the root, joined aggregates (broadcast vs associate), patterns such as anti-joins |
+| `memory:help.queries` | Query shapes, stages and their column names, raw rows, functions, variables, debugging |
+
 ## Typical Agent Workflows
 
 ### Connect and explore a new database
@@ -200,7 +219,7 @@ RETURN c.id AS id
 1. create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass")
    # auto_ingest=true by default — models are generated automatically
 2. models_summary(datasource_name="mydb")      # see what was generated
-3. inspect_model(model_name="orders")          # see schema + sample data
+3. inspect(reference="orders", entity_type="model", compact=False)  # see schema + sample data
 ```
 
 To explore first without auto-ingesting:
@@ -217,7 +236,7 @@ To explore first without auto-ingesting:
 ```
 1. list_datasources()                              # pick a datasource
 2. models_summary(datasource_name="mydb")      # discover its models
-3. inspect_model(model_name="orders")          # see schema + sample data
+3. inspect(reference="orders", entity_type="model", compact=False)  # see schema + sample data
 4. query(query={"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"], "limit": 10})
 ```
 
@@ -226,7 +245,7 @@ To explore first without auto-ingesting:
 ```
 1. edit_model(
      model_name="orders",
-     columns=[{"name": "priority", "sql": "priority", "type": "string"}],
+     columns=[{"name": "priority", "sql": "priority", "type": "TEXT"}],
      measures=[{"name": "aov", "formula": "sum(revenue) / count(*)", "label": "Average Order Value"}],
      remove={"columns": ["legacy_field"]}
    )

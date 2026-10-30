@@ -68,7 +68,7 @@ def test_canonical_text_renders_placeholder(text: str) -> None:
 
 @pytest.mark.parametrize("text", ["amount * {a, b}", "amount * {1}", "amount * {a.b}", "amount * {}"])
 def test_other_brace_shapes_stay_unsupported(text: str) -> None:
-    with pytest.raises(ValueError, match="unsupported AST node"):
+    with pytest.raises(ValueError, match="': a brace expression is not a variable placeholder"):
         parse_expr(text)
 
 

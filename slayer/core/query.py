@@ -203,42 +203,17 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-# C0 controls (U+0000–U+001F) → Python string-literal escapes for the "python"
-# regime: a raw newline/CR/NUL in a single-quoted literal makes ast.parse raise.
-_C0_NAMED_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
-_C0_ESCAPE_MAP = {
-    chr(codepoint): _C0_NAMED_ESCAPES.get(chr(codepoint), f"\\x{codepoint:02x}")
-    for codepoint in range(0x20)
-}
-_C0_RE = re.compile(r"[\x00-\x1f]")
+def _escape_string_value(value: str, *, backslash_escapes: bool) -> str:
+    """Escape a string value for a SQL literal; double quote deliberately left untouched."""
+    if backslash_escapes:
+        # order matters: double the backslash before escaping the quote.
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+    return value.replace("'", "''")
 
 
-def _escape_string_value(
-    value: str, escape: Literal["sql", "python"], *, backslash_escapes: bool
-) -> str:
-    """Escape a string value for the target layer: ``"sql"`` is dialect-aware via
-    ``backslash_escapes`` (double quote deliberately left untouched); ``"python"`` backslash-escapes
-    quotes and encodes C0 controls (SQL quote-doubling would concatenate in the Mode-B AST parser)."""
-    if escape == "sql":
-        if backslash_escapes:
-            # order matters: double the backslash before escaping the quote.
-            return value.replace("\\", "\\\\").replace("'", "\\'")
-        return value.replace("'", "''")
-    # order matters: backslash before quotes, then encode C0 controls.
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
-    return _C0_RE.sub(lambda m: _C0_ESCAPE_MAP[m.group(0)], escaped)
-
-
-def _render_list_value(
-    name: str,
-    value: "list | tuple",
-    escape: Literal["sql", "python"],
-    *,
-    backslash_escapes: bool,
-) -> str:
+def _render_list_value(name: str, value: "list | tuple", *, backslash_escapes: bool) -> str:
     """Render a ``list``/``tuple`` into an ``IN``-list body: template writes
-    the parens (``col IN ({var})``), string elements auto-quoted. ``escape="python"``
-    appends a trailing comma to force 1-tuple parsing; empty list raises (``IN ()`` invalid)."""
+    the parens (``col IN ({var})``), string elements auto-quoted; empty list raises (``IN ()`` invalid)."""
     if len(value) == 0:
         raise ValueError(
             f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
@@ -248,11 +223,7 @@ def _render_list_value(
     for element in value:
         if isinstance(element, str):
             rendered.append(
-                "'"
-                + _escape_string_value(
-                    value=element, escape=escape, backslash_escapes=backslash_escapes
-                )
-                + "'"
+                "'" + _escape_string_value(value=element, backslash_escapes=backslash_escapes) + "'"
             )
         # bool is an int subclass and is accepted (renders True/False).
         elif isinstance(element, (int, float)):
@@ -266,28 +237,16 @@ def _render_list_value(
                 f"Variable '{name}' list element must be a string, number, or bool, "
                 f"got {type(element).__name__}"
             )
-    joined = ", ".join(rendered)
-    # sql must NOT have a trailing comma (``IN (1, 2,)`` is a syntax error).
-    return f"{joined}," if escape == "python" else joined
+    return ", ".join(rendered)
 
 
-def _render_variable_value(
-    name: str,
-    value: Any,
-    escape: Literal["sql", "python"],
-    *,
-    backslash_escapes: bool,
-) -> str:
+def _render_variable_value(name: str, value: Any, *, backslash_escapes: bool) -> str:
     """Render one resolved variable value into substitution text (see the two helpers)."""
     # list/tuple first, so the scalar path only ever sees a single value.
     if isinstance(value, (list, tuple)):
-        return _render_list_value(
-            name=name, value=value, escape=escape, backslash_escapes=backslash_escapes
-        )
+        return _render_list_value(name=name, value=value, backslash_escapes=backslash_escapes)
     if isinstance(value, str):
-        return _escape_string_value(
-            value=value, escape=escape, backslash_escapes=backslash_escapes
-        )
+        return _escape_string_value(value=value, backslash_escapes=backslash_escapes)
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
@@ -375,9 +334,7 @@ def _contains_block_delimiter(text: str) -> bool:
     return _BLOCK_OPEN in text or _BLOCK_CLOSE in text
 
 
-def _make_var_replacer(
-    filter_str: str, variables: dict, escape: Literal["sql", "python"], backslash_escapes: bool
-):
+def _make_var_replacer(filter_str: str, variables: dict, backslash_escapes: bool):
     """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
 
     def _replace(match: re.Match) -> str:
@@ -396,7 +353,6 @@ def _make_var_replacer(
             return _render_variable_value(
                 name=valid_name,
                 value=variables[valid_name],
-                escape=escape,
                 backslash_escapes=backslash_escapes,
             )
         bad_name = match.group(2)
@@ -412,38 +368,22 @@ def substitute_variables(
     filter_str: str,
     variables: dict[str, Any],
     *,
-    escape: Literal["sql", "python"],
     backslash_escapes: bool | None = None,
 ) -> str:
-    """Substitute ``{var}`` placeholders in a filter or raw-SQL string (``{{``/``}}`` → literal
-    braces). ``escape`` (keyword-only) picks the regime; ``backslash_escapes`` is the fail-closed
-    dialect signal for ``"sql"``. A ``list``/``tuple`` renders an auto-quoted ``IN``-list body."""
-    if escape not in ("sql", "python"):
+    """Substitute ``{var}`` placeholders in a raw-SQL string (``{{``/``}}`` → literal braces).
+    ``backslash_escapes`` is the fail-closed dialect signal. A ``list``/``tuple`` renders an
+    auto-quoted ``IN``-list body."""
+    if backslash_escapes is None:
         raise ValueError(
-            f"Invalid escape mode {escape!r}; expected 'sql' or 'python'."
-        )
-    if escape == "sql" and backslash_escapes is None:
-        raise ValueError(
-            "escape='sql' requires backslash_escapes to be specified: True on "
+            "substitute_variables requires backslash_escapes to be specified: True on "
             "backslash-escaping dialects (MySQL, ClickHouse, Snowflake, "
             "Redshift, BigQuery, Databricks, Spark), False on standard dialects "
             "(SQLite, Postgres, DuckDB, ...). Derive it from "
             "SqlDialect.backslash_escapes_strings."
         )
-    # python mode ignores the signal (Mode-B escaping is dialect-independent).
-    effective_backslash_escapes = bool(backslash_escapes) if escape == "sql" else False
     _replace = _make_var_replacer(
-        filter_str, variables, escape, effective_backslash_escapes
+        filter_str=filter_str, variables=variables, backslash_escapes=backslash_escapes
     )
-
-    # Optional blocks are Mode-A only; Mode-B rejects them outright.
-    if escape == "python":
-        if _contains_block_delimiter(filter_str):
-            raise ValueError(
-                f"Optional blocks '{{? ... ?}}' are supported only on raw-SQL model "
-                f"surfaces, not in Mode-B expressions: {filter_str!r}."
-            )
-        return _VAR_PATTERN.sub(_replace, filter_str)
 
     # Fast path: no blocks -> single-pass regex sub.
     if not _contains_block_delimiter(filter_str):
@@ -1212,8 +1152,9 @@ class SlayerQuery(BaseModel):
             "Otherwise root where the facts are (rows without facts then drop out), or omit to "
             "infer the smallest model determining every dimension and row-level condition column "
             '(reported in the response). A saved model or stage name, an inline extension '
-            '{"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query '
-            "columns, or a full inline model."
+            '{"source_name": ..., "columns" / "measures" / "joins": [...]}, or a full inline '
+            "model. Write a per-query column as an expression in the position that uses it (a "
+            "dimension, a filter, an aggregation's argument)."
         ),
     )
     measures: MeasuresField = Field(
@@ -1225,6 +1166,8 @@ class SlayerQuery(BaseModel):
             "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
             "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
             "avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.\n"
+            "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
+            "count(*) FILTER (WHERE status = 'paid').\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
             "spell its keys exactly like the query's dimensions (a joined column by its dotted "
             "path; its bare name fails). Share of group: "
@@ -1343,7 +1286,9 @@ class SlayerQuery(BaseModel):
         description=(
             "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
             "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
-            "between, like / ilike, is null / is not null, and / or / not, regex x ~ '^A[0-9]{3}', "
+            "between, like / ilike, is null / is not null, IS [NOT] TRUE / FALSE (NULL counts as "
+            "not true), IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe =), and / or / not, "
+            "CAST(x AS DATE), regex x ~ '^A[0-9]{3}', "
             "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
             "column's sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
@@ -1351,7 +1296,8 @@ class SlayerQuery(BaseModel):
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
-            "- A list tags: contains(tags, 'x') or tags.value = 'x'.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
+            "'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
             "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
@@ -1366,7 +1312,11 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "{placeholder} values scoped to this query object / stage; the "
-            "tool-level variables argument overrides."
+            "tool-level variables argument overrides. A placeholder binds a literal value only: "
+            "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
+            "a list as the whole right-hand side of IN (status in ({statuses})) or as a "
+            "list-function argument (an empty list only there). A placeholder in a name position "
+            "is an error."
         ),
     )
     order: OrderField = Field(

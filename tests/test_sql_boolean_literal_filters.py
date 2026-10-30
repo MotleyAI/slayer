@@ -1,12 +1,4 @@
-"""SQL-cased boolean literals in Mode-B filters survive the typed pipeline.
-
-PR #316 taught the legacy parser (``core/formula.py``) to treat ``true`` /
-``false`` in any casing as SQL boolean literals instead of column
-references. The DEV-1450 typed pipeline resolves names in
-``engine/syntax.py`` and never learned the carve-out, so ``... or false``
-died at bind time with ``UnknownReferenceError``. Found by the DEV-1811
-engine A/B audit (branch vs motley-slayer 0.9.12).
-"""
+"""SQL-cased boolean literals in Mode-B filters survive the typed pipeline."""
 
 from __future__ import annotations
 

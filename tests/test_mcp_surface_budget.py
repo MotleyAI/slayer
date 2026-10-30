@@ -33,8 +33,8 @@ from tests._mcp_idiom_fixtures import (
 )
 
 DESCRIPTION_BUDGET = 2048
-# The query schema ships with every request; set from the size measured after the rewrite + ~10%, raised for list columns.
-QUERY_SCHEMA_BUDGET = 28_250
+# The query schema ships with every request; the measured size + ~10%, raised for the SQL-grammar guidance.
+QUERY_SCHEMA_BUDGET = 32_000
 FIVE_TOPICS = {"help.aggregations", "help.transforms", "help.time", "help.joins", "help.queries"}
 
 #: Distinctive guidance phrase → its one owning ($defs model, field) in the query schema.
@@ -55,6 +55,13 @@ MARKER_OWNERS: dict[str, tuple[str, str]] = {
     "only the columns the question asks for": ("SlayerQuery", "order"),
     "where the facts are": ("SlayerQuery", "source_model"),
     UNRELATED_MODEL: ("SlayerQuery", "measures"),
+    "FILTER (WHERE": ("SlayerQuery", "measures"),
+    "IS DISTINCT FROM": ("SlayerQuery", "filters"),
+    "contains_any": ("SlayerQuery", "filters"),
+    "contains_all(": ("SlayerQuery", "filters"),
+    "IS [NOT] TRUE": ("SlayerQuery", "filters"),
+    "name position": ("SlayerQuery", "variables"),
+    "list-function argument": ("SlayerQuery", "variables"),
     **EXAMPLE_OWNERS,
 }
 
@@ -379,6 +386,16 @@ def test_retired_stage_and_one_query_wording_is_gone(phrase: str) -> None:
 def test_help_topics_point_to_the_stage_rule(topic: str, sentence: str) -> None:
     body = next(t.learning for t in load_help_topics() if t.id == topic)
     assert sentence in " ".join(body.split())
+
+
+def test_no_query_text_advises_an_extension_column_for_a_per_query_column() -> None:
+    advice = [
+        (path, sentence)
+        for path, text in _query_texts().items()
+        for sentence in re.split(r"(?<=[.;])\s+(?=[A-Z])", text)
+        if re.search(r"per-query|one-off", sentence, re.I) and re.search(r'extension|"columns"', sentence)
+    ]
+    assert advice == []
 
 
 def test_date_range_drops_the_stage_recipe() -> None:
