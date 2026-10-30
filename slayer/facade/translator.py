@@ -1226,42 +1226,56 @@ def _aggregate_alias_for_column(
     return (metrics_by_name or {}).get(name)
 
 
-def _try_aggregate_alias_filter(
+_FLIPPED_COMPARATOR: dict[type, type] = {
+    exp.GT: exp.LT, exp.LT: exp.GT, exp.GTE: exp.LTE, exp.LTE: exp.GTE, exp.EQ: exp.EQ, exp.NEQ: exp.NEQ,
+}
+
+
+def _is_literal_operand(node: Expression) -> bool:
+    return isinstance(node, exp.Literal) or (isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal))
+
+
+def _literal_last(conj: Expression) -> Expression:
+    """``100 < x`` → ``x > 100``."""
+    flipped = _FLIPPED_COMPARATOR.get(type(conj))
+    if flipped is None or not _is_literal_operand(conj.this) or _is_literal_operand(conj.expression):
+        return conj
+    return flipped(this=conj.expression.copy(), expression=conj.this.copy())
+
+
+def _metric_filter(
     conj: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+    temporal_columns: AbstractSet[str] = frozenset(),
 ) -> str | None:
-    """If ``conj`` is ``<aggregate-alias-or-metric-col> <cmp> <literal>`` (in either
-    order), return the aggregate filter string. If one side names an aggregate
-    but the other side is not a literal, raise. Return ``None`` if neither side
-    names an aggregate.
+    """``conj`` as an aggregate filter, each metric reference (projected aggregate alias or catalog metric) replaced
+    by its measure formula and each time bound's literals as instants; ``None`` when it names no metric.
 
-    Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
-    references to alias-bearing SQL — ``WHERE "count" > 1`` for filters and
-    ``ORDER BY "count" DESC`` for sorts. This detector rewrites the filter
-    shapes to aggregate filters (``*:count > 1``, legacy colon form) so the engine classifies them
-    correctly as HAVING; ``_translate_order_by`` handles the ORDER BY side.
+    Metabase compiles post-aggregation filters to alias-bearing SQL (``WHERE "count" > 1``).
     """
-    op_sql = _COMPARATOR_SQL.get(type(conj))
-    if op_sql is None:
+    found: list[FacadeMetric] = []
+
+    def swap(node: Expression) -> Expression:
+        metric = _aggregate_alias_for_column(
+            node, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name,
+        )
+        if metric is None:
+            return node
+        found.append(metric)
+        return exp.var(metric.measure_formula)
+
+    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
+    instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
+    rewritten = _literal_last(instantized).transform(swap)
+    if not found:
         return None
-    lhs, rhs = conj.this, conj.expression
-    metric_lhs = _aggregate_alias_for_column(
-        lhs, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map, metrics_by_name=metrics_by_name)
-    metric_rhs = _aggregate_alias_for_column(
-        rhs, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map, metrics_by_name=metrics_by_name)
-    if metric_lhs is None and metric_rhs is None:
-        return None
-    if metric_lhs is not None and metric_rhs is None and isinstance(rhs, exp.Literal):
-        return f"{metric_lhs.measure_formula} {op_sql} {rhs.sql()}"
-    if metric_rhs is not None and metric_lhs is None and isinstance(lhs, exp.Literal):
-        return f"{metric_rhs.measure_formula} {_flip_comparator(op_sql)} {lhs.sql()}"
-    raise TranslationError(
-        f"Aggregate-alias filter expects a literal on the other side; "
-        f"got: {conj.sql()!r}"
-    )
+    normalised = _normalise_predicate_columns(
+        _expand_between(rewritten), strip_prefix=strip_prefix, alias_map=alias_map)
+    return _rewrite_neq(normalised.sql())
 
 
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -1308,6 +1322,17 @@ def _expand_between(node: Expression) -> Expression:
     return node.transform(expand)
 
 
+def _temporal_predicate(
+    temporal_columns: AbstractSet[str],
+    *, strip_prefix: tuple[str, str] | None, alias_map: dict[str, str] | None,
+) -> Callable[[Expression], bool]:
+    def temporal(node: Expression) -> bool:
+        return isinstance(node, exp.Column) and _column_to_dotted(
+            node, strip_prefix=strip_prefix, alias_map=alias_map,
+        ) in temporal_columns
+    return temporal
+
+
 def _classify_where_conjunct(
     conj: Expression, time_dim_names: set[str],
     *,
@@ -1331,11 +1356,7 @@ def _classify_where_conjunct(
     SlayerQuery.filters, not as the original 3-part-qualified form that
     the DSL parser would reject.
     """
-    def temporal(node: Expression) -> bool:
-        return isinstance(node, exp.Column) and _column_to_dotted(
-            node, strip_prefix=strip_prefix, alias_map=alias_map,
-        ) in temporal_columns
-
+    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
     instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
     if isinstance(instantized, exp.Between):
         lifted = _lift_time_between(
@@ -1457,16 +1478,16 @@ def _apply_where(
     alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
 ) -> bool:
-    """Walk the WHERE chain; route aggregate-alias / metric refs to aggregate
+    """Walk the WHERE chain; route conjuncts naming a metric to aggregate
     filters, lift time-dim filters, append verbatim rest. True when any conjunct reads an aggregate."""
     if where is None:
         return False
     reads_aggregate = False
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
-        colon_form = _try_aggregate_alias_filter(
+        colon_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
-            metrics_by_name=metrics_by_name,
+            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns | time_dim_names,
         )
         if colon_form is not None:
             filters_out.append(colon_form)
@@ -1493,10 +1514,11 @@ def _apply_having(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
     extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
+    metrics_by_name: Mapping[str, FacadeMetric] | None = None,
+    temporal_columns: AbstractSet[str] = frozenset(),
 ) -> None:
-    """Map ``HAVING <agg(col)> <cmp> <literal>`` and
-    ``HAVING <agg-alias-col> <cmp> <literal>`` conjuncts to aggregate
-    filters, which the engine classifies as HAVING.
+    """Map HAVING conjuncts naming a metric, and ``HAVING <agg(col)> <cmp> <literal>``,
+    to aggregate filters, which the engine classifies as HAVING.
 
     ``extra_metrics_by_formula`` overlay covers dynamic-join
     targets whose metrics aren't yet in the catalog's projection.
@@ -1507,14 +1529,16 @@ def _apply_having(
     if extra_metrics_by_formula:
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
-        # alias-ref form (``HAVING "rev" > 1000``). Symmetric with
-        # the WHERE pre-pass; tries first so it wins before the agg-call form.
-        colon_form = _try_aggregate_alias_filter(
+        # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
+        colon_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
+            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
         )
         if colon_form is not None:
             filters_out.append(colon_form)
             continue
+        while isinstance(conj, exp.Paren):
+            conj = conj.this
         op_sql = _COMPARATOR_SQL.get(type(conj))
         if op_sql is None:
             raise TranslationError(
@@ -1524,10 +1548,10 @@ def _apply_having(
         lhs, rhs = conj.this, conj.expression
         agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix, alias_map=alias_map)
         agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix, alias_map=alias_map)
-        if agg_lhs is not None and agg_rhs is None and isinstance(rhs, exp.Literal):
+        if agg_lhs is not None and agg_rhs is None and _is_literal_operand(rhs):
             _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
             filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
-        elif agg_rhs is not None and agg_lhs is None and isinstance(lhs, exp.Literal):
+        elif agg_rhs is not None and agg_lhs is None and _is_literal_operand(lhs):
             _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_formula=metrics_by_formula)
             flipped = _flip_comparator(op_sql)
             filters_out.append(f"{_agg_formula(agg_rhs)} {flipped} {lhs.sql()}")
@@ -2391,6 +2415,44 @@ def _parse_left_join(
     )
 
 
+def _join_subquery_columns(inner: exp.Select) -> frozenset[str] | None:
+    """The columns a join subquery exposes, each a plain column under its own name; ``None`` with a ``*``."""
+    names: set[str] = set()
+    star = False
+    for projected in inner.expressions:
+        if isinstance(projected, exp.Star) or (
+            isinstance(projected, exp.Column) and isinstance(projected.this, exp.Star)
+        ):
+            star = True
+            continue
+        source = projected.this if isinstance(projected, exp.Alias) else projected
+        if not isinstance(source, exp.Column) or projected.alias_or_name.casefold() != source.name.casefold():
+            raise TranslationError(
+                f"LEFT JOIN subquery must project plain columns under their own names; got {projected.sql()!r}."
+            )
+        names.add(source.name)
+    return None if star else frozenset(names)
+
+
+def _reject_unprojected_join_columns(parsed: exp.Select) -> None:
+    """Every ``<join alias>.<col>`` must name a column its subquery projects (case-insensitively, as ON resolves)."""
+    joins = parsed.args.get("joins") or []
+    if not joins:
+        return
+    subquery = joins[0].this
+    exposed = _join_subquery_columns(subquery.this)
+    if exposed is None:
+        return
+    exposed_folded = {name.casefold() for name in exposed}
+    alias = subquery.alias.casefold()
+    inner = {id(c) for c in subquery.find_all(exp.Column)}
+    for col in parsed.find_all(exp.Column):
+        if id(col) not in inner and col.table.casefold() == alias and col.name.casefold() not in exposed_folded:
+            raise TranslationError(
+                f"{subquery.alias}.{col.name} is not a column the LEFT JOIN subquery projects."
+            )
+
+
 def _reject_non_left_join(join: exp.Join) -> None:
     """Phase 1 accepts only LEFT JOIN (sqlglot: side='LEFT', kind in (None,
     'OUTER')). Every other shape — INNER / RIGHT / FULL / CROSS / plain
@@ -2841,6 +2903,7 @@ def _translate_slayer_select(
         parent_table=table,
         catalog=catalog,
     )
+    _reject_unprojected_join_columns(parsed)
     data_source = _resolve_query_datasource(table=table, join_plan=join_plan)
     overlays = _prepare_join_overlays(join_plan, table.name)
 
@@ -2864,18 +2927,21 @@ def _translate_slayer_select(
     _reject_lossy_cast_in_implicit_grouping(group, items)
 
     filters: list[str] = []
+    metrics_by_name = _metrics_by_name(table, overlays)
+    temporal_columns = _temporal_column_names(table, overlays)
     where_reads_aggregate = _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
-        temporal_columns=_temporal_column_names(table, overlays),
+        temporal_columns=temporal_columns,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
-        metrics_by_name=_metrics_by_name(table, overlays),
+        metrics_by_name=metrics_by_name,
     )
     _apply_having(
         parsed.args.get("having"), table,
         item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
+        metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
     )
 
     order_items = _translate_order_by(
