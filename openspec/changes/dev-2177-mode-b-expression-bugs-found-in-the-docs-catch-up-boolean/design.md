@@ -71,7 +71,7 @@ Principles that apply:
     - INT/DOUBLE widening;
     - DATE/TIMESTAMP widening;
     - a boolean beside a number;
-    - a TEXT/number rejection.
+    - a TEXT/number rejection (for `greatest`/`least`: a non-numeric TEXT literal, since a TEXT column is coerced).
 
     Plus the issue's `||` branch, a joined-column branch, an arithmetic branch, a nested aggregate and a stage, on DuckDB and SQLite. (codex finding 6)
 12. **Principle "One typing".** `architecture/system.arc42.md` §3 gains item 17, targeted at the new follow-up DEV-2180, approved verbatim (user, approved wording):
