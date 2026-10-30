@@ -466,33 +466,6 @@ def _render_ingest_result(
     return "\n".join(lines)
 
 
-def _column_summary(c: Column) -> dict:
-    entry: dict = {"name": c.name, "type": str(c.type)}
-    if c.primary_key:
-        entry["primary_key"] = True
-    entry.update({k: v for k, v in (("label", c.label), ("description", c.description), ("filter", c.filter)) if v})
-    if c.allowed_aggregations is not None:
-        entry["allowed_aggregations"] = c.allowed_aggregations
-    return entry
-
-
-def _measure_summary(mm: ModelMeasure) -> dict:
-    entry = {"name": mm.name, "formula": mm.formula}
-    entry.update({k: v for k, v in (("label", mm.label), ("description", mm.description)) if v})
-    return entry
-
-
-def _model_to_summary(model: SlayerModel) -> dict:
-    """Convert a SlayerModel to a summary dict."""
-    return {
-        "name": model.name,
-        "description": model.description,
-        "source_type": _source_type_for(model),
-        "columns": [_column_summary(c) for c in model.columns if not c.hidden],
-        "measures": [_measure_summary(mm) for mm in model.measures],
-    }
-
-
 def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
     storage: StorageBackend,
     *,

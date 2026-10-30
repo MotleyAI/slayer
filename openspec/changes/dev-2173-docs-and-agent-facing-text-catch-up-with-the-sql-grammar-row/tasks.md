@@ -66,9 +66,9 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
 
 ## 6. Dead code (D)
 
-- [ ] 6.1 Remove the `escape="python"` regime and the `escape` parameter from `slayer/core/query.py`; drop the argument at `slayer/ir/variables.py:186`. Verify: 1.7 passes.
-- [ ] 6.2 Reword the brace error at `slayer/core/syntax.py:259`. Verify: 1.8 passes.
-- [ ] 6.3 Fix the stale comments and their non-forward issue / PR refs (`query.py:206-207`, `slayer/sql/window_detect.py:1-8`, `tests/test_sql_boolean_literal_filters.py:1-8`), and delete `_column_summary` (`slayer/mcp/server.py:470`). Verify: `ruff` and the unit suite pass.
+- [x] 6.1 Remove the `escape="python"` regime and the `escape` parameter from `slayer/core/query.py`; drop the argument at `slayer/ir/variables.py:186`. Verify: 1.7 passes.
+- [x] 6.2 Reword the brace error at `slayer/core/syntax.py:259`. Verify: 1.8 passes.
+- [x] 6.3 Fix the stale comments and their non-forward issue / PR refs (`query.py:206-207`, `slayer/sql/window_detect.py:1-8`, `tests/test_sql_boolean_literal_filters.py:1-8`), and delete `_column_summary` (`slayer/mcp/server.py:470`). Verify: `ruff` and the unit suite pass.
 
 ## 7. Verification
 

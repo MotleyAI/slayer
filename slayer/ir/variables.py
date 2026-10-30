@@ -174,7 +174,7 @@ def model_placeholder_names(model: SlayerModel) -> set:
 def substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: Dict[str, Any], backslash_escapes: bool,
 ) -> SlayerModel:
-    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces (SQL regime)
+    """Copy of ``model`` with ``{var}`` substituted into its four Mode-A surfaces
     and bound into its saved measure formulas; no-op when unneeded."""
     if not variables and not model_needs_substitution_pass(model):
         return model
@@ -184,8 +184,7 @@ def substitute_model_sql_surfaces(
 
     def _sub(text: str) -> str:
         return substitute_variables(
-            filter_str=text, variables=variables, escape="sql",
-            backslash_escapes=backslash_escapes,
+            filter_str=text, variables=variables, backslash_escapes=backslash_escapes,
         )
 
     columns = []
