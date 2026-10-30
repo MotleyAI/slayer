@@ -23,6 +23,14 @@ from slayer.storage.migrations import migrate_nested, register_migration
 logger = logging.getLogger(__name__)
 
 
+def _source_label(source: object) -> str | None:
+    """A source's name: never an inline model's contents, which may hold sensitive literals."""
+    if isinstance(source, dict):
+        name = source.get("name") or source.get("source_name")
+        return name if isinstance(name, str) else None
+    return source if isinstance(source, str) else None
+
+
 @register_migration("SlayerQuery", 2)
 def _query_v2_to_v3(data: dict) -> dict:
     """Drop ``dry_run`` and ``explain`` from v2 SlayerQuery dicts."""
@@ -31,7 +39,7 @@ def _query_v2_to_v3(data: dict) -> dict:
         return data
     for k in dropped:
         data.pop(k, None)
-    identifier = data.get("name") or data.get("source_model") or "<anonymous>"
+    identifier = data.get("name") or _source_label(data.get("source_model")) or "<anonymous>"
     msg = (
         f"SlayerQuery '{identifier}': dropped legacy field(s) "
         f"{{{', '.join(dropped)}}} during v2→v3 migration; pass these as "

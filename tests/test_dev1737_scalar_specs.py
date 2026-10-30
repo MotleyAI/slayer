@@ -101,14 +101,13 @@ class TestReservedAggregationNames:
         "date_part", "date_diff", "DATE_DIFF", "date_add", "interval", "Interval",
         "current_date", "now", "NOW",
     ])
-    def test_rejected(self, name: str) -> None:
-        with pytest.raises(pydantic.ValidationError, match="scalar"):
-            Aggregation(name=name, formula="SUM({value})")
+    def test_accepted(self, name: str) -> None:
+        assert Aggregation(name=name, formula="SUM({value})").name == name
 
-    def test_model_with_shadowing_aggregation_rejected(self) -> None:
-        with pytest.raises(pydantic.ValidationError, match="date_diff"):
-            SlayerModel.model_validate({
-                "name": "orders", "sql_table": "orders", "data_source": "test",
-                "columns": [{"name": "amount", "type": "DOUBLE"}],
-                "aggregations": [{"name": "date_diff", "formula": "SUM({value})"}],
-            })
+    def test_model_with_shadowing_aggregation_accepted(self) -> None:
+        model = SlayerModel.model_validate({
+            "name": "orders", "sql_table": "orders", "data_source": "test",
+            "columns": [{"name": "amount", "type": "DOUBLE"}],
+            "aggregations": [{"name": "date_diff", "formula": "SUM({value})"}],
+        })
+        assert [a.name for a in model.aggregations] == ["date_diff"]

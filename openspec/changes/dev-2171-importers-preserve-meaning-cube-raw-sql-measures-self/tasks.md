@@ -42,7 +42,7 @@
 ## 6. Docs, arc42, gates
 
 - [x] 6.1 One sentence per change in `docs/cube/cube_import.md`, `docs/dbt/dbt_import.md`, `docs/osi/osi_import.md` (including the NULL conventions of the OSI mappings); verify the pages build in `zensical.toml` nav
-- [x] 6.2 Flip principle 20's tag with the approved wording; verify `poetry run la-arch-check` passes
+- [x] 6.2 Flip principle 21's tag with the approved wording; verify `poetry run la-arch-check` passes
 - [x] 6.3 Relate DEV-1363 to DEV-2171 and comment on DEV-1363 that this PR closes it
 - [x] 6.4 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`; all pass
 - [x] 6.5 Comment on DEV-2175 listing the xfails it lifts

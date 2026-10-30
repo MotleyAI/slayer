@@ -1,6 +1,6 @@
 ## Why
 
-The Cube, dbt and OSI importers copy the source's physical column names into SLayer SQL as bare names, and SLayer resolves a bare name to a logical column first. Imported measures and dimensions therefore read a different column than the source meant (a Cube `SUM(CASE WHEN {CUBE}.status = 'paid' …)` returns 1 where Cube gives 2), self-named transforms fail at save, and list columns are typed `DOUBLE`, so `validate_models` proposes deleting working measures. Principle 20 (importers preserve meaning) is the release bar for the DEV-2101 / DEV-2137 stack.
+The Cube, dbt and OSI importers copy the source's physical column names into SLayer SQL as bare names, and SLayer resolves a bare name to a logical column first. Imported measures and dimensions therefore read a different column than the source meant (a Cube `SUM(CASE WHEN {CUBE}.status = 'paid' …)` returns 1 where Cube gives 2), self-named transforms fail at save, and list columns are typed `DOUBLE`, so `validate_models` proposes deleting working measures. Principle 21 (importers preserve meaning) is the release bar for the DEV-2101 / DEV-2137 stack.
 
 ## What Changes
 
@@ -28,5 +28,5 @@ The Cube, dbt and OSI importers copy the source's physical column names into SLa
 
 - Code: new package `slayer/importers/` (resolver, aggregate translator, typing helper) claimed in `architecture/model.c4`; `slayer/cube/*`, `slayer/dbt/*`, `slayer/osi/*`; `slayer/core/syntax.py` (`measure_dependency_problems` gains column and join-path context); `slayer/cli.py` (datasource resolution for `import-cube` / `import-dbt`).
 - Behaviour: imported models change shape (`<measure>_col` filtered helpers, list types); some previously imported constructs are now dropped with a report (collisions and self-named transforms, untyped `min` / `max` offline, list aggregations SLayer refuses, untranslatable Cube calc measures).
-- arc42: principle 20 flips to `[enforced: test:tests/test_dev2171_importers_preserve_meaning.py]`.
+- arc42: principle 21 flips to `[enforced: test:tests/test_dev2171_importers_preserve_meaning.py]`.
 - Closes DEV-1363.

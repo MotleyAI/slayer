@@ -18,7 +18,7 @@ transpiles `'a' = ANY(tags)` and `CARDINALITY(tags)` unchanged to Snowflake / Bi
 **Goals:**
 - One shared package `slayer.importers`: the physical-reference resolver, the aggregate translator (moved from
   `slayer/osi/expression.py`), and the column-typing helper — used by Cube, dbt and OSI.
-- Principle 20 enforced by `tests/test_dev2171_importers_preserve_meaning.py`.
+- Principle 21 enforced by `tests/test_dev2171_importers_preserve_meaning.py`.
 
 **Non-Goals:**
 - Recovering list element types from the type probe (probed list expressions get `element_type: UNKNOWN`; extending the
@@ -66,13 +66,13 @@ best-effort; the offline report entry names why (absent / resolution failed / co
 
 ### Decisions log
 
-1. Scope: the shared resolver covers Cube, dbt and OSI (options: all three / Cube only) — all three, so principle 20
+1. Scope: the shared resolver covers Cube, dbt and OSI (options: all three / Cube only) — all three, so principle 21
    can be enforced and the acceptance fixture omits no known form. (user)
 2. Typing: database type when reachable, then declared, then implied; offline import still works with an info entry
    (options: live with fallback / live required) — live with fallback keeps offline Cube import. (user)
 3. OSI array functions: map all three to the library, documenting NULL differences (options: map all / refuse all /
    map `contains` + `length` only) — map all. (user)
-4. Principle 20 amended with the NULL-conventions carve-out (options: amend / keep strict and refuse `ARRAY_AGG`):
+4. Principle 21 amended with the NULL-conventions carve-out (options: amend / keep strict and refuse `ARRAY_AGG`):
    "**Importers preserve meaning**: an importer emits a construct only when SLayer reads it with the source's meaning,
    up to SLayer's documented NULL conventions; anything else is dropped with a report." (user, approved wording)
 5. New package claimed in the importers bucket of `architecture/model.c4`, applied once the package exists:
@@ -82,7 +82,7 @@ best-effort; the offline report entry names why (absent / resolution failed / co
    that / `DOUBLE` guess) — an inferred aggregate is cast to its column's type, so a guess can change a result. (user)
 7. OSI field expressions with array functions render through SLayer's `SqlDialect` list hooks (options: render via the
    library / refuse) — one renderer for list functions (principle 10). (user)
-8. Principle 20 tag flip at the end of pr-implement: `[target: DEV-2171]` →
+8. Principle 21 tag flip at the end of pr-implement: `[target: DEV-2171]` →
    `[enforced: test:tests/test_dev2171_importers_preserve_meaning.py]` (user, approved wording)
 9. Cube operand policy: a non-bare operand is always a hidden Mode-A column (verbatim native SQL), a bare one
    aggregates its column — Cube's SQL is native-dialect SQL, Mode A is its meaning. (default)
@@ -91,7 +91,7 @@ best-effort; the offline report entry names why (absent / resolution failed / co
 11. Cube calc measures reuse the OSI aggregate translator, moved to `slayer.importers` — one code path. (default)
 12. Reading a physical name a different column holds (self-named transforms, renamed collisions) is split out to
     DEV-2175; until it lands such constructs are dropped with a report (options: drop with a report / keep today's
-    behaviour behind xfails) — no wrong numbers ship and principle 20 still holds. (user)
+    behaviour behind xfails) — no wrong numbers ship and principle 21 still holds. (user)
 13. A filtered measure-source column never takes a physical name (`<measure>_col`). (default)
 14. Cube join `ON` brace-dot operands resolve physically — consistency with every other surface. (default)
 15. Cube views carry hidden dependency columns transitively. (default)
