@@ -18,6 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
     PositionTypingError,
+    ScalarOperandTypeError,
     UnknownReferenceError,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
@@ -971,12 +972,13 @@ class TestStillGuarded:
         assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
         _hidden_order_alias(sql)
 
-    @pytest.mark.parametrize("formula", [
-        "coalesce(amount:sum, id)",      # scalar call with a row-column arg
-        "coalesce(amount:sum, created_at)",  # ... and a time-dimension arg
+    @pytest.mark.parametrize(("formula", "error"), [
+        ("coalesce(amount:sum, id)", _ROW_OPERAND_REJECTED),  # scalar call with a row-column arg
+        # ... and a time-dimension arg, whose mismatched branch types are reported first
+        ("coalesce(amount:sum, created_at)", ScalarOperandTypeError),
     ])
     async def test_scalar_call_with_row_operand_raises_not_stringified(
-        self, engine, formula: str,
+        self, engine, formula: str, error: type[Exception],
     ) -> None:
         """A row-column operand inside a scalar call must raise, not be stringified."""
         query = SlayerQuery(
@@ -985,7 +987,7 @@ class TestStillGuarded:
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=formula, direction="desc")],
         )
-        with pytest.raises(_ROW_OPERAND_REJECTED):
+        with pytest.raises(error):
             await _sql(engine, query)
 
     async def test_arithmetic_with_row_operand_raises(self, engine) -> None:

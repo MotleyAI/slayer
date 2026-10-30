@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ScalarOperandTypeError
+from slayer.core.errors import DateOperandTypeError, ScalarOperandTypeError
 from slayer.core.keys import value_type
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -197,8 +197,6 @@ class TestScenarios:
 class TestEveryPosition:
     @pytest.mark.parametrize(("query", "types"), [
         pytest.param(dimension_query(MIXED), ("TEXT", "INT"), id="dimension"),
-        pytest.param(q(time_dimensions=[{"dimension": "greatest(order_date, amount)", "granularity": "month"}],
-                       measures=["count(*)"]), ("DATE", "INT"), id="time-dimension"),
         pytest.param(q(measures=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
         pytest.param(q(measures=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
         pytest.param(q(time_dimensions=MONTH, measures=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
@@ -215,6 +213,16 @@ class TestEveryPosition:
     async def test_rejected_at_plan_time(self, engine: SlayerQueryEngine, query: SlayerQuery,
                                          types: tuple[str, ...]) -> None:
         await assert_branch_mismatch(engine, query, *types)
+
+    async def test_time_dimension_rejected_as_a_date_operand(self, engine: SlayerQueryEngine) -> None:
+        # The date-operand check runs first; its error still names both branch types and a cast.
+        query = q(time_dimensions=[{"dimension": "greatest(order_date, amount)", "granularity": "month"}],
+                  measures=["count(*)"])
+        with pytest.raises(DateOperandTypeError) as info:
+            await engine.execute(query)
+        message = str(info.value)
+        for part in ("greatest", "DATE", "INT", "CAST"):
+            assert part in message, message
 
 
 class TestInferredTypes:

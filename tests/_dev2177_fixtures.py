@@ -102,7 +102,8 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
                                          filters=[PAID]))
     got = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in resp.data}
     want = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in restricted.data}
-    assert want and got.keys() >= want.keys(), (got, want)
+    assert want, (got, want)
+    assert got.keys() >= want.keys(), (got, want)
     for month, value in want.items():
         assert got[month] == pytest.approx(value), (month, resp.sql)
 

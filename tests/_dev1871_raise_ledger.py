@@ -145,10 +145,18 @@ ROWS: Tuple[LedgerRow, ...] = (
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
          "'2024-01-31 10:00:00'.",
          category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
+         message="…() needs a DATE or TIMESTAMP operand; `…` is not one: its branches return both … and …."
+         + SUGGEST + "CAST every non-temporal branch to DATE or TIMESTAMP.",
+         category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="_check_date_call", exc="DateOperandTypeError",
          message="date_add() count `…` is not numeric."
          + SUGGEST + "Pass an integer, or a numeric column or expression (it is truncated toward zero).",
          category="checker", family="date-operand", user=True, owner="checker"),
+    _row(module=_EE, function="check_conditional_branches", exc="ScalarOperandTypeError",
+         message="… `…` returns both … and …; its branches must share one type."
+         + SUGGEST + "CAST one branch so both are … (or both …).",
+         category="checker", family="mixed-type-coercion", user=True, owner="checker"),
     _row(module=_EE, function="_number_literal", exc="ScalarOperandTypeError",
          message="'…' is not a number, so it cannot meet the number `…`."
          + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",

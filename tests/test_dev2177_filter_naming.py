@@ -98,7 +98,8 @@ class TestCanonicalAggregateAlias:
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=rest)
         key = bind_expr(parse_expr(formula), scope=ModelScope(source_model=orders), bundle=bundle,
                         allow_measures=True).value_key
-        assert isinstance(key, AggregateKey) and key.filter is not None, key
+        assert isinstance(key, AggregateKey), key
+        assert key.filter is not None, key
         return key
 
     @pytest.mark.parametrize("formula", [OPEN_FIRST, "count(*) FILTER (WHERE customers.name = 'Alice')"])
@@ -108,5 +109,6 @@ class TestCanonicalAggregateAlias:
         twin = filtered.model_copy(update={"filter": None})
         relation = {"source_relation": "orders"} if profile == "cross_model_cte" else {}
         got = canonical_aggregate_alias(filtered, profile=profile, **relation)
-        assert got is not None and "_filter_" in got, got
+        assert got is not None, got
+        assert "_filter_" in got, got
         assert got != canonical_aggregate_alias(twin, profile=profile, **relation)
