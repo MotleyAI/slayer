@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import random
-import sqlite3
 import statistics
 import sys
 
@@ -187,7 +186,7 @@ def test_register_sqlite_udfs_per_group():
 
 
 # ---------------------------------------------------------------------------
-# Scalar math UDFs (DEV-1317)
+# Scalar math UDFs
 # ---------------------------------------------------------------------------
 
 
@@ -213,14 +212,12 @@ def test_ln_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "ln(NULL)") is None
 
 
-def test_ln_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(0)")
+def test_ln_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "ln(0)") is None
 
 
-def test_ln_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT ln(-1)")
+def test_ln_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "ln(-1)") is None
 
 
 # --- log10 -----------------------------------------------------------------
@@ -234,15 +231,12 @@ def test_log10_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "log10(NULL)") is None
 
 
-def test_log10_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log10(0)")
+def test_log10_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log10(0)") is None
 
 
 # --- log2 ------------------------------------------------------------------
-# DEV-1337: registered alongside log10 so the SQL generator can render a
-# user-written `log2(x)` formula verbatim on SQLite (the rewrite from
-# `LOG(2, x)` → `log2(x)` would otherwise hit a missing-function error).
+# Registered alongside log10 so a `log2(x)` formula renders verbatim on SQLite.
 
 
 def test_log2_known_value(sqlite_conn):
@@ -253,14 +247,12 @@ def test_log2_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "log2(NULL)") is None
 
 
-def test_log2_zero_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(0)")
+def test_log2_zero_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(0)") is None
 
 
-def test_log2_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log2(-1)")
+def test_log2_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(-1)") is None
 
 
 # --- log(B, X) -------------------------------------------------------------
@@ -274,8 +266,7 @@ def test_log_base_x_known_value_via_udf(sqlite_conn):
     # requires alphanumeric-only rule keys inside the suppression
     # parentheses, so the prefixed `python:S125` form is invalid; the
     # bare `S125` short name is the compliant one.
-    # Post-C3 (PR #82): the UDF registers unconditionally, overriding any
-    # built-in `log(B, X)` on SQLite >=3.35 with our strict-error semantics.
+    # The UDF registers unconditionally, overriding any built-in `log(B, X)` on SQLite >=3.35.
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)
 
 
@@ -327,9 +318,8 @@ def test_sqrt_null_input_returns_null(sqlite_conn):
     assert _scalar(sqlite_conn, "sqrt(NULL)") is None
 
 
-def test_sqrt_negative_raises(sqlite_conn):
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT sqrt(-1)")
+def test_sqrt_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "sqrt(-1)") is None
 
 
 # --- pow / power -----------------------------------------------------------
@@ -346,10 +336,8 @@ def test_pow_null_propagation(sqlite_conn):
     assert _scalar(sqlite_conn, "pow(2, NULL)") is None
 
 
-def test_pow_zero_to_negative_raises(sqlite_conn):
-    # 0 ** -1 = ZeroDivisionError in Python; surfaces as OperationalError.
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(0, -1)")
+def test_pow_zero_to_negative_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "pow(0, -1)") is None
 
 
 def test_power_alias_known_value(sqlite_conn):
@@ -362,19 +350,9 @@ def test_power_alias_null_propagation(sqlite_conn):
     assert _scalar(sqlite_conn, "power(NULL, 2)") is None
 
 
-def test_pow_negative_base_fractional_exponent_raises(sqlite_conn):
-    """`pow(-2, 0.5)` is undefined in the reals. With Python's ``**`` it
-    silently returns a complex number, which sqlite3 then errors on at
-    marshalling time (clobbering the function's role boundary). With
-    ``math.pow`` it raises ValueError up-front, surfacing as
-    OperationalError — same shape as ln(0)/sqrt(-1) and the rest of the
-    math-domain-error policy. CodeRabbit major on PR #82 round 3.
-    """
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT pow(-2, 0.5)")
-    # `power` alias goes through the same wrapper.
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT power(-2, 0.5)")
+def test_pow_negative_base_fractional_exponent_is_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "pow(-2, 0.5)") is None
+    assert _scalar(sqlite_conn, "power(-2, 0.5)") is None
 
 
 def test_pow_huge_exponent_overflows_cleanly():
@@ -401,26 +379,15 @@ def test_pow_huge_exponent_overflows_cleanly():
 
 
 def test_log_udf_registered_unconditionally():
-    """`register_sqlite_udfs` must register the `log(B, X)` UDF on every
-    SQLite version. Earlier draft skipped registration on >=3.35 to avoid
-    clobbering SQLite's built-in `log(B, X)`, but that produced a
-    version-dependent semantic split — built-in `log(0, 10)` returns
-    NULL silently, our UDF raises `OperationalError`, contradicting the
-    "match Postgres exactly — math errors propagate" promise from
-    DEV-1317. Codex review #2 on PR #82.
-
-    The UDF and the built-in have the same arg order (B first, X second)
-    and the UDF's strict-error semantics is exactly what we want, so
-    registering unconditionally just upgrades the built-in's behaviour
-    to match.
-    """
+    """`register_sqlite_udfs` registers the `log(B, X)` UDF on every SQLite version (same argument order as
+    the >=3.35 built-in), so every build reads the same domain."""
     # Spy on what gets registered. Production code no longer branches on
     # `sqlite_version_info`, so a single call against a spy connection
     # is sufficient — we just confirm `log` always appears.
     registered: list[tuple[str, int]] = []
 
     class _SpyConn:
-        def create_function(self, name, narg, fn):  # noqa: ARG002
+        def create_function(self, name, narg, fn, **_kw):  # noqa: ARG002
             registered.append((name, narg))
 
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002
@@ -430,29 +397,22 @@ def test_log_udf_registered_unconditionally():
     names = {n for n, _ in registered}
     assert "log" in names, (
         f"Expected `log` UDF to register on every SQLite version (not "
-        f"just <3.35) so strict-error semantics are uniform; got {names}"
+        f"just <3.35) so its domain is uniform; got {names}"
     )
     assert "ln" in names
     assert "log10" in names
-    # DEV-1337: log2 must register so the SQL generator can emit a
-    # user-written `log2(x)` formula verbatim on SQLite.
     assert "log2" in names
 
 
-def test_log_zero_raises_uniformly(sqlite_conn):
-    """Whether SQLite's linked version is <3.35 or >=3.35, `log(B, 0)` must
-    raise `OperationalError` — the strict-Postgres semantics promised by
-    DEV-1317. The UDF override (registered unconditionally) is what makes
-    this hold even when the built-in would silently return NULL.
-    """
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log(10, 0)")
-    with pytest.raises(sqlite3.OperationalError):
-        sqlite_conn.execute("SELECT log(10, -1)")
+def test_log_zero_is_null_uniformly(sqlite_conn):
+    """Whether SQLite's linked version is <3.35 or >=3.35, `log(B, 0)` is NULL: the UDF override is registered
+    unconditionally."""
+    assert _scalar(sqlite_conn, "log(10, 0)") is None
+    assert _scalar(sqlite_conn, "log(10, -1)") is None
 
 
 # ---------------------------------------------------------------------------
-# Aggregate stat UDFs (DEV-1317)
+# Aggregate stat UDFs
 # ---------------------------------------------------------------------------
 
 # Fixed series for cross-checking against Python's `statistics` module.
@@ -695,8 +655,7 @@ def test_one_arg_stat_agg_uses_constant_memory(agg_cls):
     """Each 1-arg stat aggregator must hold O(1) state — a count, a mean,
     and an M2 (sum of squared deviations) is enough for both stddev and
     variance variants. List-buffering would make memory grow with N and
-    blow up SQLite analytics workloads on large groups (CodeRabbit major
-    on PR #82 round 3). 100k rows shouldn't bloat the aggregator past a
+    blow up SQLite analytics workloads on large groups. 100k rows shouldn't bloat the aggregator past a
     few hundred bytes.
     """
     agg = agg_cls()

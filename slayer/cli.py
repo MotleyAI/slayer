@@ -23,6 +23,7 @@ from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
@@ -51,7 +52,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import NarrowedAccessFinding
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, ListRetypeFinding, NarrowedAccessFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
@@ -1751,7 +1752,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         return
 
     if args.format == "json":
-        print(json.dumps(result.data, indent=2, default=str))
+        print(encode_json(result.data, indent=2))
     else:
         if args.explain:
             print(f"SQL:\n{result.sql}\n")
@@ -1910,6 +1911,9 @@ def _format_validate_models_output(entries) -> str:
                 f"NARROWED ACCESS: {entry.model_name} (datasource: {entry.data_source}) "
                 f"reads {', '.join(entry.narrowed_by)}"
             )
+            continue
+        if isinstance(entry, ListRetypeFinding):
+            lines.append(f"RE-TYPE: {entry.summary}")
             continue
         if entry.tool == "delete_model":
             lines.append(
@@ -2152,7 +2156,7 @@ def _run_validate_models(args):
     _print_drift_section(entries, headed=wants_cardinality)
     _print_join_safety_section(join_safety)
     # Clean first: profiling a model we are about to repair is wasted work.
-    deletes = [e for e in entries if not isinstance(e, NarrowedAccessFinding)]
+    deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
     if bool(getattr(args, "force_clean", False)) and deletes:
         _apply_force_clean(args, engine, deletes)
     report = _collect_cardinality_report(args, engine)

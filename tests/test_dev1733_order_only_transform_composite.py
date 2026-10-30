@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 
-import pydantic
 import pytest
 import sqlglot
 from sqlglot import exp
@@ -239,11 +238,19 @@ class TestOrderItemEntryPoint:
         assert item.column.name == "_expr_pending", item.column
         assert item.raw_formula == "change(amount:sum) / 2"
 
-    def test_composite_over_declared_aliases_still_rejected(self) -> None:
-        """No ``:`` and no func-style call, so it is not a formula candidate."""
-        with pytest.raises(pydantic.ValidationError) as ei:
-            OrderItem(column="rev / cnt", direction="desc")
-        assert "rev / cnt" in str(ei.value)
+    def test_composite_over_declared_aliases_is_an_expression(self) -> None:
+        item = OrderItem.model_validate({"column": "rev / cnt", "direction": "desc"})
+        assert item.column.name == "_expr_pending", item.column
+        assert item.raw_formula == "rev / cnt"
+
+    @pytest.mark.parametrize(("direction", "expected"), [("desc", ["paid", "open"]), ("asc", ["open", "paid"])])
+    async def test_composite_over_declared_aliases_sorts(self, exec_engine, direction, expected) -> None:
+        resp = await exec_engine.execute(SlayerQuery.model_validate({
+            "source_model": "orders", "dimensions": ["status"],
+            "measures": [{"formula": "sum(amount)", "name": "rev"}, {"formula": "count(*)", "name": "cnt"}],
+            "order": [{"column": "rev / cnt", "direction": direction}],
+        }))
+        assert [r["orders.status"] for r in resp.data] == expected
 
     def test_plain_column_and_dotted_ref_unaffected(self) -> None:
         assert OrderItem(column="status").column.name == "status"

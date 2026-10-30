@@ -7,7 +7,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
 | **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and dotted join paths (`customers.regions.name`). | Aggregations (`sum(revenue)`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`); the legacy `__`-delimited split-alias qualifier (`customers__regions.name`) — now a hard error (`LegacyDunderAliasError`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including same-model expression sources (`sum(amount - cost)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of scalar functions (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`), scalar min/max (`greatest`, `least`), string hygiene (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`), `like`, and [date functions](#date-and-time-functions) (`date_part`, `date_diff`, `date_add`, `current_date`, `now`), each with a declared argument count that is validated (`coalesce`, `concat`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders (filters only). | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
+| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | SQL-compatible grammar | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `sum(customers.revenue)`); aggregations (`sum(revenue)`, `count(*)`, `percentile(price, p=0.9)`, parametric forms), including same-model expression sources (`sum(amount - cost)`); transform calls (`cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); SQL forms — `CASE`, `CAST` / `TRY_CAST` / `::`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, `[NOT] LIKE` / `ILIKE`, the regex operators `~` / `~*` / `!~` / `!~*`, the JSON arrows `->` / `->>`, `EXTRACT`, `POSITION`, `SUBSTRING … FROM … FOR`, `INTERVAL` / `DATE` / `TIMESTAMP` literals, `CURRENT_DATE`, `FILTER (WHERE …)`, plus the `like(value, pattern)` scalar; the [portable function library](#the-portable-function-library) (matched case-insensitively) — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `ceiling`, `round`, `sign`, `trunc`, `mod`, `div`, `pi`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `cbrt`), scalar min/max (`greatest`, `least`), strings (`lower`, `upper`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `substring`, `instr` / `strpos`, `length`, `concat`, `left`, `right`, `starts_with`, `ends_with`, `contains`, `lpad`, `rpad`, `reverse`, `repeat`, `split_part`, `concat_ws`, `chr`, `ascii`), regex (`regexp_like`, `regexp_extract`, `regexp_replace`), JSON (`json_value` and its aliases `json_extract`, `json_extract_scalar`, `json_extract_path_text`, `jsonb_extract_path_text`), [lists](#lists) (`contains` and `length` over a list, `contains_any`, `contains_all`, the array literal `['a', 'b']`), `like`, and [date functions](#date-and-time-functions) (`date_part`, `date_diff`, `date_add`, `date_trunc`, `current_date`, `now`), each with a declared argument count that is validated (`coalesce`, `concat`, `concat_ws`, `greatest` and `least` are variadic; `trunc` takes exactly one argument); `{variable}` placeholders supplying literal values. | identifiers using the reserved `__slayer_` prefix; raw SQL function calls outside that library (`initcap`, `to_date`, `strftime`, JSON builders, …), and any library call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below); `\|` (use `\|\|`), `//` (use `div(a, b)`), `SIMILAR TO`, `REGEXP` / `RLIKE` (use `~`), a bare `->` (end the chain with `->>`), `TIME '…'` literals. |
 
 ## Identifier resolution
 
@@ -31,6 +31,9 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * Aggregations: `<agg>(<col>)` (e.g. `sum(revenue)`), `count(*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(price, weight=quantity)`), and `<agg>(<dotted.path>)` for cross-model aggregations — see [Aggregation syntax](#aggregation-syntax).
 * Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`, `change(sum(customers.revenue))`, etc.
 * A `__` token in a name is matched by **exact name**, not split into a join walk — write a single-dot DSL path (`customers.region`) for a join. Only the reserved `__slayer_` prefix is rejected.
+* Strings are single-quoted with `''` for an embedded quote and a backslash is an ordinary character (`'O''Brien'`, `'C:\temp'`), while a double-quoted name is an identifier (`sum("order total")`, `customers."Region"`).
+* `CAST(x AS type)` and `x::type` are the database's own cast of the type you write, while `TRY_CAST(x AS type)` yields NULL for an input it cannot convert on every dialect except Postgres older than 16 (or of unknown version), which gets a plain `CAST`.
+* `INTERVAL '7 days'` (one unit) means `interval(7, 'day')`, `DATE '…'` / `TIMESTAMP '…'` are typed temporal literals, and `CURRENT_DATE` / `CURRENT_TIMESTAMP` mean `current_date()` / `now()`.
 
 ## Aggregation syntax
 
@@ -132,8 +135,8 @@ Rejected at `SlayerQuery` construction:
 Rejected at enrichment:
 
 ```json
-{"source_model": "orders", "dimensions": ["id"], "filters": ["json_extract(data, '$.x') > 5"]}
-// ↑ ReferenceError: raw SQL function calls in DSL mode
+{"source_model": "orders", "dimensions": ["id"], "filters": ["initcap(name) = 'Ada'"]}
+// ↑ UnknownFunctionError: raw SQL function calls outside the library in DSL mode
 
 {"source_model": "orders", "dimensions": ["id"], "filters": ["unknown_col > 0"]}
 // ↑ ReferenceError: 'unknown_col' is not a Column / ModelMeasure on 'orders'
@@ -157,7 +160,7 @@ Accepted at construction:
 Rejected at enrichment (when the formula is evaluated against a model):
 
 ```json
-{"name": "bad", "formula": "json_extract(data, '$.x')"}      // raw SQL fn
+{"name": "bad", "formula": "initcap(name)"}                  // raw SQL fn
 ```
 
 A bare `aov` or dotted `customers.aov` reuses a saved measure by expanding its formula inline, but only inside a measure formula or computed-dimension expression — see [Reusing another model's saved measure](models.md#reusing-another-models-saved-measure-customersaov).
@@ -183,17 +186,7 @@ Five consequences worth knowing:
     {"filters": ["concat(ifnull(first_name, ''), ifnull(last_name, '')) = 'AdaLovelace'"]}
     ```
 
-* **`greatest` / `least` NULL handling is backend-specific.** They pass through
-  to each backend's native form, and those forms disagree on `NULL`: Postgres,
-  DuckDB, SQL Server, ClickHouse 24.12+ and Snowflake (where the generated SQL
-  uses `GREATEST_IGNORE_NULLS`/`LEAST_IGNORE_NULLS`) *ignore* `NULL` arguments
-  (returning `NULL` only when every argument is `NULL`), while SQLite (scalar
-  `MAX`/`MIN`), MySQL, BigQuery and pre-24.12 ClickHouse (or 24.12+ with the
-  `least_greatest_legacy_null_behavior` setting) *propagate* `NULL`
-  (any `NULL` argument makes the result `NULL`). SLayer does not normalise this — wrap arguments in
-  `ifnull(...)` / `coalesce(...)` if you need one behaviour on every backend.
-  On SQL Server, `GREATEST` / `LEAST` require SQL Server 2022 or newer; earlier
-  versions reject the generated SQL.
+* **`greatest` / `least` ignore `NULL` arguments on every backend** (NULL only when every argument is NULL); on SQL Server they need 2022 or later.
 
 * **`log10` / `log2` keep their single-argument form** on the backends that
   provide one, rather than becoming the generic two-argument `LOG(base, x)`.
@@ -218,6 +211,35 @@ Five consequences worth knowing:
   `ceil` and `substring` is `substr`; both spellings are accepted so a formula
   written against either SQL convention binds, and both emit the target's own
   form.
+
+## The portable function library
+
+Every library function, operator and pattern language means the same on SQLite, Postgres, DuckDB, MySQL, ClickHouse, SQL Server, Trino, Snowflake and BigQuery — Postgres's value where databases disagree — and is verified on each of them; any other database runs only the functions it translates and refuses the rest at plan time ([support table](../database-support.md#portable-library-support)).
+
+* **Out-of-domain arguments yield `NULL`** (`asin(2)` over a column, `div(a, 0)`, a surrogate `chr`, `ln` / `log10` / `log2` / `log` of a value ≤ 0 or to a base ≤ 0 or 1, `sqrt` of a negative, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative one), and a literal one is a plan-time error; an overflowing result (`exp(1000)`) is the database's own (infinity or an error).
+* **Strings count characters, not bytes**; `left` / `right` with a negative count drop characters from the other end, `lpad` / `rpad` truncate, `split_part`'s index is a non-zero integer literal (negative from the end, `''` past it), `concat_ws` skips `NULL`s, `chr` / `ascii` speak Unicode code points; `div` truncates toward zero.
+* **A version-gated function fails at plan time** when the server reports an older version: regex needs SQL Server 2025 and MySQL 8.0, `greatest` / `least` SQL Server 2022, `json_value` MySQL 8.0.21, numeric `TRY_CAST` MySQL 8.0; JSON reads and `TRY_CAST` return `NULL` on malformed input only on Postgres 16+.
+* **`date_trunc('month', x)` is the granularity call `month(x)`** in every position.
+
+### Regular expressions
+
+`regexp_like(x, p[, 'i'])` (also `x ~ p`, `~*`, `!~`, `!~*`), `regexp_extract(x, p[, group])` and `regexp_replace(x, p, replacement[, 'i'])` take a pattern literal or `{variable}` in one portable subset — literals, `.`, `[…]` / `[^…]`, `* + ? {m,n}`, `^ $`, `|`, `( )`, `\d \w \s` and their negations, `\n \t \r`, a backslash before a metacharacter — where `.` matches newlines, `^` / `$` are the whole string's ends, `\d \w \s` are ASCII, matching is case-sensitive without `'i'`, and a replacement's `\1`–`\9` insert a group and `\\` a backslash (`$` and `&` are literal); anything else (lookaround, backreferences, lazy quantifiers, `(?…)`, `\b`, `\p{…}`, POSIX classes) is a plan-time error naming the construct, and a repetition such as `'[0-9]{3}'` needs no brace escaping.
+
+### JSON
+
+`json_value(x, '$.a[0]."b c"' [RETURNING INT | DOUBLE | BOOLEAN | DATE | TIMESTAMP | TEXT])` reads one scalar from JSON text or a native JSON column (`NULL` when missing, JSON null, an object or an array; `NULL` when the value cannot convert), the arrows `x -> 'a' ->> 'b'` and `x ->> '$.a.b'` spell the same read as TEXT, and a path is `$` followed by `.key`, `."quoted key"` and `[n]` steps only.
+
+### Text beside a number
+
+A TEXT operand meeting a number in a comparison, `IN`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, arithmetic or `greatest` / `least` reads as `TRY_CAST(text AS DOUBLE)` (a non-number is `NULL`; a TEXT literal converts at plan time or is an error), so `amount_txt > 100` compares numerically everywhere — integers beyond 2^53 lose precision, so compare those with `TRY_CAST(x AS BIGINT)`, and a number function or aggregation over TEXT (`sum(amount_txt)`) still needs an explicit `TRY_CAST`.
+
+### String matching
+
+`=`, `<`, `IN` and `LIKE` follow the column's collation (except SQLite's `LIKE`, which is case-sensitive), `ILIKE` and the regex `'i'` flag are the case-insensitive forms, and every `LIKE` / `ILIKE` pattern reads `%` / `_` as wildcards, `\` as escaping `%`, `_` and itself (literal before anything else) and every other character, `[` included, as itself.
+
+### Lists
+
+Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle every list construct is a plan-time error.
 
 ## Date and time functions
 

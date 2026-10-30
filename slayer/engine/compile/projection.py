@@ -17,6 +17,7 @@ from slayer.engine.elaborate_env import (
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -25,6 +26,7 @@ from slayer.core.keys import (
     Phase,
     REGROUP_LEAF_PREFIX,
     SLOT_COMPOSITE_KINDS,
+    CastKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -160,8 +162,9 @@ class ValueRegistry:
             and public_name == key.column_name
         ) or (
             isinstance(key, TimeTruncKey)
-            and column_path(key.column) == ()
-            and public_name == column_leaf(key.column)
+            and isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            and column_path(key.source) == ()
+            and public_name == column_leaf(key.source)
         )
         # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
         # is a structural marker, not a column ref. An explicit user name still raises.
@@ -209,6 +212,7 @@ class ValueRegistry:
         hidden: bool = False,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        element_type: Optional[DataType] = None,
         type_is_explicit: bool = False,
         preserve_native_type: bool = False,
         expression: Optional["BoundExpr"] = None,
@@ -232,6 +236,7 @@ class ValueRegistry:
                 hidden=hidden,
                 label=label,
                 type=type,
+                element_type=element_type,
                 type_is_explicit=type_is_explicit,
                 preserve_native_type=preserve_native_type,
                 format=format,
@@ -269,6 +274,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            element_type=element_type,
             type_is_explicit=type_is_explicit,
             preserve_native_type=preserve_native_type,
             is_dimension=is_dimension,
@@ -291,6 +297,7 @@ class ValueRegistry:
         hidden: bool,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        element_type: Optional[DataType] = None,
         type_is_explicit: bool = False,
         preserve_native_type: bool = False,
         format: Optional[NumberFormat] = None,
@@ -299,20 +306,7 @@ class ValueRegistry:
         slot = self._slots[existing_sid]
         updates: Dict = {}
         if public_name is not None and public_name not in slot.public_aliases:
-            owner = self._declared_names.get(public_name)
-            if owner is not None and owner != existing_sid:
-                check_duplicate_measure_name(
-                    name=public_name,
-                    occurrences=[
-                        self._slots[owner].declared_name,
-                        declared_name,
-                    ],
-                )
-            updates["public_aliases"] = list(slot.public_aliases) + [public_name]
-            if slot.hidden:
-                updates["hidden"] = False
-                updates["public_name"] = public_name
-            self._declared_names[public_name] = existing_sid
+            updates = self._publish(existing_sid=existing_sid, public_name=public_name, declared_name=declared_name)
         elif not hidden and slot.hidden and public_name is None:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
@@ -326,6 +320,8 @@ class ValueRegistry:
             format=format,
             description=description,
         )
+        if element_type is not None and slot.element_type is None:
+            updates["element_type"] = element_type
         if type_is_explicit and type is not None and slot.type in (None, type):
             updates["type_is_explicit"] = True
         if preserve_native_type and not slot.preserve_native_type:
@@ -334,6 +330,25 @@ class ValueRegistry:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
         return existing_sid
+
+    def _publish(self, *, existing_sid: SlotId, public_name: str, declared_name: str) -> Dict:
+        """The updates adding ``public_name`` to a slot (a hidden slot turns public under it)."""
+        slot = self._slots[existing_sid]
+        owner = self._declared_names.get(public_name)
+        if owner is not None and owner != existing_sid:
+            check_duplicate_measure_name(
+                name=public_name,
+                occurrences=[
+                    self._slots[owner].declared_name,
+                    declared_name,
+                ],
+            )
+        updates: Dict = {"public_aliases": list(slot.public_aliases) + [public_name]}
+        if slot.hidden:
+            updates["hidden"] = False
+            updates["public_name"] = public_name
+        self._declared_names[public_name] = existing_sid
+        return updates
 
     def mark_explicit(self, slot_id: SlotId, alias: str) -> None:
         """Record ``alias`` as user-chosen (never respelled downstream)."""
@@ -389,7 +404,7 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
         return
-    if isinstance(key, (StarKey, LiteralKey)):
+    if isinstance(key, (StarKey, LiteralKey, ArrayLiteralKey)):
         return  # never slottable on their own
     if isinstance(key, SLOT_COMPOSITE_KINDS):
         # Inlined composites: surface their slot-worthy children.
@@ -468,6 +483,7 @@ class ProjectionPlanner:
                 phase=phase,
                 label=m.label,
                 type=m.type,
+                element_type=m.element_type,
                 type_is_explicit=m.type_is_explicit,
                 preserve_native_type=m.preserve_native_type,
                 format=m.format,
@@ -515,7 +531,7 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return f"{prefix}{key.column_name}"
     if isinstance(key, TimeTruncKey):
         # Granularity lives in the SQL DATE_TRUNC, not the alias.
-        return _canonical_name(key.column)
+        return _canonical_name(key.source)
     if isinstance(key, AggregateKey):
         # Include args/kwargs so parametric aggregates over one column
         # (``percentile(revenue, p=0.5)`` vs ``p=0.95``) get distinct names.
@@ -529,6 +545,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return f"_arith_{key.op}"
     if isinstance(key, ScalarCallKey):
         return f"_scalar_{key.name}"
+    if isinstance(key, CastKey):
+        return f"_cast_{_canonical_name(key.source)}"
     if isinstance(key, LiteralKey):
         return f"_lit_{key.value}"
     if isinstance(key, StarKey):

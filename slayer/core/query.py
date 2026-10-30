@@ -23,9 +23,8 @@ from pydantic import (
 )
 
 from slayer.core.direction import normalize_direction
-from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name
-from slayer.core.formula import ALL_TRANSFORMS
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.enums import BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, TimeGranularity, normalize_aggregation_name, ALL_TRANSFORMS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.errors import DistinctDimensionValuesError, GranularityCallError, RefinementConflictError
 from slayer.core.granularity import GranularitySpec, granularity_key
 from slayer.core.models import (
@@ -37,7 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
-from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr, walk_parsed_refs
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_measure_text, parse_expr
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
 
@@ -48,6 +47,7 @@ _STRICT_RETIRED_AT = 4
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
+_WHOLE_PLACEHOLDER_RE = re.compile(r"^\s*\{[a-zA-Z_]\w*\}\s*$", re.ASCII)
 
 # Leading callee of a whole-string single call ``name( ... )``; used only when
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
@@ -79,9 +79,10 @@ def _single_col_of_source(node: AggCall) -> str | None:
 
 
 def call_callee(entry: str) -> tuple[Any, str | None]:
-    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any."""
+    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any; placeholders
+    parse as probe literals, since only the shape is read."""
     try:
-        node: Any = parse_expr(entry)
+        node: Any = parse_expr(render_probe_text(entry))
     except Exception:
         node = None
     if isinstance(node, AggCall):
@@ -97,27 +98,45 @@ def functional_call_column(node: Any) -> str | None:
     return None
 
 
+def granularity_call_argument(node: Any, entry: str) -> str | None:
+    """The argument text of a single-argument call ``name(expr)``, else ``None``."""
+    if not isinstance(node, AggCall) or node.args or node.kwargs or isinstance(node.source, StarSource):
+        return None
+    whole = _WHOLE_CALL_RE.match(entry)
+    if not whole:
+        return _single_col_of_source(node)  # the legacy ``col:gran`` spelling
+    text = entry.strip()
+    inner = text[text.index("(") + 1:-1].strip()
+    if whole.group(1).lower() == "date_trunc":
+        return inner.partition(",")[2].strip()  # ``date_trunc('unit', expr)``: the unit is a plain literal
+    return inner
+
+
+def _callee_granularity(callee: str) -> str:
+    return callee.lower() if callee.lower() in GRANULARITY_NAMES else callee
+
+
 def time_dimension_from_functional(entry: str, *, names: "frozenset[str] | set[str]") -> dict | None:
-    """A ``gran(col)`` string whose casefolded callee is in ``names`` → its ``TimeDimension``
+    """A ``gran(expr)`` string whose casefolded callee is in ``names`` → its ``TimeDimension``
     dict; another callee or a non-call → ``None``; a granularity callee of any other shape → raise."""
     node, callee = call_callee(entry)
     if callee is None or callee.casefold() not in names:
         return None
-    col = functional_call_column(node)
-    if col is None:
+    arg = granularity_call_argument(node, entry)
+    if arg is None:
         _reject_call_placeholders(entry)
         raise GranularityCallError.wrong_shape(entry)
-    return {"dimension": col, "granularity": callee.lower() if callee.lower() in GRANULARITY_NAMES else callee}
+    return {"dimension": arg, "granularity": _callee_granularity(callee)}
 
 
 def granularity_call_parts(entry: str) -> tuple[str, str] | None:
-    """``(col, callee)`` for a well-formed single-column call string, else ``None`` (never raises);
+    """``(expr, callee)`` for a well-formed single-argument call string, else ``None`` (never raises);
     used to resolve a functional order key against projected time dimensions."""
     node, callee = call_callee(entry)
-    col = functional_call_column(node)
-    if callee is None or col is None:
+    arg = granularity_call_argument(node, entry)
+    if callee is None or arg is None:
         return None
-    return col, (callee.lower() if callee.lower() in GRANULARITY_NAMES else callee)
+    return arg, _callee_granularity(callee)
 
 
 def _split_functional_dimensions(dims: "list | tuple") -> tuple[list, list]:
@@ -145,14 +164,14 @@ def _coerce_time_dimension_entry(entry: Any) -> Any:
     if td is not None:
         return td
     node, callee = call_callee(entry)
-    col = functional_call_column(node)
-    if callee is None or col is None:
+    arg = granularity_call_argument(node, entry)
+    if callee is None or arg is None:
         raise GranularityCallError(
             f"Time dimension {entry!r} must be the functional form "
-            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
             f"{_granularity_names()} or a datasource granularity; no default granularity is invented."
         )
-    return {"dimension": col, "granularity": callee}
+    return {"dimension": arg, "granularity": callee}
 
 
 def _rewrite_functional_granularity(data: dict) -> dict:
@@ -450,12 +469,13 @@ def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
 
 def query_variable_surfaces(query: "SlayerQuery") -> list[str]:
     """Every text of ``query`` that substitutes ``{var}``: filters, measure formulas,
-    computed-dimension expressions, order expressions and ``date_range`` bounds."""
+    computed-dimension and time-dimension expressions, order expressions and ``date_range`` bounds."""
     return [
         *(query.filters or []),
         *(m.formula for m in query.measures or []),
         *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
         *(o.raw_formula for o in query.order or [] if o.raw_formula),
+        *(td.dimension for td in query.time_dimensions or []),
         *(b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None),
     ]
 
@@ -663,18 +683,35 @@ class ComputedDimension(BaseModel):
         """The expression as written, before ``{var}`` substitution."""
         return self._template or self.expression
 
-    def substituted(self, expression: str) -> "ComputedDimension":
-        """A copy carrying the substituted ``expression`` and remembering its template."""
-        out = self.model_copy(update={"expression": expression})
-        out._template = self.template
-        return out
-
     @model_validator(mode="after")
     def _fill_name(self) -> "ComputedDimension":
         if self.name is None:
-            self.name = auto_name_from_expression(self.expression)
+            self.name = computed_dimension_name(self.expression)
         _validate_model_name(self.name, "Computed dimension")
         return self
+
+
+def computed_dimension_name(expression: str) -> str:
+    """An unnamed computed dimension's name: its expression's canonical text, sanitised, so every
+    spelling of one expression names it alike."""
+    return auto_name_from_expression(_canonical_expression_text(expression))
+
+
+def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
+    """A named or expression time dimension's name and what it may repeat for; ``None`` for an unnamed column."""
+    if td.name is None and td.column_ref is not None:
+        return None
+    text = _canonical_expression_text(td.template)
+    if td.name is not None:
+        return td.name, ("named", text, str(td.granularity))
+    return computed_dimension_name(td.template), ("auto", text)
+
+
+def _canonical_expression_text(expression: str) -> str:
+    try:
+        return canonical_measure_text(parse_expr(expression))
+    except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
+        return expression
 
 
 def _coerce_column_ref(v: Any) -> Any:
@@ -697,24 +734,18 @@ ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
 
 
 def _order_formula_candidate(v: str) -> str | None:
-    """``v`` verbatim if it carries a measure expression (legacy colon spelling,
-    call-style text, or an expression containing an aggregation), else
-    ``None``; shared by ``_capture_raw_formula`` and ``_coerce_order_column``
-    so they can't drift. The author's spelling is preserved — resolution
-    happens at binding via the native parser. Bare-alias
-    arithmetic (``rev / cnt``) is deliberately NOT a candidate — it falls
-    through to ColumnRef validation and fails fast."""
+    """``v`` verbatim if it is an expression rather than a column reference, else ``None``;
+    shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift.
+    Binding judges whether the expression is legal there."""
     if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
         return v
     if _is_valid_column_ref_name(v):
         return None
     try:
-        parsed = parse_expr(v)
+        parse_expr(v)
     except Exception:
         return None
-    if any(isinstance(node, AggCall) for node in walk_parsed_refs(parsed)):
-        return v
-    return None
+    return v
 
 
 def _is_valid_column_ref_name(name: str) -> bool:
@@ -776,19 +807,44 @@ def _date_range_problem(date_range: list[str | None]) -> str | None:
 
 
 def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, column: Any = None) -> None:
-    """Variables supply literals: a ``{var}`` naming a time dimension's granularity or column is refused."""
-    for what, value in (("granularity", granularity), ("column", column)):
-        if isinstance(value, str) and _bare_variable_names(value):
+    """Variables supply literals: a ``{var}`` naming a time dimension's granularity, or standing for its
+    whole dimension, is refused; one inside an expression is a literal."""
+    for what, value, names_it in (
+        ("granularity", granularity, lambda text: bool(_bare_variable_names(text))),
+        ("column", column, lambda text: _WHOLE_PLACEHOLDER_RE.match(text) is not None),
+    ):
+        if isinstance(value, str) and names_it(value):
             raise ValueError(
                 f"Time dimension {entry!r}: variables supply literal values; they can't name a {what} ({value!r})."
             )
 
 
+def _legacy_column_ref_text(value: Any) -> Any:
+    """The dotted text of a legacy column-reference object (``{"name", "model"}`` or a ``ColumnRef``)."""
+    if isinstance(value, ColumnRef):
+        return value.full_name
+    if isinstance(value, dict) and isinstance(name := value.get("name"), str):
+        return f"{value['model']}.{name}" if value.get("model") else name
+    return value
+
+
+def _coerce_time_dimension_text(value: Any) -> Any:
+    """A time dimension's dimension as Mode-B text; it must parse as an expression."""
+    value = _legacy_column_ref_text(value)
+    if isinstance(value, str) and not _bare_variable_names(value):
+        try:
+            parse_expr(value)
+        except Exception as exc:
+            raise ValueError(f"Time dimension {value!r} is not a row-level expression: {exc}") from exc
+    return value
+
+
 class TimeDimension(BaseModel):
     """A time-bucketed group-by: ``dimension`` truncated to ``granularity``."""
-    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)] = Field(
+    dimension: Annotated[str, BeforeValidator(_coerce_time_dimension_text)] = Field(
         validation_alias=AliasChoices("dimension", "column"),
     )
+    name: str | None = None
     granularity: GranularitySpec = Field(
         description="A built-in granularity, or a custom granularity defined on the query's datasource.",
     )
@@ -804,21 +860,43 @@ class TimeDimension(BaseModel):
         ),
     )
     label: str | None = None
+    # Pre-substitution dimension; an unnamed expression is named from it.
+    _template: str | None = PrivateAttr(default=None)
+
+    @property
+    def template(self) -> str:
+        """The dimension as written, before ``{var}`` substitution."""
+        return self._template or self.dimension
 
     @model_validator(mode="before")
     @classmethod
     def _reject_placeholder_names(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            _reject_time_dimension_placeholders(
-                data, granularity=data.get("granularity"), column=data.get("dimension", data.get("column")),
-            )
+            dimension = data.get("dimension", data.get("column"))
+            _reject_time_dimension_placeholders(data, granularity=data.get("granularity"), column=dimension)
+            if isinstance(dimension, dict) and dimension.get("label") is not None and data.get("label") is None:
+                data = {**data, "label": dimension["label"]}
         return data
+
+    @property
+    def column_ref(self) -> ColumnRef | None:
+        """The dimension as a column reference when it is one, else ``None``."""
+        return ColumnRef.from_string(self.dimension) if _is_valid_column_ref_name(self.dimension) else None
+
+    @property
+    def effective_name(self) -> str | None:
+        """``name``, else an expression's sanitised template; ``None`` for an unnamed column."""
+        if self.name is not None or self.column_ref is not None:
+            return self.name
+        return computed_dimension_name(self.template)
 
     @model_validator(mode="after")
     def _check_date_range(self) -> "TimeDimension":
+        if self.name is not None:
+            _validate_model_name(self.name, "Time dimension")
         if self.date_range is not None and (problem := _date_range_problem(self.date_range)):
             raise ValueError(
-                f"time dimension {self.dimension.full_name!r}: date_range {self.date_range!r} {problem}."
+                f"time dimension {self.dimension!r}: date_range {self.date_range!r} {problem}."
             )
         return self
 
@@ -860,6 +938,7 @@ class OrderItem(BaseModel):
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
+    nulls: Literal["first", "last"] | None = None
     raw_formula: str | None = Field(
         default=None,
         description="Internal — captured automatically from expression strings; do not set.",
@@ -911,7 +990,7 @@ def _may_name_datasource_granularity(entry: str) -> bool:
         return False
     name = callee.lower()
     return not (
-        name in GRANULARITY_NAMES or name in SCALAR_FUNCTIONS or name in ALL_TRANSFORMS
+        name in GRANULARITY_NAMES or name in RESERVED_SCALAR_NAMES or name in ALL_TRANSFORMS
         or normalize_aggregation_name(callee) in BUILTIN_AGGREGATIONS
     )
 
@@ -1046,19 +1125,21 @@ def _strip_column_ref(ref, model_name: str):
     return ref
 
 
+def _model_prefix_pattern(model_name: str) -> re.Pattern:
+    """A leading ``<model>.`` qualifier, never an inner hop of a longer path."""
+    return re.compile(r"(?<![\w.])" + re.escape(model_name) + r"\.")
+
+
 def _strip_time_dimensions(tds: list[TimeDimension] | None, model_name: str) -> list[TimeDimension] | None:
-    """The prefix-stripped time dimensions, or ``None`` when nothing changed."""
+    """The prefix-stripped column time dimensions (an expression keeps its text, as a computed
+    dimension does), or ``None`` when nothing changed."""
     if not tds:
         return None
-    new_tds = []
-    for td in tds:
-        stripped = _strip_column_ref(td.dimension, model_name)
-        if stripped is td.dimension:
-            new_tds.append(td)
-        else:
-            new_tds.append(TimeDimension(
-                dimension=stripped, granularity=td.granularity, date_range=td.date_range, label=td.label,
-            ))
+    new_tds = [
+        td if td.column_ref is None or (stripped := _strip_column_ref(td.column_ref, model_name)) is td.column_ref
+        else td.model_copy(update={"dimension": stripped.full_name})
+        for td in tds
+    ]
     return None if all(n is o for n, o in zip(new_tds, tds)) else new_tds
 
 
@@ -1073,7 +1154,9 @@ def _strip_order(order: list[OrderItem] | None, model_name: str, pattern: re.Pat
         if stripped is item.column and raw_formula == item.raw_formula:
             new_order.append(item)
         else:
-            new_order.append(OrderItem(column=stripped, direction=item.direction, raw_formula=raw_formula))
+            new_order.append(OrderItem(
+                column=stripped, direction=item.direction, nulls=item.nulls, raw_formula=raw_formula,
+            ))
     return None if all(n is o for n, o in zip(new_order, order)) else new_order
 
 
@@ -1238,8 +1321,9 @@ class SlayerQuery(BaseModel):
         json_schema_extra=_advertise_string_time_dimensions,
         description=(
             "Time-bucketed group-bys — one result row per bucket. Each entry is a "
-            "TimeDimension dict or the functional string gran(col), e.g. "
-            "\"month(created_at)\". Buckets without rows are absent. To return every bucket, "
+            "TimeDimension dict or the functional string gran(expr), e.g. "
+            "\"month(created_at)\"; the dimension may be any DATE/TIMESTAMP expression, with an "
+            "optional name. Buckets without rows are absent. To return every bucket, "
             "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
             "measure models by dotted path: "
             '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} '
@@ -1250,7 +1334,7 @@ class SlayerQuery(BaseModel):
     main_time_dimension: str | None = Field(
         default=None,
         description=(
-            "Name of the time dimension that time-ordered transforms (change, lag, ...) "
+            "Name (or column) of the time dimension that time-ordered transforms (change, lag, ...) "
             "key off; overrides auto-detection when the query has multiple time dimensions."
         ),
     )
@@ -1258,20 +1342,22 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
-            "filtering (HAVING) or filtering after transforms. Operators: == != < <= > >=, in, "
-            "like, is null / is not null, and / or / not; build text literals from the column's "
-            "sampled values.\n"
+            "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
+            "between, like / ilike, is null / is not null, and / or / not, regex x ~ '^A[0-9]{3}', "
+            "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
+            "column's sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
             "sum(amount) > 100; top N per group: "
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
             "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
             "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
             "order_date in '2025-Q1' is inside it.\n"
-            "- {variable} placeholders take values from variables.\n"
+            "- {variable} placeholders take literal values from variables.\n"
             'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
             'entity_type="memory").'
         ),
@@ -1286,8 +1372,9 @@ class SlayerQuery(BaseModel):
     order: OrderField = Field(
         default=None,
         description=(
-            'Sort keys, [{"column": ..., "direction": "asc" | "desc"}]. column is a result '
-            "column name or any aggregate or transform expression, displayed or not: with "
+            'Sort keys, [{"column": ..., "direction": "asc" | "desc", "nulls": "first" | "last"}] '
+            "(nulls optional). column is a result column name or any aggregate or transform "
+            "expression, displayed or not: with "
             'measures ["count(*)"], [{"column": "sum(amount)", "direction": "desc"}] sorts by '
             "an amount it does not return. Add limit for the top N. Return only the columns the "
             "question asks for: never add the sort value to measures just to sort by it."
@@ -1327,7 +1414,8 @@ class SlayerQuery(BaseModel):
             "What happens when an aggregation is sliced by a dimension not "
             "attributable to it: broadcast (default — repeat the value across "
             "the cells, with a warning) | associate (aggregate per cell over "
-            "the distinct associated entities) | error (refuse)."
+            "the distinct associated entities, e.g. per list element "
+            "tags.value) | error (refuse)."
         ),
     )
 
@@ -1344,21 +1432,20 @@ class SlayerQuery(BaseModel):
 
     @model_validator(mode="after")
     def _dedupe_time_dimensions(self) -> "SlayerQuery":
-        """Collapse exact-duplicate time dimensions; reject same column+granularity
-        differing in date range or label (their result keys would collide). Compares
-        on the source-model-prefix-stripped column so ``created_at`` and
-        ``orders.created_at`` (the same column) are treated as one."""
-        if not self.time_dimensions:
+        """Collapse exact-duplicate time dimensions; reject same text+granularity differing
+        in date range, name or label. Compares source-model-prefix-stripped text, so
+        ``created_at`` and ``orders.created_at`` are one."""
+        if not (tds := self.time_dimensions):
             return self
         model_name = self.source_model_name
 
         def _canon(td: TimeDimension) -> tuple:
-            col = _strip_column_ref(td.dimension, model_name) if model_name else td.dimension
-            return (col.full_name, td.granularity, tuple(td.date_range or ()), td.label)
+            text = _model_prefix_pattern(model_name).sub("", td.template) if model_name else td.template
+            return (text, td.granularity, tuple(td.date_range or ()), td.name, td.label)
 
         seen: dict[tuple[str, str], tuple] = {}
         result: list[TimeDimension] = []
-        for td in self.time_dimensions:
+        for td in tds:
             canon = _canon(td)
             base = (canon[0], str(canon[1]))
             prior = seen.get(base)
@@ -1367,13 +1454,34 @@ class SlayerQuery(BaseModel):
                 result.append(td)
             elif prior != canon:
                 raise GranularityCallError(
-                    f"Conflicting time dimensions on {td.dimension.full_name!r} at "
-                    f"{td.granularity} granularity: same column and "
-                    f"granularity must not differ in date range or label."
+                    f"Conflicting time dimensions on {td.dimension!r} at "
+                    f"{td.granularity} granularity: same dimension and "
+                    f"granularity must not differ in date range, name or label."
                 )
-        if len(result) != len(self.time_dimensions):
+        if len(result) != len(tds):
             self.time_dimensions = result
+        self._check_unique_dimension_names()
         return self
+
+    def _check_unique_dimension_names(self) -> None:
+        """Time-dimension names, an unnamed expression's included, are unique across dimensions and
+        time dimensions; a name repeats only for its own expression — an auto-name at any granularity
+        (suffixes tell them apart), an explicit one at the same granularity — which binding dedupes or
+        rejects."""
+        taken: set[str] = set()
+        for dim in self.dimensions or ():
+            if (name := dim.name if isinstance(dim, ComputedDimension) else dim.full_name) is not None:
+                taken.add(name)
+        identities: dict[str, tuple] = {}
+        for td in self.time_dimensions or ():
+            if (named := _time_dimension_name_identity(td)) is None:
+                continue
+            name, identity = named
+            if name in taken or identities.setdefault(name, identity) != identity:
+                raise ValueError(
+                    f"Dimension name {name!r} is used twice; give the time dimension {td.dimension!r} a "
+                    f"distinct `name`."
+                )
 
     def _validate_distinct_dimension_values(self) -> None:
         """Cheap, model-free rejection for ``distinct_dimension_values=False``: non-empty
@@ -1418,7 +1526,7 @@ class SlayerQuery(BaseModel):
             return self
 
         updates: dict[str, Any] = {}
-        pattern = re.compile(r"\b" + re.escape(model_name) + r"\.")
+        pattern = _model_prefix_pattern(model_name)
 
         if self.dimensions:
             new_dims = [_strip_column_ref(d, model_name) for d in self.dimensions]
@@ -1514,6 +1622,10 @@ def _canonical_ref(ref: ColumnRef, model_name: str | None) -> ColumnRef:
     return _strip_column_ref(ref, model_name) if model_name else ref
 
 
+def _canonical_text(text: str, model_name: str | None) -> str:
+    return _model_prefix_pattern(model_name).sub("", text) if model_name else text
+
+
 def _union(
     saved: list | None, refined: list | None, *, field: str, canon: Callable[[Any], Any],
     identity: Callable[[Any], tuple[str, str]],
@@ -1576,15 +1688,15 @@ def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> A
 def _merge_time_dimensions(
     saved: list[TimeDimension] | None, refined: list[TimeDimension] | None, model_name: str | None,
 ) -> list[TimeDimension] | None:
-    """Per (column, granularity): append new keys, merge ``date_range`` / ``label`` of existing ones."""
+    """Per (dimension, granularity): append new keys, merge ``date_range`` / ``name`` / ``label`` of existing ones."""
     if not refined:
         return saved
     merged = list(saved or [])
     positions: dict[tuple[str, str], int] = {}
     for i, td in enumerate(merged):
-        positions.setdefault((_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity)), i)
+        positions.setdefault((_canonical_text(td.dimension, model_name), granularity_key(td.granularity)), i)
     for td in refined:
-        slot = (_canonical_ref(td.dimension, model_name).full_name, granularity_key(td.granularity))
+        slot = (_canonical_text(td.dimension, model_name), granularity_key(td.granularity))
         i = positions.get(slot)
         if i is None:
             positions[slot] = len(merged)
@@ -1595,7 +1707,7 @@ def _merge_time_dimensions(
             attribute: _merge_attribute(
                 saved=getattr(prior, attribute), refined=getattr(td, attribute), key=key, attribute=attribute,
             )
-            for attribute in ("date_range", "label")
+            for attribute in ("date_range", "name", "label")
         }
         merged[i] = prior.model_copy(update=update)
     return merged

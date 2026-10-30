@@ -23,16 +23,16 @@ from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
-from slayer.engine.syntax import parse_expr
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import get_column_types_sync
+from slayer.sql.client import CATEGORY_DATA_TYPES, get_column_types_sync
 from slayer.osi.dialects import Selection, read, render, select_expression
 from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
 from slayer.osi.models import (
@@ -60,6 +60,14 @@ _DATATYPES: dict[str, DataType] = {
 }
 _TEMPORAL_DATATYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
 _TIME_DIMENSION_TYPES = (DataType.DATE, DataType.TIMESTAMP)
+
+
+def _typed_column(*, name: str, data_type: DataType, sql: str | None = None,
+                  element: DataType | None = None, hidden: bool = False) -> Column:
+    """A column of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
+    if data_type is not DataType.ARRAY:
+        return Column(name=name, sql=sql, type=data_type, hidden=hidden)
+    return Column(name=name, sql=sql, type=data_type, element_type=element or DataType.UNKNOWN, hidden=hidden)
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
 
@@ -318,7 +326,7 @@ class OsiToSlayerConverter:
             sql=query, engine=self.sa_engine, db_type=self.target_dialect,
             datasource_name=self.data_source,
         )
-        columns = [Column(name=name, type=category) for name, category in types.items()]
+        columns = [_typed_column(name=name, data_type=CATEGORY_DATA_TYPES[category]) for name, category in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
 
@@ -469,7 +477,8 @@ class OsiToSlayerConverter:
         db_type = self._probe_expression_type(model=model, expr=sql)
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
-        return Column(name=field.name, sql=sql, type=db_type or fallback), db_type
+        element = shadowed.element_type if shadowed is not None and db_type is None else None
+        return _typed_column(name=field.name, sql=sql, data_type=db_type or fallback, element=element), db_type
 
     @staticmethod
     def _apply_field_metadata(*, col: Column, field: OSIField) -> None:
@@ -502,10 +511,7 @@ class OsiToSlayerConverter:
         except Exception:  # noqa: BLE001 — probe is best-effort; fall back
             return None
         category = next(iter(types.values()), None)
-        if category is None:
-            return None
-        # Reuse Column's category->DataType coercion.
-        return Column(name="_osi_probe", type=category).type
+        return None if category is None else CATEGORY_DATA_TYPES[category]
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset, doc: OSIDocument) -> None:
         model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
@@ -672,17 +678,27 @@ class OsiToSlayerConverter:
             return None
 
     def _type_cross_model_columns(self) -> None:
-        """Type a derived column that is exactly one cross-model ref from its target column."""
+        """Type a derived column that is exactly one cross-model ref from the column its chain of such refs ends at."""
         for model in self._models.values():
             for col in model.columns:
-                if col.sql:
-                    target_type = self._single_cross_model_ref_type(model=model, sql=col.sql)
-                    if target_type is not None:
-                        col.type = target_type
+                end = self._ref_chain_end(model=model, col=col)
+                if end is not None:
+                    col.type, col.element_type = end.type, end.element_type
 
-    def _single_cross_model_ref_type(
-        self, model: SlayerModel, sql: str
-    ) -> DataType | None:
+    def _ref_chain_end(self, *, model: SlayerModel, col: Column) -> Column | None:
+        """The column a chain of single cross-model refs from ``col`` ends at; ``None`` without a ref or on a cycle."""
+        seen = {id(col)}
+        end: Column | None = None
+        while col.sql and (hop := self._single_cross_model_ref(model=model, sql=col.sql)) is not None:
+            model, col = hop
+            if id(col) in seen:
+                return None
+            seen.add(id(col))
+            end = col
+        return end
+
+    def _single_cross_model_ref(self, model: SlayerModel, sql: str) -> tuple[SlayerModel, Column] | None:
+        """The model and column ``sql`` names when it is exactly one cross-model ref."""
         tree = self._parse_target(sql)
         if not isinstance(tree, exp.Column):
             return None
@@ -694,8 +710,8 @@ class OsiToSlayerConverter:
         target = self._walk_join_alias(host=model, alias=".".join(quals))
         if target is None:
             return None
-        tcol = next((c for c in target.columns if c.name == parts[-1]), None)
-        return tcol.type if tcol is not None else None
+        column = next((c for c in target.columns if c.name == parts[-1]), None)
+        return None if column is None else (target, column)
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
         target = self._models.get(join.target_model)
@@ -979,6 +995,4 @@ class OsiToSlayerConverter:
             if model is None or any(c.name == mc.name for c in model.columns):
                 continue
             dtype = self._probe_expression_type(model=model, expr=self._physical_sql(model, mc.sql))
-            model.columns.append(Column(
-                name=mc.name, sql=mc.sql, type=dtype or DataType.DOUBLE, hidden=True,
-            ))
+            model.columns.append(_typed_column(name=mc.name, sql=mc.sql, data_type=dtype or DataType.DOUBLE, hidden=True))

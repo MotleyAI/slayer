@@ -42,6 +42,7 @@ class ReflectedColumn(BaseModel):
 
     name: str
     type: DataType | TypeEngine
+    element_type: DataType | None = None
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
@@ -146,13 +147,41 @@ def info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
     return DataType.TEXT, False
 
 
-def column_from_type_string(*, name: str, data_type: str | None, comment: str | None = None) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept only for exact numerics."""
+def info_schema_list_element(data_type_str: str | None) -> DataType | None:
+    """The element type of a list type string (``T[]``, ``LIST(T)``, ``ARRAY(T)``), else ``None``; a nested list
+    or record has ``UNKNOWN`` elements."""
+    text = (data_type_str or "").strip()
+    upper = text.upper()
+    if upper == "ARRAY":  # an untyped list (Snowflake), or a catalog that names no element type
+        return DataType.UNKNOWN
+    if upper.endswith("[]"):
+        inner = text[:-2].strip()
+    elif upper.startswith(("LIST(", "ARRAY(", "ARRAY<")) and upper.endswith((")", ">")):
+        inner = text[min(i for i in (text.find("("), text.find("<")) if i >= 0) + 1:-1].strip()
+    else:
+        return None
+    if info_schema_list_element(inner) is not None or inner.upper().startswith(("STRUCT", "MAP", "UNION", "ROW")):
+        return DataType.UNKNOWN
+    return info_schema_type(unwrap_clickhouse_wrapper_str(inner))[0]
+
+
+def column_from_type_string(
+    *, name: str, data_type: str | None, comment: str | None = None, zoned_types: frozenset[str] = frozenset(),
+    json_types: frozenset[str] = frozenset(),
+) -> ReflectedColumn:
+    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (a list, exact
+    numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
+    element = info_schema_list_element(unwrapped)
+    if element is not None:
+        return ReflectedColumn(
+            name=name, type=DataType.ARRAY, element_type=element, db_type=unwrapped, comment=clean_comment(comment),
+        )
     mapped, is_float = info_schema_type(unwrapped)
+    word = unwrapped.split("(")[0].upper().strip()
+    lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
     return ReflectedColumn(
-        name=name, type=mapped, is_float=is_float,
-        db_type=unwrapped if is_exact_numeric_db_type(unwrapped) else None,
+        name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment),
     )
 

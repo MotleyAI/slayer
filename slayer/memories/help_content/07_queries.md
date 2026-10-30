@@ -30,6 +30,16 @@ A query with dimensions only returns distinct combinations; set
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 
+## Functions
+
+Conditions and formulas take one portable library with the same meaning on every
+database: strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
+regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`), JSON
+(`json_value(x, '$.a' RETURNING INT)`, `x ->> 'a'`), lists (`contains(tags, 'x')`,
+`contains_any(tags, ['x', 'y'])`, `contains_all(tags, ['x', 'y'])`, `length(tags)`,
+`collect(x)` for the distinct sorted values per row); text compared with a number reads as
+a number (`amount_txt > 100`).
+
 ## Variables
 
 `{name}` placeholders in conditions, formulas and `date_range` bounds take values from

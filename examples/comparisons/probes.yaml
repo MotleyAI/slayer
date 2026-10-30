@@ -3653,6 +3653,187 @@ probes:
       keys: [customers_x.name]
       values: [events.count]
 
+  # ------------------------------------------------------------------ Q27 list columns
+  # customers.tags: Alice repeats 'vip', Carol has a NULL element, Dave's list is empty, Eve's is NULL.
+  # Cube and MetricFlow reach single tags only through a model-declared one-row-per-tag model (customer_tags).
+  - id: Q27-has-tag
+    row: Q27
+    title: customers tagged vip
+    truth_sql: select name from customers where list_contains(tags, 'vip')
+    compare: {keys: [name]}
+    slayer:
+      query: {source_model: customers, dimensions: [name], filters: ["contains(tags, 'vip')"]}
+    malloy:
+      query: |
+        run: customers -> { where: tags.each = 'vip'; group_by: name }
+    cube:
+      rest: {dimensions: [customers.name], filters: [{member: customers.tags, operator: contains, values: [vip]}]}
+      keys: [customers.name]
+      expect: {error: No function matches}
+    metricflow:
+      query:
+        metrics: [customer_count]
+        group_by: [customer__name]
+        where: ["list_contains({{ Dimension('customer__tags') }}, 'vip')"]
+      keys: [customer__name]
+
+  - id: Q27-has-tag-element
+    row: Q27
+    title: an element filter keeps each vip customer once, so its credit is not multiplied
+    truth_sql: select name, credit from customers where list_contains(tags, 'vip')
+    compare: {keys: [name], values: [c]}
+    slayer:
+      query: {source_model: customers, dimensions: [name], filters: ["tags.value = 'vip'"],
+              measures: [{formula: "sum(credit)", name: c}]}
+    malloy:
+      query: |
+        run: customers -> { where: tags.each = 'vip'; group_by: name; aggregate: c is credit.sum() }
+    cube:
+      sql: select name, measure(credit_sum) as c from customers where list_contains(tags, 'vip') group by 1
+      expect: {error: "Invalid function 'list_contains'"}
+    metricflow:
+      query:
+        metrics: [credit_total]
+        group_by: [customer__name]
+        where: ["list_contains({{ Dimension('customer__tags') }}, 'vip')"]
+      keys: [customer__name]
+      values: [credit_total]
+
+  - id: Q27-has-both
+    row: Q27
+    title: customers tagged both vip and eu
+    truth_sql: select name from customers where list_has_all(tags, ['vip', 'eu'])
+    compare: {keys: [name]}
+    slayer:
+      query: {source_model: customers, dimensions: [name], filters: ["contains_all(tags, ['vip', 'eu'])"]}
+    malloy:
+      query: |
+        run: customers -> { group_by: name
+          having: count(tags.each) { where: tags.each = 'vip' } > 0 and count(tags.each) { where: tags.each = 'eu' } > 0 }
+    cube:
+      rest: {dimensions: [customers.name], filters: [{member: customers.tags, operator: contains, values: [vip]},
+                                                     {member: customers.tags, operator: contains, values: [eu]}]}
+      keys: [customers.name]
+      expect: {error: No function matches}
+    metricflow:
+      query:
+        metrics: [customer_count]
+        group_by: [customer__name]
+        where: ["list_has_all({{ Dimension('customer__tags') }}, ['vip', 'eu'])"]
+      keys: [customer__name]
+
+  - id: Q27-customers-per-tag
+    row: Q27
+    title: customers per tag, Alice's repeated vip counted once
+    truth_sql: select t, count(distinct c.id) from customers c, unnest(c.tags) u(t) where t is not null group by 1
+    contrast_sql: select t, count(*) from customers c, unnest(c.tags) u(t) where t is not null group by 1
+    compare: {keys: [tags.value], values: [n]}
+    slayer:
+      query: {source_model: customers, dimensions: [tags.value], measures: [{formula: "count(*)", name: n}]}
+      options: {to_many_handling: associate}
+      expect: {warning: associated}
+    malloy:
+      query: |
+        run: customers -> { where: tags.each != null; group_by: t is tags.each; aggregate: n is count() }
+      keys: [t]
+    cube:
+      model_declared: true
+      schema: [model_declared/customer_tags.yml]
+      rest: {dimensions: [customer_tags.tag], measures: [customers.count]}
+      keys: [customer_tags.tag]
+      values: [customers.count]
+    metricflow:
+      model_declared: true
+      query:
+        metrics: [tagged_customers]
+        group_by: [customer_tag__tag]
+      keys: [customer_tag__tag]
+      values: [tagged_customers]
+
+  - id: Q27-group-by-list
+    row: Q27
+    title: grouping by the list itself
+    truth_sql: select tags, count(*) from customers group by 1
+    contrast_sql: select t, count(distinct c.id) from customers c, unnest(c.tags) u(t) where t is not null group by 1
+    compare: {keys: [tags], values: [n]}
+    slayer:
+      query: {source_model: customers, dimensions: [tags], measures: [{formula: "count(*)", name: n}]}
+      expect: {error: ListTypeError}
+    malloy:
+      query: |
+        run: customers -> { group_by: tags; aggregate: n is count() }
+    cube:
+      rest: {dimensions: [customers.tags], measures: [customers.count]}
+      keys: [customers.tags]
+      values: [customers.count]
+    metricflow:
+      query:
+        metrics: [customer_count]
+        group_by: [customer__tags]
+      keys: [customer__tags]
+      values: [customer_count]
+
+  - id: Q27-region-tags
+    row: Q27
+    title: distinct tags per region next to the customer count
+    truth_sql: |
+      select r.name, count(distinct t), count(distinct c.id) from customers c
+      left join regions r on c.region_id = r.id left join unnest(c.tags) u(t) on true group by 1
+    contrast_sql: |
+      select r.name, count(distinct t), count(*) from customers c
+      left join regions r on c.region_id = r.id left join unnest(c.tags) u(t) on true group by 1
+    compare: {keys: [regions.name], values: [d, n]}
+    slayer:
+      query: {source_model: customers, dimensions: [regions.name],
+              measures: [{formula: "count_distinct(tags.value)", name: d}, {formula: "count(*)", name: n}]}
+    malloy:
+      query: |
+        run: customers -> { group_by: name is regions.name; aggregate: d is count(tags.each), n is count() }
+      keys: [name]
+    cube:
+      model_declared: true
+      schema: [model_declared/customer_tags.yml]
+      rest: {dimensions: [regions.name], measures: [customer_tags.tag_count, customers.count]}
+      keys: [regions.name]
+      values: [customer_tags.tag_count, customers.count]
+      planner_expect:
+        tesseract: {known_bug: "by design: roots at regions (East kept, Eve's NULL region dropped)", buggy_rows: [[East, null, 0]]}
+        legacy: {known_bug: "by design: roots at customer_tags (untagged customers and Eve's NULL region dropped)",
+                 buggy_rows: [[South, 2, 2]]}
+    metricflow:
+      model_declared: true
+      query:
+        metrics: [distinct_tags, customer_count]
+        group_by: [region__name]
+      keys: [region__name]
+      values: [distinct_tags, customer_count]
+
+  - id: Q27-region-tag-set
+    row: Q27
+    title: the tag set per region
+    truth_sql: |
+      select distinct r.name, t from customers c left join regions r on c.region_id = r.id, unnest(c.tags) u(t)
+      where t is not null
+    compare: {keys: [regions.name, tag]}
+    slayer:
+      query: {source_model: customers, dimensions: [regions.name, {expression: tags.value, name: tag}]}
+    malloy:
+      query: |
+        run: customers -> { group_by: name is regions.name; nest: tag_set is { where: tags.each != null; group_by: tag is tags.each } }
+      flatten: tag_set
+      keys: [name, tag_set.tag]
+    cube:
+      model_declared: true
+      schema: [model_declared/customer_tags.yml]
+      rest: {dimensions: [regions.name, customer_tags.tag], measures: [customer_tags.count]}
+      keys: [regions.name, customer_tags.tag]
+    metricflow:
+      model_declared: true
+      query:
+        metrics: [tagged_customers]
+        group_by: [customer__region__name, customer_tag__tag]
+      keys: [customer__region__name, customer_tag__tag]
+
   # ------------------------------------------------------------------ C3 row-level security (SLayer)
   - id: C3a
     row: C3
@@ -3714,6 +3895,57 @@ probes:
     slayer:
       query: {source_model: monthly_rev, measures: [{formula: "sum(rev)", name: v}]}
       options: {policy: north}
+
+  # ------------------------------------------------------------------ C9 portable expression library (SLayer)
+  - id: C9-slayer-regex
+    row: C9
+    title: regex filter and group extraction, one meaning on every engine
+    truth_sql: |
+      select name, regexp_extract(name, '^([A-Z])[a-z]+$', 1) from customers where regexp_matches(name, '^[A-E]')
+    compare: {keys: [name], values: [initial]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false, filters: ["name ~ '^[A-E]'"],
+              dimensions: [name, {expression: "regexp_extract(name, '^([A-Z])[a-z]+$', 1)", name: initial}]}
+
+  - id: C9-slayer-strings
+    row: C9
+    title: Postgres string semantics (negative left, truncating lpad, negative split_part)
+    truth_sql: |
+      select name, lpad(left(name, -1), 4, '.'), split_part(city, 'o', -1) from customers
+    compare: {keys: [name], values: [short, tail]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "lpad(left(name, -1), 4, '.')", name: short},
+                           {expression: "split_part(city, 'o', -1)", name: tail}]}
+
+  - id: C9-slayer-json
+    row: C9
+    title: json_value and the ->> arrow read a scalar out of JSON text
+    truth_sql: select name, city, length(city) from customers
+    compare: {keys: [name], values: [city_json, city_len]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "'{\"c\": \"' || city || '\"}' ->> 'c'", name: city_json},
+                           {expression: "json_value('{\"n\": ' || length(city) || '}', '$.n' RETURNING INT)",
+                            name: city_len}]}
+
+  - id: C9-slayer-text-number
+    row: C9
+    title: text compared with a number compares numerically (TRY_CAST)
+    truth_sql: select id from customers where id * 10 > 50
+    compare: {keys: [id], values: []}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false, dimensions: [id],
+              filters: ["id || '0' > 50"]}
+
+  - id: C9-slayer-greatest
+    row: C9
+    title: greatest ignores NULL arguments
+    truth_sql: select name, greatest(nullif(discount, 0) * 100, 250) from customers
+    compare: {keys: [name], values: [g]}
+    slayer:
+      query: {source_model: customers, distinct_dimension_values: false,
+              dimensions: [name, {expression: "greatest(nullif(discount, 0) * 100, 250)", name: g}]}
 
   # ------------------------------------------------------------------ C11 curated semantic surfaces (SLayer)
   - id: C11-facade-listing

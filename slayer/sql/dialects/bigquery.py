@@ -9,21 +9,40 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    NativeFn,
     COMPARISON_NODES,
+    LIST_ELEMENT,
+    LIST_VALUE,
+    ListRelation,
+    PORTABLE_LIBRARY,
     DottedAliasManglingMixin,
+    MathFn,
     SqlDialect,
     TemporalComparisonOp,
+    TextFn,
+    ZONED_READ,
+    TrimFn,
     _digest,
+    anon,
+    any_null,
+    case,
+    is_not_null,
     iso_text,
+    lit,
+    operand_copy,
+    text_try_cast,
 )
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
 
@@ -34,6 +53,17 @@ if TYPE_CHECKING:
 # Caveat: a single-backticked word-only path like `ds.tbl` false-positive mangles; quote segments singly.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
+_DATETIME = exp.DataType.build("DATETIME")
+
+
+_ELEMENT, _WANTED = LIST_ELEMENT, "__slayer_w"
+
+
+def _over_elements(values: Expression, name: str) -> exp.Select:
+    """``SELECT name FROM UNNEST(values) AS name``."""
+    return exp.select(exp.column(name)).from_(exp.Unnest(
+        expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(name)]),
+    ))
 
 
 def _date_part_unit(unit: TimeGranularity) -> Expression:
@@ -101,7 +131,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     explain_prefix: str | None = None
     explain_postfix: str = ""
     log10_native: bool = True
-    log2_native: bool = True
+    log2_native: bool = False
     max_identifier_bytes: int | None = 300  # column-name limit
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "bigquery"
@@ -109,6 +139,107 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
+    like_escape_clause: ClassVar[bool] = False
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+
+    database_name: ClassVar[str] = "BigQuery"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
+    })
+    extremum_propagates_null: ClassVar[bool] = True
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
+
+    def list_length(self, values: Expression) -> Expression:
+        kept = _over_elements(values, _ELEMENT).where(is_not_null(exp.column(_ELEMENT)))
+        return anon("ARRAY_LENGTH", exp.Array(expressions=[kept]))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
+            exp.EQ(this=exp.column(_ELEMENT), expression=operand_copy(value))))
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
+            exp.In(this=exp.column(_ELEMENT), unnest=exp.Unnest(expressions=[other.copy()]))))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        missing = _over_elements(other, _WANTED).where(exp.and_(
+            is_not_null(exp.column(_WANTED)), exp.Not(this=self.list_contains(values, exp.column(_WANTED)))))
+        return exp.Not(this=exp.Exists(this=missing))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``UNNEST`` of a ``STRUCT<value>`` array, so the element reads as ``alias.value``."""
+        element_ref = exp.column(_ELEMENT)
+        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(exp.Unnest(
+            expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(_ELEMENT)]),
+        )).where(is_not_null(element_ref))
+        rows = rows.distinct() if distinct else rows
+        return ListRelation(relation=exp.Unnest(
+            expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),
+        ))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        ordered = self.distinct_sorted(value)
+        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[self.empty_list()])
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "concat_ws":
+            return anon("ARRAY_TO_STRING", exp.Array(expressions=[a.copy() for a in args[1:]]), args[0])
+        if fn == "ascii":
+            return anon("UNICODE", args[0])
+        return super().build_text_call(fn, args)
+
+    def trim_spaces(self, fn: TrimFn, s: Expression) -> Expression:
+        """The bare form strips every whitespace character."""
+        return anon(fn.upper(), s, lit(" "))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``SPLIT`` indexed by ``SAFE_ORDINAL`` (reversed for a negative index); ``''`` past the end."""
+        fields = anon("SPLIT", value, delimiter)
+        if index < 0:
+            fields = anon("ARRAY_REVERSE", fields)
+        picked = exp.Bracket(this=fields, expressions=[lit(abs(index))], safe=True, offset=1)
+        return case((any_null(value, delimiter), exp.Null()), default=exp.Coalesce(this=picked, expressions=[lit("")]))
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "pi":
+            return anon("ACOS", lit(-1))
+        return super().build_math_call(fn, args)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``MOD`` takes no FLOAT64: ``a - b * TRUNC(a / b)``."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        quotient = self.truncate(exp.Div(this=operand_copy(left), expression=exp.Nullif(this=operand_copy(right),
+                                                                                    expression=lit(0))))
+        return exp.Paren(this=exp.Sub(this=operand_copy(left), expression=exp.Mul(this=operand_copy(right),
+                                                                                 expression=quotient)))
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_CONTAINS", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """``REGEXP_EXTRACT`` takes at most one capturing group: every other one becomes non-capturing."""
+        extracted = anon("REGEXP_EXTRACT", value, self.regex_text(pattern, capture=group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        return anon("JSON_VALUE", value, lit(path.text))
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""
@@ -159,7 +290,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                 col_expr=col_expr, granularity=granularity,
             )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+            col_expr = self.promote_to_timestamp(col_expr)
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
         return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
 
@@ -172,7 +303,22 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         ))
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
-        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMPTZ"))
+        """SLayer's TIMESTAMP is naive: ``DATETIME`` (a zoned ``TIMESTAMP`` reads as its UTC wall clock)."""
+        already = (isinstance(expr, exp.Cast) and expr.to.this is exp.DataType.Type.DATETIME) or (
+            isinstance(expr, exp.Anonymous) and expr.name.upper() == "CURRENT_DATETIME")
+        return expr.copy() if already else exp.Cast(this=expr.copy(), to=_DATETIME.copy())
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:
+        """A zoned ``TIMESTAMP`` reads as its UTC wall clock; a comparison unwraps it (``bare_comparands``)."""
+        if not zoned:
+            return column
+        read = exp.Cast(this=column, to=_DATETIME.copy())
+        read.meta[ZONED_READ] = True
+        return read
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
+        zoned = to.this is exp.DataType.Type.TIMESTAMPTZ
+        return _DATETIME.copy() if data_type is DataType.TIMESTAMP and zoned else to
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
@@ -180,7 +326,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_timestamp(self) -> Expression:
-        return exp.CurrentTimestamp()
+        return anon("CURRENT_DATETIME")
 
     def build_temporal_comparison(
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
@@ -209,15 +355,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_date_diff(
         self, *, unit: TimeGranularity, start: Expression, end: Expression, operand: DataType,
     ) -> Expression:
-        """``DATE_DIFF`` counts date-part boundaries; ``TIMESTAMP_DIFF`` counts elapsed units, so its
+        """``DATE_DIFF`` counts date-part boundaries; ``DATETIME_DIFF`` counts elapsed units, so its
         operands are truncated first (and it has no week/month/quarter/year)."""
         if unit in SUB_DAY_GRANULARITIES:
-            if operand is DataType.DATE:
-                start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
+            start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
 
             def trunc(e: Expression) -> Expression:
-                return exp.Anonymous(this="TIMESTAMP_TRUNC", expressions=[e.copy(), exp.var(unit.value.upper())])
-            return exp.Anonymous(this="TIMESTAMP_DIFF", expressions=[
+                return exp.Anonymous(this="DATETIME_TRUNC", expressions=[e.copy(), exp.var(unit.value.upper())])
+            return exp.Anonymous(this="DATETIME_DIFF", expressions=[
                 trunc(end), trunc(start), exp.var(unit.value.upper()),
             ])
         if operand is DataType.TIMESTAMP:
@@ -232,20 +377,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATE_ADD`` keeps a DATE a DATE; timestamps use ``TIMESTAMP_ADD`` up to a day and
-        ``DATETIME_ADD`` (which clamps at month-end) for months."""
+        """``DATE_ADD`` keeps a DATE a DATE; timestamps use ``DATETIME_ADD`` (which clamps at month-end)."""
         if operand is DataType.DATE and unit not in SUB_DAY_GRANULARITIES:
             return exp.Anonymous(this="DATE_ADD", expressions=[expr.copy(), _interval(count.copy(), unit)])
-        base = self.promote_to_timestamp(expr) if operand is DataType.DATE else expr.copy()
+        base = self.promote_to_timestamp(expr)
         if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
-            days = exp.Mul(this=exp.Paren(this=count.copy()), expression=exp.Literal.number(7))
-            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(days, TimeGranularity.DAY)])
-        if unit in SUB_DAY_GRANULARITIES or unit is TimeGranularity.DAY:
-            return exp.Anonymous(this="TIMESTAMP_ADD", expressions=[base, _interval(count.copy(), unit)])
-        moved = exp.Anonymous(this="DATETIME_ADD", expressions=[
-            exp.Cast(this=base, to=exp.DataType.build("DATETIME")), _interval(count.copy(), unit),
-        ])
-        return self.promote_to_timestamp(moved)
+            count = exp.Mul(this=exp.Paren(this=count.copy()), expression=exp.Literal.number(7))
+            unit = TimeGranularity.DAY
+        return exp.Anonymous(this="DATETIME_ADD", expressions=[base, _interval(count.copy(), unit)])
 
     def build_engine(
         self,

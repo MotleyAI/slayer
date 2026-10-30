@@ -174,6 +174,8 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
 
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension).
+
 ```json
 {
   "dimension": "created_at",
@@ -196,6 +198,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 ## OrderItem
 
 A sort specification: `column` names a dimension (`status`), a declared measure's short alias (`revenue_sum`), or a formula (`count(*)`); `direction` is `asc` or `desc`.
+An optional `nulls` (`first` or `last`) places NULL values first or last on every dialect; without it the database's default placement applies.
 
 ```json
 {"column": "count(*)", "direction": "desc"}
@@ -227,7 +230,7 @@ What each shape of an *undeclared* order target does:
 | An inline **composite** (`sum(revenue) / sum(cnt)`, `abs(sum(amount))`, `change(sum(amount)) / 2`) | Computed hidden, sorted on, stripped. |
 | A **windowed** aggregate (`sum(amount, window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). Applies to a **joined** column (`customers.regions.name`) and to a derived column whose `sql` reaches through a join — the join is pulled in for the sort. |
-| A raw row column, in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
+| A raw row column or row-level expression (`amount - fee`), in an **aggregated / dedup** query | Sorted on **per group**: ASC by each group's minimum, DESC by each group's maximum. The wrap is implicit — you do not write `min(created_at)`. |
 | A **joined** row column (`customers.regions.name`) in an aggregated query | Same per-group wrap, computed in a CTE rooted at the source model with the join pulled inside, so each group gets its own extreme rather than one global value. |
 
 Ordering by an undeclared row column in a grouped query is **not** the same as
@@ -240,17 +243,14 @@ NULLs sort **last** in both directions, on every database, so the same query
 returns the same row order regardless of backend. (SQL Server is the one
 exception: its native ordering is used because the portable emulation makes the
 statement fail there.)
+An explicit `nulls` (`first` or `last`) places NULLs there on every database, SQL Server included.
 
 An order target that names nothing SLayer can resolve is an error, never a
 silently unsorted result.
 
 Transform and composite order targets accept the full formula syntax, so
 `{"column": "sum(revenue) / sum(cnt)"}` and `{"column": "change(sum(revenue))"}` both
-work without declaring a measure. One limit: the operands must be written as
-formulas, not as the *names* of measures you declared in the same query —
-`{"column": "rev / cnt"}` is rejected at validation, because referencing a
-declared measure by its alias inside an expression is not supported anywhere in
-SLayer. Write `{"column": "sum(revenue) / sum(cnt)"}` instead.
+work without declaring a measure, and their operands may also be the names of measures declared in the same query (`{"column": "rev / cnt"}`), as in filters.
 
 Windowed measures work in declared composites and transforms too — see [formulas](formulas.md#windowed-aggregations).
 
@@ -321,6 +321,9 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
+| `ilike` | `"name ilike '%acme%'"` |
+| `between` | `"amount between 100 and 1000"` |
+| `is distinct from` | `"discount is distinct from 0"` |
 
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
@@ -358,16 +361,13 @@ by.
 
 ### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept the closed Mode-B scalar
-allowlist: string hygiene (`lower`, `upper`, `trim`, `ltrim`,
-`rtrim`, `replace`, `substr`, `substring`, `instr`, `length`, `concat`),
-null handling (`coalesce`, `nullif`, `ifnull`), math (`round`, `abs`,
-`ceil`, `floor`, `sign`, `trunc`, `mod`, `log10`, …), scalar min/max
-(`greatest`, `least`), and [date functions](references.md#date-and-time-functions)
-(`date_part`, `date_diff`, `date_add`, `current_date`, `now`). The SQL `||` concat operator is
-rewritten to `concat(...)` automatically. See
-[references](references.md#scalar-functions-and-dialect-semantics) for the
-full list and per-dialect semantics.
+Filters in `SlayerQuery.filters` accept the
+[portable function library](references.md#the-portable-function-library) — strings
+(`lower`, `left`, `split_part`, `concat_ws`, …), math (`round`, `div`, `atan2`, …), null
+handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
+`payload ->> 'key'`) and [date functions](references.md#date-and-time-functions) — each with
+one meaning on every database. The SQL `||` concat operator is rewritten to `concat(...)`
+automatically.
 
 ```json
 "filters": [
@@ -376,16 +376,15 @@ full list and per-dialect semantics.
   "replace(category, ',', '') = 'books'",
   "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
   "coalesce(nickname, name) = 'Ada'",
-  "first || ' ' || last = 'jane doe'"
+  "first || ' ' || last = 'jane doe'",
+  "regexp_like(sku, '^[A-Z]{3}-[0-9]+$')",
+  "json_value(payload, '$.plan') = 'pro'"
 ]
 ```
 
-Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind.
-sqlglot translates each call to the target dialect's preferred spelling at SQL-generation
-time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
-`SUBSTRING`, `concat` → `||` on SQLite). Raw SQL functions outside the
-allowlist (`json_extract`, `date_trunc`, `CASE WHEN`, …) belong in
-`Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL).
+Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind — and raw SQL
+functions outside the library (`initcap`, `to_date`, …) belong in `Column.sql` /
+`Column.filter` / `SlayerModel.filters` (Mode A SQL).
 
 ### Filtering on Computed Columns
 
@@ -435,6 +434,14 @@ A query filter that reaches the population root only across a fanning (not prova
 
 A negated condition on a joined model does not mean "has none": `not orders.status = 'bad'` keeps a customer with at least one non-bad order, while a customer with no orders fails it (the comparison is NULL) — include those with `or orders.id is null`.
 
+### List columns
+
+A list column `skills` is also a join hop to its elements, one row per non-NULL element with the single column `skills.value`, so `skills.value = 'go'` keeps the contractors having a `go` element, `skills.value` groups by element with `count(skills.*)` counting occurrences, `to_many_handling: "associate"` turns `count(*)` by `skills.value` into the number of contractors per skill (no key needed), every `skills.value` condition in one query reads the same element (so require several with `contains_all(skills, ['go', 'sql'])`, not `AND`), and absence is `NOT contains(skills, 'go')`, since `NOT (skills.value = 'go')` keeps rows with some other element.
+
+```json
+{"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"], "to_many_handling": "associate"}
+```
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
@@ -452,7 +459,7 @@ Use one of:
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
 
-The same placeholders work in measure formulas, computed-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and placeholders in a time dimension's granularity or column are rejected.
+The same placeholders work in measure formulas, computed- and time-dimension expressions, `order` expressions and `date_range` bounds (`"measures": ["sum(amount) * {k} / 100"]`), and an unnamed entry is named from its template (`amount_sum_k_100`), so result keys never depend on the values; `{? ... ?}` blocks and a placeholder naming a time dimension's granularity or standing for its whole dimension is rejected.
 
 ```json
 {
@@ -466,7 +473,7 @@ The same placeholders work in measure formulas, computed-dimension expressions, 
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`), backslash, or control character (newline, tab) can't break out of that literal or the filter parser (DEV-1727). Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
+- Values must be strings, numbers, or **lists**, and every value binds as a literal: **you write the surrounding quotes** for a string (`status = '{status}'`, an embedded `'` is doubled), an unquoted placeholder takes a number (a numeric string included), and a placeholder in a name position (`sum({col})`, `customers.{c}`, `{f}(x)`, `partition_by={x}`) is rejected, so no value can change the expression's structure; non-finite floats (`nan`/`inf`) are rejected.
 - **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
 
     ```json
@@ -478,13 +485,13 @@ This produces the filter `status = 'completed' AND amount > 100`.
     }
     ```
 
-    An empty list raises (`IN ()` is invalid SQL). Under the hood a list renders as a Python tuple (with a trailing comma, e.g. `('US',)`) so that even a single-element list is treated as membership rather than a bare value — you may see that trailing comma in `show_sql` output; it is not a typo.
+    An empty list raises (`IN ()` is invalid SQL).
 - `{{` and `}}` produce literal `{` and `}`
 - Undefined variables raise an error
 - The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
 
 !!! note "Trusted input"
-    Substituted values are treated as trusted. The automatic escaping keeps a string value inside the quoted literal you wrote, but a `{var}` placed in an **unquoted** position is still raw SQL/expression substitution — do not feed untrusted end-user input through `variables`.
+    In query fields a value is always bound as a literal, but in a model's raw-SQL (Mode A) surfaces it is substituted as text, so do not feed untrusted end-user input through `variables` there.
 
 #### Variables passed as a runtime kwarg
 

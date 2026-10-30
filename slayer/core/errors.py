@@ -96,13 +96,15 @@ class SchemaDriftError(SlayerError):
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
+        findings: list[str] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
+        notes = "".join(f" {f}" for f in findings or [])
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s). Original error: {original}"
+            f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
@@ -395,7 +397,7 @@ class UnknownGranularityError(QueryTypeError):
 
 
 class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that is not a single column reference ``gran(col)``."""
+    """A datasource-granularity call that does not take one row-level argument ``gran(expr)``."""
 
 
 class TimeSpineError(QueryTypeError):
@@ -405,6 +407,37 @@ class TimeSpineError(QueryTypeError):
 
 class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
+
+
+class CastTypeError(QueryTypeError):
+    """A CAST target type the query's dialect cannot express."""
+
+
+class AggregationFilterError(QueryTypeError):
+    """A ``FILTER (WHERE …)`` condition that is not a row-level predicate of its aggregation."""
+
+
+class ScalarArgumentError(QueryTypeError):
+    """A scalar function argument outside its contract: a pattern, path, flag or index the library does not
+    take, or a literal outside the function's domain."""
+
+
+class ScalarOperandTypeError(QueryTypeError):
+    """A scalar function or operator over an operand of a type it does not read (a number function over TEXT,
+    a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
+
+
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
+
+
+class ServerVersionError(QueryTypeError):
+    """A function the connected server's version does not provide."""
+
+
+class UnsupportedServerFunctionError(QueryTypeError):
+    """A library function the connected database cannot yet run with its portable meaning."""
 
 
 class UnreachableDefinitionError(SlayerError, ValueError):
@@ -579,6 +612,21 @@ class AmbiguousReferenceError(SlayerError, ValueError):
         ))
 
 
+class AmbiguousAggregationError(SlayerError):
+    """A call matches several of its model's aggregations case-insensitively and none exactly."""
+
+    def __init__(self, *, model: str, call: str, candidates: List[str]) -> None:
+        self.model = model
+        self.call = call
+        self.candidates = sorted(candidates)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Aggregation call {call!r} is ambiguous on model {model!r}: it matches "
+            f"{', '.join(self.candidates)} case-insensitively.",
+            suggestion="Spell the call exactly as one of them.",
+        ))
+
+
 class IllegalScopeReferenceError(SlayerError, ValueError):
     """A reference is syntactically rejected by the scope kind (``__`` in a Mode-B ``ModelScope`` ref; a dotted ref against a flat ``StageSchema``)."""
 
@@ -700,6 +748,10 @@ class MeasureCycleError(SlayerError, ValueError):
             summary="Cyclic reference in named-measure expansion.",
             extras=[("chain", " → ".join(self.chain))],
         ))
+
+
+class VariableError(SlayerError):
+    """A ``{name}`` placeholder whose name is invalid or whose variable is undefined."""
 
 
 class UnresolvedPlaceholderError(SlayerError):
@@ -873,10 +925,10 @@ class GranularityCallError(SlayerError, ValueError):
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one column reference."""
+        """A granularity callee with any argument shape other than one row-level argument."""
         return cls(
-            f"Granularity call {entry!r} must be a single column reference "
-            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"Granularity call {entry!r} must take one row-level argument "
+            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
             f"{', '.join(g.value for g in TimeGranularity)}."
         )
 

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.enums import DataType
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import same_edge
+from slayer.core.join_walker import with_list_children
 from slayer.core.models import (
     Column,
     ModelJoin,
@@ -51,6 +52,8 @@ class ResolvedSourceBundle(BaseModel):
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
+    # The datasource's type: picks its own dialect where several share a sqlglot name (MariaDB / MySQL).
+    datasource_type: Optional[str] = None
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
     # Stored query-backed models the statement may splice, including result joins.
@@ -68,11 +71,12 @@ class ResolvedSourceBundle(BaseModel):
     spine_clash: bool = False
 
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]:
-        """Linear lookup by name (list is small, O(n) scan is fine)."""
+        """Linear lookup by name (list is small, O(n) scan is fine); a list child resolves through its parent."""
         for m in self.referenced_models:
             if m.name == name:
                 return m
-        return None
+        child = self.models_by_name.get(name)
+        return child if child is not None and child.list_of is not None else None
 
     def saved_joins(self, name: str) -> List[ModelJoin]:
         """The declared joins of stored query-backed model ``name``; none for any other stage."""
@@ -110,7 +114,7 @@ class ResolvedSourceBundle(BaseModel):
             out[self.source_model.name] = self.source_model
         for m in self.referenced_models:
             out.setdefault(m.name, m)
-        return out
+        return with_list_children(out)
 
 
 def added_joins(*, base: SlayerModel, joins: Optional[List[ModelJoin]]) -> List[ModelJoin]:
@@ -217,6 +221,7 @@ def model_from_stage_schema(
                 name=c.name,
                 sql=column_sql.get(c.name),
                 type=c.type or DataType.DOUBLE,
+                element_type=(c.element_type or DataType.UNKNOWN) if c.type is DataType.ARRAY else None,
                 granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,
                 format=c.format,

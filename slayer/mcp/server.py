@@ -30,6 +30,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.format import encode_json, encode_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
@@ -1829,7 +1830,7 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
     separator = " | ".join("-" * len(c) for c in columns)
     body_lines = []
     for row in rows:
-        body_lines.append(" | ".join(str(row.get(c, "")) for c in columns))
+        body_lines.append(" | ".join(encode_text(row.get(c)) for c in columns))
 
     result = f"{header}\n{separator}\n" + "\n".join(body_lines)
     if truncated:
@@ -1849,7 +1850,7 @@ def _format_json(
     the whole response stays strict-``json.loads``-able — never trailing prose.
     """
     if not warnings and not attributes and population is None:
-        return json.dumps(data, default=str)
+        return encode_json(data)
     payload: dict[str, Any] = {"data": data}
     if warnings:
         payload["warnings"] = warnings
@@ -1858,7 +1859,7 @@ def _format_json(
     if population is not None:
         payload["population"] = population
         payload["population_inferred"] = True
-    return json.dumps(payload, default=str)
+    return encode_json(payload)
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -1869,7 +1870,7 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     for row in data:
         values = []
         for c in columns:
-            v = str(row.get(c, ""))
+            v = encode_text(row.get(c))
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
             values.append(v)

@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from slayer.core.keys import SCALAR_PASSTHROUGH, check_scalar_arity
 from slayer.core.refs import functional_agg_text
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}

@@ -8,12 +8,13 @@ openspec/changes/dev-1833-harden-mode-b-keyword-lexing-case-like-for-unicode.
 
 from __future__ import annotations
 
+import unicodedata
 from decimal import Decimal
 
 import pytest
 
 from slayer.core.errors import IllegalWindowInFilterError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     BoolOp,
@@ -23,9 +24,7 @@ from slayer.engine.syntax import (
     Ref,
     ScalarCall,
     UnaryOp,
-    _rewrite_sql_like,
     parse_expr,
-    parse_filter_expr,
 )
 
 
@@ -58,7 +57,7 @@ class TestBareKeywordIdentifiers:
         )
 
     def test_case_in_filter_predicate(self) -> None:
-        assert parse_filter_expr("case = 1") == Cmp(
+        assert parse_expr("case = 1") == Cmp(
             op="==", left=Ref(name="case"), right=Literal(value=Decimal(1)),
         )
 
@@ -220,31 +219,31 @@ class TestCaseStillLowers:
 # --------------------------------------------------------------------------- #
 class TestLikeHardening:
     def test_escaped_quote_pattern(self) -> None:
-        assert parse_filter_expr(r"col LIKE 'It\'s%'") == ScalarCall(
+        assert parse_expr("col LIKE 'It''s%'") == ScalarCall(
             name="like", args=(Ref(name="col"), Literal(value="It's%")),
         )
 
     def test_like_inside_string_literal_untouched(self) -> None:
-        node = parse_filter_expr("note == \"we like 'cats'\"")
+        node = parse_expr("note == 'we like ''cats'''")
         assert node == Cmp(
             op="==", left=Ref(name="note"), right=Literal(value="we like 'cats'"),
         )
 
     def test_dotless_i_is_not_like(self) -> None:
-        text = "x lıke 'p%'"
-        assert _rewrite_sql_like(text) == text
+        with pytest.raises(ValueError):
+            parse_expr("x lıke 'p%'")
 
     def test_kelvin_sign_is_not_like(self) -> None:
-        text = "x liKe 'p%'"
-        assert _rewrite_sql_like(text) == text
+        with pytest.raises(ValueError):
+            parse_expr("x liKe 'p%'")
 
     def test_spoofed_like_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match=r"Invalid Mode-B expression"):
-            parse_filter_expr("x lıke 'p%'")
+            parse_expr("x lıke 'p%'")
 
     def test_spoofed_is_keyword_not_normalized(self) -> None:
         with pytest.raises(ValueError, match=r"Invalid Mode-B expression"):
-            parse_filter_expr("x ıs None")
+            parse_expr("x ıs None")
 
 
 # --------------------------------------------------------------------------- #
@@ -252,19 +251,19 @@ class TestLikeHardening:
 # --------------------------------------------------------------------------- #
 class TestLikeStillWorks:
     def test_basic_like(self) -> None:
-        assert parse_filter_expr("name LIKE 'a%'") == ScalarCall(
+        assert parse_expr("name LIKE 'a%'") == ScalarCall(
             name="like", args=(Ref(name="name"), Literal(value="a%")),
         )
 
     def test_not_like(self) -> None:
-        node = parse_filter_expr("name NOT LIKE 'a%'")
+        node = parse_expr("name NOT LIKE 'a%'")
         assert isinstance(node, UnaryOp)
         assert node.op == "not"
         assert isinstance(node.operand, ScalarCall)
         assert node.operand.name == "like"
 
     def test_scalar_call_lhs(self) -> None:
-        node = parse_filter_expr("lower(customers.email) like '%@x.io'")
+        node = parse_expr("lower(customers.email) like '%@x.io'")
         assert isinstance(node, ScalarCall)
         assert node.name == "like"
         assert node.args[0] == ScalarCall(
@@ -272,18 +271,19 @@ class TestLikeStillWorks:
         )
 
     def test_unicode_lhs_still_rewrites(self) -> None:
-        assert parse_filter_expr("é_col LIKE 'p%'") == ScalarCall(
+        assert parse_expr("é_col LIKE 'p%'") == ScalarCall(
             name="like", args=(Ref(name="é_col"), Literal(value="p%")),
         )
 
     def test_ascii_mixed_case_still_rewrites(self) -> None:
-        node = parse_filter_expr("x LiKe 'p%'")
+        node = parse_expr("x LiKe 'p%'")
         assert isinstance(node, ScalarCall)
         assert node.name == "like"
 
-    def test_double_quoted_pattern_rejected(self) -> None:
-        with pytest.raises(ValueError, match=r"Invalid Mode-B expression"):
-            parse_filter_expr('col like "p%"')
+    def test_double_quoted_pattern_is_an_identifier(self) -> None:
+        assert parse_expr('col like "p%"') == ScalarCall(
+            name="like", args=(Ref(name="col"), Ref(name="p%")),
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -298,22 +298,22 @@ class TestSiblingRewriterUnicode:
 
     def test_null_keyword_fused_into_other_id_start(self) -> None:
         # ``℘NULL`` is one identifier; without the guard NULL → None rebinds it.
-        assert parse_filter_expr("℘NULL is None") == Cmp(
+        assert parse_expr("℘NULL is None") == Cmp(
             op="is", left=Ref(name="℘NULL"), right=Literal(value=None),
         )
 
     def test_null_keyword_fused_after_combining_mark(self) -> None:
         # e + COMBINING ACUTE then NULL; NFKC composes the ref back to ``éNULL``.
-        assert parse_filter_expr("éNULL is None") == Cmp(
+        assert parse_expr("éNULL is None") == Cmp(
             op="is", left=Ref(name="éNULL"), right=Literal(value=None),
         )
 
     def test_operator_keyword_fused_not_lowercased(self) -> None:
         # ``℘IS`` is a name; case-normalisation must not fold it to ``℘is``.
-        assert parse_filter_expr("℘IS") == Ref(name="℘IS")
+        assert parse_expr("℘IS") == Ref(name="℘IS")
 
     def test_null_still_normalizes_when_standalone(self) -> None:
-        assert parse_filter_expr("amount is NULL") == Cmp(
+        assert parse_expr("amount is NULL") == Cmp(
             op="is", left=Ref(name="amount"), right=Literal(value=None),
         )
 
@@ -330,26 +330,20 @@ class TestSiblingRewriterUnicode:
             parse_expr("amount OVER (partition_by)")
 
     def test_like_lhs_fused_never_corrupts(self) -> None:
-        # A fused LHS can't lex as a LIKE operand; rather than the old
-        # ``℘like(name, …)`` corruption it now errors cleanly.
-        for expr in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
-            with pytest.raises(ValueError):
-                parse_filter_expr(expr)
-
-    def test_like_unit_leaves_fused_lhs_untouched(self) -> None:
-        for text in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
-            assert _rewrite_sql_like(text) == text
+        # A fused LHS is one whole LIKE operand, never the old ``℘like(name, …)`` corruption.
+        for expr in ("℘name LIKE 'x%'", "éname LIKE 'x%'"):
+            name = unicodedata.normalize("NFKC", expr.split()[0])
+            assert parse_expr(expr) == ScalarCall(name="like", args=(Ref(name=name), Literal(value="x%")))
 
     def test_keyword_named_dotted_leaf_preserved(self) -> None:
         # ``a.NULL`` is a dotted ref; the NULL sub must not rewrite the leaf to
         # ``a.None`` (parity with the CASE lexer keeping ``customers.end``).
-        assert parse_filter_expr("a.NULL is None") == Cmp(
+        assert parse_expr("a.NULL is None") == Cmp(
             op="is", left=DottedRef(parts=("a", "NULL")), right=Literal(value=None),
         )
 
     def test_dotted_root_other_id_start_not_a_like_operand(self) -> None:
-        # ``\u2118.name`` roots at an Other_ID_Start component the ``\w`` LHS can't
-        # lex whole; LIKE must not slice the leaf off into ``\u2118.like(name, \u2026)``.
-        assert _rewrite_sql_like("\u2118.name LIKE 'x%'") == "\u2118.name LIKE 'x%'"
-        with pytest.raises(ValueError):
-            parse_filter_expr("\u2118.name LIKE 'x%'")
+        # LIKE must not slice the leaf off into ``\u2118.like(name, \u2026)``.
+        assert parse_expr("\u2118.name LIKE 'x%'") == ScalarCall(
+            name="like", args=(DottedRef(parts=("\u2118", "name")), Literal(value="x%")),
+        )

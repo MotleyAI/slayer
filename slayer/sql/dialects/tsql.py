@@ -7,19 +7,51 @@ against the FROM scope, not the SELECT list.
 from __future__ import annotations
 
 import re
-from typing import ClassVar, Literal
+from collections.abc import Iterable, Sequence
+from typing import Any, ClassVar, Literal, Optional
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.json_path import JsonPath, json_path_text
+from slayer.core.keys import ScalarCallKey
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    PORTABLE_LIBRARY,
+    NativeFn,
+    REGEX_LIBRARY,
     DottedAliasManglingMixin,
+    ExtremumFn,
+    ServerProfile,
     SqlDialect,
+    TextFn,
+    anon,
+    any_null,
+    case,
+    either,
+    is_not_null,
+    is_null,
+    lit,
+    operand_copy,
+    pad_fill,
+    text_try_cast,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
+
+#: SQL Server major versions: 16 = 2022 (``GREATEST`` / ``LEAST``, ``JSON_PATH_EXISTS``), 17 = 2025 (regex).
+_SQL_SERVER_2022 = (16, 0, 0)
+_SQL_SERVER_2025 = (17, 0, 0)
+_GATED_FUNCTIONS = REGEX_LIBRARY | {"greatest", "least", "json_value"}
+_HIGH_SURROGATES = (55296, 56319)
+_NVARCHAR_MAX = exp.DataType.build("NVARCHAR(MAX)", dialect="tsql")
+#: Matching compares binary; counting needs a supplementary-character (``_SC``) collation, which no binary one is.
+_BINARY = "Latin1_General_100_BIN2"
+_CODE_POINTS = "Latin1_General_100_CS_AS_SC"
 
 
 # sqlglot's tsql transpiler emits names (VAR_SAMP, VARIANCE_POP) T-SQL lacks.
@@ -55,6 +87,34 @@ def _dateadd(unit: str, count: Expression, expr: Expression) -> Expression:
     return exp.Anonymous(this="DATEADD", expressions=[exp.var(unit), count, expr])
 
 
+def _collated(value: Expression, collation: str) -> Expression:
+    """``value COLLATE collation``, replacing a collation it already carries; COLLATE binds tighter than any operator."""
+    inner = value.this if isinstance(value, exp.Collate) else value
+    operand = inner.copy() if isinstance(inner, (exp.Column, exp.Literal, exp.Paren)) else exp.Paren(this=inner.copy())
+    return exp.Collate(this=operand, expression=exp.var(collation))
+
+
+def _units(text: Expression) -> Expression:
+    """The UTF-16 units of an ``NVARCHAR`` value, trailing spaces counted."""
+    return exp.Div(this=anon("DATALENGTH", text), expression=lit(2), typed=True)
+
+
+def _nth_field(text: Expression, sep: Expression, n: int) -> Expression:
+    """Field ``n`` (≥ 1) of ``text``, which has at least ``n`` fields; ``SUBSTRING`` stays unit-counted."""
+    start: Expression = lit(1)
+    for _ in range(n - 1):
+        start = exp.Add(this=anon("CHARINDEX", sep, text, start), expression=_units(sep))
+    rest = anon("SUBSTRING", text, start, anon("DATALENGTH", text))
+    end = anon("CHARINDEX", sep, anon("CONCAT", rest, sep))
+    return anon("SUBSTRING", rest, lit(1), exp.Sub(this=end, expression=lit(1)))
+
+
+def _negative_literal(node: Optional[Expression]) -> bool:
+    if isinstance(node, exp.Neg):
+        return isinstance(node.this, exp.Literal) and node.this.is_number
+    return isinstance(node, exp.Literal) and node.is_number and node.this.startswith("-")
+
+
 def _days_since_monday(expr: Expression) -> Expression:
     """0 for Monday … 6 for Sunday, counted from 1900-01-01 (a Monday)."""
     days = exp.Anonymous(this="DATEDIFF", expressions=[
@@ -69,7 +129,10 @@ def _days_since_monday(expr: Expression) -> Expression:
 
 
 def _is_predicate(node: Expr) -> bool:
-    return isinstance(node, (exp.Predicate, exp.Connector, exp.Not))
+    """A predicate node; ``LIKE`` under its ``ESCAPE`` clause is part of that predicate."""
+    if isinstance(node.parent, exp.Escape) and node.arg_key == "this":
+        return False
+    return isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Escape))
 
 
 def _in_condition_position(node: Expr) -> bool:
@@ -95,7 +158,11 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
+    database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+    })
     sa_backend_names: frozenset[str] = frozenset({"mssql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
@@ -110,6 +177,163 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
+
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2  # a replacement's ``&`` is literal; ``\&`` would insert the match
+    json_db_types: ClassVar[frozenset[str]] = frozenset()
+    like_brackets: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def profile_needed(self, keys: Iterable[object]) -> bool:
+        """Regex needs SQL Server 2025, ``greatest`` / ``least`` and the strict ``json_value`` read 2022: the
+        version decides."""
+        return any(isinstance(k, ScalarCallKey) and k.name in _GATED_FUNCTIONS for k in keys)
+
+    def server_profile_sql(self) -> str | None:
+        return "SELECT SERVERPROPERTY('ProductMajorVersion')"
+
+    def parse_server_profile(
+        self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+    ) -> ServerProfile:
+        major = base_row[0] if base_row else None
+        try:
+            version = None if major is None else (int(str(major).strip()),)
+        except ValueError:
+            version = None
+        return ServerProfile(version=version)
+
+    def _require_regex(self, fn: str) -> None:
+        self.require_version(minimum=_SQL_SERVER_2025, what=f"{fn}()", release="SQL Server 2025")
+
+    def text_repeat(self, value: Expression, count: Expression) -> Expression:
+        return anon("REPLICATE", value, count)
+
+    def concat_text(self, left: Expression, right: Expression) -> Expression:
+        return anon("CONCAT", left, right)
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn in ("lpad", "rpad"):
+            return self.portable_pad(fn=fn, s=args[0], n=args[1], fill=pad_fill(args))
+        if fn == "replace":
+            return anon("REPLACE", self.binary_text(args[0]), self.binary_text(args[1]), args[2])
+        if fn == "reverse":
+            return anon("REVERSE", _collated(args[0], _CODE_POINTS))
+        if fn == "contains":
+            found = exp.GT(this=self.text_position(args[0], args[1]), expression=lit(0))
+            empty = exp.And(this=exp.EQ(this=anon("DATALENGTH", args[1]), expression=lit(0)),
+                            expression=exp.Not(this=any_null(args[0])))
+            return either(found, empty)
+        return super().build_text_call(fn, args)
+
+    def binary_text(self, value: Expression) -> Expression:
+        return _collated(value, _BINARY)
+
+    def text_position(self, s: Expression, p: Expression) -> Expression:
+        """``CHARINDEX`` counts UTF-16 units: the units before the match are recounted as characters."""
+        units = super().text_position(s, p)
+        before = anon("LEFT", self.binary_text(s), exp.Sub(this=units.copy(), expression=lit(1)))
+        return case(
+            (exp.EQ(this=anon("DATALENGTH", p.copy()), expression=lit(0)), case((exp.Not(this=any_null(s)), lit(1)))),
+            (exp.GT(this=units.copy(), expression=lit(0)), exp.Add(this=self.char_length(before), expression=lit(1))),
+            default=units,
+        )
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
+
+    def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
+        """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
+        return exp.DataType.build("DATETIME2", dialect="tsql") if data_type is DataType.TIMESTAMP else to
+
+    def code_point_char(self, n: Expression) -> Expression:
+        """``NCHAR``, astral code points as their UTF-16 surrogate pair (no supplementary collation needed)."""
+        offset = exp.Paren(this=exp.Sub(this=n.copy(), expression=lit(65536)))
+        high = anon("NCHAR", exp.Add(this=lit(55296), expression=exp.IntDiv(this=offset, expression=lit(1024))))
+        low = anon("NCHAR", exp.Add(this=lit(56320), expression=exp.Mod(this=offset.copy(), expression=lit(1024))))
+        return case((exp.LT(this=n.copy(), expression=lit(65536)), anon("NCHAR", n)), default=anon("CONCAT", high, low))
+
+    def first_code_point(self, s: Expression) -> Expression:
+        """``UNICODE`` reads one UTF-16 unit: a surrogate pair is combined; ``''`` is 0."""
+        first = anon("UNICODE", s)
+        second = anon("UNICODE", self.char_substring(s, lit(2), lit(1)))
+        astral = exp.Add(this=exp.Add(this=exp.Mul(this=exp.Paren(this=exp.Sub(this=first.copy(), expression=lit(55296))),
+                                                   expression=lit(1024)),
+                                      expression=exp.Sub(this=second, expression=lit(56320))), expression=lit(65536))
+        return case(
+            (exp.EQ(this=anon("DATALENGTH", s), expression=lit(0)), lit(0)),
+            (exp.Between(this=first.copy(), low=lit(_HIGH_SURROGATES[0]), high=lit(_HIGH_SURROGATES[1])), astral),
+            default=first,
+        )
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """Nested ``CHARINDEX`` over ``NVARCHAR(MAX)`` UTF-16 units; a negative index splits the reversed value.
+        ``''`` past the last field."""
+        text = self.binary_text(exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()))
+        sep = self.binary_text(exp.Cast(this=delimiter.copy(), to=_NVARCHAR_MAX.copy()))
+        if index > 0:
+            field = _nth_field(text, sep, index)
+        else:
+            field = anon("REVERSE", _nth_field(anon("REVERSE", text), anon("REVERSE", sep), -index))
+        removed = anon("DATALENGTH", anon("REPLACE", text, sep, lit("")))
+        gap = exp.Paren(this=exp.Sub(this=anon("DATALENGTH", text), expression=removed))
+        per_field = exp.Nullif(this=anon("DATALENGTH", sep), expression=lit(0))
+        fields = exp.Add(this=exp.Div(this=gap, expression=per_field, typed=True), expression=lit(1))
+        beyond = exp.GT(this=lit(abs(index)), expression=fields)
+        return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
+
+    def cube_root(self, value: Expression) -> Expression:
+        magnitude = exp.Cast(this=exp.Abs(this=value.copy()), to=exp.DataType.build("FLOAT"))
+        # A FLOAT exponent: 1 / 3.0 is NUMERIC with 6 places.
+        root = anon("POWER", magnitude, exp.Div(this=lit(1), expression=exp.Literal.number("3E0")))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=root)
+
+    def build_modulo(self, left: Expression, right: Expression, integer: bool) -> Expression:
+        """``%`` rejects FLOAT operands: ``a - b * trunc(a / b)``."""
+        if integer:
+            return super().build_modulo(left, right, integer)
+        quotient = self.truncate(exp.Div(this=operand_copy(left), expression=exp.Nullif(this=operand_copy(right),
+                                                                                    expression=lit(0))))
+        return exp.Paren(this=exp.Sub(this=operand_copy(left), expression=exp.Mul(this=operand_copy(right),
+                                                                                 expression=quotient)))
+
+    def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
+        self.require_version(minimum=_SQL_SERVER_2022, what=f"{fn}()", release="SQL Server 2022")
+        return super().build_extremum(fn, args)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_INSTR(…) > 0``: ``REGEXP_LIKE`` needs compatibility level 170, this does not."""
+        self._require_regex("regexp_like")
+        position = anon("REGEXP_INSTR", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+        return exp.GT(this=position, expression=lit(0))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        self._require_regex("regexp_extract")
+        extracted = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), lit("c"), lit(group))
+        return self.skipped_group_empty(value, pattern, group, extracted)
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        self._require_regex("regexp_replace")
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement), lit(1), lit(0), lit("c"))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
+        4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
+        ``JSON_VALUE`` reads only wrapped as ``[document]``."""
+        version = self.server_profile.version
+        if version is not None and version < _SQL_SERVER_2022:
+            return case((exp.EQ(this=anon("ISJSON", value), expression=lit(1)), anon("JSON_VALUE", value, lit(path.text))))
+        document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
+        text = json_path_text((0, *path.steps))
+        lax = anon("JSON_VALUE", document, lit(text))
+        scalar = exp.And(this=exp.EQ(this=anon("JSON_PATH_EXISTS", document, lit(text)), expression=lit(1)),
+                         expression=is_null(anon("JSON_QUERY", document, lit(text))))
+        read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", document, lit(f"strict {text}"))))
+        return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
@@ -135,6 +359,30 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return super().build_ordered(
             order_col, descending=descending, nulls=nulls,
         )
+
+    def build_order_terms(
+        self,
+        order_col: Expression,
+        *,
+        descending: bool,
+        nulls: Literal["default", "first", "last"] = "default",
+        resolved: Optional[Expression] = None,
+    ) -> list[exp.Ordered]:
+        """An explicit NULL placement is a leading ``CASE WHEN <expr> IS NULL`` key over the resolved
+        expression (an alias is not visible inside an ORDER BY expression), then the native term."""
+        if nulls == "default":
+            return [self.build_ordered(order_col, descending=descending)]
+        null_rank = exp.Case(
+            ifs=[exp.If(
+                this=exp.Is(this=operand_copy(resolved if resolved is not None else order_col), expression=exp.Null()),
+                true=exp.Literal.number(0 if nulls == "first" else 1),
+            )],
+            default=exp.Literal.number(1 if nulls == "first" else 0),
+        )
+        return [
+            self.build_ordered(null_rank, descending=False),
+            self.build_ordered(order_col, descending=descending),
+        ]
 
     def build_date_trunc(
         self,
@@ -167,6 +415,25 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 return exp.Paren(this=exp.Sub(
                     this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
                 ))
+            return node
+        return tree.transform(_fix)
+
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        """``LEN`` / ``SUBSTRING`` count characters under ``_CODE_POINTS``; a negative literal ``SUBSTRING``
+        length is 0 (rejected at compile time, even in an untaken branch); ``ROUND`` gets its digits and
+        ``POWER`` a FLOAT base (an INT one returns an INT)."""
+        def _fix(node: Expression) -> Expression:
+            if isinstance(node, exp.Substring):
+                if _negative_literal(node.args.get("length")):
+                    node.set("length", exp.Literal.number(0))
+                node.set("this", _collated(node.this, _CODE_POINTS))
+            if isinstance(node, exp.Anonymous) and node.name.upper() == "LEN":
+                node.set("expressions", [_collated(node.expressions[0], _CODE_POINTS)])
+            if isinstance(node, exp.Round) and node.args.get("decimals") is None:
+                node.set("decimals", exp.Literal.number(0))
+            if isinstance(node, exp.Pow):
+                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
+                            node.expression.copy())
             return node
         return tree.transform(_fix)
 

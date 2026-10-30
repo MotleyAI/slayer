@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "examples" / "comparisons" / "export_matrix.py"
@@ -34,6 +35,19 @@ def test_inline_links_unsafe_urls_stay_text(url):
     out = export_matrix.inline(f"see [this]({url})")
     assert "<a" not in out
     assert out == f"see [this]({url})"
+
+
+def test_list_columns_row_has_probes_on_every_engine():
+    matrix = yaml.safe_load(export_matrix.MATRIX.read_text())
+    rows = matrix if isinstance(matrix, list) else matrix["rows"]
+    (row,) = [r for r in rows if r["id"] == "Q27"]
+    assert row["group"] == "Query semantics"
+    assert all(tool in row for tool, _ in export_matrix.TOOLS)
+    probes = [p for p in yaml.safe_load(export_matrix.PROBES.read_text())["probes"] if p["row"] == "Q27"]
+    assert len(probes) >= 5
+    for probe in probes:
+        assert all(engine in probe for engine in export_matrix.ENGINES), probe["id"]
+    assert "tags" in (ROOT / "examples" / "comparisons" / "dataset.sql").read_text()
 
 
 def test_probe_on_unknown_row_is_rejected(tmp_path, monkeypatch):

@@ -21,10 +21,12 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -99,26 +101,26 @@ class TestLeafKinds:
         not inherit that blind spot."""
         out = reroot_value_key(
             TimeTruncKey(
-                column=ColumnKey(path=("customers",), leaf="signup_at"),
+                source=ColumnKey(path=("customers",), leaf="signup_at"),
                 granularity=TimeGranularity.MONTH,
             ),
             target_path=TARGET,
         )
         assert out == TimeTruncKey(
-            column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
+            source=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
         )
 
     def test_time_trunc_key_over_derived_column(self) -> None:
         out = reroot_value_key(
             TimeTruncKey(
-                column=ColumnSqlKey(
+                source=ColumnSqlKey(
                     path=("customers",), model="customers", column_name="signup_d",
                 ),
                 granularity=TimeGranularity.DAY,
             ),
             target_path=TARGET,
         )
-        assert out.column == ColumnSqlKey(
+        assert out.source == ColumnSqlKey(
             path=(), model="customers", column_name="signup_d",
         )
 
@@ -161,7 +163,7 @@ class TestCompositeKinds:
                 ),
                 partition_keys=Grain.of({ColumnKey(path=("customers",), leaf="tier")}),
                 time_key=TimeTruncKey(
-                    column=ColumnKey(path=("customers",), leaf="signup_at"),
+                    source=ColumnKey(path=("customers",), leaf="signup_at"),
                     granularity=TimeGranularity.MONTH,
                 ),
             ),
@@ -171,7 +173,7 @@ class TestCompositeKinds:
         assert isinstance(out.time_key, TimeTruncKey)
         assert out.input.source == ColumnKey(path=(), leaf="spend")
         assert out.partition_keys == Grain.of({ColumnKey(path=(), leaf="tier")})
-        assert out.time_key.column == ColumnKey(path=(), leaf="signup_at")
+        assert out.time_key.source == ColumnKey(path=(), leaf="signup_at")
 
     def test_transform_scalar_args_are_type_prohibited_from_holding_keys(self) -> None:
         """``TransformKey.args``/``kwargs`` are ``Tuple[Scalar, ...]`` where
@@ -268,7 +270,7 @@ class TestCompositeKinds:
                         TimePointCmpKey(
                             op=">=",
                             operand=TimeTruncKey(
-                                column=ColumnKey(
+                                source=ColumnKey(
                                     path=("customers",), leaf="signup_at",
                                 ),
                                 granularity=TimeGranularity.DAY,
@@ -291,7 +293,7 @@ class TestCompositeKinds:
         assert isinstance(time_point, TimePointCmpKey)
         assert isinstance(time_point.operand, TimeTruncKey)
         assert in_key.column == ColumnKey(path=(), leaf="tier")
-        assert time_point.operand.column == ColumnKey(path=(), leaf="signup_at")
+        assert time_point.operand.source == ColumnKey(path=(), leaf="signup_at")
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +315,7 @@ class TestTotalityAndFailClosed:
                 path=("customers",), model="customers", column_name="cr",
             ),
             TimeTruncKey: TimeTruncKey(
-                column=ColumnKey(path=("customers",), leaf="signup_at"),
+                source=ColumnKey(path=("customers",), leaf="signup_at"),
                 granularity=TimeGranularity.DAY,
             ),
             StarKey: StarKey(path=("customers",)),
@@ -347,6 +349,10 @@ class TestTotalityAndFailClosed:
             SqlFragmentKey: SqlFragmentKey(
                 template="{r0} * 2", refs=(ColumnKey(path=("customers",), leaf="spend"),),
             ),
+            CastKey: CastKey(
+                source=ColumnKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
+            ),
+            ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

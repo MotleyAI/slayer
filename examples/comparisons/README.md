@@ -45,6 +45,7 @@ The dataset keeps edge cases that break naive joins:
 - `returns` is a second fact on `return_date`: 2024-06 has returns but no orders, return 3 has a NULL
   `customer_id`, and Eve returns once.
 - `events` has sub-hour timestamps for 15-minute buckets.
+- `customers.tags` is a list: Alice repeats `vip`, Carol has a NULL element, Dave's list is empty and Eve's is NULL.
 
 Each runner seeds a fresh DuckDB file in a temp directory and computes the ground truth there. The SLayer runner
 pins "now" at 2025-07-15 12:00 for relative time filters and the time spine's default upper bound, and defines two

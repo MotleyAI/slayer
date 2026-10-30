@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import JoinCardinality
-from slayer.engine.syntax import AggCall, Ref, parse_expr
+from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiConversionError
 from slayer.osi.parser import parse_osi_path

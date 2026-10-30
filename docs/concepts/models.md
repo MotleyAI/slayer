@@ -39,7 +39,7 @@ A query then asks for `sum(revenue)` (aggregate the `revenue` column), `aov` (th
 | `hidden` | bool | No | Hide from listings (still queryable by name and joinable). Set automatically at ingest for recognised ELT/migration internals — see [Recognised internals](../reference/cli.md#recognised-internals) |
 | `access_tags` | list[str] | No | Access groups: through an [access-filtered store](../configuration/storage.md#access-filtered-storage) a caller sees the model only if it is untagged or shares a tag, else it reads as deleted (unlike `hidden`, which curates listings for everyone) |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping. Ingestion writes `internal_table: <tool>` on auto-hidden internals |
-| `version` | int | No | Schema version stamp (currently `15`) |
+| `version` | int | No | Schema version stamp (currently `18`) |
 
 ## Source modes
 
@@ -76,7 +76,8 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
-| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
+| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date`, `ARRAY` |
+| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests) |
 | `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
@@ -100,6 +101,7 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 | `boolean` | True/false | BOOLEAN |
 | `time` | Timestamp | TIMESTAMP, DATETIME |
 | `date` | Date only | DATE |
+| `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a `TEXT` column whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
 
@@ -111,6 +113,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
 | `boolean` | the `number` set |
 | `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
+| `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
@@ -278,6 +281,7 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 | `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
 | `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
+| `collect` | `collect(name)` | The distinct non-NULL values as a sorted list; `[]` when there are none |
 
 `count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
@@ -290,7 +294,7 @@ columns:
   - {name: balance, sql: balance, type: number}
 ```
 
-`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would.
+`last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time column is specified, ordering resolves via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`. Whichever column wins is an input of the aggregation: if it, or a derived definition it names, crosses a join hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a time/date dimension in that order.
 
 Not to be confused with the [`last()` formula function](formulas.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
 
@@ -307,6 +311,8 @@ aggregations:
 ```
 
 Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names.
+
+An aggregation may take the name of a library function or function spelling (`reverse`, `left`, `strpos`, …): inside its own model every call over that model's columns — `reverse(a)`, `a:reverse`, `t.reverse(a)`, in any letter case — is the aggregation, the library function stays reachable everywhere else (another model's columns, a literal argument), and saving, loading and every query response that resolves through it carry a `library_name_shadow` warning; transform, date-part and granularity names stay reserved.
 
 A placeholder inside a quoted string literal (`SUM({value}) * CAST('{n}' AS DOUBLE)`) splices its parameter's value and so needs a literal one, a number or a string; write a literal brace there as `{{` or `}}`.
 
@@ -578,7 +584,7 @@ Query results use `model_name.column_name` keys. Aggregations map to keys: `sum(
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field — currently `11` for `SlayerModel`, `3` for `SlayerQuery`, `1` for `DatasourceConfig`. Behaviour:
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`, `Memory`) carries a `version: int` field — currently `18` for `SlayerModel`, `9` for `SlayerQuery`, `3` for `DatasourceConfig`, `7` for `Memory`. Behaviour:
 
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.
@@ -586,6 +592,14 @@ Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`)
 - **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis. For `SlayerModel` and `DatasourceConfig`, unknown fields are ignored. `SlayerQuery` v3 sets `extra="forbid"`, so any unknown field on a future-version query raises a `ValidationError` rather than being silently dropped — this catches typos but means a future schema's new fields will not load on an older SLayer.
 
 The v2→v3 converter drops the legacy `dry_run` / `explain` fields from `SlayerQuery` — they were execution-mode flags that had no business being persisted; pass them as kwargs to `engine.execute(query, dry_run=..., explain=...)` instead. Each migrated query emits one `logger.warning` and one `DeprecationWarning` on first load.
+
+Stored Mode-B text written before the SQL grammar is upgraded on load: double-quoted strings become `'…'`, backslash escapes are re-encoded, adjacent literals are joined, `|` becomes `||`, an object-form time dimension becomes its dotted `model.name` text, and an aggregation over a bare column named `distinct` (`sum(distinct)`) reads it as `"distinct"`.
+
+Text the old grammar could not have held (`::`, `||`, `CAST(`, `FILTER (WHERE`, `BETWEEN`) is left unchanged with a warning even under an old `version`, but old-version text using only `''`, `"…"` or backslash escapes is still upgraded, so hand-edit such text only together with its `version`.
+
+A stored datasource granularity whose name the library has since reserved is renamed on load to `<name>_granularity` (`<name>_granularity_<n>` if taken) together with every reference in that datasource's models, saved queries and memories, with a logged warning, so update any client that names it.
+
+Persisted documents omit unset (`None`) fields, so a store written by this release still reads on the previous one, except for text already in the new grammar and `ARRAY` columns.
 
 Migrations are defined in `slayer/storage/migrations.py` and apply at the Pydantic-validation layer, so every storage backend (YAML, SQLite, third-party backends registered via `register_storage`, plus HTTP API, MCP server, and dbt importer) gets them automatically.
 

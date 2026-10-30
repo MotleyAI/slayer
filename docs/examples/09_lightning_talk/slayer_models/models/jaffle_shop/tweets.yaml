@@ -1,4 +1,4 @@
-version: 15
+version: 18
 name: tweets
 sql_table: tweets
 source_kind: table

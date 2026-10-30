@@ -13,18 +13,42 @@ with commented tables, ingested, and deleted on teardown.
 
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig
+from slayer.core.errors import SchemaDriftError
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
     ingest_datasource,
     ingest_datasource_idempotent,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, validate_datasource
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    contractors_model,
+    contractors_statements,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
+)
+from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._sql_mode_retype_fixtures import (
+    check_query_carries_finding,
+    check_reingest_retypes,
+    check_validation_finding,
+    sql_shapes,
+    stale_sql_model,
+)
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -291,3 +315,154 @@ def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
         dialect="bigquery", words=keyword_universe(BIGQUERY_KEYWORDS), table=f"{dataset_id}.plain", column="x",
         fails=fails, workers=8,
     ) == []
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def bq_dev2120_storage(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    for stmt in dev2120_table_statements(LIB, dialect="bigquery", prefix=f"{dataset_id}."):
+        client.query(stmt).result()
+    rows = ", ".join(f"({rid}, PARSE_JSON({server_literal(doc, kind='TEXT', dialect='bigquery')}))"
+                     for rid, doc in DOCS_ROWS)
+    client.query(f"CREATE TABLE {dataset_id}.docs (id INT64, payload JSON)").result()
+    client.query(f"INSERT INTO {dataset_id}.docs VALUES {rows}").result()
+    client.query(f"CREATE TABLE {dataset_id}.events (id INT64, zoned_ts TIMESTAMP, wall_ts DATETIME)").result()
+    client.query(f"INSERT INTO {dataset_id}.events VALUES {_EVENT_ROWS}").result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
+    run_sync(storage.save_datasource(ds))
+    run_sync(storage.save_model(lib_model(data_source=ds.name)))
+    for model in ingest_datasource(datasource=ds, include_tables=["docs", "events"]):
+        run_sync(storage.save_model(model))
+    return storage
+
+
+async def test_dev2120_library(bq_dev2120_storage) -> None:
+    await check_library(SlayerQueryEngine(storage=bq_dev2120_storage))
+
+
+async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
+    await check_native_json(SlayerQueryEngine(storage=bq_dev2120_storage))
+
+
+_EVENT_ROWS = ("(1, TIMESTAMP '2024-02-29 10:00:00 UTC', DATETIME '2024-02-29 10:00:00'), "
+               "(2, TIMESTAMP '2025-06-01 23:30:00 UTC', DATETIME '2025-06-01 23:30:00')")
+
+
+async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
+    model = await bq_dev2120_storage.get_model("events", data_source="bqtest")
+    db_types = {c.name: c.db_type for c in model.columns if c.name in ("zoned_ts", "wall_ts")}
+    assert db_types == {"zoned_ts": "TIMESTAMP", "wall_ts": None}
+    engine = SlayerQueryEngine(storage=bq_dev2120_storage)
+    for column in ("zoned_ts", "wall_ts"):
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "events", "dimensions": ["id", {"expression": f"date_add({column}, 1, 'day')", "name": "v"}],
+            "filters": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
+        }))
+        got = {int(r["events.id"]): r["events.v"] for r in resp.data}
+        assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "events",
+            "dimensions": ["id", column, {"expression": f"month({column})", "name": "bucket"}],
+        }))
+        rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
+        assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
+                        2: (datetime(2025, 6, 1, 23, 30), datetime(2025, 6, 1))}, (column, resp.sql)
+
+
+# ---------------------------------------------------------------------------
+# List columns: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
+# queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+def _stale_contractors(data_source: str) -> SlayerModel:
+    """``contractors`` as stored before list columns: ``skills`` as TEXT."""
+    return SlayerModel(name="stale", sql_table="contractors", data_source=data_source, columns=[
+        Column(name="id", type=DataType.INT, primary_key=True), Column(name="skills", type=DataType.TEXT)])
+
+
+@pytest.fixture(scope="module")
+def bq_lists(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    prefix = f"{dataset_id}."
+    for stmt in [*contractors_statements(dialect="bigquery", prefix=prefix),
+                 *assignments_statements(dialect="bigquery", prefix=prefix)]:
+        client.query(stmt).result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
+    run_sync(storage.save_datasource(ds))
+    for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
+                  _stale_contractors(ds.name)):
+        run_sync(storage.save_model(model))
+    return storage, ds
+
+
+async def test_lists(bq_lists) -> None:
+    await check_lists(SlayerQueryEngine(storage=bq_lists[0]), dialect="bigquery")
+
+
+def test_repeated_field_ingested(bq_lists) -> None:
+    (model,) = ingest_datasource(datasource=bq_lists[1], include_tables=["contractors"])
+    skills = model.get_column("skills")
+    assert skills is not None
+    assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert "STRING" in (skills.db_type or "").upper(), skills.db_type
+
+
+async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
+    engine = SlayerQueryEngine(storage=bq_lists[0])
+    stale = SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]})
+    with pytest.raises(SchemaDriftError) as info:
+        await engine.execute(stale)
+    assert "skills" in str(info.value), str(info.value)
+    assert "ingest" in str(info.value).lower(), str(info.value)
+
+
+# NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's typed ``[]`` fallback must unify with their ARRAY_AGG.
+_AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
+                "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
+_AMOUNT_COLUMNS = ("n", "big", "i")
+
+
+@pytest.fixture(scope="module")
+def bq_amounts(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    client.query(f"CREATE TABLE {dataset_id}.amounts "
+                 "(id INT64, team STRING, n NUMERIC, big BIGNUMERIC, i INT64)").result()
+    client.query(f"INSERT INTO {dataset_id}.amounts VALUES {_AMOUNT_ROWS}").result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
+    run_sync(storage.save_datasource(ds))
+    for model in ingest_datasource(datasource=ds, include_tables=["amounts"]):
+        run_sync(storage.save_model(model))
+    return storage
+
+
+async def test_collect_over_exact_numerics(bq_amounts) -> None:
+    resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
+        "source_model": "amounts", "dimensions": ["team"],
+        "measures": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+    }))
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+           for r in resp.data}
+    assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
+                   "b": {"n": [], "big": [], "i": []}}, resp.sql
+    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
+
+
+# Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
+# REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
+async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: DataType) -> None:
+    storage, ds = bq_lists
+    engine = SlayerQueryEngine(storage=storage)
+    await storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, column=column)
+    await check_query_carries_finding(engine, column=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

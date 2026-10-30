@@ -1,6 +1,7 @@
 """Abstract storage protocol and factory."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -32,8 +33,10 @@ from slayer.core.models import (
     _validate_column_name,
     is_base_column_sql,
     physical_column_sql,
+    shadows_library_function,
 )
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import LibraryNameShadowWarning, SlayerLibraryNameShadowWarning, caller_announces
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
@@ -42,6 +45,14 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.granularity_rename import (
+    Renames,
+    granularity_renames,
+    memory_source_model,
+    rename_in_memory,
+    rename_in_model,
+    renamed_datasource,
+)
 from slayer.storage.legacy_backends import adapt_legacy_hooks
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
@@ -68,6 +79,8 @@ _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
+# Inside the one-time granularity settle, whose own loads must not wait on it.
+_SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -281,6 +294,31 @@ def _check_not_exact_inverse(
             )
 
 
+def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerModel]) -> None:
+    """A list column ``L`` is the hop ``L`` to its elements, so no other hop from its model may share the name — checked
+    on this model's list columns and on the peers its new edges reach (design D12)."""
+    incident = [(j.name or j.target_model, j.target_model) for j in model.joins] + [
+        (j.name or p.name, p.name) for p in peers.values() for j in p.joins if j.target_model == model.name
+    ]
+    for column in model.columns:
+        hop = next((target for token, target in incident if token == column.name), None)
+        if column.type is DataType.ARRAY and hop is not None:
+            raise ValueError(
+                f"Model '{model.name}': list column '{column.name}' has the name of its hop to '{hop}'; the list's "
+                f"elements are reached as '{column.name}.value', so rename the column or name the edge."
+            )
+    for join in model.joins:
+        peer = peers.get(join.target_model)
+        token = join.name or model.name
+        column = peer.get_column(token) if peer is not None else None
+        if column is not None and column.type is DataType.ARRAY:
+            raise ValueError(
+                f"Model '{model.name}': its join to '{join.target_model}' is the hop '{token}' from "
+                f"'{join.target_model}', which collides with the list column '{join.target_model}.{token}'; "
+                "name the edge differently."
+            )
+
+
 def _warn_unnamed_parallel_edges(
     *, model: SlayerModel, peers: dict[str, SlayerModel],
 ) -> None:
@@ -323,6 +361,24 @@ def _write_sample_fields(
         col.pop("distinct_count", None)
     else:
         col["distinct_count"] = distinct_count
+
+
+def warn_library_shadows(model: SlayerModel) -> None:
+    """One warning per aggregation of ``model`` that shadows a library function."""
+    for agg in model.aggregations:
+        if shadows_library_function(agg):
+            warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
+                model=model.name, aggregation=agg.name, function=agg.name,
+            )), stacklevel=3)
+
+
+def without_none(value: Any) -> Any:
+    """``value`` with every ``None`` mapping entry dropped, recursively: an unset field is never persisted."""
+    if isinstance(value, dict):
+        return {k: without_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [without_none(v) for v in value]
+    return value
 
 
 def storage_base_dir(path: str) -> str:
@@ -429,6 +485,7 @@ class StorageBackend(ABC):
         """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only). Backends must NOT override this."""
         if _validate:
             await self.validate_for_save(model, failures=failures)
+            warn_library_shadows(model)
         await self._save_model_impl(model)
         self._forget_raw(data_source=model.data_source, name=model.name)
 
@@ -488,6 +545,7 @@ class StorageBackend(ABC):
                 f"'{model.data_source}'. Edge names and model names share "
                 f"the path-segment namespace."
             )
+        _check_list_hop_collisions(model=model, peers=peers)
         if not model.joins:
             return
         names = _checked_join_names(model)
@@ -593,6 +651,81 @@ class StorageBackend(ABC):
         """The persisted model dict verbatim — no migration, no validation; ``None`` when absent. The legacy-``__`` rewrite reads sibling models raw through this to avoid recursing their load pipeline; YAML/SQLite override, the default ``None`` limits the rewrite to first-hop walks."""
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        """Every stored memory dict verbatim; backends without raw access store none."""
+        await asyncio.sleep(0)
+        return {}
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        raise NotImplementedError
+
+    async def _settle_library_granularities(self) -> None:
+        """Once per instance, before any model or memory loads: load every datasource, which renames its library-named
+        granularities (an unloadable datasource is reported where it is used)."""
+        if getattr(self, "_granularities_settled", False) or _SETTLING.get():
+            return
+        lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
+        async with lock:
+            if getattr(self, "_granularities_settled", False):
+                return
+            token = _SETTLING.set(True)
+            try:
+                for name in await self.list_datasources():
+                    with contextlib.suppress(ValueError):
+                        await self.get_datasource(name)
+            finally:
+                _SETTLING.reset(token)
+            self._granularities_settled = True
+
+    async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
+        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        dependants persisted before it so an interrupted rename converges."""
+        if not isinstance(data, dict):
+            return data
+        names = [g["name"] for g in data.get("granularities") or [] if isinstance(g, dict)
+                 and isinstance(g.get("name"), str)]
+        renames = granularity_renames(names)
+        if not renames:
+            return data
+        await self._rename_granularities(data_source=name, raw=data, renames=renames)
+        return renamed_datasource(data, renames=renames)
+
+    async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
+        identities = await self._list_all_model_identities()
+        own = {n for d, n in identities if d == data_source}
+        elsewhere = {n for d, n in identities if d != data_source}
+        renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
+        for name in sorted(own):
+            data = await self._load_raw_model_dict(name=name, data_source=data_source)
+            if isinstance(data, dict) and (new := rename_in_model(data, renames=renames)) != data:
+                await self._write_raw_model_dict(name=name, data_source=data_source, data=new)
+                renamed[("model", f"{data_source}.{name}")] = (data, new)
+        for memory_id, data in (await self._raw_memory_dicts()).items():
+            inline_data_source, source = memory_source_model(data)
+            in_datasource = inline_data_source == data_source if inline_data_source is not None else (
+                source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
+            )
+            if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
+                await self._write_raw_memory_dict(memory_id=memory_id, data=new)
+                renamed[("memory", memory_id)] = (data, new)
+        await self._write_raw_datasource_dict(name=data_source, data=renamed_datasource(raw, renames=renames))
+        for old, new in renames.items():
+            logging.getLogger(__name__).warning(
+                "datasource %r: custom granularity %r is now a reserved library name; renamed to %r with every "
+                "reference to it", data_source, old, new,
+            )
+
+    def _renamed_since_read(self, data: Any, *, kind: str, key: str) -> Any:
+        """``data`` as the settle rewrote it, when it is the stored document read before that rewrite."""
+        original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
+        return new if original is not None and data == original else data
 
     async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
         """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
@@ -732,6 +865,8 @@ class StorageBackend(ABC):
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
+        await self._settle_library_granularities()
+        data = self._renamed_since_read(data, kind="model", key=f"{data_source}.{name}")
         write_back = False
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
@@ -755,6 +890,8 @@ class StorageBackend(ABC):
                     name=name, data=data, data_source=data_source,
                 )
         model = SlayerModel.model_validate(data)
+        if not caller_announces():
+            warn_library_shadows(model)
         if write_back:
             # Write-back must not re-validate: legacy models may hold cycles or
             # fanning refs a user needs to load to repair.
@@ -821,8 +958,14 @@ class StorageBackend(ABC):
     async def _repair_query_filters(
         self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
     ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column."""
-        filters = query.get("filters") if isinstance(query, dict) else None
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column;
+        the stored query is migrated first, so its filters read under the current grammar."""
+        if not isinstance(query, dict):
+            return
+        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
+        query.clear()
+        query.update(migrated)
+        filters = query.get("filters")
         if not isinstance(filters, list):
             return
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
@@ -1119,8 +1262,9 @@ class StorageBackend(ABC):
 
     async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
         """Decode, repair and validate one stored memory inside its load boundary."""
+        await self._settle_library_granularities()
         with stored_document_boundary(kind="memory", name=memory_id):
-            data = _mig.stamp_stored(decode())
+            data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
             # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
             if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                 await self._repair_query_filters(query=data.get("query"), data_source=None)

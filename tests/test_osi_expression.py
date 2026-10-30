@@ -15,7 +15,7 @@ import sqlglot
 from slayer.core.enums import DataType
 from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.osi.expression import convert_expression
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).

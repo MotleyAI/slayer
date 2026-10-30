@@ -14,7 +14,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import ColumnKey, TimeTruncKey
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import (
     PlainProducerKernel,
     RankedProducerKernel,
@@ -114,7 +114,7 @@ class TestKernelSynthesis:
         planned = _plan(q(
             dimensions=["customers.tier"],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers.signup_at"),
+                dimension="customers.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(
@@ -186,6 +186,12 @@ def _ranked_kernel_of(planned) -> RankedProducerKernel:
     return attach.kernel
 
 
+def _ranking_leaf(planned) -> str:
+    key = _ranked_kernel_of(planned).ranking_time_key
+    assert isinstance(key, ColumnKey), key
+    return key.leaf
+
+
 class TestRankingKeyPrecedence:
     """Ported from ``test_dev1748_ranked_plan`` (retired): the per-scope
     ranking-column precedence, now pinned on the attach kernel."""
@@ -195,14 +201,14 @@ class TestRankingKeyPrecedence:
             dimensions=["status"],
             measures=[{"formula": "amount:last(shipped_at)", "name": "l"}],
         ))
-        assert _ranked_kernel_of(planned).ranking_time_key.leaf == "shipped_at"
+        assert _ranking_leaf(planned) == "shipped_at"
 
     def test_a_temporal_dimension_outranks_the_model_default(self) -> None:
         planned = _plan48(_q48(
             dimensions=["shipped_at"],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        assert _ranked_kernel_of(planned).ranking_time_key.leaf == "shipped_at"
+        assert _ranking_leaf(planned) == "shipped_at"
 
     def test_a_time_dimension_supplies_its_raw_column(self) -> None:
         """Never the truncated bucket — ranking within a month by the month
@@ -211,7 +217,7 @@ class TestRankingKeyPrecedence:
             time_dimensions=[{"dimension": "shipped_at", "granularity": "month"}],
             measures=[{"formula": "amount:last", "name": "l"}],
         ))
-        assert _ranked_kernel_of(planned).ranking_time_key.leaf == "shipped_at"
+        assert _ranking_leaf(planned) == "shipped_at"
 
     def test_the_model_default_is_the_last_resort(self) -> None:
         planned = _plan48(_q48(

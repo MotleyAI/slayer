@@ -13,8 +13,11 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
+    NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -53,10 +56,15 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     iif_case_chain,
     numeric_parts,
     render_arithmetic,
+    render_array_literal,
+    render_cast,
     render_in_predicate,
+    render_modulo,
+    render_null_safe,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
+    render_scalar_key,
     temporal_comparison,
 )
 from slayer.sql.scope import ScopeFrame
@@ -370,12 +378,17 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=ctx.dialect)
 
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=ctx.dialect)
+
     if isinstance(key, TimeTruncKey):
-        column = _require_scope(ctx, key).resolve(
-            key.column, consumer=ctx.consumer,
+        source = (
+            _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
+            if isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_bucket(col_expr=column, granularity=key.granularity)
+        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
@@ -385,6 +398,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
+        if key.op in NULL_SAFE_COMPARISON_OPS:
+            return render_null_safe(
+                op=key.op, operands=[render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
+            )
         op = key.op.lower()
         operands = numeric_parts(
             key=key, parts=[render_value_key(key=o, ctx=ctx) for o in key.operands],
@@ -396,6 +413,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             and op in _COMPARISON_OPS
         ):
             operands = [_paren_if_binary(o) for o in operands]
+        if op == "%":
+            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, column_type=_known_column_types(ctx))
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
@@ -413,15 +432,21 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
             )
-        return render_scalar_call(
-            name=key.name, args=args, dialect=ctx.dialect,
-        )
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+                                 part=lambda a: render_value_key(key=a, ctx=ctx),
+                                 column_element=ctx.scope.column_element if ctx.scope is not None else None)
 
     if isinstance(key, InKey):
         (column,) = numeric_parts(
             key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
         )
         return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+
+    if isinstance(key, CastKey):
+        return render_cast(
+            key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
+            direct=ctx.aliases is None or not _slot_available(key.source, ctx.aliases),
+        )
 
     if isinstance(key, AggregateKey):
         return _render_aggregate(key, ctx)

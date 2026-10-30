@@ -23,12 +23,11 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
     parse_expr,
-    parse_filter_expr,
     walk_parsed_refs,
 )
 from slayer.memories.resolver import _all_models_in_datasource
@@ -121,14 +120,14 @@ def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
 def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter via the execution filter parser.
 
-    Uses ``parse_filter_expr`` (the same parser execution binds with), so SQL operator
+    Uses ``parse_expr`` (the same parser execution binds with), so SQL operator
     spellings and aggregations in either spelling (``sum(x)``) are all
     handled uniformly and string literals never surface as references. ``ok`` is False
     when the filter is aggregate-bearing or unparseable — either way it contributes
     nothing to determination.
     """
     try:
-        parsed = parse_filter_expr(render_probe_text(filter_str))
+        parsed = parse_expr(render_probe_text(filter_str))
     except Exception:
         return [], False
     nodes = list(walk_parsed_refs(parsed))
@@ -155,8 +154,8 @@ def _filter_refs(
 def _query_dimension_refs(query: SlayerQuery) -> list[str]:
     """Row-valued refs of the query's dimensions + time dimensions.
 
-    Computed dimensions contribute their row-valued and partition_by refs (never
-    refs inside an aggregation); plain and time dimensions contribute their name.
+    Computed and time dimensions contribute their row-valued and partition_by refs
+    (never refs inside an aggregation); plain dimensions contribute their name.
     """
     refs: list[str] = []
     for dim in query.dimensions or []:
@@ -165,7 +164,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
         else:
             refs.append(dim.full_name)
     for td in query.time_dimensions or []:
-        refs.append(td.dimension.full_name)
+        refs.extend(_computed_dimension_refs(td.dimension))
     return refs
 
 
@@ -461,7 +460,7 @@ def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
             if not mentions_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
         ] or None,
         "time_dimensions": [
-            td for td in query.time_dimensions or [] if not names_spine(td.dimension.full_name)
+            td for td in query.time_dimensions or [] if not mentions_spine(td.dimension)
         ] or None,
         "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
         "measures": None,

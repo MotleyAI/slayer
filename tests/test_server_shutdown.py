@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import IO, Literal, NoReturn
 
@@ -426,6 +427,25 @@ def test_guard_stays_installed_after_signal_races_restore(monkeypatch: pytest.Mo
     finally:
         real_restore(guard)
     assert {sig: signal.getsignal(sig) for sig in _SIGNALS} == before
+
+
+class _Referent:
+    """A weakly referenceable object."""
+
+
+def test_termination_in_a_weakref_callback_prints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    unraisable: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    guard = slayer_cli._TerminationGuard(token=None)
+    try:
+        referent = _Referent()
+        ref = weakref.ref(referent, lambda _r: guard._handle(signal.SIGTERM, None))  # as during an import's lock
+        del referent
+    finally:
+        guard.restore()
+    assert ref() is None
+    assert unraisable == []
+    assert guard.signum == signal.SIGTERM
 
 
 @pytest.mark.parametrize("abandoned", [True, False])

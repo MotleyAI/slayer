@@ -43,6 +43,15 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
     sql_literal,
 )
+from tests._dev2120_fixtures import (
+    LIB,
+    check_library,
+    contractors_model,
+    contractors_statements,
+    lib_model,
+    server_table_statements as dev2120_table_statements,
+)
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
@@ -400,7 +409,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -416,7 +425,7 @@ class TestTrinoQueries:
     async def test_consecutive_periods_with_boolean_predicate(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="total:sum"),
                 ModelMeasure(formula="consecutive_periods(total:sum > 200)", name="positive_run"),
@@ -435,7 +444,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[ModelMeasure(formula="total:sum"), ModelMeasure(formula="change(total:sum)", name="amount_change")],
@@ -448,7 +457,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[ModelMeasure(formula="total:sum"), ModelMeasure(formula="change_pct(total:sum)", name="pct")],
@@ -461,7 +470,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -634,7 +643,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_cross_model_measure(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         result = await trino_cross_model_env.execute(query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         ))
@@ -645,7 +654,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_query_list_named(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
         outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
@@ -655,7 +664,7 @@ class TestCrossModelAndMultistageTrino:
     async def test_create_model_from_query(self, trino_cross_model_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
         saved = await trino_cross_model_env.create_model_from_query(query=source, name="trino_monthly")
@@ -1272,3 +1281,48 @@ def test_every_trino_alias_failure_is_quoted(trino_container) -> None:
                 dialect="trino", words=keyword_universe(), table="kw_probe", column="a",
                 fails=sa_statement_fails(engine), workers=8,
             ) == []
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_dev2120_storage(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, dev2120_table_statements(LIB, dialect="trino")) as schema:
+        yield _storage(
+            str(tmp_path_factory.mktemp("trino_dev2120")), _ds_config(trino_container, schema),
+            [lib_model(data_source=_DS)],
+        )
+
+
+@pytest.mark.integration
+class TestTrinoPortableLibrary:
+    async def test_library(self, _trino_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_trino_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_lists(trino_container, tmp_path_factory):
+    statements = [*contractors_statements(dialect="trino"), *assignments_statements(dialect="trino")]
+    with _seeded_schema(trino_container, statements) as schema:
+        ds = _ds_config(trino_container, schema)
+        yield _storage(str(tmp_path_factory.mktemp("trino_lists")), ds,
+                       [contractors_model(data_source=_DS), assignments_model(data_source=_DS)]), ds
+
+
+@pytest.mark.integration
+class TestTrinoLists:
+    async def test_lists(self, _trino_lists) -> None:
+        await check_lists(SlayerQueryEngine(storage=_trino_lists[0]), dialect="trino")
+
+    def test_list_columns_ingested(self, _trino_lists) -> None:
+        model = next(m for m in ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
+        typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
+        assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

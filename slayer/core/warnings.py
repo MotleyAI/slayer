@@ -3,9 +3,28 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+
+_caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
+
+
+@contextmanager
+def announced_by_caller() -> Iterator[None]:
+    """Inside the block the caller (a query response, a save) announces stored-document advisories, so loads do not."""
+    token = _caller_announces.set(True)
+    try:
+        yield
+    finally:
+        _caller_announces.reset(token)
+
+
+def caller_announces() -> bool:
+    return _caller_announces.get()
 
 
 class SlayerWarning(BaseModel):
@@ -234,6 +253,21 @@ class NarrowedAccessWarning(SlayerWarning):
         )
 
 
+class LibraryNameShadowWarning(SlayerWarning):
+    """Model ``model``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+
+    kind: Literal["library_name_shadow"] = "library_name_shadow"
+    model: str
+    aggregation: str
+    function: str
+
+    def human_message(self) -> str:
+        return (
+            f"model {self.model!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
+            f"columns is that aggregation, not the library function {self.function.lower()}()"
+        )
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -249,6 +283,7 @@ AnySlayerWarning = Annotated[
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
         NarrowedAccessWarning,
+        LibraryNameShadowWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -313,6 +348,17 @@ class SlayerStatementTimeoutSkippedWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``StatementTimeoutSkippedWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: StatementTimeoutSkippedWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerLibraryNameShadowWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``LibraryNameShadowWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: LibraryNameShadowWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

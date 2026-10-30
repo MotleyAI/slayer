@@ -7,7 +7,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 ### Requirement: Every Mode-B formula surface substitutes variables
 
-`{var}` placeholders SHALL be substituted from the query's effective variables in a query's filters, measure formulas, computed-dimension expressions (string and object form), and order expressions, using the Mode-B escaping regime: a string value is escaped so it stays inside the quoted literal the author wrote, a number or boolean is inserted verbatim, a list renders a Mode-B tuple, and `{{` / `}}` render literal braces. A query carrying placeholders on these surfaces SHALL construct successfully and SHALL execute with the substituted values.
+`{var}` placeholders in a query's filters, measure formulas, computed-dimension expressions (string and object form) and order expressions SHALL be bound from the query's effective variables as literal values, never as text spliced into the expression. A placeholder inside a string literal, wholly or partly (`'{status}'`, `'%{q}%'`), SHALL contribute its value's text to that literal; a placeholder in a bare literal position SHALL take a number or boolean value, a numeric string reading as its number; a placeholder forming the whole parenthesised list of `IN` SHALL take a list value. `{{` and `}}` inside a string literal SHALL render literal braces, and a brace pair inside a string literal whose contents are only digits, commas and spaces (`'[0-9]{3}'`, `'{1, 2, 3}'`, `'{}'`) SHALL be literal text, not a placeholder. A query carrying placeholders on these surfaces SHALL construct successfully and SHALL execute with the bound values.
 
 #### Scenario: Measure formula
 
@@ -32,11 +32,16 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 #### Scenario: Quoted string value is escaped
 
 - **WHEN** a measure contains `'{name}'` inside a quoted literal and `variables={"name": "O'Brien"}`
-- **THEN** the value stays inside the literal and the query executes without a parse error
+- **THEN** the literal's value is `O'Brien` and the query executes without a parse error
+
+#### Scenario: Digit-and-comma braces in a string literal
+
+- **WHEN** a filter is `regexp_like(code, '^[a-z]{1,2}[0-9]{2,}$')`, `status = '{1, 2, 3}'` or `status = '{}'`, with or without variables
+- **THEN** the braces stay in the literal and no variable is looked up
 
 ### Requirement: Saved measure formulas substitute on the models whose SQL surfaces substitute
 
-A saved `ModelMeasure.formula` SHALL substitute `{var}` under the Mode-B regime on exactly the models whose Mode-A surfaces substitute (the query's direct source model and each stage's own source model), using that model's effective variables. Its placeholders SHALL be reported by model variable inspection as required unless the model defaults them. A saved measure reached through a join or a cross-model reference SHALL NOT substitute, and a placeholder in it SHALL raise the unresolved-placeholder error.
+A saved `ModelMeasure.formula` SHALL bind `{var}` placeholders as literal values, by the same rules as query formula surfaces, on exactly the models whose Mode-A surfaces substitute (the query's direct source model and each stage's own source model), using that model's effective variables. Its placeholders SHALL be reported by model variable inspection as required unless the model defaults them. A saved measure reached through a join or a cross-model reference SHALL NOT substitute, and a placeholder in it SHALL raise the unresolved-placeholder error.
 
 #### Scenario: Saved measure on the source model
 
@@ -55,7 +60,7 @@ A saved `ModelMeasure.formula` SHALL substitute `{var}` under the Mode-B regime 
 
 ### Requirement: Time-dimension date ranges substitute variables; granularities and columns do not
 
-A time dimension's `date_range` bounds SHALL substitute `{var}` and SHALL then be validated as time points exactly like literal bounds. A placeholder in a time dimension's granularity or column SHALL be rejected with an error stating that variables supply literal values and cannot name a granularity or a column.
+A time dimension's `date_range` bounds SHALL substitute `{var}` and SHALL then be validated as time points exactly like literal bounds. A placeholder inside a time dimension's expression SHALL substitute a literal exactly as in a computed dimension's expression, and an unnamed such time dimension SHALL take its name from the pre-substitution template. A placeholder in a time dimension's granularity, or one standing for its whole dimension, SHALL be rejected with an error stating that variables supply literal values and cannot name a granularity or a column.
 
 #### Scenario: Variable date range
 
@@ -71,6 +76,11 @@ A time dimension's `date_range` bounds SHALL substitute `{var}` and SHALL then b
 
 - **WHEN** a time dimension has granularity `{g}`, or is written `"{g}(ordered_at)"`, or names column `{col}`
 - **THEN** the query is rejected with the error stating variables cannot name a granularity or a column
+
+#### Scenario: Literal placeholder in a time-dimension expression
+
+- **WHEN** a time dimension is `month(coalesce(shipped_at, created_at + INTERVAL '{days}' DAY))` with `variables={"days": 30}`
+- **THEN** rows with a NULL `shipped_at` are bucketed by `created_at` 30 days later, by executed values on SQLite and DuckDB, and its result key is derived from the template, not the value
 
 ### Requirement: Result names come from the template
 
@@ -147,3 +157,27 @@ A `{name}` placeholder that reaches query binding unsubstituted SHALL raise a ty
 
 - **WHEN** a measure is `sum(amount) * {a, b}`
 - **THEN** parsing it fails as unsupported syntax, and executing it fails with the invalid-variable-name error, as in filters
+
+### Requirement: Variables supply literal values only
+
+A placeholder in any other position — an identifier or path segment (`{col}:sum`, `t.{c}`), a function name (`{f}(x)`), a keyword argument's name, or a value that must be a reference (`partition_by={x}`) — SHALL be rejected with an error stating that variables supply literal values. A string value bound into a bare literal position SHALL be rejected with the same error plus a hint to put the placeholder inside quotes. No variable value SHALL ever change the structure of the expression it is bound into.
+
+#### Scenario: Identifier injection rejected
+
+- **WHEN** a query on `orders` has measure `sum({col})` with `variables={"col": "amount"}`
+- **THEN** it fails with the literal-values error and the hint to quote the placeholder
+
+#### Scenario: Function and path positions rejected
+
+- **WHEN** a measure is `{f}(amount)`, or a dimension is `customers.{c}`, or a measure is `sum(amount, partition_by={x})`
+- **THEN** each fails with the literal-values error
+
+#### Scenario: Numeric string in a bare position
+
+- **WHEN** a filter is `amount > {min}` with `variables={"min": "10"}`
+- **THEN** it keeps the rows with amount above 10
+
+#### Scenario: Hostile string stays a literal
+
+- **WHEN** a filter is `status = '{s}'` with `variables={"s": "x' OR '1' = '1"}`
+- **THEN** it keeps only the rows whose status equals that whole string — none, on data without it

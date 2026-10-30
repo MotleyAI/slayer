@@ -638,8 +638,8 @@ operand value) and `count_distinct`, parametric and model-defined custom
 aggregations — including multi-input built-ins and column-reference parameters
 resolvable at row scope — and its own `partition_by=` and `window=`, each
 resolved by the same rules as over a plain expression source. `first`/`last`
-over the mixed expression SHALL keep the existing not-supported-over-an-
-expression error. The shape SHALL be legal in measure, filter (typing as a
+over the mixed expression SHALL be the ranked aggregation, picking the mixed
+value at the ranked row of each cell. The shape SHALL be legal in measure, filter (typing as a
 measure: pruning result rows without altering surviving values), and ORDER BY
 positions, and as a computed dimension when grain-self-contained (the outer and
 every inner aggregate explicitly grained). No producer or grouping step may
@@ -765,8 +765,10 @@ its `partition_by=` still gets the outer attach the grain join needs.
 
 #### Scenario: Ranked aggregation over a mixed source keeps the expression error
 - **WHEN** a query selects `first(quantity * avg(unit_price, partition_by=product))`
-- **THEN** it fails with the existing error that `first` is not supported over
-  an expression — never a mixing error and never wrong values
+- **THEN** it is no longer an error: each cell carries `quantity` times its
+  product's average unit price on the cell's earliest row by the ranking key, by
+  hand-computed executed values on SQLite and DuckDB — never the transform
+  reading, a mixing error or wrong values
 
 #### Scenario: Filter and order positions
 - **WHEN** the mixed measure appears only in a filter
@@ -1395,3 +1397,67 @@ cells takes the outer aggregation's empty value (0 for the count family, NULL ot
 - **WHEN** a query rooted at `customers` with no dimensions selects
   `sum(max(account_snapshots.balance, partition_by=[account_snapshots.account_id, id]))`
 - **THEN** it returns exactly one row carrying the sum over all account cells
+
+### Requirement: Partition keys accept row-level expressions
+A `partition_by=` key of an aggregation or a rank-family transform SHALL be any
+row-level Mode-B expression — a column being the one-leaf case — or the name of a
+query dimension, computed dimension or time dimension. An expression key
+structurally equal to a query computed dimension's expression or to a time
+dimension's bucket SHALL be that dimension, attach-carrying computed dimensions
+included; an expression key equal to a projected time dimension's source SHALL be
+its bucket, exactly as a column key is, and SHALL fail with the existing ambiguity
+error when that source is projected at several granularities. Any other key
+carrying an aggregate, transform or attached value SHALL fail with a typed error
+naming the key and the remedy of declaring it as a computed dimension and naming it
+in `partition_by=`. An expression key SHALL follow every rule a column key follows:
+the combined-consumer rule (it is a query dimension iff it is one of the query's
+dimension keys by structural identity), attributability from the aggregate's root
+judged over every leaf the expression reads (per › Partition keys are attributable
+from the aggregate's root), the finer-grain exemptions, and the rank family's
+operand-grain membership; a producer grouping by it SHALL group by the expression's
+per-row value.
+
+#### Scenario: Partition by an expression in a computed-dimension position
+- **WHEN** a query over `[region, upper(city)]` selects
+  `sum(amount, partition_by=upper(city))`
+- **THEN** each row carries its upper-cased city's total, by executed values on
+  SQLite and DuckDB, identical to declaring the computed dimension `ucity` and writing
+  `partition_by=ucity`
+
+#### Scenario: Expression key that is not a query dimension in a combined position
+- **WHEN** a query over `[region]` selects `sum(amount, partition_by=upper(city))` as a
+  measure
+- **THEN** it fails at plan time with the partition-key error naming `upper(city)` and
+  the remedy
+
+#### Scenario: Expression key under the finer-grain exemption
+- **WHEN** a query over `[region]` selects
+  `avg(sum(amount, partition_by=[region, upper(city)]))`
+- **THEN** each region carries the average of its upper-cased-city totals, by executed
+  values
+
+#### Scenario: Rank family partitioned by an expression
+- **WHEN** a query over `[region, upper(city)]` selects
+  `rank(sum(amount), partition_by=upper(city), direction='desc')`
+- **THEN** regions are ranked within each upper-cased city, by executed values
+
+#### Scenario: Expression key equal to a time dimension's source
+- **WHEN** a query buckets `coalesce(shipped_at, created_at)` at `month`, groups by
+  `region`, and selects `sum(amount, partition_by=coalesce(shipped_at, created_at))`
+- **THEN** the key is the month bucket and each row carries its month's total across
+  regions; projecting the same source also at `year` makes the key fail with the
+  ambiguity error
+
+#### Scenario: Joined leaf over an unproven hop errors
+- **WHEN** an aggregate declares `partition_by=upper(r.name)` where `r` is reachable
+  only across a join of unproven arity, under `"broadcast"` or `"error"` mode
+- **THEN** the query fails with the partition-key attributability error naming the
+  leaf, the hop and the remedy
+
+#### Scenario: Aggregate-bearing inline key rejected
+- **WHEN** an aggregate declares
+  `partition_by=CASE WHEN sum(amount, partition_by=city) > 100 THEN 'hi' ELSE 'lo' END`
+  and no query computed dimension has that expression
+- **THEN** it fails with the typed error naming the key and the computed-dimension
+  remedy; the same key equal to a query computed dimension's expression executes as
+  that dimension

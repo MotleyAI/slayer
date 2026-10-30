@@ -180,7 +180,7 @@ class TestSqliteMemoriesPkMigration:
             assert rows[0].id == "1"
             assert rows[0].learning == "legacy"
             assert rows[0].entities == ["mydb.orders"]
-            assert rows[0].version == 4
+            assert rows[0].version == 7
 
 
 @pytest.fixture(autouse=True)

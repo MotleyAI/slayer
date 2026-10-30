@@ -6,11 +6,11 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from pydantic import BaseModel
 
-from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS
+from slayer.core.enums import JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
 from slayer.core.join_search import HopFilter, routes
 from slayer.core.join_walker import (
@@ -27,6 +27,7 @@ from slayer.core.join_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL
 from slayer.core.keys import (
+    is_ranked,
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
     ColumnKey,
@@ -235,7 +236,7 @@ def _contradiction_finding(finding) -> JoinSafetyFinding:
 
 def key_host_path(key: ValueKey) -> Tuple[str, ...]:
     if isinstance(key, TimeTruncKey):
-        return tuple(getattr(key.column, "path", ()) or ())
+        return source_anchor_path(key)
     return tuple(getattr(key, "path", ()) or ())
 
 
@@ -423,6 +424,8 @@ def _reroot_leaf_via_host(
 ) -> Optional[ValueKey]:
     if not isinstance(r, (ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey)):
         return None
+    if isinstance(r, TimeTruncKey) and not isinstance(r.source, (ColumnKey, ColumnSqlKey)):
+        return None  # an expression's leaves reroot one by one
     hp = key_host_path(r)
     if isinstance(r, ColumnKey) and _is_product_path(hp, host_name=host_name, models_by_name=models_by_name):
         route = home_spine_route(root_model=root_model, models_by_name=models_by_name)
@@ -443,7 +446,7 @@ def _reroot_leaf_via_host(
         return None  # resolved through the root's own join to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
-            "column": r.column.model_copy(update={"path": via_host}),
+            "source": cast(ColumnKey | ColumnSqlKey, r.source).model_copy(update={"path": via_host}),
         })
     return r.model_copy(update={"path": via_host})
 
@@ -460,8 +463,8 @@ def reroot_from_root(
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        # The walk also yields TimeTruncKey.column, but substitute matches the
-        # whole TimeTruncKey pre-order, so the inner-column entry is inert.
+        # A column bucket reroots whole (substitute matches it pre-order, so its
+        # inner-column entry is inert); an expression bucket's leaves reroot alone.
         rerooted = _reroot_leaf_via_host(
             r, target_path=tp, root_model=root_model,
             models_by_name=models_by_name, host_name=host_name,
@@ -687,7 +690,7 @@ def undetermined_witness(
 def _determination_operands(key: ValueKey) -> Optional[Iterable[ValueKey]]:
     """The operands whose determination decides ``key``'s, else ``None`` (opaque)."""
     if isinstance(key, TimeTruncKey):
-        return (key.column,)
+        return (key.source,)
     if isinstance(key, AggregateKey):
         return key.partition_keys
     if isinstance(key, (*SLOT_COMPOSITE_KINDS, SqlFragmentKey)):
@@ -842,7 +845,7 @@ def crossing_local_root_predicate(
             # host-rooted producer (as ``_local_broadcasts`` excludes).
             and k.locus != "host"
             and window_kwarg_of(k) is None
-            and k.agg not in RANKED_AGGREGATIONS
+            and not is_ranked(k)
             and host_model is not None
             and _crosses(k, host=host_model)
         )

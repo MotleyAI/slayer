@@ -47,6 +47,7 @@ import statistics
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 import pytest
 import sqlalchemy as sa
@@ -94,6 +95,21 @@ from tests._dev2046_fixtures import (
     m as bool_measure,
     orders_q,
     seed_statements as dev2046_seed_statements,
+)
+from tests._dev2101_fixtures import (
+    check_filtered_aggregations,
+    check_null_ordering,
+    check_server_forms,
+    check_try_cast,
+    dev2101_models,
+    seed_server as dev2101_seed_server,
+)
+from tests._dev2120_fixtures import (
+    LIB,
+    REGEX_NAMES,
+    check_library,
+    lib_model,
+    server_table_statements as dev2120_table_statements,
 )
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
@@ -458,7 +474,7 @@ class TestSQLServerQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -476,7 +492,7 @@ class TestSQLServerQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(formula="total:sum"),
@@ -497,7 +513,7 @@ class TestSQLServerQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -514,7 +530,7 @@ class TestSQLServerQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -531,7 +547,7 @@ class TestSQLServerQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -626,7 +642,7 @@ class TestCrossModelAndMultistageSQLServer:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -642,7 +658,7 @@ class TestCrossModelAndMultistageSQLServer:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -654,7 +670,7 @@ class TestCrossModelAndMultistageSQLServer:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -1217,7 +1233,7 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
     query = SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )],
         measures=[
             ModelMeasure(formula="total:sum"),
@@ -1604,3 +1620,195 @@ def test_every_sqlserver_alias_failure_is_quoted(sqlserver_container) -> None:
             ) == []
     finally:
         _drop_module_db(sqlserver_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Mode-B SQL grammar (spec: queries/expression-grammar, queries/casts, queries/positions)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_dev2101_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            raw = engine.raw_connection()
+            try:
+                dev2101_seed_server(raw.cursor(), dialect="tsql")
+                raw.commit()
+            finally:
+                raw.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dev2101")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in dev2101_models(data_source="testmssql"):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerModeBGrammar:
+    async def test_sql_forms(self, _sqlserver_dev2101_storage) -> None:
+        await check_server_forms(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_null_ordering_over_aliased_targets(self, _sqlserver_dev2101_storage) -> None:
+        await check_null_ordering(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_try_cast(self, _sqlserver_dev2101_storage) -> None:
+        await check_try_cast(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_filtered_aggregations(self, _sqlserver_dev2101_storage) -> None:
+        await check_filtered_aggregations(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+
+# ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def sqlserver_2025_container():
+    """SQL Server 2025, the first release with the regex functions."""
+    with SqlServerContainer("mcr.microsoft.com/mssql/server:2025-latest", password=_SA_PASSWORD) as c:
+        yield c
+
+
+def _dev2120_storage(container, tmp_path_factory, *, label: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_db_url(container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_dev2120_{label}")))
+        run_sync(storage.save_datasource(_ds_config(container, db_name)))
+        run_sync(storage.save_model(lib_model(data_source="testmssql")))
+        yield storage
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _sqlserver_2022_dev2120_storage(sqlserver_container, tmp_path_factory):
+    yield from _dev2120_storage(sqlserver_container, tmp_path_factory, label="2022")
+
+
+@pytest.fixture(scope="module")
+def _sqlserver_2025_dev2120_storage(sqlserver_2025_container, tmp_path_factory):
+    yield from _dev2120_storage(sqlserver_2025_container, tmp_path_factory, label="2025")
+
+
+@pytest.mark.integration
+class TestSQLServerPortableLibrary:
+    async def test_library_on_2022_refuses_regex(self, _sqlserver_2022_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_sqlserver_2022_dev2120_storage), gated=REGEX_NAMES,
+                            refusal="2025")
+
+    async def test_library_on_2025(self, _sqlserver_2025_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_sqlserver_2025_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# JSON scalars over 4,000 characters and long split_part fields (spec: queries/json › Long scalar on SQL Server)
+# ---------------------------------------------------------------------------
+
+_LONG = "x" * 5000
+_LONG_FIELD = "y" * 5000
+_JDOCS: dict[int, tuple[str, str | None]] = {
+    1: (f'{{"a": "{_LONG}"}}', f"{_LONG_FIELD}/tail"),
+    2: ('{"a": "short"}', "a/b"),
+    3: ('{"a": {"k": 1}}', None),
+    4: ('{"a": [1]}', None),
+    5: ('{"a": null}', None),
+    6: ("{}", None),
+    7: ("not json", None),
+    8: ('{"b": {"c": "nested"}, "q k": "quoted", "n": 42}', None),
+    9: ('"rootscalar"', None),
+}
+_SHORT_IDS = sorted(set(_JDOCS) - {1})
+
+
+def _jdocs_storage(container, tmp_path_factory, *, label: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_db_url(container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text("CREATE TABLE jdocs (id INT PRIMARY KEY, payload NVARCHAR(MAX), "
+                                     "txt NVARCHAR(MAX))"))
+                for rid, (payload, txt) in _JDOCS.items():
+                    conn.execute(sa.text("INSERT INTO jdocs VALUES (:id, :payload, :txt)"),
+                                 {"id": rid, "payload": payload, "txt": txt})
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_jdocs_{label}")))
+        run_sync(storage.save_datasource(_ds_config(container, db_name)))
+        run_sync(storage.save_model(SlayerModel(name="jdocs", sql_table="jdocs", data_source="testmssql", columns=[
+            Column(name="id", type=DataType.INT, primary_key=True), Column(name="payload", type=DataType.TEXT),
+            Column(name="txt", type=DataType.TEXT),
+        ])))
+        yield storage
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module", params=["2022", "2025"])
+def _jdocs(request, tmp_path_factory):
+    container = request.getfixturevalue("sqlserver_container" if request.param == "2022" else "sqlserver_2025_container")
+    yield from _jdocs_storage(container, tmp_path_factory, label=request.param)
+
+
+def _jq(*dims: Any, ids: Optional[list[int]] = None, **body: Any) -> SlayerQuery:
+    filters = [f"id IN ({', '.join(map(str, ids))})"] if ids else []
+    filters += body.pop("filters", [])
+    return SlayerQuery.model_validate({"source_model": "jdocs", "dimensions": list(dims), "filters": filters, **body})
+
+
+def _per_id(resp, name: str = "v") -> dict[int, Any]:
+    return {int(r["jdocs.id"]): r[f"jdocs.{name}"] for r in resp.data}
+
+
+def _v(expr: str) -> dict[str, str]:
+    return {"expression": expr, "name": "v"}
+
+
+@pytest.mark.integration
+class TestSQLServerLongJsonScalars:
+    @pytest.mark.parametrize("expr", ["json_value(payload, '$.a')", "payload ->> 'a'",
+                                      "json_value(payload, '$.a' RETURNING TEXT)"])
+    async def test_long_scalar_fails_loud(self, _jdocs, expr: str) -> None:
+        engine, query = SlayerQueryEngine(storage=_jdocs), _jq("id", _v(expr))
+        with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
+            await engine.execute(query)
+
+    async def test_long_scalar_fails_loud_grouped(self, _jdocs) -> None:
+        query = _jq(_v("json_value(payload, '$.a')"), measures=[{"formula": "count(*)", "name": "n"}])
+        engine = SlayerQueryEngine(storage=_jdocs)
+        with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
+            await engine.execute(query)
+
+    async def test_short_missing_null_object_array_malformed(self, _jdocs) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v("json_value(payload, '$.a')"), ids=_SHORT_IDS))
+        assert _per_id(resp) == {rid: "short" if rid == 2 else None for rid in _SHORT_IDS}, resp.sql
+
+    async def test_grouped_having_ordered(self, _jdocs) -> None:
+        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, measures=[{"formula": "count(*)", "name": "n"}],
+                    filters=["n >= 1"], order=[{"column": "v"}])
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(query)
+        assert {r["jdocs.v"]: int(r["jdocs.n"]) for r in resp.data} == {"short": 1, None: len(_SHORT_IDS) - 1}, resp.sql
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("json_value(payload, '$.b.c')", {8: "nested"}),
+        ("json_value(payload, '$.\"q k\"')", {8: "quoted"}),
+        ("json_value(payload, '$')", {9: "rootscalar"}),
+        ("json_value(payload, '$.n' RETURNING INT)", {8: 42}),
+    ])
+    async def test_paths(self, _jdocs, expr: str, expected: dict[int, Any]) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+        assert _per_id(resp) == {rid: expected.get(rid) for rid in _JDOCS}, resp.sql
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("split_part(txt, '/', 1)", {1: _LONG_FIELD, 2: "a"}),
+        ("split_part(txt, '/', -1)", {1: "tail", 2: "b"}),
+        ("split_part(txt, '/', 2)", {1: "tail", 2: "b"}),
+        ("split_part(txt, '/', 3)", {1: "", 2: ""}),
+    ])
+    async def test_split_part_has_no_length_limit(self, _jdocs, expr: str, expected: dict[int, Any]) -> None:
+        resp = await SlayerQueryEngine(storage=_jdocs).execute(_jq("id", _v(expr)))
+        assert _per_id(resp) == {rid: expected.get(rid) for rid in _JDOCS}, resp.sql

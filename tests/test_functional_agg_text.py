@@ -3,7 +3,7 @@
 import pytest
 
 from slayer.core import refs
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 
 
 @pytest.mark.parametrize(

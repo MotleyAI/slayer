@@ -20,11 +20,13 @@ from typing import get_args
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -51,7 +53,7 @@ def _samples() -> dict:
         ColumnKey: ColumnKey(path=(), leaf="spend"),
         ColumnSqlKey: ColumnSqlKey(path=(), model="customers", column_name="cr"),
         TimeTruncKey: TimeTruncKey(
-            column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.DAY,
+            source=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.DAY,
         ),
         StarKey: StarKey(path=()),
         LiteralKey: LiteralKey(value=Decimal("1")),
@@ -79,6 +81,8 @@ def _samples() -> dict:
         SqlFragmentKey: SqlFragmentKey(
             template="{r0} * 2", refs=(ColumnKey(path=(), leaf="spend"),),
         ),
+        CastKey: CastKey(source=ColumnKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INT),
+        ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     }
 
 
@@ -130,10 +134,10 @@ class TestPrependLeafKinds:
 
     def test_time_trunc_prepends_wrapped_column(self) -> None:
         out = K.prepend_value_key(
-            TimeTruncKey(column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH),
             host_path=HOST,
         )
-        assert out.column == ColumnKey(path=("customers",), leaf="signup_at")
+        assert out.source == ColumnKey(path=("customers",), leaf="signup_at")
 
     def test_deep_host_path_prefixes_fully(self) -> None:
         out = K.prepend_value_key(ColumnKey(path=(), leaf="pop"), host_path=DEEP)
@@ -174,7 +178,7 @@ class TestPrependCompositeKinds:
                 input=AggregateKey(source=ColumnKey(path=(), leaf="spend"), agg="sum"),
                 partition_keys=Grain.of({ColumnKey(path=(), leaf="tier")}),
                 time_key=TimeTruncKey(
-                    column=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
+                    source=ColumnKey(path=(), leaf="signup_at"), granularity=TimeGranularity.MONTH,
                 ),
             ),
             host_path=HOST,
@@ -183,7 +187,7 @@ class TestPrependCompositeKinds:
         assert isinstance(out.time_key, TimeTruncKey)
         assert out.input.source == ColumnKey(path=("customers",), leaf="spend")
         assert out.partition_keys == Grain.of({ColumnKey(path=("customers",), leaf="tier")})
-        assert out.time_key.column == ColumnKey(path=("customers",), leaf="signup_at")
+        assert out.time_key.source == ColumnKey(path=("customers",), leaf="signup_at")
 
     def test_arithmetic_scalarcall_time_point_in(self) -> None:
         out = K.prepend_value_key(

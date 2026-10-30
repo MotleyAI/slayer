@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -12,7 +13,7 @@ from slayer.core.errors import UnknownFunctionError
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Cmp, Literal, Ref, parse_expr, parse_filter_expr
+from slayer.core.syntax import AggCall, Cmp, Literal, Ref, parse_expr
 from tests._engine_helpers import _engine_generate
 from tests._query_heal_fixtures import (
     BACKENDS,
@@ -80,14 +81,14 @@ class TestCountDistinctParse:
         assert parse_expr(healed) == parse_expr(canonical_text)
 
     def test_filter_position(self) -> None:
-        assert parse_filter_expr("count(distinct customer_id) > 1") == parse_filter_expr(
+        assert parse_expr("count(distinct customer_id) > 1") == parse_expr(
             "count_distinct(customer_id) > 1")
 
     def test_identifier_starting_with_distinct_untouched(self) -> None:
         assert parse_expr("count(distinct_id)") == AggCall(source=Ref(name="distinct_id"), agg="count")
 
     def test_quoted_distinct_unchanged(self) -> None:
-        assert parse_filter_expr("status == 'count(distinct x)'") == Cmp(
+        assert parse_expr("status == 'count(distinct x)'") == Cmp(
             op="==", left=Ref(name="status"), right=Literal(value="count(distinct x)"))
 
     @pytest.mark.parametrize("expr", [
@@ -149,13 +150,12 @@ class TestMethodCallParse:
         assert parse_expr(healed) == parse_expr(canonical_text)
 
     def test_filter_position(self) -> None:
-        assert parse_filter_expr("order_items.count(*) > 1") == parse_filter_expr("count(order_items.*) > 1")
+        assert parse_expr("order_items.count(*) > 1") == parse_expr("count(order_items.*) > 1")
 
     @pytest.mark.parametrize(("expr", "functional"), [
         ("order_items.weighted_avg(price, qty)", "weighted_avg(order_items."),
         ("order_items.sum(products.price)", "sum(order_items."),
         ("order_items.sum(price, partition_by=region)", "sum(order_items.price"),
-        ("order_items.round(price)", "round(order_items.price)"),
         ("order_items.cumsum(price)", "cumsum("),
     ])
     def test_ambiguous_shapes_show_functional_spelling(self, expr: str, functional: str) -> None:
@@ -172,6 +172,11 @@ class TestMethodCallExecuted:
         self, engine: SlayerQueryEngine, healed: str, canonical_text: str,
     ) -> None:
         await assert_equivalent(engine, by_region(healed), by_region(canonical_text))
+
+    async def test_a_library_function_shows_functional_spelling_at_binding(self, engine: SlayerQueryEngine) -> None:
+        query = by_region("order_items.round(price)")
+        with pytest.raises(ValueError, match=re.escape("round(order_items.price)")):
+            await engine.execute(query)
 
     async def test_granularity_dimension_equals_functional_twin(self, engine: SlayerQueryEngine) -> None:
         def query(dimension: str) -> dict[str, Any]:

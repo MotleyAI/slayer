@@ -471,7 +471,7 @@ class TestRendersEveryKeyKind:
         """Exact per-dialect SQL — a substring check would accept a truncation
         at the wrong granularity or over the wrong column."""
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
+            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
@@ -487,7 +487,7 @@ class TestRendersEveryKeyKind:
         defect this module exists to remove.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
+            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect)
         if dialect == "sqlite":
@@ -502,7 +502,7 @@ class TestRendersEveryKeyKind:
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
         key = TimeTruncKey(
-            column=ColumnKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
+            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "WEEK_SUNDAY" not in out.upper(), out
@@ -758,7 +758,7 @@ _SCALAR_MATRIX = [
      "orders.label || 'x'", "orders.label + 'x'"),
     # T-SQL LEN drops trailing spaces; an NVARCHAR(MAX) copy plus a sentinel keeps them.
     ("length", (ColumnKey(leaf="label"),),
-     "LENGTH(orders.label)", "(LEN(CAST(orders.label AS NVARCHAR(MAX)) + 'x') - 1)"),
+     "LENGTH(orders.label)", "(LEN((CAST(orders.label AS NVARCHAR(MAX)) + 'x') COLLATE Latin1_General_100_CS_AS_SC) - 1)"),
 ]
 
 
@@ -817,16 +817,16 @@ class TestB5ScalarCallPolicy:
         assert "DECIMAL" in out.upper(), out
 
     def test_like_stays_the_sql_operator(self) -> None:
-        """``like(value, pattern)`` is the one allowlist member that is an
-        OPERATOR, not a function call. Both legacy paths special-case it; the
-        unified renderer keeps that."""
+        """``like(value, pattern)`` is an OPERATOR, not a function call, with the backslash
+        escape of the one LIKE pattern language."""
         key = ScalarCallKey(
             name="like",
             args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
-        assert isinstance(out, exp.Like)
-        assert _sql(out) == "orders.label LIKE 'x%'"
+        assert isinstance(out, exp.Escape)
+        assert isinstance(out.this, exp.Like)
+        assert _sql(out) == "orders.label LIKE 'x%' ESCAPE '\\'"
 
     def test_nested_scalar_calls_use_one_policy_throughout(self) -> None:
         """The policy applies at every depth — a nested call must not fall back
@@ -1320,7 +1320,7 @@ class TestOuterWrapperAndShiftedCteFamilies:
                 source_model="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension=ColumnRef(name="created_at"),
+                        dimension="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
@@ -1373,13 +1373,13 @@ def _mutation_cases():
         ),
         (
             "TimeTruncKey.granularity",
-            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(column=col, granularity=TimeGranularity.YEAR),
+            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=col, granularity=TimeGranularity.YEAR),
         ),
         (
-            "TimeTruncKey.column",
-            TimeTruncKey(column=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(column=other, granularity=TimeGranularity.MONTH),
+            "TimeTruncKey.source",
+            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=other, granularity=TimeGranularity.MONTH),
         ),
         ("StarKey.path", StarKey(), StarKey(path=("customers",))),
         (
@@ -1871,7 +1871,7 @@ class TestParserAndBinderScalarSetsAgree:
         """Names whose Mode-B call is not the same SQL function: the LIKE and
         CASE rewrite targets, and the dialect-rendered date functions."""
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
-            "like", "iif", "date_part", "date_diff", "date_add", "interval",
+            "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
             "current_date", "now",
         }
 

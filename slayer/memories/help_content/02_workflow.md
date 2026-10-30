@@ -12,7 +12,7 @@
 Decompose the question into blocks first: every qualifier, projected column, filter,
 grouping, unit, rounding, and ordering hint is one block, and each must map to a named
 column, measure, filter or dimension. Never drop a qualifier because no entity matched:
-search for it, else encode it as an expression or an inline extension column; reference
+search for it, else encode it as an expression where it is used; reference
 already-encoded quantities by name rather than re-deriving them. Pin explicitly rather
 than guessing: which aggregation ("typical" is not automatically avg vs median), the
 grouping column and raw vs standardized labels, each aggregate's scope (all rows vs a
@@ -22,7 +22,7 @@ show" is the rows.
 
 ## Filter literals
 
-Build every `==` / `in` / `like` condition on a text column from that column's
+Build every `=` / `in` / `like` condition on a text column from that column's
 sampled values (inspect it with `compact=false`), never a guessed spelling; samples are a top-N snapshot,
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.

@@ -16,7 +16,11 @@ SLayer surfaces drift as a first-class concept across three behaviours:
    query fails and surfaces the structured drift payload instead of the
    raw DBAPI message. It checks only the models the failed statement read,
    reuses live-schema facts for up to 60 seconds, and its `models` lists
-   the drifted models.
+   the drifted models. It wraps the failure only when a drift entry touches
+   what the statement reads — a whole-model drop, a column it reads (also
+   through a derived column or as a join key), a join it crosses, a measure
+   or aggregation it uses, any model filter, or a re-type finding on a
+   column it reads; any other drift leaves the original database error.
 
 Use `validate_models` to inspect drift; use `slayer validate-models
 --force-clean` (CLI only) to apply the deletes.
@@ -32,7 +36,8 @@ Drift is computed per source mode:
   `INTEGER` and `FLOAT` collapse to `number`, `DATE` and `TIMESTAMP`
   collapse to `temporal`. A column flags as drift only when the bucket
   changes — switching `BIGINT` ↔ `FLOAT` is *not* drift, but
-  `NUMBER` ↔ `STRING` is.
+  `NUMBER` ↔ `STRING` is. On SQLite, which stores dates as text, a `DATE` or
+  `TIMESTAMP` column over a live `TEXT` column is not drift.
 * **`sql`** — trial-execute `SELECT * FROM (<model.sql>) AS _sd_validate
   WHERE 1=0`. Successful execution exposes cursor metadata (column names
   and types), which goes through the same column-level diff. A failed
@@ -74,14 +79,30 @@ references that resolve into another datasource are skipped silently.
 
 ## Two-pass invariant for type drift
 
-The idempotent ingestion pass is *additive only*: it never re-types an
-existing column. Type-bucket drift on a column whose name still exists
+The idempotent ingestion pass is *additive only*: it re-types an existing
+column only when a non-list column's live column is now a list (see
+[List re-type findings](#list-re-type-findings)). Type-bucket drift on a column whose name still exists
 in `model.columns` is detected in a different pass — `validate_models`
 re-introspects every persisted column and emits a `drop_column` for any
 bucket mismatch. On the user's next idempotent re-ingest after they
 apply the drop, the additive pass freshly adds the column with the
 correct live type. The two-pass flow handles type drift implicitly
 without the additive pass needing a dedicated code path.
+
+## List re-type findings
+
+A stored non-list column whose live column is a native list is reported as a
+report-only `list_retype` finding (`{finding: "list_retype", model_name,
+data_source, column, live_type, summary}`) naming re-ingestion as the remedy,
+never as a column to delete; re-ingesting re-types the column to the list in
+place, keeping only `count` among its `allowed_aggregations`, and a query
+failure explained by such a column raises `SchemaDriftError` carrying the
+finding.
+
+An `sql`-mode model is treated the same way, its result columns typed from the
+live schema of the tables its query reads (else from the type the database
+reports for the result column), so a list the query returns is found even on
+BigQuery, whose driver reports a repeated result column by its element type.
 
 ## Output shape
 

@@ -47,7 +47,7 @@ from slayer.engine.cardinality import (
     declares_solo_unique,
 )
 from slayer.core.policy import SessionPolicy
-from slayer.core.format import format_number
+from slayer.core.format import encode_text, format_number
 from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
@@ -63,6 +63,7 @@ from slayer.core.query import (
     OrderItem,
     QueryRefinement,
     SlayerQuery,
+    computed_dimension_name,
     extract_variable_refs,
     granularity_call_parts,
     refine_query,
@@ -87,22 +88,25 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    LibraryNameShadowWarning,
     NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerLibraryNameShadowWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
+    announced_by_caller,
 )
-from slayer.core.refs import auto_name_from_expression, functional_agg_text
+from slayer.core.refs import functional_agg_text
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
     RootModelRecommendation,
 )
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,
@@ -120,12 +124,15 @@ from slayer.ir.planned import (
     is_spliced,
     plan_has_semi_join_filters,
     plans_read_clock,
+    planned_keys,
 )
 from slayer.engine.schema_drift import (
     AppliedEntry,
     ApplyDriftResult,
     ApplyError,
     LiveSnapshotCache,
+    REPORT_ONLY_FINDINGS,
+    ListRetypeFinding,
     NarrowedAccessFinding,
     ToDeleteEntry,
     unloadable_model_delete,
@@ -141,6 +148,8 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
+from slayer.engine.statement_reads import StatementReads, statement_reads
+from slayer.engine.binding import collect_bind_records
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
@@ -164,6 +173,7 @@ from slayer.sql.client import (
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.render.library import check_library_support
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
@@ -315,7 +325,7 @@ def _merge_query_variables(
 
 def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
     """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
-    if d.name != auto_name_from_expression(d.template):
+    if d.name != computed_dimension_name(d.template):
         return False
     call = granularity_call_parts(d.expression)
     return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
@@ -340,7 +350,7 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
             dimensions.append(d.name or d.expression)
     time_dimensions = [
         f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
-        f"({td.dimension.full_name})"
+        f"({td.dimension})"
         for td in query.time_dimensions or []
     ]
     columns = [*dimensions, *time_dimensions, *granularity_calls]
@@ -598,6 +608,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
         elif isinstance(w, UnrelatedDatasetWarningPayload):
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
+        elif isinstance(w, LibraryNameShadowWarning):
+            _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -627,12 +639,10 @@ class SlayerResponse(BaseModel):
 
     def _format_value(self, column: str, value: Any) -> str:
         """Format a single cell value using column format metadata if available."""
-        if value is None:
-            return ""
         fm = self.attributes.get(column)
         if fm and fm.format and isinstance(value, (int, float, decimal.Decimal)):
             return format_number(value=value, format_spec=fm.format)
-        return str(value)
+        return encode_text(value)
 
     def to_markdown(self) -> str:
         """Format data as a Markdown table with number formatting applied."""
@@ -660,6 +670,8 @@ class _Prepared(BaseModel):
     expected_columns: List[str]
     # The persisted models the statement reads (drift-attribution scope).
     touched: Set[str]
+    # The elements of those models it reads (drift attribution).
+    reads: StatementReads = PydanticField(default_factory=StatementReads)
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
@@ -684,6 +696,7 @@ class _Rendered(BaseModel):
     model: SlayerModel
     # Models whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
+    element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
@@ -789,8 +802,26 @@ class SlayerQueryEngine:
             ),
         )
 
-    async def _require_correlated_subqueries(
+    async def _render_dialect(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+    ) -> "str | SqlDialect":
+        """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
+        name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
+        as an unknown server. A library call the dialect does not translate is refused first."""
+        sql_dialect = dialect_for_ds_type(datasource.type)
+        if sql_dialect.sqlglot_name != dialect:
+            sql_dialect = get_dialect(dialect)
+        check_library_support(sql_dialect, planned_keys(planned_list))
+        if not sql_dialect.profile_needed(planned_keys(planned_list)):
+            return sql_dialect
+        try:
+            profile = await self._client_for(datasource).server_profile()
+        except Exception:  # noqa: BLE001 — an unknown server gets the plain cast
+            profile = ServerProfile()
+        return sql_dialect.model_copy(update={"server_profile": profile})
+
+    async def _require_correlated_subqueries(
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
     ) -> None:
         """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
         sql_dialect = get_dialect(dialect)
@@ -803,9 +834,9 @@ class SlayerQueryEngine:
             profile = await self._client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
-            reason = sql_dialect.correlated_subquery_refusal(ServerProfile())
+            reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), sql=sql)
             raise SlayerError(f"{lead} {reason}") from exc
-        reason = sql_dialect.correlated_subquery_refusal(profile)
+        reason = sql_dialect.correlated_subquery_refusal(profile, sql=sql)
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
@@ -908,21 +939,22 @@ class SlayerQueryEngine:
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
         run_input = resolve_run_input(query, refine)
-        main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
-            run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
-        )
-        response = await self._execute_pipeline(
-            query=main_query,
-            named_queries=named_queries,
-            splice_chain=splice_chain,
-            runtime_kwarg=runtime_kwarg,
-            dry_run=dry_run,
-            explain=explain,
-            prefer_data_source=prefer_data_source,
-            cache=cache,
-            original_input=run_input,
-            original_data_source=data_source,
-        )
+        with announced_by_caller():
+            main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
+                run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+            )
+            response = await self._execute_pipeline(
+                query=main_query,
+                named_queries=named_queries,
+                splice_chain=splice_chain,
+                runtime_kwarg=runtime_kwarg,
+                dry_run=dry_run,
+                explain=explain,
+                prefer_data_source=prefer_data_source,
+                cache=cache,
+                original_input=run_input,
+                original_data_source=data_source,
+            )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
         _emit_python_warnings(response)
@@ -1049,7 +1081,7 @@ class SlayerQueryEngine:
         root_planned = planned_list[-1]
         if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
-                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list,
+                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list, sql=sql,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
@@ -1069,6 +1101,7 @@ class SlayerQueryEngine:
             attributes=attributes,
             expected_columns=list(expected_columns),
             touched=rendered.reads,
+            reads=rendered.element_reads,
             model=rendered.model,
             slack_warnings=rendered.warnings,
             population=rendered.population,
@@ -1076,7 +1109,16 @@ class SlayerQueryEngine:
             reads_clock=plans_read_clock(rendered.emitted_list),
         )
 
-    async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
+    async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
+        """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
+        with collect_bind_records() as records:
+            rendered = await self._plan_and_render_statement(**kwargs)
+        reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
+        # A pruned stage's shadowing call is not made by the statement.
+        shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
+        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
+
+    async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
         *,
         query: SlayerQuery,
@@ -1144,7 +1186,7 @@ class SlayerQueryEngine:
         # never touches ``model.data_source``.
         datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={"dialect": dialect})
+        bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
         # Substitute {var} into the direct source model's Mode-A surfaces before
         # anything parses them; the substituted copy replaces the model as both
@@ -1215,6 +1257,7 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
+        render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
         kept: Set[str] = set()
         sql: Optional[str] = None
         statement: Optional[Any] = None
@@ -1222,12 +1265,12 @@ class SlayerQueryEngine:
         with collect_stale_spellings() as render_stale_spellings:
             if as_statement:
                 statement = _build_planned_stages_ast(
-                    planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
+                    planned_list, bundle=bundle, dialect=render_dialect, kept_stages=kept,
                 )
                 reads |= read_models(statement)
             else:
                 sql = generate_planned_stages(
-                    planned_queries=planned_list, bundle=bundle, dialect=dialect,
+                    planned_queries=planned_list, bundle=bundle, dialect=render_dialect,
                     # Plan-derived canonical projection keys drive the write-side length
                     # fit; the read side decodes against the same set.
                     projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
@@ -1406,7 +1449,8 @@ class SlayerQueryEngine:
                 explained = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                    err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                    reads=prepared.reads,
                 )
                 raise
             return SlayerResponse(
@@ -1459,7 +1503,8 @@ class SlayerQueryEngine:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                reads=prepared.reads,
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
@@ -1775,6 +1820,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
+        findings_out: "Optional[List[ListRetypeFinding]]" = None,
     ) -> "List[ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
@@ -1791,6 +1837,7 @@ class SlayerQueryEngine:
                 sql_clients=self._sql_clients,
                 available_in_ds=available,
                 snapshot=snapshot,
+                findings_out=findings_out,
             )
 
     async def _maybe_raise_schema_drift(
@@ -1799,21 +1846,23 @@ class SlayerQueryEngine:
         err: BaseException,
         datasource: DatasourceConfig,
         read_set: "Set[str]",
+        reads: StatementReads,
     ) -> None:
-        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
-        models; else return so the caller re-raises. Attribution errors are swallowed."""
+        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
+        statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            entries = await self._validate_read_set(datasource=datasource, read_set=read_set)
-            # An "invalid_sql" entry is not drift evidence — it restates the
-            # query failure itself, so the original error must propagate.
-            filtered = [
-                e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
-            ]
-            if filtered:
+            found: List[ListRetypeFinding] = []
+            entries = await self._validate_read_set(
+                datasource=datasource, read_set=read_set, findings_out=found,
+            )
+            filtered = [e for e in entries if reads.touched_by(e)]
+            findings = [f for f in found if reads.touched_by(f)]
+            if filtered or findings:
                 raise SchemaDriftError(
-                    models=sorted({e.model_name for e in filtered}),
+                    models=sorted({e.model_name for e in [*filtered, *findings]}),
                     to_delete=filtered,
                     original=err,
+                    findings=[f.summary for f in findings],
                 )
         except SchemaDriftError:
             raise
@@ -1904,7 +1953,7 @@ class SlayerQueryEngine:
                 now=self._clock(),
             )
             dialect = self._dialect_for_type(datasource.type)
-            bundle = bundle.model_copy(update={"dialect": dialect})
+            bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
             sql = generate_planned_stages(
@@ -2361,7 +2410,7 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
-            if isinstance(entry, NarrowedAccessFinding):
+            if isinstance(entry, REPORT_ONLY_FINDINGS):
                 continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
@@ -2408,7 +2457,7 @@ class SlayerQueryEngine:
             try:
                 residual.extend(
                     e for e in await self.validate_models(data_source=ds_name)
-                    if not isinstance(e, NarrowedAccessFinding)
+                    if not isinstance(e, REPORT_ONLY_FINDINGS)
                 )
             except Exception as inner:
                 logger.debug(
@@ -2683,13 +2732,16 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        entries = await validate_datasource(datasource=ds, models=models, sql_clients=self._sql_clients)
+        retypes: List[ListRetypeFinding] = []
+        entries = await validate_datasource(
+            datasource=ds, models=models, sql_clients=self._sql_clients, findings_out=retypes,
+        )
         findings = [
             NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *retypes, *findings]
 
     def create_model_from_query_sync(
         self,
@@ -2803,6 +2855,12 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
         Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
+        with announced_by_caller():
+            return await self._save_model(model, warnings_out=warnings_out)
+
+    async def _save_model(
+        self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]],
+    ) -> SlayerModel:
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale

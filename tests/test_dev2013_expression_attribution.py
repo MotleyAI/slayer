@@ -20,6 +20,8 @@ from slayer.core.keys import (
     KIND_POLICY,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
@@ -558,8 +560,8 @@ def _derived(name: str) -> ColumnSqlKey:
 class TestCombinator:
     @pytest.mark.parametrize("key,expected", [
         (_lit("x"), True),
-        (TimeTruncKey(column=CITY, granularity=TimeGranularity.MONTH), True),
-        (TimeTruncKey(column=PRODUCT, granularity=TimeGranularity.MONTH), False),
+        (TimeTruncKey(source=CITY, granularity=TimeGranularity.MONTH), True),
+        (TimeTruncKey(source=PRODUCT, granularity=TimeGranularity.MONTH), False),
         (_eq(CITY, _lit("Alpha")), True),
         (_eq(PRODUCT, _lit("P")), False),
         (ArithmeticKey(op="+", operands=(CITY, PRODUCT)), False),
@@ -615,8 +617,8 @@ class TestCombinator:
         assert _determines(ArithmeticKey(op="+", operands=(member, _lit(1))), grain) is True
 
     def test_finer_bucket_does_not_determine_coarser(self):
-        day = TimeTruncKey(column=CITY, granularity=TimeGranularity.DAY)
-        month = TimeTruncKey(column=CITY, granularity=TimeGranularity.MONTH)
+        day = TimeTruncKey(source=CITY, granularity=TimeGranularity.DAY)
+        month = TimeTruncKey(source=CITY, granularity=TimeGranularity.MONTH)
         assert _determines(month, Grain.of([day])) is False
 
     @pytest.mark.parametrize("name,expected", [
@@ -638,7 +640,7 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
     (NAME, ["customers.regions.name"]),
     (ColumnSqlKey(path=("customers",), model="customers", column_name="rid10"),
      ["customers.rid10"]),
-    (TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH),
+    (TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH),
      ["ordered_at", "month"]),
     (StarKey(), ["*"]),
     (_lit("Alpha"), ["'Alpha'"]),
@@ -652,6 +654,8 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
      ["city", " in ", "'Alpha'", "'Beta'"]),
     (SqlFragmentKey(template="LENGTH({r0}) + {r1}", refs=(CITY, ColumnKey(leaf="quantity"))),
      ["LENGTH(city) + quantity"]),
+    (CastKey(source=CITY, type_text="INT", data_type=DataType.INT), ["CAST(city AS INT)"]),
+    (ArrayLiteralKey(values=(_lit("Alpha"), _lit("Beta"))), ["['Alpha', 'Beta']"]),
 ]
 _REPR_MARKERS = ("Key(", "path=", "leaf=", "operands=", "op=", "refs=", "template=")
 

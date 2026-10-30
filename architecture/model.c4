@@ -22,6 +22,7 @@ model {
       }
       query = node 'Query'
       models = node 'Models'
+      syntax = node 'Syntax'
     }
     sql = node 'SQL generation' {
       metadata {
@@ -37,7 +38,6 @@ model {
       metadata {
         package 'slayer.engine'
       }
-      syntax = node 'Syntax'
       binding = node 'Binding'
       bind_inputs = node 'Bind inputs'
       elaborate_env = node 'Checker'
@@ -93,7 +93,6 @@ model {
       }
     }
 
-    core.query -> engine.syntax #legacy
     core.models -> sql.dialects #legacy
     core.models -> sql.sql_predicate #legacy
     core.models -> sql.window_detect #legacy
@@ -102,12 +101,13 @@ model {
     core.query -> storage.migrations #legacy
     core.models -> core.query #legacy
     core.query -> core.models
+    core.query -> core.syntax
     sql.render -> sql.dialects
     sql.sql_predicate -> sql.window_detect
-    engine.binding -> engine.syntax
+    engine.binding -> core.syntax
     engine.bind_inputs -> engine.binding
     engine.bind_inputs -> engine.elaborate_env
-    engine.bind_inputs -> engine.syntax
+    engine.bind_inputs -> core.syntax
     engine.compile -> engine.elaborate
     engine.compile -> engine.elaborate_env
     engine.elaborate -> engine.bind_inputs

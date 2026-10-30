@@ -13,10 +13,12 @@ from typing import get_args
 
 import pytest
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -74,12 +76,12 @@ class TestDirectAndNestedHits:
         assert substitute_value_keys(ik, MAPPING).column == PLACEHOLDER
 
     def test_column_to_column_inside_time_trunc(self) -> None:
-        # TimeTruncKey.column is typed ColumnKey/ColumnSqlKey — a column-to-
+        # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
         # column mapping must reach through it.
         other = ColumnKey(path=(), leaf="shipped_at")
-        tt = TimeTruncKey(column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        tt = TimeTruncKey(source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         out = substitute_value_keys(tt, {ColumnKey(path=(), leaf="ordered_at"): other})
-        assert out.column == other
+        assert out.source == other
 
 
 class TestAtomicity:
@@ -107,7 +109,7 @@ class TestTotality:
             ColumnKey: CITY,
             ColumnSqlKey: ColumnSqlKey(path=(), model="orders", column_name="margin"),
             TimeTruncKey: TimeTruncKey(
-                column=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
+                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
             ),
             StarKey: StarKey(),
             LiteralKey: LiteralKey(value=Decimal("1")),
@@ -118,6 +120,8 @@ class TestTotality:
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
             InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
+            CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
+            ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

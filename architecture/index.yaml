@@ -6,7 +6,7 @@ python:
 
 # Count of `#legacy` arrows in the model; arch_check fails if the model's count
 # differs. Only ever lower this — every legacy arrow is a door slated to die.
-legacy_arrows: {baseline: 8}
+legacy_arrows: {baseline: 7}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
 x-guards: {baseline: 0}
@@ -16,6 +16,7 @@ cross_cutting_specs:
   models: {touches: [python.core, python.storage, python.engine]}
   aggregations: {touches: [python.core, python.engine, python.sql]}
   cli: {touches: [python.surfaces, python.protocols]}
+  results: {touches: [python.core, python.surfaces, python.protocols]}
 
 # arc42 files not owned by one node; arch_check flags unlisted orphans.
 cross_cutting_arc42: [architecture/semantics.arc42.md]

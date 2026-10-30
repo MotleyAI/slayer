@@ -8,14 +8,30 @@ the Postgres catalog queries duckdb-engine inherits.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar, Optional
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.json_path import JsonPath
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import (
+    LIST_ELEMENT,
+    PORTABLE_LIBRARY,
+    NativeFn,
+    SqlDialect,
+    TextFn,
+    anon,
+    case,
+    is_not_null,
+    lit,
+    pad_fill,
+    text_try_cast,
+)
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
@@ -31,6 +47,17 @@ from slayer.sql.dialects.reflection import (
     table_function,
     without_primary_key,
 )
+
+#: ``json_type`` values that are not a scalar.
+_NON_SCALAR_JSON = ("OBJECT", "ARRAY", "NULL")
+
+
+def _compact(values: Expression) -> Expression:
+    """``[e FOR e IN values IF e IS NOT NULL]``: DuckDB 2 rejects the ``->`` lambda, 1.1–1.2 lack ``lambda e:``."""
+    element = exp.column(LIST_ELEMENT)
+    return exp.Array(expressions=[exp.Comprehension(
+        this=element, expression=element.copy(), iterator=values.copy(), condition=is_not_null(element.copy()),
+    )])
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:
@@ -64,6 +91,7 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     sqlglot_name: str = "duckdb"
+    ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
@@ -74,6 +102,62 @@ class DuckdbDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
+    database_name: ClassVar[str] = "DuckDB"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
+    })
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
+        if fn in ("left", "right", "lpad", "rpad", "repeat"):
+            fill = [pad_fill(args)] if fn in ("lpad", "rpad") and len(args) == 2 else []
+            return anon(fn.upper(), *args, *fill)
+        return super().build_text_call(fn, args)
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_MATCHES", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """The first of ``regexp_extract_all`` (NULL on no match, unlike ``regexp_extract``'s ``''``)."""
+        matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                       lit(group))
+        return self.skipped_group_empty(value, pattern, group, anon("LIST_EXTRACT", matches, lit(1)))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
+                    self.replacement_text(replacement), lit("g"))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        text = lit(path.text)
+        scalar = exp.Not(this=exp.In(this=anon("JSON_TYPE", value, text),
+                                     expressions=[lit(t) for t in _NON_SCALAR_JSON]))
+        read = case((scalar, anon("JSON_EXTRACT_STRING", value, text)))
+        return case((anon("JSON_VALID", value), read))
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("LEN", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("LIST_CONTAINS", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ANY", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ALL", _compact(values), _compact(other))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        return self.filtered_collect(value)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(
@@ -92,7 +176,10 @@ class DuckdbDialect(SqlDialect):
             .order_by(col("column_index"))
         )
         return [
-            column_from_type_string(name=name, data_type=dtype, comment=comment)
+            column_from_type_string(
+                name=name, data_type=dtype, comment=comment,
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+            )
             for name, dtype, comment in fetch(sa_engine, query, dialect=self.sqlglot_name)
         ]
 

@@ -277,7 +277,7 @@ class TestProjectionOrder:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count", name="rows")],
@@ -333,7 +333,7 @@ class TestWindowArgReuse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -372,7 +372,7 @@ class TestWindowArgReuse:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="consecutive_periods(revenue:sum > 0)", name="streak")],
@@ -532,7 +532,7 @@ class TestResponseAttributesAlignment:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="revenue:sum", name="total")],
@@ -607,7 +607,7 @@ class TestEdgeCases:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="revenue:sum", name="total")],
@@ -661,7 +661,7 @@ class TestEdgeCases:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -860,7 +860,7 @@ class TestProvenance:
             order=[OrderItem(column="quantity:sum", direction="desc")],
             filters=["change(revenue:sum) > 0"],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
         )
@@ -894,7 +894,7 @@ class TestProvenance:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="cumsum(revenue:sum)", name="cum")],
@@ -934,7 +934,7 @@ class TestProvenance:
             source_model="orders",
             dimensions=[ColumnRef(name="status"), ColumnRef(name="region")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -1048,7 +1048,7 @@ class TestWrapperLayering:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="revenue:sum", name="total")],
@@ -1155,7 +1155,7 @@ class TestWindowChainReuse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -1187,7 +1187,7 @@ class TestWindowChainReuse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="rank(rank(revenue:sum, direction='desc'), direction='desc')", name="r2")],
@@ -1289,7 +1289,7 @@ class TestDimAndTimeDimClash:
             source_model="orders",
             dimensions=[ColumnRef(name="created_at")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count")],

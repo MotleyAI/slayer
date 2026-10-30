@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.errors import QueryTypeError, SlayerError, UnresolvedPlaceholderError
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     AggCall,
     Arith,
     Cmp,
@@ -19,7 +19,6 @@ from slayer.engine.syntax import (
     UnaryOp,
     canonical_measure_text,
     parse_expr,
-    parse_filter_expr,
 )
 
 K = Placeholder(name="k")
@@ -59,7 +58,7 @@ def test_placeholder_position(text: str, expected) -> None:
 
 
 def test_filter_parser_admits_placeholder() -> None:
-    assert parse_filter_expr("amount = {k}") == Cmp(op="==", left=AMOUNT, right=K)
+    assert parse_expr("amount = {k}") == Cmp(op="==", left=AMOUNT, right=K)
 
 
 @pytest.mark.parametrize("text", ["amount:sum * {k} / 100", "sum(amount) * {k} / 100"])

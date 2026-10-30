@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, InKey, KindPolicy, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -40,7 +40,7 @@ REGION = ColumnKey(path=(), leaf="region")
 AMOUNT = ColumnKey(path=(), leaf="amount")
 TS = ColumnKey(path=(), leaf="created_at")
 JOINED = ColumnKey(path=("customers",), leaf="balance")
-TT = TimeTruncKey(column=TS, granularity=TimeGranularity.MONTH)
+TT = TimeTruncKey(source=TS, granularity=TimeGranularity.MONTH)
 AGG = AggregateKey(source=AMOUNT, agg="sum")
 CHANGE_TR = TransformKey(op="change", input=AGG, time_key=TT)
 RANK_TR = TransformKey(op="rank", input=AGG, partition_keys=Grain.of({CITY}))
@@ -83,6 +83,8 @@ SAMPLES = {
     TimePointCmpKey: TP,
     InKey: IK,
     SqlFragmentKey: SqlFragmentKey(template="{r0} * {r1}", refs=(CITY, JOINED)),
+    CastKey: CastKey(source=JOINED, type_text="INT", data_type=DataType.INT),
+    ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
 }
 LEAF_KINDS = (ColumnKey, ColumnSqlKey, StarKey, LiteralKey)
 
@@ -291,12 +293,12 @@ class TestKindPolicyRegistry:
 
     def test_slot_composite_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slot_composite} == {
-            ArithmeticKey, ScalarCallKey, InKey,
+            ArithmeticKey, ScalarCallKey, InKey, CastKey,
         }
 
     def test_materialised_order_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.materialised_order} == {
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey,
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey, CastKey,
         }
 
     def test_kind_policy_is_frozen(self) -> None:
@@ -575,7 +577,7 @@ class TestSubstituteAtomicity:
 
 
 # ---------------------------------------------------------------------------
-# B1 — walk_value_keys reaches TimeTruncKey.column without side effects
+# B1 — walk_value_keys reaches TimeTruncKey.source without side effects
 # ---------------------------------------------------------------------------
 class TestTimeTruncWidening:
     def test_walk_yields_the_wrapped_column(self) -> None:
@@ -652,7 +654,7 @@ class TestJoinDiscoveryExpressionSources:
     def test_time_trunc_inside_a_source_crosses_via_its_column(self) -> None:
         # B1: the trunc's crossing lives on its wrapped column.
         joined_tt = TimeTruncKey(
-            column=ColumnKey(path=("customers",), leaf="balance"),
+            source=ColumnKey(path=("customers",), leaf="balance"),
             granularity=TimeGranularity.MONTH,
         )
         key = AggregateKey(
@@ -699,7 +701,7 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count")],
@@ -714,7 +716,7 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count")],

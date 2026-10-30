@@ -5,9 +5,7 @@ from __future__ import annotations
 import pydantic
 import pytest
 
-from slayer.core import formula as legacy_formula
 from slayer.core import keys
-from slayer.core.formula import MixedArithmeticField, parse_formula
 from slayer.core.keys import (
     SCALAR_FUNCTION_ARITY,
     SCALAR_FUNCTIONS,
@@ -18,6 +16,12 @@ from slayer.core.keys import (
 from slayer.core.models import Aggregation, SlayerModel
 from slayer.osi import expression as osi_expression
 from slayer.osi.expression import convert_expression
+from slayer.core.enums import DataType
+from slayer.core.models import Column
+from slayer.core.scope import ModelScope
+from slayer.engine.binding import bind_expr
+from slayer.core.syntax import ScalarCall, parse_expr
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 DATE_NAMES = {"date_part", "date_diff", "date_add", "interval", "current_date", "now"}
 
@@ -51,11 +55,10 @@ class TestSpecTable:
         assert issubclass(ScalarSpec, pydantic.BaseModel)
 
     def test_one_canonical_passthrough_set(self) -> None:
-        assert getattr(legacy_formula, "SCALAR_PASSTHROUGH", keys.SCALAR_PASSTHROUGH) is keys.SCALAR_PASSTHROUGH
         assert osi_expression.SCALAR_PASSTHROUGH is keys.SCALAR_PASSTHROUGH
 
 
-class TestLegacyFormulaParser:
+class TestFormulaParser:
     @pytest.mark.parametrize("text", [
         "date_diff('day', created_at:min, created_at:max)",
         "revenue:sum / date_part('day', created_at:max)",
@@ -64,11 +67,18 @@ class TestLegacyFormulaParser:
         "DATE_DIFF('day', created_at:min, current_date())",
     ])
     def test_recognises_date_functions(self, text: str) -> None:
-        assert isinstance(parse_formula(text), MixedArithmeticField)
+        parsed = parse_expr(text)
+        top = parsed if isinstance(parsed, ScalarCall) else getattr(parsed, "right")
+        assert isinstance(top, ScalarCall), parsed
+        assert top.name.lower() in DATE_NAMES, parsed
 
     def test_unknown_call_lists_date_functions(self) -> None:
+        model = SlayerModel(name="orders", sql_table="orders", data_source="t",
+                            columns=[Column(name="revenue", type=DataType.DOUBLE)])
+        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
+        parsed, scope = parse_expr("bogus_fn(revenue:sum)"), ModelScope(source_model=model)
         with pytest.raises(ValueError, match="date_diff"):
-            parse_formula("bogus_fn(revenue:sum)")
+            bind_expr(parsed, scope=scope, bundle=bundle, allow_measures=True)
 
 
 class TestOsiDoesNotCarryDateFunctions:
@@ -91,14 +101,13 @@ class TestReservedAggregationNames:
         "date_part", "date_diff", "DATE_DIFF", "date_add", "interval", "Interval",
         "current_date", "now", "NOW",
     ])
-    def test_rejected(self, name: str) -> None:
-        with pytest.raises(pydantic.ValidationError, match="scalar"):
-            Aggregation(name=name, formula="SUM({value})")
+    def test_accepted(self, name: str) -> None:
+        assert Aggregation(name=name, formula="SUM({value})").name == name
 
-    def test_model_with_shadowing_aggregation_rejected(self) -> None:
-        with pytest.raises(pydantic.ValidationError, match="date_diff"):
-            SlayerModel.model_validate({
-                "name": "orders", "sql_table": "orders", "data_source": "test",
-                "columns": [{"name": "amount", "type": "DOUBLE"}],
-                "aggregations": [{"name": "date_diff", "formula": "SUM({value})"}],
-            })
+    def test_model_with_shadowing_aggregation_accepted(self) -> None:
+        model = SlayerModel.model_validate({
+            "name": "orders", "sql_table": "orders", "data_source": "test",
+            "columns": [{"name": "amount", "type": "DOUBLE"}],
+            "aggregations": [{"name": "date_diff", "formula": "SUM({value})"}],
+        })
+        assert [a.name for a in model.aggregations] == ["date_diff"]

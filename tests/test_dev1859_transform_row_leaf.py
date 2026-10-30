@@ -16,7 +16,6 @@ import re
 
 import pytest
 
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -30,9 +29,10 @@ from tests._dev1846_fixtures import (
     rows_by,
 )
 from tests.test_law_guard_ratchet import DEFERRAL_CLASSIFIER
+import slayer.core.enums
 
 SHIFT_OPS = frozenset({"time_shift", "change", "change_pct"})
-NON_SHIFT_OPS = sorted(ALL_TRANSFORMS - SHIFT_OPS - {"first", "last"})
+NON_SHIFT_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - SHIFT_OPS - {"first", "last"})
 
 #: input-shape id -> the formula body around the unprojected row leaf.
 SHAPES = {
@@ -81,9 +81,9 @@ async def exec_engine(request):
 class TestDerivedSet:
     def test_shift_family_exemption_is_exactly_three_ops(self):
         """A new transform op must default into the rejected set."""
-        assert SHIFT_OPS <= ALL_TRANSFORMS
-        assert {"first", "last"} <= ALL_TRANSFORMS
-        assert set(NON_SHIFT_OPS) <= ALL_TRANSFORMS
+        assert SHIFT_OPS <= slayer.core.enums.ALL_TRANSFORMS
+        assert {"first", "last"} <= slayer.core.enums.ALL_TRANSFORMS
+        assert set(NON_SHIFT_OPS) <= slayer.core.enums.ALL_TRANSFORMS
         assert not set(NON_SHIFT_OPS) & SHIFT_OPS
 
 

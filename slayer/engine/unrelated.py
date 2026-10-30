@@ -21,7 +21,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.engine.syntax import DottedRef, parse_expr, parse_filter_expr
+from slayer.core.syntax import DottedRef, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
@@ -43,7 +43,7 @@ def _dotted_heads(node: Any) -> Iterator[str]:
 
 def _parsed_heads(text: str, *, as_filter: bool) -> Iterator[str]:
     try:
-        parsed = parse_filter_expr(render_probe_text(text)) if as_filter else parse_expr(text)
+        parsed = parse_expr(render_probe_text(text) if as_filter else text)
     except Exception:  # noqa: BLE001 — the binder reports a malformed expression
         return
     yield from _dotted_heads(parsed)
@@ -63,7 +63,7 @@ def first_hop_names(query: SlayerQuery) -> set[str]:
         out.update(_parsed_heads(d.expression, as_filter=False) if isinstance(d, ComputedDimension)
                    else _path_head(d.full_name))
     for td in query.time_dimensions or []:
-        out.update(_path_head(td.dimension.full_name))
+        out.update(_parsed_heads(td.dimension, as_filter=False))
     for f in query.filters or []:
         out.update(_parsed_heads(f, as_filter=True))
     for o in query.order or []:
@@ -146,7 +146,7 @@ class ProductSides:
         elif isinstance(node, TransformKey):
             yield from self._walk_transform(node, inputs=inputs)
         elif isinstance(node, TimeTruncKey):
-            yield from self._walk(node.column, inputs=inputs)
+            yield from self._walk(node.source, inputs=inputs)
         elif isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
             if not inputs:
                 yield from ((node, dataset) for dataset in sorted(self.crossed(node)))
@@ -189,7 +189,7 @@ def _row_leaves(node: ValueKey) -> Iterator[ValueKey]:
     if isinstance(node, (AggregateKey, TransformKey)):
         return
     if isinstance(node, TimeTruncKey):
-        yield from _row_leaves(node.column)
+        yield from _row_leaves(node.source)
         return
     if isinstance(node, (ColumnKey, ColumnSqlKey, StarKey)):
         yield node

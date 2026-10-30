@@ -55,7 +55,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
@@ -82,7 +82,7 @@ class TestDev1701SharedGrainDerivedTimeDim:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
         )
@@ -107,7 +107,7 @@ class TestDev1701SharedGrainDerivedTimeDim:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="amount:sum")],
         )
@@ -121,7 +121,7 @@ class TestDev1701SharedGrainDerivedTimeDim:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
         )
         sql = await _gen(query)
@@ -144,7 +144,7 @@ class TestDev1701AnchoringDirectionMatrix:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="eff_created"),
+                dimension="eff_created",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="amount:sum")],
         )
@@ -162,7 +162,7 @@ class TestDev1701AnchoringDirectionMatrix:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.signup_eff"),
+                dimension="customers_v2.signup_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="amount:sum")],
         )
@@ -176,7 +176,7 @@ class TestDev1701AnchoringDirectionMatrix:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="amount:sum")],
         )
@@ -505,7 +505,7 @@ class TestDerivedSharedGrainRenders:
         query = SlayerQuery(
             source_model="orders_x",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="customers_v2.region_opened_eff"),
+                dimension="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
         )
@@ -582,9 +582,9 @@ _NULLSAFE_STRATEGY = {
     "ClickhouseDialect": "IS NOT DISTINCT FROM",
     "MysqlDialect": "<=>",
     "SqliteDialect": " IS ",
-    "TsqlDialect": "= t2.a OR (t1.a IS NULL AND t2.a IS NULL)",
-    "OracleDialect": "= t2.a OR (t1.a IS NULL AND t2.a IS NULL)",
-    "RedshiftDialect": "= t2.a OR (t1.a IS NULL AND t2.a IS NULL)",
+    "TsqlDialect": "= t2.a AND NOT t1.a IS NULL AND NOT t2.a IS NULL) OR (t1.a IS NULL AND t2.a IS NULL)",
+    "OracleDialect": "= t2.a AND NOT t1.a IS NULL AND NOT t2.a IS NULL) OR (t1.a IS NULL AND t2.a IS NULL)",
+    "RedshiftDialect": "= t2.a AND NOT t1.a IS NULL AND NOT t2.a IS NULL) OR (t1.a IS NULL AND t2.a IS NULL)",
 }
 
 
@@ -641,9 +641,8 @@ class TestNullSafeJoinBackDialects:
 
     @pytest.mark.parametrize("dialect", _NULLSAFE_EXPANDED)
     async def test_join_back_expanded_null_safe(self, dialect: str) -> None:
-        """Dialects without a native form emit the full expanded predicate
-        ``a = b OR (a IS NULL AND b IS NULL)`` (Codex finding 9 — assert the
-        whole structure, not just ``IS NULL``)."""
+        """Dialects without a native form emit the full expanded two-valued predicate
+        ``(a = b AND NOT a IS NULL AND NOT b IS NULL) OR (a IS NULL AND b IS NULL)``."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.status"],
@@ -652,7 +651,7 @@ class TestNullSafeJoinBackDialects:
         sql = await _gen(query, dialect=dialect)
         on_pred = _norm(_joinback_on_predicate(sql, dialect=dialect)).upper()
         assert " OR " in on_pred, on_pred
-        assert on_pred.count(" IS NULL") == 2, on_pred
+        assert on_pred.count(" IS NULL") == 4, on_pred
         assert " AND " in on_pred, on_pred
         # A bare equality (both sides non-null) is still one arm of the OR.
         assert "=" in on_pred, on_pred

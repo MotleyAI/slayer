@@ -46,7 +46,7 @@ from slayer.core.keys import (
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.planned import ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import (  # type: ignore[attr-defined]
@@ -183,6 +183,7 @@ class TestAggRenderSpecConstruction:
             "column_type",
             "input_type",
             "value",
+            "element_type",
         }
 
     def test_minimal_count_star(self):

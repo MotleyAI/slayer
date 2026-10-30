@@ -28,7 +28,6 @@ flowchart TD
   protocols("BI wire protocols")
   usage_reporting["Usage reporting"]
   surfaces("User-facing surfaces")
-  core -.-> engine
   core -.-> sql
   core -.-> storage
   engine --> core
@@ -91,7 +90,7 @@ All code, old and new, MUST obey these.
    [enforced: arch_check:model-truth]
 2. **`core` imports no other SLayer node.** The remaining crossings are the
    grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
-   `engine.syntax`, `sql.*`, `storage.migrations`), slated to die.
+   `sql.*`, `storage.migrations`), slated to die.
    [enforced: arch_check:model-truth]
 3. **Every top-level `slayer.*` package/module belongs to exactly one node.**
    A new top-level package must be claimed in a node's model metadata in the same change.
@@ -125,18 +124,29 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
-    vs Mode B Python-AST DSL (formulas, query fields, scalar allowlist only) —
-    one canonical scalar allowlist, extended never forked. [review]
-11. **Versioned persistence**: models/queries/datasource configs carry
-    `version`; migrations run automatically on load. [review]
+    vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
+    canonical function library, extended never forked. [review]
+    - **10.1** Every Mode B construct means the same on every dialect.
+      [enforced: test:tests/test_dev2120_library_matrix.py]
+    - **10.2** A dialect without its own translation of a Mode B construct
+      refuses it with a typed error; a base-class default is never another
+      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
+11. **Versioned persistence**: models, queries, datasource configs and memories
+    carry `version`; migrations run automatically on load. [review]
+    - **11.1** A load never writes; an upgraded document is persisted only by a
+      save. [target: DEV-1844]
+    - **11.2** Library growth never invalidates a stored artefact: a newly
+      reserved name yields to a model's own definition of it inside that model;
+      any other collision ships with a migration.
+      [enforced: test:tests/test_library_growth.py]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
 13. **One key kind per meaning**: a construct with an existing kind's shape and
     meaning reuses it; anything else is a new kind, never a reserved name
     bending an existing kind's contract. Every kind dispatch fails closed on a
     kind it does not handle. [review]
 14. **Ingestion is idempotent and additive-only**: user metadata is never
-    overwritten by a re-ingest (`source_kind` refresh is the one documented
-    exception). [review]
+    overwritten by a re-ingest (documented exceptions: the `source_kind`
+    refresh, and a non-list column re-typed to the list its live column is). [review]
 15. **Row-level security fails closed**: anything a session policy cannot
     confirm is rejected, never passed through unscoped. [review]
 16. **Logical names, physical once**: every model-level column reference —
@@ -146,6 +156,17 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
+17. **Honest wire catalogs**: every column a BI wire protocol advertises is
+    selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
+18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
+    consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+19. **One writer of result values**: every output path encodes result values
+    with one codec in `core.format`; none encodes a value itself.
+    [enforced: test:tests/test_dev2172_value_codec.py]
+20. **One treatment per model source**: an `sql`-mode model is typed,
+    re-typed, validated and drift-checked exactly like a `sql_table` model
+    wherever the live database can tell the same about both; any difference
+    is a documented exception. [review]
 
 ## 4. Enforcement
 
