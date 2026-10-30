@@ -1014,7 +1014,7 @@ def parse_expr(text: str) -> ParsedExpr:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
         except pp.ParseBaseException as e:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
-    if any(_is_interval(n) for n in _walk_parsed(parsed)):
+    if any(_is_interval(n) for n in walk_parsed(parsed)):
         raise ValueError(
             f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
@@ -1037,7 +1037,7 @@ def _syntax_message(text: str, error: pp.ParseBaseException) -> str:
 
 def placeholder_names(parsed: Any) -> List[str]:
     """Names of every ``Placeholder`` in a parsed tree, in walk order."""
-    return [n.name for n in _walk_parsed(parsed) if isinstance(n, Placeholder)]
+    return [n.name for n in walk_parsed(parsed) if isinstance(n, Placeholder)]
 
 
 _ANY_BRACE_RE = re.compile(r"\{\{|\}\}|\{([^}]*)\}")
@@ -1073,10 +1073,10 @@ _LIST_ARG_FUNCTIONS = frozenset({"contains_any", "contains_all"})
 
 def _list_slot_ordinals(template: Any) -> frozenset[int]:
     """Textual ordinals of the placeholders filling a list function's list argument."""
-    starts = sorted({n.start for n in _walk_parsed(template) if isinstance(n, Placeholder)})
+    starts = sorted({n.start for n in walk_parsed(template) if isinstance(n, Placeholder)})
     return frozenset(
         starts.index(arg.start)
-        for node in _walk_parsed(template)
+        for node in walk_parsed(template)
         if isinstance(node, ScalarCall) and node.name in _LIST_ARG_FUNCTIONS
         for arg in node.args if isinstance(arg, Placeholder)
     )
@@ -1085,10 +1085,10 @@ def _list_slot_ordinals(template: Any) -> frozenset[int]:
 def _text_slot_ordinals(template: Any, *, variables: Mapping[str, Any]) -> frozenset[int]:
     """Textual ordinals of the placeholders filling a pattern / path / replacement slot, checked here so an
     error names the variable."""
-    starts = sorted({n.start for n in _walk_parsed(template) if isinstance(n, Placeholder)})
+    starts = sorted({n.start for n in walk_parsed(template) if isinstance(n, Placeholder)})
     return frozenset(
         starts.index(placeholder.start)
-        for node in _walk_parsed(template)
+        for node in walk_parsed(template)
         if isinstance(node, ScalarCall) and node.name in STRING_SLOTS
         for placeholder in _checked_slot_placeholders(node, variables=variables)
     )
@@ -1733,17 +1733,17 @@ def _interval_as_date_add(*, op: str, left: Any, right: Any) -> Optional[ScalarC
     return ScalarCall(name="date_add", args=(base, count, unit))
 
 
-def _walk_parsed(node: Any) -> Iterator[Any]:
+def walk_parsed(node: Any) -> Iterator[Any]:
     """Every node of a parsed tree, including call args, kwargs, agg sources and filters."""
     if isinstance(node, tuple):
         for item in node:
-            yield from _walk_parsed(item)
+            yield from walk_parsed(item)
         return
     if not isinstance(node, _BaseNode):
         return
     yield node
     for field in type(node).model_fields:
-        yield from _walk_parsed(getattr(node, field))
+        yield from walk_parsed(getattr(node, field))
 
 
 # ---------------------------------------------------------------------------
@@ -1904,8 +1904,9 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 
 
 __all__ = [
-    "AggCall", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
+    "AggCall", "ArrayLit", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
     "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
     "bind_variables", "canonical_measure_text", "comparison_hint", "keyword_spelling", "measure_dependency_problems",
-    "parse_expr", "placeholder_names", "positional_hint", "split_entity_agg_ref", "walk_parsed_refs",
+    "parse_expr", "placeholder_names", "positional_hint", "split_entity_agg_ref", "walk_parsed",
+    "walk_parsed_refs",
 ]

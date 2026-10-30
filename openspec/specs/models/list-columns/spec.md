@@ -73,13 +73,25 @@ Every list construct — list functions, element access, sampling and `collect` 
 - **WHEN** a row's `skills` is `['sql', NULL]`
 - **THEN** `length(skills)` is 1, `contains(skills, 'go')` is FALSE, and the row contributes one `skills.value` row, `'sql'`
 
-### Requirement: List columns are not dimensions, comparisons or general aggregation inputs
+### Requirement: List columns are not group keys, comparisons or general aggregation inputs
 
-A list column SHALL NOT be a dimension, and SHALL NOT be an operand of `=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `BETWEEN` or `IS DISTINCT FROM`. `IS NULL` / `IS NOT NULL` SHALL be accepted. The only aggregation over a list-valued source SHALL be `count`, which counts non-NULL lists; every other built-in aggregation, `collect` and every custom aggregation over a list-valued source SHALL be rejected — whether the source is a column or an expression. `allowed_aggregations` on a list column naming anything but `count` SHALL fail at save time. Each rejection SHALL be a typed error naming its remedy.
+A list column SHALL NOT be a group key: a query that groups (it has measures, or `distinct_dimension_values` is true) SHALL reject a list-valued dimension, whether it names the column or is an expression. A raw-rows query (`distinct_dimension_values: false`) SHALL project a list-valued dimension once per record. A list column SHALL NOT be an operand of `=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `BETWEEN` or `IS DISTINCT FROM`, and SHALL NOT be an `order` key. `IS NULL` / `IS NOT NULL` SHALL be accepted. The only aggregation over a list-valued source SHALL be `count`, which counts non-NULL lists; every other built-in aggregation, `collect` and every custom aggregation over a list-valued source SHALL be rejected — whether the source is a column or an expression. `allowed_aggregations` on a list column naming anything but `count` SHALL fail at save time. Each rejection SHALL be a typed error naming its remedy.
 
 #### Scenario: List as a dimension
-- **WHEN** a query on `contractors` has the dimension `skills`
+- **WHEN** a grouping query on `contractors` has the dimension `skills`
 - **THEN** it fails with a typed error naming `skills.value`
+
+#### Scenario: List projected per record
+- **WHEN** a query on `contractors` has the dimensions `id` and `skills` and `distinct_dimension_values: false`
+- **THEN** it returns one row per contractor with that contractor's list, and NULL for a NULL list
+
+#### Scenario: List-valued expression projected per record
+- **WHEN** a raw-rows query has a computed dimension whose expression is the list column `skills`
+- **THEN** it returns each contractor's list, and the same expression in a grouping query fails naming `skills.value`
+
+#### Scenario: Ordering by a list
+- **WHEN** a raw-rows query on `contractors` orders by `skills`
+- **THEN** it fails with a typed error naming the list type
 
 #### Scenario: Comparing a list
 - **WHEN** a filter is `skills = 'go'` or `skills IN ('go', 'sql')`
@@ -111,7 +123,7 @@ A list column SHALL NOT be a dimension, and SHALL NOT be an operand of `=`, `<>`
 
 ### Requirement: Backends without native lists reject list constructs
 
-On SQLite, MySQL and SQL Server, every list construct — a list function over a list, an array literal, element access and `collect` — SHALL fail at plan time with a typed error naming the construct and the database.
+On SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle, every list construct — a list function over a list, an array literal, element access, a list child and `collect` — SHALL fail at plan time with a typed error naming the construct and the database.
 
 #### Scenario: List function on SQLite
 - **WHEN** a model on a SQLite datasource declares a list column and a query filters `contains(skills, 'go')`
@@ -120,6 +132,10 @@ On SQLite, MySQL and SQL Server, every list construct — a list function over a
 #### Scenario: collect on MySQL
 - **WHEN** a query on a MySQL datasource has the measure `collect(team)`
 - **THEN** it fails at plan time naming `collect` and MySQL
+
+#### Scenario: Element access on Databricks
+- **WHEN** a model on a Databricks datasource declares a list column `skills` and a query has the dimension `skills.value`
+- **THEN** the query fails at plan time naming the element access and Databricks
 
 ### Requirement: Re-ingest re-types TEXT list columns
 

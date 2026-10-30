@@ -54,6 +54,10 @@ Response:
 }
 ```
 
+Cell values use SLayer's one JSON encoding: a list is a JSON array, a decimal a number with its exact digits, a
+UUID its string, bytes `\x` + lowercase hex, an interval an ISO-8601 duration and NaN / ±Infinity `null`;
+`"distinct_dimension_values": false` returns one row per record, list columns included.
+
 `warnings` carries advisories about the query itself; it is `[]` for a clean
 query. Every entry has a `kind` discriminator — switch on it rather than on the
 presence of a field:

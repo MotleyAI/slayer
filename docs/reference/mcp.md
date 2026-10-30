@@ -110,7 +110,7 @@ claude mcp list
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run the database's EXPLAIN and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) and field attributes stay machine-safe: a trailing `Warnings:` block (attributes footer just before it) in markdown, leading `#` comment lines in csv, and inside the json payload — which becomes `{"data", "warnings"?, "attributes"?}` instead of a bare array once either is present |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) and field attributes stay machine-safe: a trailing `Warnings:` block (attributes footer just before it) in markdown, leading `#` comment lines in csv, and inside the json payload — which becomes `{"data", "warnings"?, "attributes"?}` instead of a bare array once either is present. In json a list is a JSON array and a decimal a number with its exact digits; csv / markdown carry lists and JSON values as JSON text; everywhere a UUID is its string, bytes are `\x` + lowercase hex, an interval is an ISO-8601 duration and NaN / ±Infinity is `null` inside JSON |
 
 **Query object fields** (the shape of `query`, and of each stage in the list form):
 
