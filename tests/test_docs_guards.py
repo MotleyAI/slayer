@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,16 @@ def _rel(path: Path) -> str:
     return path.relative_to(_DOCS).as_posix()
 
 
+@cache
+def _docs_files() -> tuple[Path, ...]:
+    """Files under ``docs/`` that git does not ignore (generated notebook artefacts are skipped)."""
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "docs/"],
+        cwd=_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    return tuple(sorted(p for p in (_ROOT / name for name in listed.split("\0") if name) if p.is_file()))
+
+
 # --------------------------------------------------------------------------- #
 # Nav coverage
 # --------------------------------------------------------------------------- #
@@ -48,7 +60,7 @@ def _nav() -> set[str]:
 
 
 def test_every_docs_page_is_in_the_nav() -> None:
-    pages = {_rel(p) for p in _DOCS.rglob("*") if p.suffix in (".md", ".ipynb")}
+    pages = {_rel(p) for p in _docs_files() if p.suffix in (".md", ".ipynb")}
     assert sorted(pages - _nav() - NAV_EXEMPT) == []
 
 
@@ -67,8 +79,8 @@ def test_nav_exemptions_exist_and_stay_out_of_the_nav() -> None:
 def test_no_issue_numbers_in_docs() -> None:
     found = {
         (_rel(path), token.decode().upper())
-        for path in _DOCS.rglob("*")
-        if path.is_file() and _rel(path) != "CLAUDE.md"
+        for path in _docs_files()
+        if _rel(path) != "CLAUDE.md"
         for token in _ISSUE_NUMBER.findall(path.read_bytes())
     }
     assert found == ISSUE_NUMBER_BASELINE
@@ -78,8 +90,9 @@ def test_no_issue_numbers_in_docs() -> None:
 # Every Mode-B example parses
 # --------------------------------------------------------------------------- #
 def _doc_sources() -> list[Path]:
-    yamls = [p for p in (_DOCS / "examples").rglob("*") if p.suffix in (".yaml", ".yml")]
-    return sorted(_DOCS.rglob("*.md")) + sorted(_HELP.glob("*.md")) + sorted(yamls)
+    examples = _DOCS / "examples"
+    yamls = [p for p in _docs_files() if p.suffix in (".yaml", ".yml") and p.is_relative_to(examples)]
+    return [p for p in _docs_files() if p.suffix == ".md"] + sorted(_HELP.glob("*.md")) + yamls
 
 
 def test_every_doc_example_parses() -> None:

@@ -49,7 +49,7 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
   Verify by reading.
 - [x] 3.5 C / orphans: fold the listed unique content into `reference/{cli,mcp,rest-api}.md`, then delete `docs/interfaces/{cli,mcp,python-client,rest-api}.md`. Verify: 1.6 passes and `grep` finds no inbound link to a deleted page.
 - [x] 3.6 C / reference gaps: add the 4 MCP tools, 3 REST routes and 5 CLI commands listed in design.md, each checked against `slayer/mcp/server.py`, `slayer/api/server.py` and `slayer/cli.py`. Verify by reading against the code.
-- [ ] 3.7 C / nav: add notebook 08 under Tutorials as "MCP Introspection", after Aggregations. Verify: 1.1 passes.
+- [x] 3.7 C / nav: add notebook 08 under Tutorials as "MCP Introspection", after Aggregations. Verify: 1.1 passes.
 - [x] 3.8 C / issue numbers: remove every `DEV-<n>` from `docs/` outside the sibling-owned pages (full inventory across all file types first). Verify: 1.2 passes.
 - [x] 3.9 C / DEV-1768 drift items: case-sensitivity claim, `order[].column` conflict, `*:count` → `_count`. Each is verified and fixed where it remains. Verify by reading.
 
@@ -72,4 +72,4 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
 
 ## 7. Verification
 
-- [ ] 7.1 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2173-docs-and-agent-facing-text-catch-up-with-the-sql-grammar-row --strict`, and the docs build (`uvx zensical build`). All green.
+- [x] 7.1 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2173-docs-and-agent-facing-text-catch-up-with-the-sql-grammar-row --strict`, and the docs build (`uvx zensical build`). All green.
