@@ -76,6 +76,15 @@ class TestListAggregations:
         assert [e for e in mentions(result, "tag_agg") if agg in e.message.upper() and "tags" in e.message], (
             result.unconverted_metrics)
 
+    @pytest.mark.parametrize("sql", [
+        "ARRAY_AGG(DISTINCT CASE WHEN status = 'paid' THEN tags END)", "MAX(COALESCE(tags, tags))",
+        "COUNT(DISTINCT NULLIF(tags, tags))", "MIN(IF(status = 'paid', tags, NULL))",
+    ], ids=["case", "coalesce", "nullif", "if"])
+    def test_refused_behind_a_conditional(self, db: Path, sql: str) -> None:
+        result = import_osi(flat([orders(LIST_FIELDS, metrics=[m("tag_agg", sql)])]), db=db)
+        assert unconverted(result, "tag_agg")
+        assert [e for e in mentions(result, "tag_agg") if "list field" in e.message], result.unconverted_metrics
+
     async def test_count_of_a_list(self, db: Path) -> None:
         result = import_osi(flat([orders(LIST_FIELDS, metrics=[m("tag_cnt", "COUNT(tags)")])]), db=db)
         assert await value(models=result.models, db=db, model="orders", formula="tag_cnt") == 2

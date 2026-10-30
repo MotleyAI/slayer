@@ -100,6 +100,29 @@ def contains_args(
     return first, second
 
 
+def _value_branches(node: exp.Expr) -> list[exp.Expr | None] | None:
+    """The operands whose value ``node`` passes through (a conditional's results), else ``None``."""
+    if isinstance(node, exp.Paren):
+        return [node.this]
+    if isinstance(node, exp.Case):
+        return [*(branch.args.get("true") for branch in node.args.get("ifs") or []), node.args.get("default")]
+    if isinstance(node, exp.If):
+        return [node.args.get("true"), node.args.get("false")]
+    if isinstance(node, exp.Coalesce):
+        return [node.this, *node.expressions]
+    if isinstance(node, exp.Nullif):
+        return [node.this]
+    return None
+
+
+def list_valued(node: exp.Expr, *, is_list: Callable[[exp.Expr], bool]) -> bool:
+    """Whether ``node`` yields a list: a list column, or a conditional that can return one."""
+    branches = _value_branches(node)
+    if branches is None:
+        return is_list(node)
+    return any(b is not None and list_valued(b, is_list=is_list) for b in branches)
+
+
 def length_arg(node: exp.Expr) -> Expression | None:
     """The list an ``ARRAY_LENGTH`` / ``CARDINALITY`` call measures; ``None`` when ``node`` is not one.
 
@@ -340,7 +363,7 @@ class _Translator:
         return self._plain_agg_ref(node.this, mask=predicate)
 
     def _refuse_list(self, operand: exp.Expr, agg: str) -> None:
-        if self.policy.is_list(operand):
+        if list_valued(operand, is_list=self.policy.is_list):
             raise Unconvertible(f"{agg} over the list field {operand.sql()!r} is not supported; only COUNT counts "
                                 f"a list's rows")
 
