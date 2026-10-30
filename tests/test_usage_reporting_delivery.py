@@ -173,7 +173,16 @@ def test_stdio_mcp_broken_pipe_spools(store: str, usage_reporting_env) -> None:
         assert json.loads(stdout.readline())["id"] == 2
         stdout.close()
         send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "list_datasources", "arguments": {}}})
-        stdin.close()
+        # No EOF while a response is pending: EOF cancels it and the server exits cleanly instead.
+        deadline = time.monotonic() + 30
+        ping_id = 100
+        while proc.poll() is None and time.monotonic() < deadline:
+            try:
+                send({"jsonrpc": "2.0", "id": ping_id, "method": "ping"})
+            except BrokenPipeError:
+                break
+            ping_id += 1
+            time.sleep(0.1)
         returncode = proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
