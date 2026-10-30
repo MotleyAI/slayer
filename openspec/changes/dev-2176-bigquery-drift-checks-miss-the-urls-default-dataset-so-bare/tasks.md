@@ -20,7 +20,7 @@
 
 ## 4. CI and docs
 
-- [ ] 4.1 Add a job-level `concurrency` (one repo-wide group, `cancel-in-progress: false`, `queue: max`) to `bigquery-example` in `.github/workflows/ci.yml` — verify the YAML parses and the PR's BigQuery job runs green
+- [x] 4.1 Add a job-level `concurrency` (one repo-wide group, `cancel-in-progress: false`, `queue: max`) to `bigquery-example` in `.github/workflows/ci.yml` — verify the YAML parses and the PR's BigQuery job runs green
 - [x] 4.2 One sentence in `docs/configuration/datasources.md`: the URL dataset is BigQuery's default and bare table names resolve there
 
 ## 5. Gates
