@@ -256,6 +256,20 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
             await engine.execute(query)
 
 
+@pytest.mark.parametrize("ds_type", TIER2)
+@pytest.mark.parametrize(("expr", "name"), [
+    ("asin(2)", "asin"), ("regexp_like(code, '[')", "regexp_like"),
+    ("json_value(payload, 'a.b')", "json_value"), ("split_part(tag, '-', 0)", "split_part"),
+])
+async def test_refusal_outranks_an_invalid_argument(ds_type: str, expr: str, name: str) -> None:
+    query = lib_query(expr)
+    with pytest.raises(UnsupportedServerFunctionError) as info:
+        await emit_lib(query, dialect=ds_type)
+    msg = str(info.value)
+    assert f"`{name}()`" in msg, msg
+    assert database(ds_type) in msg, msg
+
+
 class TestTier2Like:
     async def test_databricks_like_keeps_the_escape(self) -> None:
         sql = await emit_lib(lib_query(filters=[r"code LIKE 'a\_%'"]), dialect="databricks")
@@ -282,6 +296,11 @@ class TestPresto:
     async def test_dot_matches_newline(self) -> None:
         sql = await emit_lib(lib_query(filters=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
         assert any("(?s)" in s for s in _strings(sql, read="presto")), sql
+
+    @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_extract(notes, 'paid(.*)late', 1)"])
+    async def test_dot_matches_newline_in_every_regex_function(self, expr: str) -> None:
+        sql = await emit_lib(lib_query(expr), dialect="presto")
+        assert any(s.startswith("(?s)") for s in _strings(sql, read="presto")), sql
 
     async def test_end_anchor_is_absolute(self) -> None:
         sql = await emit_lib(lib_query(filters=["regexp_like(code, '^ab$')"]), dialect="presto")

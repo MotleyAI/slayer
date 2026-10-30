@@ -57,7 +57,7 @@ from slayer.core.models import (
     reserved_value_param_message,
 )
 from slayer.engine import dimension_routing
-from slayer.engine.key_metadata import scope_column_type
+from slayer.engine.key_metadata import bundle_dialect, scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
@@ -98,6 +98,7 @@ from slayer.core.scalar_args import (
     check_split_index,
     slot_name,
 )
+from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
 from slayer.sql.sql_expr import build_cast_type, has_window_function, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
@@ -1895,6 +1896,9 @@ def _bind_scalar(
             f"{canonical_measure_text(parsed.args[1])!r}."
         )
 
+    if parsed.name in LIBRARY_FUNCTIONS and not is_list_fn(parsed.name):
+        # A refusal outranks argument errors; a list-overloaded name is decided once its arguments are typed.
+        require_library(bundle_dialect(bundle), parsed.name)
     _check_library_literals(parsed)
 
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:

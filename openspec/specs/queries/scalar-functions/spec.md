@@ -187,8 +187,8 @@ Each dialect SHALL run a portable library function — the string, math, `greate
 
 #### Scenario: Presto gets Presto SQL
 
-- **WHEN** a query on a Presto or Athena datasource has the dimension `regexp_extract(notes, 'a(b)', 1)` and the dimension `json_value(payload, '$.a.b')`
-- **THEN** the SQL uses Presto's own regex and JSON functions, contains no Postgres-only function, and `.` matches newlines
+- **WHEN** a query on a Presto or Athena datasource has the dimension `regexp_extract(notes, 'paid(.*)late', 1)` and the dimension `json_value(payload, '$.a.b')`
+- **THEN** the SQL uses Presto's own regex and JSON functions, contains no Postgres-only function, and its pattern makes `.` match newlines
 
 #### Scenario: Every dialect and function is decided
 
