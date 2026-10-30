@@ -190,6 +190,14 @@ class TestIntervalRewrite:
     def test_operator_spelling_interns_with_date_add(self, pair) -> None:
         assert _bind(pair[0]) == _bind(pair[1])
 
+    @pytest.mark.timeout(30)
+    def test_a_standalone_interval_beside_nested_spellings_fails_fast(self) -> None:
+        nested = "a"
+        for _ in range(24):
+            nested = f"json_extract_path_text({nested}, 'k', 'j')"
+        with pytest.raises(ValueError, match="interval"):
+            parse_expr(f"{nested} = '1' AND interval(1, 'day') > 0")
+
     def test_bound_filter_interns(self) -> None:
         model = orders_model()
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])

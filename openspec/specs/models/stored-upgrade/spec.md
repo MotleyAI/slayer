@@ -208,7 +208,7 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 #### Scenario: Every reserved name as a stored granularity
 
-- **WHEN** for each reserved name a stored datasource defines a custom granularity of that name used by a stored model's time dimension
+- **WHEN** for each reserved name other than a built-in granularity (never storable as a custom one) a stored datasource defines a custom granularity of that name used by a stored model's time dimension
 - **THEN** the datasource and model load and the time dimension buckets by the renamed granularity
 
 #### Scenario: An unpinned reservation is caught

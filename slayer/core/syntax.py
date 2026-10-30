@@ -1038,20 +1038,25 @@ def parse_expr(text: str) -> ParsedExpr:
     return parsed
 
 
-def _deferred_intervals(node: Any, *, message: str) -> Any:
+def _deferred_intervals(node: Any, *, message: str, memo: Optional[Dict[int, Any]] = None) -> Any:
     """``node`` with each standalone ``interval(…)`` a deferred aggregation candidate; raises ``message`` for one
-    that cannot be."""
+    that cannot be. ``memo`` rewrites a node shared by ``args`` and ``written_args`` once."""
+    memo = {} if memo is None else memo
     if isinstance(node, tuple):
-        return tuple(_deferred_intervals(item, message=message) for item in node)
+        return tuple(_deferred_intervals(item, message=message, memo=memo) for item in node)
     if not isinstance(node, _BaseNode):
         return node
+    if id(node) in memo:
+        return memo[id(node)]
     if isinstance(node, ScalarCall) and _is_interval(node):
         deferred = _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
         if deferred is None:
             raise ValueError(message)
+        memo[id(node)] = deferred
         return deferred
-    update = {f: _deferred_intervals(getattr(node, f), message=message) for f in type(node).model_fields}
-    return node.model_copy(update=update)
+    update = {f: _deferred_intervals(getattr(node, f), message=message, memo=memo) for f in type(node).model_fields}
+    memo[id(node)] = node.model_copy(update=update)
+    return memo[id(node)]
 
 
 def _syntax_message(text: str, error: pp.ParseBaseException) -> str:
@@ -1486,8 +1491,17 @@ def _reject_bare_star_args(
         )
 
 
-def _onto_path(node: Any, *, path: Tuple[str, ...]) -> Any:
-    """``node`` with every column leaf (and ``*``) read under the join ``path``."""
+def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any]] = None) -> Any:
+    """``node`` with every column leaf (and ``*``) read under the join ``path``; ``memo`` rewrites a node shared by
+    ``args`` and ``written_args`` once."""
+    memo = {} if memo is None else memo
+    if id(node) in memo:
+        return memo[id(node)]
+    memo[id(node)] = _onto_path_node(node, path=path, memo=memo)
+    return memo[id(node)]
+
+
+def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
     if isinstance(node, Ref):
         return DottedRef(parts=(*path, node.name), quoted=node.quoted)
     if isinstance(node, DottedRef):
@@ -1495,16 +1509,17 @@ def _onto_path(node: Any, *, path: Tuple[str, ...]) -> Any:
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
-        written = None if node.written_args is None else tuple(_onto_path(a, path=path) for a in node.written_args)
-        return node.model_copy(update={"args": tuple(_onto_path(a, path=path) for a in node.args), "written_args": written})
+        args = tuple(_onto_path(a, path=path, memo=memo) for a in node.args)
+        written = None if node.written_args is None else tuple(_onto_path(a, path=path, memo=memo) for a in node.written_args)
+        return node.model_copy(update={"args": args, "written_args": written})
     if isinstance(node, Cast):
-        return node.model_copy(update={"source": _onto_path(node.source, path=path)})
+        return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo)})
     if isinstance(node, (Arith, Cmp)):
-        return node.model_copy(update={"left": _onto_path(node.left, path=path), "right": _onto_path(node.right, path=path)})
+        return node.model_copy(update={"left": _onto_path(node.left, path=path, memo=memo), "right": _onto_path(node.right, path=path, memo=memo)})
     if isinstance(node, UnaryOp):
-        return node.model_copy(update={"operand": _onto_path(node.operand, path=path)})
+        return node.model_copy(update={"operand": _onto_path(node.operand, path=path, memo=memo)})
     if isinstance(node, BoolOp):
-        return node.model_copy(update={"operands": tuple(_onto_path(o, path=path) for o in node.operands)})
+        return node.model_copy(update={"operands": tuple(_onto_path(o, path=path, memo=memo) for o in node.operands)})
     return node
 
 

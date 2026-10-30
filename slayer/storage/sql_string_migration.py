@@ -13,7 +13,7 @@ import tokenize
 from collections.abc import Callable
 
 from slayer.storage.migrations import document_label, register_migration
-from slayer.storage.rank_direction_migration import rewrite_model_texts, rewrite_query_texts, stamp_memory_query
+from slayer.storage.rank_direction_migration import rewrite_model_texts_at, rewrite_query_texts_at, stamp_memory_query
 
 logger = logging.getLogger(__name__)
 
@@ -103,23 +103,24 @@ def _pipe_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
     return (i > 0 and touches(tokens[i - 1], tokens[i])) or (i + 1 < len(tokens) and touches(tokens[i], tokens[i + 1]))
 
 
-def _gated(document: str | None) -> Callable[[str], str]:
-    def rewrite(text: str) -> str:
+def _gated(document: str | None) -> Callable[[str, str], str]:
+    def rewrite(text: str, field: str) -> str:
         if is_old_grammar(text):
             return sql_quote_strings(text)
         logger.warning(
-            "stored document %r: `%s` is not in the grammar its version claims; left unchanged", document, text,
+            "stored document %r, field %s: `%s` is not in the grammar its version claims; left unchanged",
+            document, field, text,
         )
         return text
     return rewrite
 
 
 def rewrite_model_strings(data: dict) -> dict:
-    return rewrite_model_texts(data, _gated(document_label(data)))
+    return rewrite_model_texts_at(data, _gated(document_label(data)))
 
 
 def rewrite_query_strings(data: dict) -> dict:
-    return rewrite_query_texts(data, _gated(document_label(data)))
+    return rewrite_query_texts_at(data, _gated(document_label(data)))
 
 
 register_migration(entity="SlayerModel", source_version=15, stored_only=True)(rewrite_model_strings)
