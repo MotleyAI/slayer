@@ -73,6 +73,7 @@ class DuckdbDialect(SqlDialect):
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
+    catalog_qualified_schema_tokens: bool = True
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

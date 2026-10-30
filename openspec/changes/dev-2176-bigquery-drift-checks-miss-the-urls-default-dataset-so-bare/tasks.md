@@ -8,21 +8,21 @@
 
 ## 2. Dialect hook
 
-- [ ] 2.1 Add the default-schema hook to `SqlDialect` in `slayer/sql/dialects/base.py` (inspector value, else the moved `current_schema()` probe) — verify 1.1 base cases pass
-- [ ] 2.2 Override it in `BigqueryDialect` (`dataset_id`, no SQL) and make `reflect_schema_description` use it — verify 1.1 BigQuery cases pass
-- [ ] 2.3 Add the catalog-qualifying attribute to `SqlDialect` (True on `DuckdbDialect`) — verify 1.4 passes
+- [x] 2.1 Add the default-schema hook to `SqlDialect` in `slayer/sql/dialects/base.py` (inspector value, else the moved `current_schema()` probe) — verify 1.1 base cases pass
+- [x] 2.2 Override it in `BigqueryDialect` (`dataset_id`, no SQL) and make `reflect_schema_description` use it — verify 1.1 BigQuery cases pass
+- [x] 2.3 Add the catalog-qualifying attribute to `SqlDialect` (True on `DuckdbDialect`) — verify 1.4 passes
 
 ## 3. Engine wiring
 
-- [ ] 3.1 `schema_scope._default_schema_name` delegates to the hook via `dialect_for_sa_backend`; replace `_CATALOG_QUALIFYING_DIALECTS` with the dialect attribute; drop the `(DEV-1758)` docstring reference — verify 1.2 and 1.3 pass and `tests/test_schema_scope.py`, `tests/test_ingestion_schema_qualification.py` stay green
-- [ ] 3.2 Route the FK cross-schema check in `ingestion.py` through the same resolver — verify the FK ingestion tests stay green
-- [ ] 3.3 Replace `schema_drift`'s `datasource.type != "sqlite"` gate with `probes_integer_affinity` — verify the SQLite drift-probe tests stay green
+- [x] 3.1 `schema_scope._default_schema_name` delegates to the hook via `dialect_for_sa_backend`; replace `_CATALOG_QUALIFYING_DIALECTS` with the dialect attribute; drop the `(DEV-1758)` docstring reference — verify 1.2 and 1.3 pass and `tests/test_schema_scope.py`, `tests/test_ingestion_schema_qualification.py` stay green
+- [x] 3.2 Route the FK cross-schema check in `ingestion.py` through the same resolver — verify the FK ingestion tests stay green
+- [x] 3.3 Replace `schema_drift`'s `datasource.type != "sqlite"` gate with `probes_integer_affinity` — verify the SQLite drift-probe tests stay green
 
 ## 4. CI and docs
 
 - [ ] 4.1 Add a job-level `concurrency` (one repo-wide group, `cancel-in-progress: false`, `queue: max`) to `bigquery-example` in `.github/workflows/ci.yml` — verify the YAML parses and the PR's BigQuery job runs green
-- [ ] 4.2 One sentence in `docs/configuration/datasources.md`: the URL dataset is BigQuery's default and bare table names resolve there
+- [x] 4.2 One sentence in `docs/configuration/datasources.md`: the URL dataset is BigQuery's default and bare table names resolve there
 
 ## 5. Gates
 
-- [ ] 5.1 Full unit suite `poetry run pytest -m "not integration"`, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` — all green
+- [x] 5.1 Full unit suite `poetry run pytest -m "not integration"`, the CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` — all green

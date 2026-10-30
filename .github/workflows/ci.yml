@@ -152,6 +152,11 @@ jobs:
     # would fail otherwise and we'd rather not nag external contributors.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    # One run at a time in the shared GCP project; overlapping runs queue, never cancel.
+    concurrency:
+      group: bigquery-shared-gcp-project
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
 

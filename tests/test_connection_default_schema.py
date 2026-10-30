@@ -238,7 +238,8 @@ async def test_reingest_with_the_url_dataset_heals_a_bare_model(bq_engine: sa.En
     ):
         result = await ingestion.ingest_datasource_idempotent(datasource=_DS, storage=storage, schema=_URL_DATASET)
     stored = await storage.get_model("contractors", data_source=_DS.name)
-    assert stored is not None and stored.sql_table == f"{_URL_DATASET}.contractors"
+    assert stored is not None
+    assert stored.sql_table == f"{_URL_DATASET}.contractors"
     assert result.skipped == []
 
 
