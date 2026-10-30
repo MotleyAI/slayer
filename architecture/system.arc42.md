@@ -146,6 +146,8 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
+17. **One typing**: a value's type is derived from its key in one place; every
+    check, coercion and metadata lift reads that derivation. [target: DEV-2180]
 
 ## 4. Enforcement
 
