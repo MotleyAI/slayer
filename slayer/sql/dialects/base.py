@@ -1,4 +1,4 @@
-"""SqlDialect strategy base class: Postgres-shaped defaults that dialects override."""
+"""SqlDialect strategy base class: neutral AST defaults, or a typed refusal where only a database's own SQL will do."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import hashlib
 import re
 from datetime import date, datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, TypeGuard, get_args
 from collections.abc import Callable, Iterable, Sequence
 
 import sqlalchemy as sa
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlglot import exp
@@ -20,12 +20,17 @@ from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
-from slayer.core.errors import IdentifierCollisionError, IdentifierLengthError, ServerVersionError
+from slayer.core.errors import (
+    IdentifierCollisionError,
+    IdentifierLengthError,
+    ServerVersionError,
+    UnsupportedServerFunctionError,
+)
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
+from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
 from slayer.sql._identifier_fit import (
     SqlLexis,
     fit_identifier,
@@ -114,6 +119,13 @@ MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan
 ExtremumFn = Literal["greatest", "least"]
 
 
+#: Functions a database may declare native (``native_functions``), spelled as named.
+NativeFn = Literal[
+    "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
+]
+_EXTREMUM_NAMES: dict[str, NativeFn] = {"greatest": "GREATEST", "least": "LEAST"}
+
+
 def is_text_fn(name: str) -> TypeGuard[TextFn]:
     return name in get_args(TextFn)
 
@@ -124,6 +136,37 @@ def is_math_fn(name: str) -> TypeGuard[MathFn]:
 
 def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
     return name in get_args(ExtremumFn)
+
+
+#: Scalars rendered through a dialect hook.
+LIBRARY_FUNCTIONS = frozenset({
+    *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
+    "regexp_like", "regexp_extract", "regexp_replace",
+})
+REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+#: Every library function plus ``TRY_CAST``: what a dialect translating the whole library declares.
+PORTABLE_LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
+
+
+def library_refusal(name: str, *, database: str) -> UnsupportedServerFunctionError:
+    """The typed refusal of a library construct ``database`` has no translation of."""
+    what = ("TRY_CAST (and comparing or computing text with numbers, which reads through it)" if name == "try_cast"
+            else f"`{name}()`")
+    return UnsupportedServerFunctionError(
+        summary=f"{what} is not supported on {database} yet.",
+        suggestion="Express it in the model's own SQL (Column.sql), or run the query on a database that translates it.",
+    )
+
+
+def require_library(dialect: "SqlDialect", name: str) -> None:
+    """Refuse ``name`` unless ``dialect`` declares a translation of it."""
+    if name not in dialect.library_functions:
+        raise library_refusal(name, database=dialect.database_name)
+
+
+def text_try_cast(value: Expression, to: exp.DataType) -> Expression:
+    """``TRY_CAST(CAST(value AS TEXT) AS to)``, for an engine whose own ``TRY_CAST`` has the portable meaning."""
+    return exp.TryCast(this=as_text(value), to=to)
 
 
 def anon(name: str, *args: Expression) -> exp.Anonymous:
@@ -424,9 +467,17 @@ class ServerProfile(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    version: tuple[int, int] | None = None
+    version: tuple[int, ...] | None = None
     readonly: int | None = None
     correlated_subqueries: bool | None = None
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _three_parts(cls, value: Any) -> Any:
+        """``(major, minor, patch)``: missing parts are 0, parts past the patch are dropped."""
+        if isinstance(value, (tuple, list)) and value:
+            return (*tuple(value)[:3], *(0,) * (3 - len(value)))
+        return value
 
 
 class DriverFacts(BaseModel):
@@ -471,7 +522,7 @@ class DriverFacts(BaseModel):
 
 
 class SqlDialect(BaseModel):
-    """One database's quirks; the base IS the Postgres-shaped default, subclasses override what differs."""
+    """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -479,8 +530,8 @@ class SqlDialect(BaseModel):
     ds_type_aliases: frozenset[str] = frozenset()
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
+    log10_native: bool = False
+    log2_native: bool = False
 
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
@@ -583,9 +634,9 @@ class SqlDialect(BaseModel):
         """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
         return to
 
-    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:  # NOSONAR(S1172) — hook signature
         """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
-        return exp.TryCast(this=as_text(value), to=to)
+        self.refuse("try_cast")
 
     def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """The author's ``CAST``; NULL stays NULL."""
@@ -601,8 +652,14 @@ class SqlDialect(BaseModel):
 
     # -- The portable library (spec: queries/scalar-functions, regex, json, string-matching) -------
 
-    #: How this engine spells the portable regex.
-    regex_flavour: ClassVar[RegexFlavour] = POSTGRES
+    #: The library functions (and ``try_cast``) this dialect translates; any other is refused at plan time.
+    library_functions: ClassVar[frozenset[str]] = frozenset()
+    #: Functions this database has natively with the reference meaning, spelled as named (``REPEAT``, ``PI``, …).
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset()
+    #: Whether ``GREATEST`` / ``LEAST`` return NULL when any argument is NULL.
+    extremum_propagates_null: ClassVar[bool] = False
+    #: How this engine spells the portable regex (``None``: it has no translation).
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = None
     #: This engine's JSON column types (a column of one is read natively by ``json_value``).
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
     #: Whether LIKE takes ``ESCAPE '\'`` (else backslash already escapes).
@@ -614,14 +671,24 @@ class SqlDialect(BaseModel):
         """Whether rendering ``keys`` reads ``server_profile``."""
         return False
 
-    def require_version(self, *, minimum: tuple[int, int], what: str, release: str) -> None:
+    def require_version(self, *, minimum: tuple[int, int, int], what: str, release: str) -> None:
         """Fail closed when the known server version is below ``minimum``; an unknown version emits."""
         version = self.server_profile.version
         if version is not None and version < minimum:
             raise ServerVersionError(
-                summary=f"{what} needs {release} or later; the server reports version {version[0]}.{version[1]}.",
+                summary=f"{what} needs {release} or later; the server reports version {'.'.join(map(str, version))}.",
                 suggestion=f"Upgrade to {release}, or express the computation without {what}.",
             )
+
+    def refuse(self, name: str) -> NoReturn:
+        """The typed refusal of library construct ``name`` on this database."""
+        raise library_refusal(name, database=self.database_name)
+
+    def native(self, name: NativeFn, *args: Expression) -> exp.Anonymous:
+        """``NAME(args)`` for a function in ``native_functions``; any other is refused."""
+        if name not in self.native_functions:
+            self.refuse(name.lower())
+        return anon(name, *args)
 
     def char_length(self, value: Expression) -> Expression:
         """The length of ``value`` in characters."""
@@ -633,7 +700,7 @@ class SqlDialect(BaseModel):
 
     def text_repeat(self, value: Expression, count: Expression) -> Expression:
         """``value`` repeated ``count`` (≥ 1) times."""
-        return anon("REPEAT", value, count)
+        return self.native("REPEAT", value, count)
 
     def truncate(self, value: Expression) -> Expression:
         """``value`` truncated toward zero."""
@@ -665,11 +732,11 @@ class SqlDialect(BaseModel):
         if fn in ("lpad", "rpad"):
             return self._pad(fn=fn, s=s, n=args[1], fill=pad_fill(args))
         if fn == "reverse":
-            return anon("REVERSE", s)
+            return self.native("REVERSE", s)
         if fn == "repeat":
             return self._non_positive_empty(args[1], self.text_repeat(s, args[1]), source=s)
         if fn == "concat_ws":
-            return anon("CONCAT_WS", *args)
+            return self.native("CONCAT_WS", *args)
         if fn == "chr":
             return self._code_point_guard(s, self.code_point_char(s))
         return self.first_code_point(s)
@@ -713,7 +780,7 @@ class SqlDialect(BaseModel):
                     default=value)
 
     def _pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
-        node = anon("LPAD" if fn == "lpad" else "RPAD", s, n, fill)
+        node = self.native("LPAD" if fn == "lpad" else "RPAD", s, n, fill)
         return self._non_positive_empty(n, node, source=s)
 
     def portable_pad(self, *, fn: TextFn, s: Expression, n: Expression, fill: Expression) -> Expression:
@@ -741,7 +808,7 @@ class SqlDialect(BaseModel):
 
     def code_point_char(self, n: Expression) -> Expression:
         """The character of Unicode code point ``n`` (in range)."""
-        return anon("CHR", n)
+        return self.native("CHR", n)
 
     def _code_point_guard(self, n: Expression, value: Expression) -> Expression:
         """``value`` where ``n`` is a Unicode scalar value, else NULL."""
@@ -750,11 +817,11 @@ class SqlDialect(BaseModel):
 
     def first_code_point(self, s: Expression) -> Expression:
         """The code point of ``s``'s first character; 0 for ``''``."""
-        return anon("ASCII", s)
+        return self.native("ASCII", s)
 
     def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
         """The ``index``-th field (negative: from the end); ``''`` beyond the last."""
-        return anon("SPLIT_PART", value, delimiter, lit(index))
+        return self.native("SPLIT_PART", value, delimiter, lit(index))
 
     def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
         """A library math function; an out-of-domain argument yields NULL."""
@@ -762,7 +829,7 @@ class SqlDialect(BaseModel):
             divisor = exp.Nullif(this=operand_copy(args[1]), expression=lit(0))
             return self.truncate(exp.Div(this=operand_copy(args[0]), expression=divisor))
         if fn == "pi":
-            return anon("PI")
+            return self.native("PI")
         if fn in ("asin", "acos"):
             inside = exp.Between(this=args[0].copy(), low=lit(-1), high=lit(1))
             return case((inside, self.rewrite_target_ast(func(fn.upper(), args[0]))))
@@ -771,14 +838,18 @@ class SqlDialect(BaseModel):
         return self.rewrite_target_ast(func(fn.upper(), *args))
 
     def cube_root(self, value: Expression) -> Expression:
-        return anon("CBRT", value)
+        return self.native("CBRT", value)
 
     def natural_log(self, value: Expression) -> Expression:
         return self.rewrite_target_ast(exp.Ln(this=value.copy()))
 
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """``greatest`` / ``least`` of the non-NULL arguments; NULL only when all are NULL."""
-        return anon(fn.upper(), *args)
+        name = _EXTREMUM_NAMES[fn]
+        if self.extremum_propagates_null:
+            self.native(name)
+            return self.coalesced_extremum(fn, args, spelling="upper")
+        return self.native(name, *args)
 
     def coalesced_extremum(
         self, fn: ExtremumFn, args: tuple[Expression, ...], *, spelling: Literal["upper", "lower", "min_max"],
@@ -796,30 +867,33 @@ class SqlDialect(BaseModel):
 
     # Regex
 
+    def _flavour(self) -> RegexFlavour:
+        if self.regex_flavour is None:
+            self.refuse("regexp_like")
+        return self.regex_flavour
+
     def regex_text(
         self, pattern: RegexPattern, *, case_insensitive: bool = False, capture: Optional[int] = None,
         wrap: bool = False, anchored: bool = False,
     ) -> Expression:
-        return lit(emit_regex(pattern, self.regex_flavour, case_insensitive=case_insensitive, capture=capture,
+        return lit(emit_regex(pattern, self._flavour(), case_insensitive=case_insensitive, capture=capture,
                               wrap=wrap, anchored=anchored))
 
     def replacement_text(self, replacement: RegexReplacement) -> Expression:
-        return lit(emit_replacement(replacement, self.regex_flavour))
+        return lit(emit_replacement(replacement, self._flavour()))
 
-    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+    def build_regexp_like(
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
         """Whether ``pattern`` matches anywhere in ``value``."""
-        node = exp.RegexpILike if case_insensitive else exp.RegexpLike
-        return node(this=value.copy(), expression=self.regex_text(pattern))
+        self.refuse("regexp_like")
 
     def build_regexp_extract(
-        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """The first match (``group`` 0) or its ``group``; NULL on no match, ``''`` for a group that did not
         take part."""
-        match = anon("REGEXP_MATCH", value, self.regex_text(pattern, wrap=True),
-                     *([lit("i")] if case_insensitive else []))
-        picked = exp.Bracket(this=exp.Paren(this=match), expressions=[lit(group)])
-        return self.skipped_group_empty(value, pattern, group, picked)
+        self.refuse("regexp_extract")
 
     def skipped_group_empty(
         self, value: Expression, pattern: RegexPattern, group: int, extracted: Expression,
@@ -831,11 +905,10 @@ class SqlDialect(BaseModel):
         return case((matched, exp.Coalesce(this=extracted, expressions=[lit("")])))
 
     def build_regexp_replace(
-        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
     ) -> Expression:
         """``value`` with every match replaced."""
-        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement),
-                    lit("gi" if case_insensitive else "g"))
+        self.refuse("regexp_replace")
 
     # LIKE
 
@@ -860,24 +933,11 @@ class SqlDialect(BaseModel):
 
     # JSON
 
-    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+    def build_json_value(
+        self, value: Expression, path: JsonPath, native: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
         """The scalar at ``path`` as TEXT; NULL when missing, JSON null, an object or an array."""
-        jsonb = exp.DataType.build("JSONB")
-        already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
-        doc = value.copy() if already else exp.Cast(this=value.copy(), to=jsonb)
-        keys = [lit(str(step)) for step in path.steps]
-        found = anon("JSONB_EXTRACT_PATH", doc, *keys)
-        scalar = exp.In(this=anon("JSONB_TYPEOF", found), expressions=[lit("string"), lit("number"), lit("boolean")])
-        read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
-        if native or not self.validates_json_input():
-            return read
-        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
-        return case((valid, read))
-
-    def validates_json_input(self) -> bool:
-        """Whether malformed JSON text can be detected (Postgres 16+)."""
-        version = self.server_profile.version
-        return version is not None and version >= (16, 0)
+        self.refuse("json_value")
 
     def build_json_value_as(
         self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,  # NOSONAR(S1172) — hook parameter read by dialect overrides
@@ -888,15 +948,17 @@ class SqlDialect(BaseModel):
     # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.
 
     #: Whether the database has native lists; elsewhere every list construct is refused at plan time.
-    native_lists: ClassVar[bool] = True
+    native_lists: ClassVar[bool] = False
     #: The database's name in a refusal.
-    database_name: ClassVar[str] = "Postgres"
+    database_name: ClassVar[str] = "this database"
 
     def build_list_call(
         self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,
+        element: Optional[DataType] = None,  # NOSONAR(S1172) — read by dialect overrides
     ) -> Expression:
         """A list function, NULL only when an operand is NULL; ``[]`` as the second list is decided here. ``each``:
-        the second list's element type, unlike the first's, so compared one element at a time."""
+        the second list's element type, unlike the first's, so compared one element at a time; ``element``: the
+        lists' shared element type, when known."""
         values = args[0]
         if fn == "length":
             return case((is_null(values), exp.Null()), default=self.list_length(values))
@@ -926,18 +988,17 @@ class SqlDialect(BaseModel):
         missing = exp.and_(is_not_null(wanted), exp.Not(this=found))
         return exp.Not(this=self.list_exists(other, alias=alias, element=element, predicate=missing))
 
-    def list_length(self, values: Expression) -> Expression:
-        return exp.Anonymous(this="CARDINALITY", expressions=[anon("ARRAY_REMOVE", values, exp.Null())])
+    def list_length(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("length")
 
-    def list_contains(self, values: Expression, value: Expression) -> Expression:
-        found = exp.EQ(this=operand_copy(value), expression=exp.Any(this=exp.Paren(this=values.copy())))
-        return exp.Coalesce(this=found, expressions=[exp.false()])
+    def list_contains(self, values: Expression, value: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains")
 
-    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
-        return exp.ArrayOverlaps(this=operand_copy(values), expression=operand_copy(other))
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains_any")
 
-    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
-        return exp.ArrayContainsAll(this=operand_copy(values), expression=anon("ARRAY_REMOVE", other, exp.Null()))
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        self.refuse("contains_all")
 
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:  # NOSONAR(S1172) — hook default
         """Per result-column position, how to read a non-NULL cell the driver returns as text (default: none)."""
@@ -973,11 +1034,9 @@ class SqlDialect(BaseModel):
     def build_array_literal(self, values: Sequence[Expression]) -> Expression:
         return exp.Array(expressions=[v.copy() for v in values])
 
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        """``[]`` of ``element`` elements, typed where the type is known."""
-        if element is None or element.is_opaque:
-            return exp.Array(expressions=[])
-        return exp.Cast(this=exp.Array(expressions=[]), to=exp.DataType.build(f"ARRAY<{element.value}>"))
+    def empty_list(self) -> Expression:
+        """An untyped ``[]``, which takes the type of the list it meets (``collect``'s empty value)."""
+        return exp.Array(expressions=[])
 
     def distinct_sorted(self, value: Expression) -> exp.Order:
         """``DISTINCT value ORDER BY value`` (NULLs where the engine puts them, so no NULLS clause is emitted)."""
@@ -985,11 +1044,17 @@ class SqlDialect(BaseModel):
         return exp.Order(this=exp.Distinct(expressions=[value.copy()]),
                          expressions=[self.build_ordered(value.copy(), descending=False, nulls=nulls)])
 
-    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+    def build_collect(
+        self, value: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
         """The distinct non-NULL values, sorted ascending; ``[]`` when there are none."""
-        ordered = self.distinct_sorted(value)
-        aggregate = exp.Filter(this=exp.ArrayAgg(this=ordered), expression=exp.Where(this=is_not_null(value)))
-        return exp.Coalesce(this=aggregate, expressions=[self.empty_list(element)])
+        self.refuse("collect")
+
+    def filtered_collect(self, value: Expression) -> Expression:
+        """``COALESCE(ARRAY_AGG(DISTINCT value ORDER BY value) FILTER (WHERE value IS NOT NULL), [])``."""
+        aggregate = exp.Filter(this=exp.ArrayAgg(this=self.distinct_sorted(value)),
+                               expression=exp.Where(this=is_not_null(value)))
+        return exp.Coalesce(this=aggregate, expressions=[self.empty_list()])
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

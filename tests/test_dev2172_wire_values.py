@@ -18,7 +18,6 @@ import pytest
 from slayer.mcp.server import create_mcp_server
 from tests._dev2172_fixtures import (
     BIG,
-    COLLECT_FALLBACK_XFAIL,
     DS,
     THINGS,
     UID_1,
@@ -106,7 +105,6 @@ def test_decimal_and_timestamp_columns_keep_their_native_types(servers: Servers,
         assert ts is None or isinstance(ts, dt.datetime)
 
 
-@COLLECT_FALLBACK_XFAIL
 class TestCollectOverUuid:
     @pytest.mark.parametrize("wire", WIRES)
     def test_over_the_wire_it_is_json_array_text(self, servers: Servers, wire: str) -> None:
@@ -124,7 +122,6 @@ class TestCollectOverUuid:
         assert sorted(strict_json(_single_cell(text, fmt=fmt))) == sorted([str(UID_1), str(UID_3)])
 
 
-@COLLECT_FALLBACK_XFAIL
 class TestCollectOverExactDecimals:
     async def test_mcp_json_keeps_every_digit(self, store: FacadeStore) -> None:
         text = await mcp_text(create_mcp_server(storage=store.storage),

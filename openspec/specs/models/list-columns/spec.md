@@ -123,7 +123,7 @@ A list column SHALL NOT be a group key: a query that groups (it has measures, or
 
 ### Requirement: Backends without native lists reject list constructs
 
-On SQLite, MySQL and SQL Server, every list construct — a list function over a list, an array literal, element access and `collect` — SHALL fail at plan time with a typed error naming the construct and the database.
+On SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle, every list construct — a list function over a list, an array literal, element access, a list child and `collect` — SHALL fail at plan time with a typed error naming the construct and the database.
 
 #### Scenario: List function on SQLite
 - **WHEN** a model on a SQLite datasource declares a list column and a query filters `contains(skills, 'go')`
@@ -132,6 +132,10 @@ On SQLite, MySQL and SQL Server, every list construct — a list function over a
 #### Scenario: collect on MySQL
 - **WHEN** a query on a MySQL datasource has the measure `collect(team)`
 - **THEN** it fails at plan time naming `collect` and MySQL
+
+#### Scenario: Element access on Databricks
+- **WHEN** a model on a Databricks datasource declares a list column `skills` and a query has the dimension `skills.value`
+- **THEN** the query fails at plan time naming the element access and Databricks
 
 ### Requirement: Re-ingest re-types TEXT list columns
 

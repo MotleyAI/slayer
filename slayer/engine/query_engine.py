@@ -168,6 +168,7 @@ from slayer.sql.client import (
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.render.library import check_library_support
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
@@ -796,10 +797,11 @@ class SlayerQueryEngine:
     ) -> "str | SqlDialect":
         """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
         name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
-        as an unknown server."""
+        as an unknown server. A library call the dialect does not translate is refused first."""
         sql_dialect = dialect_for_ds_type(datasource.type)
         if sql_dialect.sqlglot_name != dialect:
             sql_dialect = get_dialect(dialect)
+        check_library_support(sql_dialect, planned_keys(planned_list))
         if not sql_dialect.profile_needed(planned_keys(planned_list)):
             return sql_dialect
         try:
@@ -1163,7 +1165,7 @@ class SlayerQueryEngine:
         # never touches ``model.data_source``.
         datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={"dialect": dialect})
+        bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
         # Substitute {var} into the direct source model's Mode-A surfaces before
         # anything parses them; the substituted copy replaces the model as both
@@ -1930,7 +1932,7 @@ class SlayerQueryEngine:
                 now=self._clock(),
             )
             dialect = self._dialect_for_type(datasource.type)
-            bundle = bundle.model_copy(update={"dialect": dialect})
+            bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
             sql = generate_planned_stages(

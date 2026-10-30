@@ -8,7 +8,7 @@ the Postgres catalog queries duckdb-engine inherits.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
 import sqlglot
 from sqlglot import exp
@@ -17,8 +17,21 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.sql.dialects.base import LIST_ELEMENT, SqlDialect, TextFn, anon, case, is_not_null, lit, pad_fill
-from slayer.sql.dialects.patterns import RE2, RegexFlavour, emit_replacement
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import (
+    LIST_ELEMENT,
+    PORTABLE_LIBRARY,
+    NativeFn,
+    SqlDialect,
+    TextFn,
+    anon,
+    case,
+    is_not_null,
+    lit,
+    pad_fill,
+    text_try_cast,
+)
+from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
@@ -89,8 +102,16 @@ class DuckdbDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
-    regex_flavour: ClassVar[RegexFlavour] = RE2
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     database_name: ClassVar[str] = "DuckDB"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
+    })
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        return text_try_cast(value, to)
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
@@ -114,7 +135,7 @@ class DuckdbDialect(SqlDialect):
         self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
-                    lit(emit_replacement(replacement, self.regex_flavour)), lit("g"))
+                    self.replacement_text(replacement), lit("g"))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         text = lit(path.text)
@@ -134,6 +155,9 @@ class DuckdbDialect(SqlDialect):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         return anon("LIST_HAS_ALL", _compact(values), _compact(other))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        return self.filtered_collect(value)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(
