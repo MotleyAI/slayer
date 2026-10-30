@@ -10,7 +10,7 @@ from sqlglot.dialects.dialect import Dialect, NormalizationStrategy
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.models import Column
+from slayer.core.models import Column, is_base_column_sql
 from slayer.sql.column_expansion import root_scope_column_ids
 
 
@@ -24,13 +24,18 @@ class PhysicalIndex:
         # Physical spellings: exact name -> whether written unquoted.
         self._reads: dict[int, tuple[str, bool]] = {
             id(c): self._spelling(self._identifier(c)) for c in self.columns if c.is_base and c.filter is None}
-        self._known: dict[str, bool] = {name: False for name in live}
+        self._known: dict[str, bool] = dict.fromkeys(live, False)
         for name, unquoted in self._reads.values():
             self._known[name] = self._known.get(name, False) or unquoted
 
     def _identifier(self, col: Column) -> exp.Identifier:
-        node = sqlglot.parse_one(col.sql, read=self.dialect) if col.sql is not None else None
-        return node.this if isinstance(node, exp.Column) else exp.to_identifier(col.name)
+        try:
+            node = sqlglot.parse_one(col.sql, read=self.dialect) if col.sql is not None else None
+        except SqlglotError:  # a reserved word such as `from`
+            node = None
+        if isinstance(node, exp.Column) and isinstance(node.this, exp.Identifier):
+            return node.this
+        return exp.to_identifier(col.physical_name)
 
     def _spelling(self, ident: exp.Identifier) -> tuple[str, bool]:
         """``(exact name, unquoted)``: an unquoted name folded per the dialect."""
@@ -77,7 +82,11 @@ class PhysicalIndex:
         try:
             tree = sqlglot.parse_one(sql, read=self.dialect)
         except SqlglotError as exc:
-            return f"SQL does not parse: {exc}"
+            tree = exc
+        if is_base_column_sql(sql) and not isinstance(tree, exp.Column):
+            return f"{sql.strip()!r} is a reserved word; quote it to read the physical column"
+        if isinstance(tree, SqlglotError):
+            return f"SQL does not parse: {tree}"
         for col in root_physical_columns(tree):
             if col.name not in logical and (found := self.problem(col.this, owner=owner)) is not None:
                 return found

@@ -28,7 +28,7 @@ from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
-from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.importers.aggregates import MaterializedColumn, contains_args, convert_expression, outermost_aggregates
@@ -144,6 +144,19 @@ def _match_name(ident: exp.Identifier, names: list[str]) -> str:
     if not hits:
         raise LookupError(f"{ident.name!r} is not declared")
     return hits[0]
+
+
+def _list_call(node: exp.Expr, *, dialect: SqlDialect, is_list: Callable[[exp.Expr], bool]) -> exp.Expr:
+    """``node`` as SLayer's own list SQL when it is an array function, else ``node``."""
+    if isinstance(node, exp.ArrayContains):
+        return dialect.build_list_call("contains", contains_args(node, is_list=is_list))
+    if isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any):
+        return dialect.build_list_call("contains", (node.expression.this, node.this))
+    if isinstance(node, exp.ArraySize) or (
+            isinstance(node, exp.Anonymous) and node.name.lower() in ("cardinality", "array_length")):
+        (values,) = node.expressions if isinstance(node, exp.Anonymous) else [node.this]
+        return dialect.build_list_call("length", (values,))
+    return node
 
 
 def _render_description(explicit: Optional[str], ctx: Optional[OSIAIContext]) -> Optional[str]:
@@ -441,24 +454,13 @@ class OsiToSlayerConverter:
 
     def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
         """``tree`` with array functions as SLayer's own list SQL for the target."""
-        dialect = self._dialect
         physical = self._physical[ds.name]
 
         def is_list(node: exp.Expr) -> bool:
             col = physical.get(node.name) if isinstance(node, exp.Column) and not node.table else None
             return col is not None and col.type is DataType.ARRAY
 
-        def rewrite(node: exp.Expr) -> exp.Expr:
-            if isinstance(node, exp.ArrayContains):
-                return dialect.build_list_call("contains", contains_args(node, is_list=is_list))
-            if isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any):
-                return dialect.build_list_call("contains", (node.expression.this, node.this))
-            if isinstance(node, exp.ArraySize) or (
-                    isinstance(node, exp.Anonymous) and node.name.lower() in ("cardinality", "array_length")):
-                (values,) = node.expressions if isinstance(node, exp.Anonymous) else [node.this]
-                return dialect.build_list_call("length", (values,))
-            return node
-        return tree.transform(rewrite)
+        return tree.transform(lambda node: _list_call(node, dialect=self._dialect, is_list=is_list))
 
     def _field_column(self, field: OSIField, ds: OSIDataset, model: SlayerModel) -> Column | None:
         """The Column one field maps to, or ``None`` on a reported clean-fail."""

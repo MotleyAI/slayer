@@ -270,17 +270,23 @@ class InlineOperands(OperandPolicy):
             return f"length({self._inline(values)})"
         if name not in SCALAR_PASSTHROUGH or name in _NOT_INLINE_FUNCS:
             raise _NotInline(f"function {name!r} is not in the formula allowlist")
-        args: list[exp.Expr] = []
-        for key in node.arg_types:
-            value = node.args.get(key)
-            if not isinstance(value, (exp.Expr, list)):
-                continue  # absent arg or a boolean flag
-            if key not in _FUNC_ARG_KEYS:
-                raise _NotInline(f"function {name!r} argument {key!r}")
-            args.extend(value if isinstance(value, list) else [value])
+        args = _func_args(node, name=name)
         if check_scalar_arity(name=name, argc=len(args)) is not None:
             raise _NotInline(f"function {name!r} arity")
         return f"{name}({', '.join(self._inline(a) for a in args)})"
+
+
+def _func_args(node: exp.Func, *, name: str) -> list[exp.Expr]:
+    """``node``'s positional arguments, in order."""
+    args: list[exp.Expr] = []
+    for key in node.arg_types:
+        value = node.args.get(key)
+        if not isinstance(value, (exp.Expr, list)):
+            continue  # absent arg or a boolean flag
+        if key not in _FUNC_ARG_KEYS:
+            raise _NotInline(f"function {name!r} argument {key!r}")
+        args.extend(value if isinstance(value, list) else [value])
+    return args
 
 
 class _Translator:

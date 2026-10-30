@@ -24,6 +24,7 @@
 - [x] 3.5 Two-sided join-key resolution phase; a masked key drops the join with a report; verify the join-key tests pass
 - [x] 3.6 View facades carry hidden dependency columns transitively; verify the view tests pass
 - [x] 3.7 `import-cube` resolves `--datasource` and types columns via the helper; verify the CLI typing tests pass
+- [x] 3.8 Resolve `{other}.x` as the joined cube's physical column (spec "Cube reference forms"; design step 2/5)
 
 ## 4. dbt
 

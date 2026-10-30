@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 import yaml
+from sqlalchemy import event
 
 from slayer.cli import main as cli_main
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -63,6 +64,15 @@ def seed(directory: Path, statements: Sequence[str] = ORDERS_DDL) -> Path:
 def sa_engine(db: Path) -> Generator[sa.Engine]:
     with disposable_engine(f"duckdb:///{db}") as engine:
         yield engine
+
+
+@contextlib.contextmanager
+def unreachable_engine(directory: Path) -> Generator[tuple[sa.Engine, list[object]]]:
+    """An engine whose every connection fails, and the list of its connection attempts."""
+    attempts: list[object] = []
+    with disposable_engine(f"duckdb:///{directory / 'no_such_dir' / 'x.duckdb'}") as engine:
+        event.listen(engine, "do_connect", lambda *args: attempts.append(args))
+        yield engine, attempts
 
 
 # ── importers ─────────────────────────────────────────────────────────────

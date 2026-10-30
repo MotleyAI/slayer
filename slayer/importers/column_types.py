@@ -142,14 +142,35 @@ class LiveSource:
         return CATEGORY_DATA_TYPES[category], DataType.UNKNOWN if category == "list" else None
 
 
-def connect_source(*, engine: sa.Engine | None, offline_reason: str | None, data_source: str, db_type: str | None,
-                   dialect: str | None, sql_table: str | None = None,
-                   sql: str | None = None) -> LiveSource | str:
-    """The source's live schema, or why types are not checked against the database."""
-    if engine is None:
-        return offline_reason or "no datasource connection was given"
-    try:
-        return LiveSource(engine=engine, data_source=data_source, db_type=db_type, dialect=dialect,
-                          sql_table=sql_table, sql=sql)
-    except Exception as exc:  # noqa: BLE001 — an unreachable datasource still imports
-        return f"datasource {data_source!r} could not be reached: {type(exc).__name__}"
+class LiveDatasource:
+    """An importer's datasource: each source's live schema, the connection tried at most once."""
+
+    def __init__(self, *, engine: sa.Engine | None, offline_reason: str | None, data_source: str,
+                 db_type: str | None, dialect: str | None) -> None:
+        self.engine = engine
+        self.data_source = data_source
+        self.db_type = db_type
+        self.dialect = dialect
+        self._offline = None if engine is not None else offline_reason or "no datasource connection was given"
+        self._tried = False
+
+    def _reachable(self, engine: sa.Engine) -> bool:
+        if not self._tried:
+            self._tried = True
+            try:
+                with engine.connect():
+                    pass
+            except Exception as exc:  # noqa: BLE001 — an unreachable datasource still imports
+                self._offline = f"datasource {self.data_source!r} could not be reached: {type(exc).__name__}"
+        return self._offline is None
+
+    def source(self, *, sql_table: str | None = None, sql: str | None = None) -> LiveSource | str:
+        """The source's live schema, or why types are not checked against the database."""
+        engine = self.engine
+        if engine is None or not self._reachable(engine):
+            return self._offline or "no datasource connection was given"
+        try:
+            return LiveSource(engine=engine, data_source=self.data_source, db_type=self.db_type, dialect=self.dialect,
+                              sql_table=sql_table, sql=sql)
+        except Exception as exc:  # noqa: BLE001 — an unreadable source still imports
+            return f"the source could not be read from datasource {self.data_source!r}: {type(exc).__name__}"

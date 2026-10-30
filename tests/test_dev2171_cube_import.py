@@ -10,11 +10,14 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.syntax import AggCall, Ref, parse_expr
+from slayer.cube.converter import CubeToSlayerConverter
+from slayer.cube.models import CubeProject
 from slayer.sql import engine_factory
 from tests._dev2171_fixtures import (
-    DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_measure,
+    DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_column,
+    has_measure,
     import_cube, models_of, run_cli, save_datasource, seed, source_column, stored_model, typing_notes,
-    value, write_yaml,
+    unreachable_engine, value, write_yaml,
 )
 
 ID = {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}
@@ -115,6 +118,17 @@ class TestPhysicalReferences:
         result = import_cube([cube(dimensions=[RENAMED_STATUS, bucket])], db=db)
         assert await counts_by(models=result.models, db=db, model="orders", dimension="bucket") == {"P": 2, "O": 1}
 
+    @pytest.mark.parametrize("word", ["select", "from"])
+    def test_reserved_word_column_is_dropped_with_a_report(self, word: str) -> None:
+        result = import_cube([cube(dimensions=[dim("k", f"{{CUBE}}.{word}")])])
+        assert not has_column(result, "orders", "k")
+        assert [i for i in cube_issues(result, "k") if "reserved word" in i.message], result.report.issues
+
+    async def test_quoted_reserved_word_column_is_read(self, tmp_path: Path) -> None:
+        db = seed(tmp_path, ['CREATE TABLE t (id INTEGER, "from" VARCHAR)', "INSERT INTO t VALUES (1, 'x'), (2, 'x')"])
+        result = import_cube([cube("t", dimensions=[dim("k", '{CUBE}."from"')], sql_table="t")], db=db)
+        assert await counts_by(models=result.models, db=db, model="t", dimension="k") == {"x": 2}
+
 
 @MASKED
 class TestSelfNamed:
@@ -186,6 +200,56 @@ class TestMemberReferences:
         result = import_cube([cube(measures=[
             meas("rate", "sum", "{CUBE}.rate"), meas("double_rate", "number", "{rate} * 2")])], db=db)
         assert await _measure(result, db, "double_rate") == pytest.approx(10.0)
+
+
+class TestJoinedCubesPhysicalColumn:
+    JOIN = {"name": "customers", "relationship": "many_to_one", "sql": "{CUBE}.customer_id = {customers}.id"}
+    CUST_NAME = dim("cust_name", "{customers}.name")
+
+    @pytest.mark.parametrize("customers", [CUSTOMERS, {**CUSTOMERS, "dimensions": [ID]}],
+                             ids=["read-by-a-member", "read-by-no-member"])
+    async def test_reads_the_joined_cubes_physical_column(self, db: Path, customers: dict[str, Any]) -> None:
+        result = import_cube([cube(dimensions=[self.CUST_NAME], joins=[self.JOIN]), customers], db=db)
+        assert await counts_by(models=result.models, db=db, model="orders", dimension="cust_name") == {
+            "Ann": 2, "Bo": 1}
+
+    def test_masked_is_dropped_with_a_report(self) -> None:
+        masked = {**CUSTOMERS, "dimensions": [ID, dim("name", "{CUBE}.region")]}
+        result = import_cube([cube(dimensions=[self.CUST_NAME], joins=[self.JOIN]), masked])
+        assert not has_column(result, "orders", "cust_name")
+        assert [i for i in cube_issues(result, "cust_name") if "'name'" in i.message], result.report.issues
+
+    def test_cube_not_joined_is_dropped_with_a_report(self) -> None:
+        result = import_cube([cube(dimensions=[self.CUST_NAME]), CUSTOMERS])
+        assert not has_column(result, "orders", "cust_name")
+        assert [i for i in cube_issues(result, "cust_name") if "does not join" in i.message], result.report.issues
+
+    @pytest.mark.parametrize("ref", ["{customers}.name", "{customers.name}"], ids=["physical", "member"])
+    def test_join_dropped_later_drops_its_readers(self, ref: str) -> None:
+        masked_key = dim("customer_id", "{CUBE}.legacy_ref", type="number")
+        result = import_cube([cube(dimensions=[masked_key, dim("cn", ref), dim("cn_upper", "UPPER({cn})")],
+                                   measures=[meas("n_names", "count_distinct", "{cn}")], joins=[self.JOIN]),
+                              CUSTOMERS])
+        assert not any(has_column(result, "orders", c) for c in ("cn", "cn_upper"))
+        assert not has_measure(result, "orders", "n_names")
+        assert [i for i in cube_issues(result, "cn") if "no join" in i.message], result.report.issues
+
+    async def test_measure_over_the_joined_cubes_column(self, db: Path) -> None:
+        result = import_cube([cube(measures=[meas("n_regions", "count_distinct", "{customers}.region")],
+                                   joins=[self.JOIN]), CUSTOMERS], db=db)
+        assert await _measure(result, db, "n_regions") == 2
+
+    def test_filtered_measure_over_a_cube_not_joined_is_dropped(self) -> None:
+        result = import_cube([cube(measures=[meas("m", "sum", "{customers}.id", filters=PAID)]), CUSTOMERS])
+        assert not has_measure(result, "orders", "m")
+        assert [i for i in cube_issues(result, "m") if "m_col" in i.message], result.report.issues
+
+    def test_non_bare_aggregate_operand_is_dropped_with_a_report(self) -> None:
+        result = import_cube([cube(measures=[meas("bad", "number", "SUM({CUBE}.amount + {customers}.id)")],
+                                   joins=[self.JOIN]), CUSTOMERS])
+        assert not has_measure(result, "orders", "bad")
+        assert [i for i in cube_issues(result, "bad") if "reads another cube (customers)" in i.message], \
+            result.report.issues
 
 
 # ── calculated measures with raw SQL aggregates ───────────────────────────
@@ -343,6 +407,15 @@ class TestTyping:
         assert source_column(models_of(result)["orders"], "tag_cnt").type == DataType.TEXT
         notes = typing_notes(i.message for i in result.report.issues if i.severity == "info")
         assert len(notes) == 1, result.report.issues
+
+    def test_unreachable_datasource_is_tried_once(self, tmp_path: Path) -> None:
+        total = [meas("total", "sum", "{CUBE}.amount")]
+        project = CubeProject.model_validate({"cubes": [cube(measures=total), cube("orders_b", measures=total)]})
+        with unreachable_engine(tmp_path) as (engine, attempts):
+            result = CubeToSlayerConverter(project=project, data_source=DS, sa_engine=engine).convert()
+        assert len(attempts) == 1
+        (note,) = typing_notes(i.message for i in result.report.issues if i.severity == "info")
+        assert "could not be reached" in note
 
     def test_offline_max_over_an_untyped_source_is_dropped(self) -> None:
         result = import_cube([cube(measures=[meas("latest", "max", "{CUBE}.created_at")])])

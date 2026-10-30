@@ -34,8 +34,9 @@ transpiles `'a' = ANY(tags)` and `CARDINALITY(tags)` unchanged to Snowflake / Bi
 
 1. Reserve every source member name of the model (dimensions, measures, segments) and fix the source → emitted name
    map (allocator suffixes, duplicates, namespace collisions) before any SQL is resolved.
-2. Classify Cube braces: physical (`{CUBE}.x`, `{own}.x`, bare `x`), logical member (`{m}`, `{CUBE.m}`, `{own.m}` →
-   emitted name via the map), join path (`{other.m}`). FILTER_PARAMS stay opaque, parse-safe placeholders.
+2. Classify Cube braces: physical (`{CUBE}.x`, `{own}.x`, bare `x`), a joined cube's physical (`{other}.x`), logical
+   member (`{m}`, `{CUBE.m}`, `{own.m}` → emitted name via the map), join path (`{other.m}`). FILTER_PARAMS stay
+   opaque, parse-safe placeholders.
 3. Parse each fragment in the datasource dialect (sqlglot default when unknown); walk root-scope column references
    with `slayer.sql`'s root-scope walker (the expander's own scoping); rewrite only physical references whose target
    differs, by span, keeping all other text verbatim.
@@ -46,6 +47,9 @@ transpiles `'a' = ANY(tags)` and `CARDINALITY(tags)` unchanged to Snowflake / Bi
    self-named member is dropped first, which frees its name; reading such an `x` is DEV-2175; (c) else another
    unfiltered base column reading `x`, first declared; (d) else bare `x` in Mode A (a Mode-B operand gets a base column
    `x`).
+   A joined cube's physical `{other}.x` resolves by the same rules against `other`'s columns once every cube and join
+   is built, emitting `other.<column>`; (d) adds the base column `x` to `other`, hidden; a cube `other` that is not
+   joined drops the construct with a report.
 6. Matching: quoted identifiers exactly; unquoted with the dialect's folding; more than one match → the construct is
    dropped with an ambiguity report. Emitted base-column SQL keeps the source's quoting.
 7. Join keys: a separate two-sided phase after all cubes are converted maps each physical `ON` operand by step 5 to an

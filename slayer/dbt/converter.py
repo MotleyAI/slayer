@@ -54,7 +54,7 @@ from slayer.engine.ingestion import introspect_table_to_model
 from slayer.importers.column_types import (
     LiveSource,
     Typed,
-    connect_source,
+    LiveDatasource,
     contradiction_note,
     contradicts,
     declared_type,
@@ -227,8 +227,9 @@ class DbtToSlayerConverter:
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
-        self.offline_reason = offline_reason
         self._dialect = dialect_for_ds_type(target_dialect).sqlglot_name if target_dialect else None
+        self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
+                                    db_type=target_dialect, dialect=self._dialect)
         # {dbt model: {column: declared data_type}}
         self._declared: dict[str, dict[str, str]] = {
             rm.name: {c.name: c.data_type for c in rm.columns if c.data_type} for rm in project.regular_models
@@ -271,7 +272,8 @@ class DbtToSlayerConverter:
         self._prune_dangling_measures()
 
         if self.include_hidden_models and self.project.regular_models:
-            models.extend(self._convert_regular_models(existing_names={m.name for m in models}))
+            wrapped = {sm.model or sm.name for sm in self.project.semantic_models}
+            models.extend(self._convert_regular_models(existing_names={m.name for m in models} | wrapped))
 
         return ConversionResult(
             models=models,
@@ -409,7 +411,7 @@ class DbtToSlayerConverter:
         if sm.label:
             model_meta.setdefault("label", sm.label)
 
-        live = self._live_source(sm, sql_table=sql_table, sql=sql_source)
+        live = self._live_source(sql_table=sql_table, sql=sql_source)
         cols = self._drop_masked(sm, [_convert_dimension(d) for d in sm.dimensions], live=live)
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
@@ -448,10 +450,9 @@ class DbtToSlayerConverter:
             meta=model_meta or None,
         )
 
-    def _live_source(self, sm: DbtSemanticModel, *, sql_table: str | None, sql: str | None) -> LiveSource | None:
+    def _live_source(self, *, sql_table: str | None, sql: str | None) -> LiveSource | None:
         """The semantic model's live schema; ``None`` (noted once per reason) when the database is not reachable."""
-        live = connect_source(engine=self.sa_engine, offline_reason=self.offline_reason, data_source=self.data_source,
-                              db_type=self.target_dialect, dialect=self._dialect, sql_table=sql_table, sql=sql)
+        live = self._live.source(sql_table=sql_table, sql=sql)
         if isinstance(live, LiveSource):
             return live
         if live not in self._offline_noted:

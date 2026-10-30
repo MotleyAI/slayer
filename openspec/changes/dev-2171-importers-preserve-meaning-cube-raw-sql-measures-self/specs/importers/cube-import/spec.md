@@ -8,7 +8,7 @@ Scenarios use the `orders` table of `importers/meaning-preservation`: rows `(1, 
 
 ### Requirement: Cube reference forms
 
-In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written.
+In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, measure `sql` and `filters`, segments, join `ON`), `{CUBE}.x`, `{<own cube>}.x` and a bare `x` SHALL denote the physical column `x` of the cube's source; `{other}.x` SHALL denote the physical column `x` of the joined cube `other`'s source, and a construct naming a cube that is not joined SHALL be dropped with a report naming that cube; `{member}`, `{CUBE.member}` and `{<own cube>.member}` SHALL denote that member of the cube, under the name it was imported as; `{other.member}` SHALL denote the member of the joined cube `other`. The cube's own `sql` body SHALL be imported as written.
 
 #### Scenario: Same-cube dotted reference
 - **WHEN** cube `orders` declares measure `paid_sum` (`sum`, `sql: {CUBE}.amount`, filter `{CUBE}.status = 'paid'`) and calculated measures `a: {orders.paid_sum}` and `b: {CUBE.paid_sum}`
@@ -17,6 +17,14 @@ In every Cube SQL surface of a cube (dimension `sql`, CASE `when` predicates, me
 #### Scenario: Member reference under its imported name
 - **WHEN** a cube's measure `rate` is `sum` over `{CUBE}.rate` and a calculated measure is `{rate} * 2`
 - **THEN** the calculated measure returns twice the sum of `rate`
+
+#### Scenario: Another cube's physical column
+- **WHEN** cube `orders` joins `customers` on `{CUBE}.customer_id = {customers}.id` and declares dimension `cust_name` with `sql: {customers}.name`
+- **THEN** grouping by `cust_name` returns `Ann` for 2 orders and `Bo` for 1
+
+#### Scenario: Another cube's physical column, masked
+- **WHEN**, in addition, cube `customers` declares dimension `name` with `sql: {CUBE}.region`
+- **THEN** `cust_name` is dropped and the report names `name`
 
 ### Requirement: Calculated measures with raw SQL aggregates
 

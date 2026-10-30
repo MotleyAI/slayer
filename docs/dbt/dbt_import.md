@@ -36,7 +36,8 @@ Each dbt semantic model becomes one SLayer model:
 - a column's type is the live database type when `--datasource` resolves (with or without
   `--include-hidden-models`), else the `data_type` declared for it in `schema.yml` or the manifest (`array<string>`,
   `text[]` and `ARRAY<INT64>` become lists of their element type), else the measure's aggregation; a `min`/`max`
-  measure that none of these types, or an aggregation SLayer refuses over a list, is dropped with a report
+  measure over a column none of these sources types, or an aggregation SLayer refuses over a list, is dropped with a
+  report
 
 ### Entities → Primary Keys + Joins
 

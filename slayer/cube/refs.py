@@ -16,6 +16,8 @@ _JINJA_RE = re.compile(r"\{\{|\{%|%\}|\}\}")
 _LITERAL_RE = re.compile(r"'(?:''|[^'])*'")  # SQL string literal, doubled-quote aware
 _REF_RE = re.compile(r"\{([^{}]+)\}")
 _MARKER_PREFIX = "__slayer_member_"
+_PHYSICAL_PREFIX = "__slayer_physical_"
+_IDENT_RE = re.compile(r'"(?:[^"]|"")+"|[A-Za-z_]\w*')
 
 # Operand forms accepted inside a join ON clause.
 _OPERAND_BRACE_DOT = re.compile(r"^\{([A-Za-z_]\w*)\}\.(\w+)$")  # {CUBE}.col
@@ -74,11 +76,19 @@ def _resolve_ref(inner: str, next_char: str, cube: str | None) -> tuple[str, int
     return inner, 0  # `{member}` / `{a.b}` → inner verbatim
 
 
+class ForeignRef(BaseModel):
+    """A joined cube's physical column, as written."""
+
+    cube: str
+    column: str  # identifier SQL, quoting kept
+
+
 class CubeSql(BaseModel):
     """Cube SQL with physical references bare and each member reference as a marker identifier."""
 
     text: str
     members: dict[str, str] = Field(default_factory=dict)  # marker -> source member name
+    foreign: dict[str, ForeignRef] = Field(default_factory=dict)  # marker -> another cube's physical column
     unknown: list[str] = Field(default_factory=list)  # referenced members the cube does not declare
 
     def resolved(self, emitted: Mapping[str, str]) -> str:
@@ -94,8 +104,9 @@ def member_marker(index: int) -> str:
 
 
 def classify_cube_refs(text: str, *, cube: str, members: Collection[str], start: int = 0) -> CubeSql:
-    """Translate ``text``'s Cube refs: ``{CUBE}.x`` / ``{<cube>}.x`` → physical ``x``; ``{m}`` / ``{CUBE.m}`` /
-    ``{<cube>.m}`` → a member marker; ``{other.m}`` → ``other.m``; ``{CUBE}`` → the cube name."""
+    """Translate ``text``'s Cube refs: ``{CUBE}.x`` / ``{<cube>}.x`` → physical ``x``; ``{other}.x`` → a marker for
+    ``other``'s physical ``x``; ``{m}`` / ``{CUBE.m}`` / ``{<cube>.m}`` → a member marker; ``{other.m}`` →
+    ``other.m``; ``{CUBE}`` → the cube name. Markers are numbered from ``start``."""
     literal_spans = [m.span() for m in _LITERAL_RE.finditer(text)]
     out: list[str] = []
     found = CubeSql(text="")
@@ -104,26 +115,35 @@ def classify_cube_refs(text: str, *, cube: str, members: Collection[str], start:
         if m.start() < last or any(s <= m.start() < e for s, e in literal_spans):
             continue
         out.append(text[last:m.start()])
-        inner = m.group(1).strip()
-        parts = inner.split(".")
-        followed_by_dot = text[m.end():m.end() + 1] == "."
-        last = m.end()
-        if len(parts) == 1 and parts[0] in ("CUBE", cube) and followed_by_dot:
-            last += 1  # `{CUBE}.col` → `col`
-        elif len(parts) == 1 and parts[0] == "CUBE":
-            out.append(cube)
-        elif len(parts) == 2 and parts[0] in ("CUBE", cube) or len(parts) == 1:
-            member = parts[-1]
-            if member not in members:
-                found.unknown.append(member)
-            marker = member_marker(start + len(found.members))
-            found.members[marker] = member
-            out.append(marker)
-        else:
-            out.append(inner)
+        replacement, last = _classify(m, text=text, cube=cube, members=members, found=found, start=start)
+        out.append(replacement)
     out.append(text[last:])
     found.text = "".join(out)
     return found
+
+
+def _classify(m: re.Match[str], *, text: str, cube: str, members: Collection[str], found: CubeSql,
+              start: int) -> tuple[str, int]:
+    """One brace ref's replacement and the position after it; markers are recorded on ``found``."""
+    parts = m.group(1).strip().split(".")
+    end = m.end()
+    index = start + len(found.members) + len(found.foreign)
+    if len(parts) == 1 and text[end:end + 1] == ".":
+        if parts[0] in ("CUBE", cube):
+            return "", end + 1  # `{CUBE}.col` → `col`
+        if (col := _IDENT_RE.match(text, end + 1)) is not None:
+            marker = f"{_PHYSICAL_PREFIX}{index}__"
+            found.foreign[marker] = ForeignRef(cube=parts[0], column=col.group(0))
+            return marker, col.end()
+    if parts == ["CUBE"]:
+        return cube, end
+    if len(parts) == 1 or (len(parts) == 2 and parts[0] in ("CUBE", cube)):
+        if parts[-1] not in members:
+            found.unknown.append(parts[-1])
+        marker = member_marker(index)
+        found.members[marker] = parts[-1]
+        return marker, end
+    return m.group(1).strip(), end
 
 
 class JoinSide(BaseModel):

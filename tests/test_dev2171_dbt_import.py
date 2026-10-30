@@ -10,11 +10,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.dbt.converter import DbtToSlayerConverter
+from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
 from slayer.sql import engine_factory
 from tests._dev2171_fixtures import (
     DS, MASKED, column, counts_by, deletes, drift_entries, entries, has_column, has_measure, import_dbt, models_of,
-    run_cli, save_datasource, seed, source_column, stored_model, value, write_yaml,
+    run_cli, save_datasource, seed, source_column, stored_model, unreachable_engine, value, write_yaml,
 )
 
 ORDER = {"name": "order", "type": "primary", "expr": "id"}
@@ -162,6 +163,15 @@ class TestTypingOrder:
         assert source_column(model, "total").type == DataType.DOUBLE
         assert source_column(model, "n_notes").type == DataType.TEXT
         assert source_column(model, "paid").type == DataType.INT
+
+    def test_unreachable_datasource_is_tried_once(self, tmp_path: Path) -> None:
+        project = DbtProject.model_validate({"semantic_models": [sm(), sm(name="orders_b")]})
+        with unreachable_engine(tmp_path) as (engine, attempts):
+            result = DbtToSlayerConverter(project=project, data_source=DS, sa_engine=engine,
+                                          target_dialect="duckdb").convert()
+        assert len(attempts) == 1
+        (note,) = [w.message for w in result.warnings if w.category == "typing"]
+        assert "could not be reached" in note
 
     def test_offline_max_over_an_untyped_source_is_dropped(self) -> None:
         result = import_dbt([sm(measures=[meas("latest", "max", "created_at")])])
