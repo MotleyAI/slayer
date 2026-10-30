@@ -287,6 +287,8 @@ class TestPresto:
         ("regexp_extract(notes, 'a(b)', 1)", "REGEXP_EXTRACT"),
         ("json_value(payload, '$.a.b')", "JSON_EXTRACT_SCALAR"),
         ("regexp_replace(tag, '[^0-9]', '')", "REGEXP_REPLACE"),
+        ("split_part(tag, '-', 2)", "ELEMENT_AT(SPLIT"),
+        ("repeat(tag, 3)", "ARRAY_JOIN(REPEAT"),
     ])
     @pytest.mark.parametrize("ds_type", PRESTO)
     async def test_own_functions(self, ds_type: str, expr: str, function: str) -> None:
