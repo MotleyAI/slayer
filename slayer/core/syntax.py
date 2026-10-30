@@ -1044,9 +1044,7 @@ def _deferred_intervals(node: Any, *, message: str) -> Any:
     if not isinstance(node, _BaseNode):
         return node
     if isinstance(node, ScalarCall) and _is_interval(node):
-        deferred = None if check_scalar_arity(name="interval", argc=len(node.args)) is None else (
-            _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
-        )
+        deferred = _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
         if deferred is None:
             raise ValueError(message)
         return deferred
@@ -1572,14 +1570,15 @@ def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
     column-bearing value argument."""
     if call.written is None:
         return None
-    args, kwargs = _keyword_args(call.args, ())
-    return _aggregation_candidate(call.written, args=args, kwargs=kwargs, error=None)
+    return _aggregation_candidate(call.written, args=call.args, kwargs=(), error=None)
 
 
 def _aggregation_candidate(
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], error: Optional[str],
 ) -> Optional[AggCall]:
-    """``func_name(args)`` as an aggregation call over a column-bearing value, else ``None``."""
+    """``func_name(args)`` as an aggregation call over a column-bearing value (``name = value`` arguments as
+    keywords), else ``None``."""
+    args, kwargs = _keyword_args(args, kwargs)
     if not args or not isinstance(args[0], _AGG_SOURCE_KINDS) or _contains_agg_or_transform(args[0]):
         return None
     if not any(isinstance(leaf, (Ref, DottedRef)) for leaf in _source_leaves(args[0])):
@@ -1656,9 +1655,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
         try:
             date_args = _date_args(name=name, args=args, original=original)
         except ValueError as error:
-            deferred = None if check_scalar_arity(name=name, argc=len(args)) is None else _aggregation_candidate(
-                func_name, args=args, kwargs=kwargs, error=str(error),
-            )
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=str(error))
             if deferred is None:
                 raise
             return deferred

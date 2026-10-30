@@ -124,6 +124,14 @@ class TestUnreadDriftLeavesTheError:
             env.live("ALTER TABLE t DROP COLUMN s")
             await _unwrapped(env.engine, _LN_FAILURE)
 
+    async def test_a_host_column_named_like_a_producer_column(self, tmp_path: Path) -> None:
+        customers, orders = _shop()
+        stale = customers.model_copy(update={"columns": [*customers.columns, Column(name="amount", type=DataType.DOUBLE)]})
+        async with _env(tmp_path, stale, orders) as env:
+            err = await _unwrapped(env.engine, {"source_model": "customers", "dimensions": ["region"], "measures": [
+                {"formula": "orders.sum(amount)", "name": "total"}, {"formula": "orders.sum(bad)", "name": "b"}]})
+        assert "no_such_fn" in str(err).lower(), err
+
     async def test_an_uncrossed_join_losing_its_key(self, tmp_path: Path) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
@@ -154,6 +162,14 @@ class TestReadDriftWraps:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
             await _wrapped(env.engine, {"source_model": "orders", "dimensions": ["customers.region"],
                                         "measures": [{"formula": "sum(amount)"}]})
+
+    @pytest.mark.parametrize("formula", ["orders.sum(amount)", "sum(orders.amount)"])
+    async def test_a_column_a_cross_model_producer_reads(self, tmp_path: Path, formula: str) -> None:
+        async with _env(tmp_path, *_shop()) as env:
+            env.live("ALTER TABLE orders DROP COLUMN amount")
+            err = await _wrapped(env.engine, {"source_model": "customers", "dimensions": ["region"],
+                                              "measures": [{"formula": formula, "name": "total"}]})
+        assert _removes(err, model="orders", column="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
         model = _t(measures=[ModelMeasure(name="total", formula="sum(x)")])

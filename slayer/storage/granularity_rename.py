@@ -115,9 +115,7 @@ def rename_in_query(data: dict, *, renames: Renames) -> dict:
     if isinstance(data.get("time_dimensions"), list):
         data["time_dimensions"] = [_renamed_time_dimension(td, renames=renames) for td in data["time_dimensions"]]
     source = data.get("source_model")
-    if isinstance(source, dict) and "source_name" in source:
-        data["source_model"] = {**source, "measures": [_renamed_formula(m, text) for m in source.get("measures") or []]}
-    elif isinstance(source, dict):
+    if isinstance(source, dict):
         data["source_model"] = rename_in_model(source, renames=renames)
     return data
 
@@ -143,7 +141,8 @@ def _renamed_formula(measure: Any, text: Callable[[str], str]) -> Any:
 
 
 def rename_in_model(data: dict, *, renames: Renames) -> dict:
-    """A stored model dict with every granularity reference renamed (column granularities, measures, stages)."""
+    """A stored model or inline extension dict with every granularity reference renamed (column granularities,
+    measures, stages)."""
     out = dict(data)
     text = partial(rename_in_text, renames=renames)
     if isinstance(out.get("columns"), list):

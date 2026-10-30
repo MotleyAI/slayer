@@ -14,7 +14,7 @@ from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, Val
 from slayer.core.models import SlayerModel, aggregation_definition
 from slayer.engine.column_dependency import definition_reads
 from slayer.engine.schema_drift import EditModelDelete, ListRetypeFinding, WholeModelDelete
-from slayer.ir.planned import plan_value_keys
+from slayer.ir.planned import plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 #: ``(declaring model, target model, edge name, join pairs)``.
@@ -66,9 +66,10 @@ def statement_reads(
         if root is None:
             continue
         models = with_list_children({**own.models_by_name, root.name: root})
-        for root_key in plan_value_keys(plan):
+        for root_name, root_key in plan_value_keys_by_root(plan):
+            key_root = models.get(root_name, root) if root_name else root
             for key in walk_value_keys(root_key):
-                _add_key(reads, key=key, root=root, models=models)
+                _add_key(reads, key=key, root=key_root, models=models)
     _close_columns(reads, models=_all_models(plans, bundle=bundle))
     return reads
 
@@ -81,8 +82,9 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerModel, models:
             reads.columns.add((terminal.name, key.column_name if isinstance(key, ColumnSqlKey) else key.leaf))
     elif isinstance(key, AggregateKey):
         owner = aggregation_owner(root=root, source=key.source, models_by_name=models)
-        if owner is not None and aggregation_definition(owner=owner, agg=key.agg) is not None:
-            reads.aggregations.add((owner.name, key.agg))
+        definition = aggregation_definition(owner=owner, agg=key.agg) if owner is not None else None
+        if owner is not None and definition is not None:
+            reads.aggregations.add((owner.name, definition.name))
 
 
 def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerModel, models: dict[str, SlayerModel]) -> None:

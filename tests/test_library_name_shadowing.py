@@ -68,6 +68,14 @@ class TestStoredShadow:
             resp = await engine.execute(_query(measure(formula)))
         assert float(value(resp)) == expected
 
+    @pytest.mark.parametrize("name", ["date_part", "interval"])
+    @pytest.mark.parametrize("call", ["{name}(a, 2)", "{name}(a, k = 2)"], ids=["positional", "keyword"])
+    async def test_a_date_function_name_with_the_library_arity(self, name: str, call: str) -> None:
+        own = agg(name, "SUM({value}) * {k}", k="1")
+        async with stored_engine(models=[t_doc(aggregations=[own])]) as engine:
+            resp = await engine.execute(_query(measure(call.format(name=name))))
+        assert float(value(resp)) == 2 * SUM_A
+
 
 class TestCaseResolution:
     @pytest.mark.parametrize("formula", ["REVERSE(a)", "Reverse(a)", "a:REVERSE"])
@@ -123,6 +131,13 @@ class TestLibraryErrorsKept:
         async with stored_engine(models=[t_doc()]) as engine:
             query = _query(measure("left(a, n=2)"))
             with pytest.raises(UnknownReferenceError, match="scalar functions take positional arguments"):
+                await engine.execute(query)
+
+    @pytest.mark.parametrize("formula", ["date_part(a, 2)", "interval(a, 2)"])
+    async def test_an_undefined_date_function_keeps_the_unit_error(self, formula: str) -> None:
+        async with stored_engine(models=[t_doc()]) as engine:
+            query = _query(measure(formula))
+            with pytest.raises(ValueError, match="must be a string literal"):
                 await engine.execute(query)
 
     async def test_the_library_function_still_answers_without_a_definition(self) -> None:

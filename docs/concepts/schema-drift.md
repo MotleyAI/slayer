@@ -99,6 +99,11 @@ place, keeping only `count` among its `allowed_aggregations`, and a query
 failure explained by such a column raises `SchemaDriftError` carrying the
 finding.
 
+An `sql`-mode model is treated the same way, its result columns typed from the
+live schema of the tables its query reads (else from the type the database
+reports for the result column), so a list the query returns is found even on
+BigQuery, whose driver reports a repeated result column by its element type.
+
 ## Output shape
 
 `validate_models` returns a `List[ToDeleteEntry]`, where each entry is

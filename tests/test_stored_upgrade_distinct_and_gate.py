@@ -188,6 +188,11 @@ class TestOldGrammarGate:
         assert formulas == ["sum(CAST(x AS INT))", "sum(iif(status == 'paid', amount, 0))"]
         assert not _warned(messages, document="gate_probe", field=("m_old", 'status == "paid"')), messages
 
+    @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
+    def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
+        query = _query(version=6, filters=[f'{pad}status == "paid"'])
+        assert query.filters == [f"{pad}status == 'paid'"]
+
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
             query = _query(version=6, name="gate_q", filters=[BETWEEN, 'status == "paid"'],

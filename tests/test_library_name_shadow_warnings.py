@@ -97,6 +97,22 @@ class TestEveryResponse:
             got = await _both(engine.execute(_query("sum(a)")))
         assert got == ([], [])
 
+    async def test_a_pruned_stage_is_not_announced(self) -> None:
+        stages = [
+            {"name": "unused", "source_model": "t", "measures": [measure("reverse(a)", "r")]},
+            {"name": "s1", "source_model": "t", "dimensions": ["s"], "measures": [measure("sum(a)", "total")]},
+            {"source_model": "s1", "measures": [measure("sum(total)", "grand")]},
+        ]
+        query = {"source_model": "qb", "measures": [measure("sum(grand)")]}
+        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                await engine.create_model_from_query(query=stages, name="qb")
+            dry = await engine.execute(query, dry_run=True)
+            assert "unused" not in (dry.sql or ""), "fixture must prune the unused stage"
+            got = await _both(engine.execute(query))
+        assert got == ([], [])
+
     async def test_a_library_call_in_another_model_is_not_announced(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute({

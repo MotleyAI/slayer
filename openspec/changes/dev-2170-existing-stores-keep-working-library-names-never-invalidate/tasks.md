@@ -9,6 +9,7 @@
 - [x] 1.7 Write the old-grammar gate tests: `::`, `||`, `CAST`, `FILTER`, `BETWEEN` in old-version documents load unchanged and warn; genuine old text is still upgraded; the 0.10.2 corpus still passes. Verify: the new-only cases fail now.
 - [x] 1.8 Write the rollback-safety tests: a vendored v1.4.1 field-set snapshot, generated from the `v1.4.1` tag; no `null` in any stored kind from either backend; the memory `nulls` case; YAML memory byte stability, with `id`/`learning` never in frontmatter. Verify: the memory cases fail now.
 - [x] 1.9 Write the drift tests (spec `models/schema-drift`): unrelated drifted column → original error (the SQLite `ln(0)` repro, re-shaped so `ts` drifts INT-over-TEXT, since temporal-over-TEXT is no longer drift); read, derived and join-key drift wrap; the `invalid_sql` whole-model drop does not wrap; SQLite temporal-over-TEXT reports nothing; persisted `DOUBLE` over a live list → re-type finding, and re-ingest re-types it with only `count`. Verify: they fail now (the existing read-set scenarios still pass).
+- [x] 1.10 Write the `sql`-mode re-type tests on DuckDB and Postgres (bare, aliased, `*` and subquery projections; an untypeable projection falling back to the cursor): the validation finding, a failing query carrying it, and re-ingest re-typing in place with the element type and only `count`. Verify: they fail now.
 
 ## 2. Aggregation resolution and shadowing
 
@@ -31,9 +32,11 @@
 - [x] 4.2 Element-level attribution in `_maybe_raise_schema_drift` (`schema_drift` whole-model drops only; model filters always read). Verify: 1.9 attribution tests pass, and the existing schema-drift tests stay green.
 - [x] 4.3 Dialect capability `temporal_text_compatible` (SQLite) used by the bucket rule. Verify: the 1.9 SQLite temporal test passes.
 - [x] 4.4 Extend the re-type finding and `_retyped_list` to every non-`ARRAY` type. Verify: the 1.9 re-type tests pass.
+- [x] 4.5 `sql`-mode parity (system 17): result typing by sqlglot over the reflected live schema with the cursor fallback; the finding in `_collect_sql_diffs`; the re-ingest re-type of stored `sql`-mode models. Verify: 1.10 passes.
 
 ## 5. Architecture, docs, gates
 
 - [x] 5.1 Apply the approved arc42 edits: 11.2 wording + `[enforced: test:tests/test_library_growth.py]`, and principle 14 "a non-list column". Verify: `poetry run la-arch-check` passes.
 - [x] 5.2 Docs: `docs/concepts/schema-drift.md` (re-type finding, in-place re-type, error carrying the finding, element attribution, SQLite temporal, output shape), `docs/concepts/ingestion.md` (lines ~359/364), `docs/concepts/models.md` (§Schema versioning: versions 18/9/3/7, the upgrade list, shadow rule, granularity rename, `distinct`, the gate residue; the line-42 version and the aggregations reserved-name text), `docs/development.md` (one-sentence library-growth rule). Verify: grep finds no stale "never re-types" or old version numbers.
 - [x] 5.3 Run the full unit suite, the CI integration suite invocation, `ruff`, `basedpyright` (ratchet) and `la-arch-check`. Verify: all green.
+- [x] 5.4 Apply the approved arc42 principle 17; one sentence each in `docs/concepts/schema-drift.md` and `docs/concepts/ingestion.md` on `sql`-mode re-typing. Verify: `poetry run la-arch-check` passes.

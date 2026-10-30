@@ -81,6 +81,8 @@ A dialect capability, `temporal_text_compatible` (true only for SQLite), makes p
 ### D10. Re-type any non-list column (default)
 The drift finding and `_retyped_list` cover every non-`ARRAY` persisted type, UNKNOWN included. Principle 14's wording is amended (user, approved wording).
 
+`sql`-mode models get the same treatment (system 17, user): their result columns are typed by sqlglot (`qualify` + `annotate_types`) over the reflected live schema of the tables the query reads, which carries list element types on every dialect (BigQuery's driver reports a repeated result column by its element type alone; reflection does not lose it). A projection sqlglot cannot type (an unknown function or UDF) falls back to the cursor category, with `UNKNOWN` elements. `_collect_sql_diffs` collects the finding from these types, and re-ingest visits each stored `sql`-mode model of the datasource and applies `_retyped_list` with a column built from them.
+
 ### D11. Old-grammar gate on the string migration (user)
 - Before `sql_quote_strings` rewrites a field, the text must be old grammar: the old parser's colon pre-pass, then `ast.parse(…, mode="eval")`. Otherwise the field is left unchanged and a warning names the document and field.
 - `''`, `"…"` and backslash literals are valid old grammar with a different meaning, so they stay governed by the version stamp; this residue is documented. Making them no-ops was rejected (codex finding): that would change the meaning of every genuine old store.

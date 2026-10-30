@@ -55,7 +55,7 @@ def sql_quote_strings(text: str) -> str:
 def is_old_grammar(text: str) -> bool:
     """Whether the pre-SQL grammar could have held ``text``."""
     try:
-        ast.parse(_star_sources_named(_COLON_REF.sub("_", text)), mode="eval")
+        ast.parse(_star_sources_named(_COLON_REF.sub("_", text)).strip(), mode="eval")
     except SyntaxError:
         return False
     return True

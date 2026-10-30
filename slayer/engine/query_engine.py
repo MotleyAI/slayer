@@ -1115,10 +1115,10 @@ class SlayerQueryEngine:
         """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
         with collect_bind_records() as records:
             rendered = await self._plan_and_render_statement(**kwargs)
-        return rendered.model_copy(update={
-            "element_reads": statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures),
-            "warnings": [*rendered.warnings, *records.shadows.values()],
-        })
+        reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
+        # A pruned stage's shadowing call is not made by the statement.
+        shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
+        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,

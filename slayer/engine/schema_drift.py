@@ -61,7 +61,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, build_sql_model_trial_query
+from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -1770,6 +1770,7 @@ class _Catalog(BaseModel):
 class _SqlTrial(BaseModel):
     live_columns: dict[str, DataType] | None
     invalid_sql: bool
+    list_types: dict[str, str] = Field(default_factory=dict)
 
 
 class DriftSnapshot(BaseModel):
@@ -1933,13 +1934,12 @@ async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
     client: SlayerSQLClient,
-) -> dict[str, DataType] | None:
-    """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
+) -> ingestion.SqlResultTypes | None:
+    """Trial-execute ``model.sql`` with a 0-row guard; return its result types, or None on failure."""
     if not model.sql:
         return None
-    # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
+        return await ingestion.sql_result_types(sql=model.sql, client=client)
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
@@ -1947,10 +1947,6 @@ async def _live_columns_for_sql_model(
             exc,
         )
         return None
-    return {
-        name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT)
-        for name, cat in cats.items()
-    }
 
 
 def _has_star_projection(parsed: exp.Expression) -> bool:
@@ -2434,7 +2430,7 @@ async def _sql_trials(
 ) -> dict[str, _SqlTrial]:
     """Trial results keyed by SQL text: one trial per distinct text not already in ``snapshot``."""
 
-    async def _invalid_sql(model: SlayerModel, live_cols: dict[str, DataType] | None) -> bool:
+    async def _invalid_sql(model: SlayerModel, live_cols: ingestion.SqlResultTypes | None) -> bool:
         return live_cols is None and await _source_tables_resolve(model=model, client=client)
 
     trials: dict[str, _SqlTrial] = dict(snapshot.sql_trials) if snapshot is not None else {}
@@ -2452,7 +2448,10 @@ async def _sql_trials(
             raise
     flags = await asyncio.gather(*map(_invalid_sql, pending.values(), live))
     for sql_text, live_cols, invalid_sql in zip(pending, live, flags):
-        trials[sql_text] = _SqlTrial(live_columns=live_cols, invalid_sql=invalid_sql)
+        trials[sql_text] = _SqlTrial(
+            live_columns=None if live_cols is None else live_cols.columns, invalid_sql=invalid_sql,
+            list_types={} if live_cols is None else {n: found.db_type for n, found in live_cols.lists.items()},
+        )
         if snapshot is not None:
             snapshot.sql_trials[sql_text] = trials[sql_text]
     return trials
@@ -2464,8 +2463,9 @@ async def _collect_sql_diffs(
     sql_models: list[SlayerModel],
     sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
     snapshot: DriftSnapshot | None = None,
+    findings: list[ListRetypeFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Trial-execute each sql-mode model concurrently and produce its diff."""
+    """Trial-execute each sql-mode model concurrently and produce its diff; re-type findings append to ``findings``."""
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
     if not sql_models:
         return out
@@ -2475,6 +2475,9 @@ async def _collect_sql_diffs(
     )
     for model in sql_models:
         trial = trials[model.sql or ""]
+        if findings is not None and trial.live_columns is not None:
+            live = LiveTable(columns=trial.live_columns, list_types=trial.list_types)
+            findings.extend(list_retype_findings(model=model, live_table=live))
         out[model.name] = diff_sql_model(
             model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
             temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
@@ -2516,6 +2519,7 @@ async def validate_datasource(
         sql_models=[m for m in models if m.sql],
         sql_clients=sql_clients,
         snapshot=snapshot,
+        findings=findings_out,
     )
     return list(compute_datasource_drops(
         models=models,

@@ -97,7 +97,7 @@ class TestUnitLiterals:
     ])
     def test_unknown_unit_rejected_listing_accepted(self, expr: str, listed: str) -> None:
         with pytest.raises(ValueError, match=listed):
-            parse_expr(expr)
+            _bind(expr)
 
     @pytest.mark.parametrize("expr", [
         "date_part(status, created_at) = 1",
@@ -109,7 +109,7 @@ class TestUnitLiterals:
     ])
     def test_non_literal_unit_rejected(self, expr: str) -> None:
         with pytest.raises(ValueError, match="string literal"):
-            parse_expr(expr)
+            _bind(expr)
 
     def test_bucket_form_is_not_a_date_function(self) -> None:
         assert not isinstance(parse_expr("month(created_at)"), ScalarCall)
