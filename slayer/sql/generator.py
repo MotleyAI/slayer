@@ -159,7 +159,7 @@ class ResolvedAggKwarg(BaseModel):
 
     kind: Literal["expr"] = "expr"
     value: Expression
-    input_type: Optional[DataType]
+    input_type: Optional[DataType] = None
 
 
 class AggRenderSpec(BaseModel):
