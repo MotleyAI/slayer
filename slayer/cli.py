@@ -239,14 +239,7 @@ class _TerminationGuard:
             if callable(previous) and previous is not signal.default_int_handler:
                 self.prior[signum] = previous
             signal.signal(signum, self._handle)
-        self.prior_unraisable = sys.unraisablehook
-        sys.unraisablehook = self._unraisable
         _TerminationGuard.active = self
-
-    def _unraisable(self, unraisable: Any) -> None:
-        """A termination raised where Python cannot propagate it (e.g. a weakref callback) is already recorded."""
-        if not isinstance(unraisable.exc_value, _Terminated):
-            self.prior_unraisable(unraisable)
 
     def _handle(self, signum: int, frame: FrameType | None) -> None:
         if self.forcing:
@@ -335,7 +328,6 @@ class _TerminationGuard:
         """Put back the handlers this guard replaced."""
         for signum, handler in self.replaced.items():
             signal.signal(signum, handler)
-        sys.unraisablehook = self.prior_unraisable
         if _TerminationGuard.active is self:
             _TerminationGuard.active = None
 
