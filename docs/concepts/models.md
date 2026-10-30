@@ -524,8 +524,6 @@ Rules:
 
 **Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is dialect-aware: it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 
-**Known limitation:** a string value containing a backslash does not round-trip through **SQLite** end-to-end (its driver does not unescape backslashes) — a dialect quirk independent of variable substitution.
-
 ### Variable precedence
 
 When a query-backed model references `{var}` placeholders, values flow in this order (highest first):

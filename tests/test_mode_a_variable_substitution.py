@@ -392,7 +392,7 @@ async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
         )
         cur.executemany(
             "INSERT INTO t (status, amount) VALUES (?, ?)",
-            _TRICKY_ROWS + [("a\\b", 30.0)],  # a\b row exists only for the xfail pin
+            _TRICKY_ROWS + [("a\\b", 30.0)],  # a\b row is for test_backslash_value_sqlite_roundtrip
         )
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(

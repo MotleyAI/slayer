@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tomllib
@@ -29,6 +30,8 @@ ISSUE_NUMBER_BASELINE = frozenset({
     for token in ("DEV-1562", "DEV-1565", "DEV-1566", "DEV-1567", "DEV-1568", "DEV-1569", "DEV-1572")
 })
 _ISSUE_NUMBER = re.compile(rb"\bDEV-\d+\b", re.IGNORECASE)
+#: A git hook's repository-location variables would point ``git ls-files`` away from ``_ROOT``.
+_GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"})
 
 
 def _rel(path: Path) -> str:
@@ -38,9 +41,10 @@ def _rel(path: Path) -> str:
 @cache
 def _docs_files() -> tuple[Path, ...]:
     """Files under ``docs/`` that git does not ignore (generated notebook artefacts are skipped)."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
     listed = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "docs/"],
-        cwd=_ROOT, capture_output=True, text=True, check=True,
+        cwd=_ROOT, env=env, capture_output=True, text=True, check=True,
     ).stdout
     return tuple(sorted(p for p in (_ROOT / name for name in listed.split("\0") if name) if p.is_file()))
 
@@ -167,6 +171,11 @@ def test_every_query_field_is_read() -> None:
         "count(*)", "sum(amount)", "status", "upper(status)", "month(order_date)", "order_date",
         "amount > 10", "sum(amount)",
     ]
+
+
+def test_time_dimension_column_alias_is_read() -> None:
+    query = {"time_dimensions": [{"column": "bad((", "granularity": "month"}]}
+    assert mode_b_values(query) == ["bad(("]
 
 
 def test_stage_lists_and_refinements() -> None:

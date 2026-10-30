@@ -96,24 +96,24 @@ def _strings(value: Any) -> Iterator[str]:
         yield from (v for v in value if isinstance(v, str))
 
 
-def _entries(value: Any, *, key: str) -> Iterator[str]:
+def _entries(value: Any, *, keys: tuple[str, ...]) -> Iterator[str]:
     for entry in value if isinstance(value, list) else [value]:
         if isinstance(entry, str):
             yield entry
-        elif isinstance(entry, dict) and isinstance(entry.get(key), str):
-            yield entry[key]
+        elif isinstance(entry, dict):
+            yield from (entry[k] for k in keys if isinstance(entry.get(k), str))
 
 
 def _measures(value: Any) -> Iterator[str]:
-    return _entries(value, key="formula")
+    return _entries(value, keys=("formula",))
 
 
 _FIELD_READERS = {
     "measures": _measures,
-    "dimensions": lambda v: _entries(v, key="expression"),
-    "time_dimensions": lambda v: _entries(v, key="dimension"),
+    "dimensions": lambda v: _entries(v, keys=("expression",)),
+    "time_dimensions": lambda v: _entries(v, keys=("dimension", "column")),
     "filters": _strings,
-    "order": lambda v: _entries(v, key="column"),
+    "order": lambda v: _entries(v, keys=("column",)),
 }
 
 

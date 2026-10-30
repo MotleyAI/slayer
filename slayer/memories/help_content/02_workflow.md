@@ -26,7 +26,7 @@ Build every `=` / `in` / `like` condition on a text column from that column's
 sampled values (inspect it with `compact=false`), never a guessed spelling; samples are a top-N snapshot,
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.
-Compare case- and whitespace-insensitively (`name ILIKE 'al%'`) in the condition only, never on a projected,
+Compare case- and whitespace-insensitively (`trim(name) ILIKE 'al%'`) in the condition only, never on a projected,
 grouped or join-key column. Apply only the transformations (TRIM / ROUND / CAST /
 dedup) the question or a governing definition requires.
 

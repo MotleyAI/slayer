@@ -560,7 +560,7 @@ slayer memory forget kb.brooklyn-pos
 
 ### `slayer storage`
 
-Storage maintenance. `migrate-types` introspects each model's datasource and refines `DOUBLE` to `INT` on base columns whose live SQL type is integer; it fails if a datasource is unreachable.
+Storage maintenance. `migrate-types` introspects each model's datasource and refines `DOUBLE` to `INT` on base columns whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `INT` column to `DOUBLE` or `TEXT` whose values are not); it fails if a datasource is unreachable.
 
 ```bash
 slayer storage migrate-types --dry-run

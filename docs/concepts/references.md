@@ -240,7 +240,7 @@ Every library function, operator and pattern language means the same on SQLite, 
 
 `json_value(x, '$.a[0]."b c"' [RETURNING INT | DOUBLE | BOOLEAN | DATE | TIMESTAMP | TEXT])` reads one scalar from JSON text or a native JSON column (`NULL` when missing, JSON null, an object or an array; `NULL` when the value cannot convert), the arrows `x -> 'a' ->> 'b'` and `x ->> '$.a.b'` spell the same read as TEXT, and a path is `$` followed by `.key`, `."quoted key"` and `[n]` steps only.
 
-Read as TEXT, a JSON boolean is `'true'` / `'false'` and a JSON number is the database's own text form (`1.50` may read `'1.5'`), so use `RETURNING DOUBLE` for the exact number; `RETURNING` converts JSON booleans and numbers directly.
+Read as TEXT, a JSON boolean is `'true'` / `'false'` and a JSON number is the database's own text form (`1.50` may read `'1.5'`), so use `RETURNING DOUBLE` to read it as a number; `RETURNING` converts JSON booleans and numbers directly.
 
 ### Text beside a number
 

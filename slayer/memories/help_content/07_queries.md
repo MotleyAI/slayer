@@ -41,7 +41,7 @@ aggregation `collect(x)` builds one per group); text compared with a number read
 a number (`amount_txt > 100`). `starts_with`, `ends_with`, `contains`, `strpos`, `replace`
 and the `split_part` delimiter match literally, case- and accent-sensitively, whatever the
 collation. Casts: `CAST(x AS INT)` or `x::INT`; `TRY_CAST(x AS INT)` gives NULL where a value
-does not convert.
+does not convert (on Postgres before 16, or of unknown version, it fails like `CAST`).
 
 ## Variables
 
