@@ -1688,6 +1688,10 @@ class DbtToSlayerConverter:
             else dbt_measure.name
         )
         mapped = _map_agg(dbt_measure.agg)
+        if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
+            self._fail_metric(metric, category="percentile", severity="dropped",
+                              message=f"Filtered metric '{metric.name}' dropped: {refusal}")
+            return None
         if mapped == "percentile":
             ap = dbt_measure.agg_params
             if ap is None or ap.percentile is None or ap.use_discrete_percentile or ap.use_approximate_percentile:

@@ -251,6 +251,11 @@ class _CubeOperands(OperandPolicy):
         self._measures = {m.name for m in build.cube.measures}
 
     def operand(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
+        column = self._column(operand, mask=mask, agg=agg)
+        self.build.sources[self.build.measure_names[self.measure]].append((column, agg))
+        return column
+
+    def _column(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
         if isinstance(operand, exp.Column) and mask is None:
             return self.converter._bare_source(self.build, operand, agg=agg)
         foreign = self.build.foreign

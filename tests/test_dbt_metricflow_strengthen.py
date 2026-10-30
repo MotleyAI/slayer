@@ -1265,6 +1265,21 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     assert "region" in col.filter
 
 
+@pytest.mark.parametrize("agg", ["percentile", "median"])
+def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
+    params = DbtMeasureAggParams(percentile=0.95) if agg == "percentile" else None
+    project = DbtProject(
+        semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[
+            DbtMeasure(name="latency_agg", agg=agg, expr="latency", agg_params=params)])],
+        metrics=[DbtMetric(name="us_latency", type="simple",
+                           type_params=DbtMetricTypeParams.model_validate({"measure": "latency_agg"}),
+                           filter="{{ Dimension('orders__region') }} = 'US'")],
+    )
+    result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
+    assert all(m.name != "us_latency" for model in result.models for m in model.measures)
+    assert any("us_latency" in e.message and "not supported" in e.message for e in _all_report_entries(result))
+
+
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     """A filtered simple metric over a sum_boolean measure must keep the
     CASE-WHEN INT form (not collapse to SUM of a raw boolean)."""

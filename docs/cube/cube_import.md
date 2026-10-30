@@ -75,7 +75,7 @@ column.
 `{CUBE}.x` always reads the physical column `x`, `{customers}.x` reads the physical column `x` of the joined cube
 `customers` (a cube that is not joined drops the member with a report), and `{orders.member}` inside cube `orders`
 means `{member}`; a
-member whose SQL reads a physical column another member's name holds, or its own name
+member whose SQL reads a physical column another member's name holds, or transforms the physical column of its own name
 (`status: UPPER({CUBE}.status)`), is dropped with a report, as is an unquoted reserved word (`{CUBE}.from`; write
 `{CUBE}."from"`).
 

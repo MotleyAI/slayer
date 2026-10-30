@@ -239,6 +239,16 @@ class TestJoinedCubesPhysicalColumn:
                                    joins=[self.JOIN]), CUSTOMERS], db=db)
         assert await _measure(result, db, "n_regions") == 2
 
+    @pytest.mark.parametrize("sql", ["SUM({customers}.tags)", "SUM({customers.tags})"], ids=["physical", "member"])
+    def test_aggregate_over_a_joined_list_is_refused(self, tmp_path: Path, sql: str) -> None:
+        db = seed(tmp_path, ("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)",
+                             "CREATE TABLE customers (id INTEGER PRIMARY KEY, tags VARCHAR[])"))
+        customers = {"name": "customers", "sql_table": "customers", "dimensions": [ID, dim("tags", "{CUBE}.tags")]}
+        measures = [meas("tag_total", "number", sql), meas("double_total", "number", "{tag_total} * 2")]
+        result = import_cube([cube(measures=measures, joins=[self.JOIN]), customers], db=db)
+        assert not any(has_measure(result, "orders", m) for m in ("tag_total", "double_total"))
+        assert [i for i in cube_issues(result, "tag_total") if "list (ARRAY)" in i.message], result.report.issues
+
     def test_filtered_measure_over_a_cube_not_joined_is_dropped(self) -> None:
         result = import_cube([cube(measures=[meas("m", "sum", "{customers}.id", filters=PAID)]), CUSTOMERS])
         assert not has_measure(result, "orders", "m")
@@ -437,6 +447,17 @@ class TestTyping:
         assert not has_measure(result, "orders", "latest")
         issues = cube_issues(result, "latest")
         assert [i for i in issues if "datasource" in i.message.lower() and "type" in i.message.lower()], issues
+
+    def test_calculated_measure_over_a_list_is_refused(self, db: Path) -> None:
+        result = import_cube([cube(measures=[meas("tag_sum", "number", "SUM({CUBE}.tags)")])], db=db)
+        assert not has_measure(result, "orders", "tag_sum")
+        assert [i for i in cube_issues(result, "tag_sum") if "list (ARRAY)" in i.message], result.report.issues
+
+    def test_offline_calculated_max_over_an_untyped_source_is_dropped(self) -> None:
+        result = import_cube([cube(measures=[meas("latest", "number", "MAX({CUBE}.created_at)")])])
+        assert not has_measure(result, "orders", "latest")
+        issues = cube_issues(result, "latest")
+        assert [i for i in issues if "needs the type" in i.message], issues
 
     def test_offline_max_over_a_declared_dimension_imports(self) -> None:
         result = import_cube([cube(dimensions=[dim("created_at", "{CUBE}.created_at", type="time")],

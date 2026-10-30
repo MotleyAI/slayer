@@ -158,8 +158,7 @@ class LiveDatasource:
         if not self._tried:
             self._tried = True
             try:
-                with engine.connect():
-                    pass
+                engine.connect().close()
             except Exception as exc:  # noqa: BLE001 — an unreachable datasource still imports
                 self._offline = f"datasource {self.data_source!r} could not be reached: {type(exc).__name__}"
         return self._offline is None

@@ -100,6 +100,21 @@ def contains_args(
     return first, second
 
 
+def length_arg(node: exp.Expr) -> Expression | None:
+    """The list an ``ARRAY_LENGTH`` / ``CARDINALITY`` call measures; ``None`` when ``node`` is not one.
+
+    Raises ``Unconvertible`` for a dimension argument (``ARRAY_LENGTH(a, 2)``), which ``length`` cannot express."""
+    if isinstance(node, exp.ArraySize):
+        args = [a for a in (node.this, node.args.get("expression")) if a is not None]
+    elif isinstance(node, exp.Anonymous) and node.name.lower() in _LIST_LENGTH_NAMES:
+        args = list(node.expressions)
+    else:
+        return None
+    if len(args) != 1:
+        raise Unconvertible("an array length with a dimension argument has no SLayer form")
+    return args[0]
+
+
 class OperandPolicy:
     """How an importer turns an aggregate's operand into a formula reference."""
 
@@ -265,13 +280,12 @@ class InlineOperands(OperandPolicy):
         if isinstance(node, exp.ArrayContains):
             values, value = contains_args(node, is_list=self.is_list)
             return f"contains({self._inline(values)}, {self._inline(value)})"
-        name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
-        if isinstance(node, exp.ArraySize) or name in _LIST_LENGTH_NAMES:
-            (values,) = node.expressions if isinstance(node, exp.Anonymous) else [node.this]
+        if (values := length_arg(node)) is not None:
             return f"length({self._inline(values)})"
+        name = (node.name if isinstance(node, exp.Anonymous) else node.sql_name()).lower()
         if name not in SCALAR_PASSTHROUGH or name in _NOT_INLINE_FUNCS:
             raise _NotInline(f"function {name!r} is not in the formula allowlist")
-        args = _func_args(node, name=name)
+        args = _func_args(node=node, name=name)
         if check_scalar_arity(name=name, argc=len(args)) is not None:
             raise _NotInline(f"function {name!r} arity")
         return f"{name}({', '.join(self._inline(a) for a in args)})"

@@ -168,6 +168,13 @@ def test_percentile_nonliteral_clean_fails():
     assert not r.ok
 
 
+@pytest.mark.parametrize("sql", ["SUM(ARRAY_LENGTH(tags, 2))", "SUM(ARRAY_SIZE(tags, 2))"])
+def test_array_length_with_a_dimension_clean_fails(sql: str):
+    r = _run(sql)
+    assert not r.ok
+    assert "dimension" in (r.reason or "")
+
+
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
 def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
     r = _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)", sql_dialect=dialect_for_ds_type(ds_type))

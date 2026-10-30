@@ -15,7 +15,7 @@ from slayer.osi.parser import parse_osi_path
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ListFn
 from tests._dev2171_fixtures import (
-    MASKED, by_id, column, convert_osi, counts_by, import_osi, models_of, rows, seed, value,
+    MASKED, by_id, column, convert_osi, counts_by, entries, has_column, import_osi, models_of, rows, seed, value,
 )
 from tests._osi_helpers import ds, f, flat, legacy, m, mentions, unconverted, visible, write_yaml
 
@@ -118,6 +118,24 @@ class TestArrayFunctions:
         db = seed(tmp_path, statements=NULL_ELEMENTS)
         result = import_osi(flat([orders([ID, f("tags"), f("listed", sql)])]), db=db)
         assert await by_id(models=result.models, db=db, model="orders", dimension="listed") == expected
+
+    async def test_nested_list_calls_are_all_mapped(self, tmp_path: Path) -> None:
+        db = seed(tmp_path, statements=("CREATE TABLE orders (id INTEGER PRIMARY KEY, tags VARCHAR[])",
+                                        "INSERT INTO orders VALUES (1, ['1', NULL]), (2, ['2', 'x']), (3, NULL)"))
+        sql = "ARRAY_CONTAINS(tags, CAST(CARDINALITY(tags) AS VARCHAR))"
+        result = import_osi(flat([orders([ID, f("tags"), f("holds_length", sql)])]), db=db)
+        assert await by_id(models=result.models, db=db, model="orders", dimension="holds_length") == [
+            True, True, None]
+
+    async def test_any_over_a_subquery_stays_sql(self, db: Path) -> None:
+        sql = "id = ANY(SELECT id FROM orders WHERE status = 'paid')"
+        result = import_osi(flat([orders([*LIST_FIELDS, f("paid_id", sql)])]), db=db)
+        assert await by_id(models=result.models, db=db, model="orders", dimension="paid_id") == [True, True, False]
+
+    def test_array_length_with_a_dimension_is_reported(self, db: Path) -> None:
+        result = import_osi(flat([orders([*LIST_FIELDS, f("n_dim", "ARRAY_LENGTH(tags, 1)")])]), db=db)
+        assert not has_column(result, "orders", "n_dim")
+        assert [e for e in entries(result, "n_dim") if "dimension" in e.message], result.warnings
 
     @pytest.mark.parametrize("target", ["postgres", "snowflake", "bigquery"])
     @pytest.mark.parametrize(("sql", "fn", "args"), [

@@ -31,7 +31,9 @@ from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_targe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
-from slayer.importers.aggregates import MaterializedColumn, contains_args, convert_expression, outermost_aggregates
+from slayer.importers.aggregates import (
+    MaterializedColumn, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
+)
 from slayer.importers.physical import unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.sql.client import CATEGORY_DATA_TYPES, get_column_types_sync
@@ -147,13 +149,26 @@ def _list_call(node: exp.Expr, *, dialect: SqlDialect, is_list: Callable[[exp.Ex
     """``node`` as SLayer's own list SQL when it is an array function, else ``node``."""
     if isinstance(node, exp.ArrayContains):
         return dialect.build_list_call("contains", contains_args(node, is_list=is_list))
-    if isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any):
+    if (isinstance(node, exp.EQ) and isinstance(node.expression, exp.Any)
+            and not isinstance(node.expression.this, (exp.Subquery, exp.Select))):
         return dialect.build_list_call("contains", (node.expression.this, node.this))
-    if isinstance(node, exp.ArraySize) or (
-            isinstance(node, exp.Anonymous) and node.name.lower() in ("cardinality", "array_length")):
-        (values,) = node.expressions if isinstance(node, exp.Anonymous) else [node.this]
+    if (values := length_arg(node)) is not None:
         return dialect.build_list_call("length", (values,))
     return node
+
+
+def _bottom_up(tree: exp.Expr, fn: Callable[[exp.Expr], exp.Expr]) -> exp.Expr:
+    """A copy of ``tree`` with ``fn`` applied to every node, children before their parent."""
+    tree = tree.copy()
+    for node in reversed(list(tree.walk())):
+        new = fn(node)
+        if new is node:
+            continue
+        if node is tree:
+            tree = new
+        else:
+            node.replace(new)
+    return tree
 
 
 def _render_description(explicit: Optional[str], ctx: Optional[OSIAIContext]) -> Optional[str]:
@@ -446,7 +461,11 @@ class OsiToSlayerConverter:
             self._warn(f"{label} has an unparseable expression {selection.candidate.text!r}; skipping.",
                        model_name=ds.name, category="expression")
             return None
-        rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
+        try:
+            rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
+        except Unconvertible as exc:
+            self._warn(f"{label}: {exc}; skipping.", model_name=ds.name, category="expression")
+            return None
         return render(selection.candidate, rendered, target=self._target), tree
 
     def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
@@ -457,7 +476,7 @@ class OsiToSlayerConverter:
             col = physical.get(node.name) if isinstance(node, exp.Column) and not node.table else None
             return col is not None and col.type is DataType.ARRAY
 
-        return tree.transform(lambda node: _list_call(node, dialect=self._dialect, is_list=is_list))
+        return _bottom_up(tree, lambda node: _list_call(node, dialect=self._dialect, is_list=is_list))
 
     def _field_column(self, field: OSIField, ds: OSIDataset, model: SlayerModel) -> Column | None:
         """The Column one field maps to, or ``None`` on a reported clean-fail."""
