@@ -1896,10 +1896,7 @@ def _bind_scalar(
             f"{canonical_measure_text(parsed.args[1])!r}."
         )
 
-    if parsed.name in LIBRARY_FUNCTIONS and not is_list_fn(parsed.name):
-        # A refusal outranks argument errors; a list-overloaded name is decided once its arguments are typed.
-        require_library(bundle_dialect(bundle), parsed.name)
-    _check_library_literals(parsed)
+    _check_library_literals(parsed, bundle=bundle)
 
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
         key = _bind(
@@ -1936,9 +1933,12 @@ def _text_literal(parsed: ScalarCall, pos: int) -> str:
     return value
 
 
-def _check_library_literals(parsed: ScalarCall) -> None:
+def _check_library_literals(parsed: ScalarCall, *, bundle: ResolvedSourceBundle) -> None:
     """The literal-only arguments of a library call: patterns, replacements, paths, flags, groups, indices, domains."""
     name, args = parsed.name, parsed.args
+    if name in LIBRARY_FUNCTIONS and not is_list_fn(name):
+        # A refusal outranks argument errors; a list-overloaded name is decided once its arguments are typed.
+        require_library(bundle_dialect(bundle), name)
     if name in REGEX_FUNCTIONS:
         pattern = check_pattern(name, _text_literal(parsed, 1))
         if name == "regexp_replace":
