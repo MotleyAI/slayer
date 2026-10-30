@@ -17,7 +17,7 @@ See proposal.md (Why). Every symptom was reproduced on the idiom fixture (`tests
   - The canonical `value_type` (`slayer/core/keys.py`) already types `concat` as TEXT, but the check never consults it.
 
 Principles that apply:
-- **system §3:** §3.6 (AST), §3.10 (one meaning on every dialect), §3.13 (fail closed on kind dispatch), and the new §3.17 "One typing" [target: DEV-2180];
+- **system §3:** §3.6 (AST), §3.10 (one meaning on every dialect), §3.13 (fail closed on kind dispatch), and the new §3.21 "One typing" [target: DEV-2180];
 - **sql §3:** §3.3 (one naming authority) and §3.9 (fail closed);
 - **engine §3:** §3.1 (typed pipeline), §3.4 (interning), §3.9 (the checker raises every user-facing type error as a `QueryTypeError`);
 - **semantics Law 3** (compositionality).
@@ -74,9 +74,9 @@ Principles that apply:
     - a TEXT/number rejection (for `greatest`/`least`: a non-numeric TEXT literal, since a TEXT column is coerced).
 
     Plus the issue's `||` branch, a joined-column branch, an arithmetic branch, a nested aggregate and a stage, on DuckDB and SQLite. (codex finding 6)
-12. **Principle "One typing".** `architecture/system.arc42.md` §3 gains item 17, targeted at the new follow-up DEV-2180, approved verbatim (user, approved wording):
+12. **Principle "One typing".** `architecture/system.arc42.md` §3 gains item 21, targeted at the new follow-up DEV-2180, approved verbatim (user, approved wording):
 
-    > 17. **One typing**: a value's type is derived from its key in one place; every check, coercion and metadata lift reads that derivation. [target: DEV-2180]
+    > 21. **One typing**: a value's type is derived from its key in one place; every check, coercion and metadata lift reads that derivation. [target: DEV-2180]
 
     (user)
 

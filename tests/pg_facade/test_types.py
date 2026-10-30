@@ -46,7 +46,7 @@ def test_datatype_to_oid_none_falls_back_to_text() -> None:
 
 
 def test_query_result_oid_overridden_by_cast() -> None:
-    """DEV-1566: end-to-end — a CAST(<DATE col> AS TIMESTAMP) translation
+    """End-to-end: a CAST(<DATE col> AS TIMESTAMP) translation
     yields a projection_types entry that maps to OID_TIMESTAMP, not the
     column's declared OID_DATE."""
     orders = SlayerModel(
@@ -79,7 +79,7 @@ def test_value_to_text_none_is_sql_null() -> None:
 
 
 def test_value_to_text_bool() -> None:
-    # DEV-1566: the default oid is OID_TEXT, which is the Postgres text shape
+    # The default oid is OID_TEXT, which is the Postgres text shape
     # for booleans (``true``/``false``). The BOOL-wire ``t``/``f`` shape is
     # covered separately by test_value_to_text_bool_in_bool_column.
     assert t.value_to_text(True) == b"true"
@@ -142,7 +142,7 @@ def test_value_to_text_datetime_in_timestamp_column_is_preserved() -> None:
 
 
 def test_value_to_text_date_in_timestamp_column_is_widened() -> None:
-    """DEV-1566: symmetric widening to the existing OID_DATE-driven narrowing.
+    """Symmetric widening to the existing OID_DATE-driven narrowing.
     CAST(<DATE col> AS TIMESTAMP) needs the wire text payload to look like a
     Postgres TIMESTAMP literal (``YYYY-MM-DD HH:MM:SS``) — without the widen
     step pgjdbc/psycopg2 mis-parse a bare ``YYYY-MM-DD`` value for a column
@@ -154,7 +154,7 @@ def test_value_to_text_date_in_timestamp_column_is_widened() -> None:
 
 
 def test_value_to_text_bool_in_text_column_uses_true_false() -> None:
-    """DEV-1566: CAST(<bool> AS TEXT) must surface Postgres-shaped boolean
+    """CAST(<bool> AS TEXT) must surface Postgres-shaped boolean
     text (``true``/``false``), not the BOOL wire shape (``t``/``f``).
     Default oid == OID_TEXT so the explicit and default forms agree;
     BOOL-wire ``t``/``f`` is reachable only via explicit OID_BOOL."""
@@ -164,7 +164,7 @@ def test_value_to_text_bool_in_text_column_uses_true_false() -> None:
 
 def test_value_to_text_str_and_bytes() -> None:
     assert t.value_to_text("hello") == b"hello"
-    assert t.value_to_text(b"raw") == b"raw"
+    assert t.value_to_text(b"raw") == b"\\x726177"
 
 
 # --- binary roundtrip --------------------------------------------------------
@@ -177,6 +177,7 @@ def test_binary_int8_roundtrip() -> None:
 
 def test_binary_float8_roundtrip() -> None:
     encoded = t.value_to_binary(1.5, OID_FLOAT8)
+    assert encoded is not None
     assert encoded == struct.pack(">d", 1.5)
     assert t.value_from_binary(encoded, OID_FLOAT8) == 1.5  # NOSONAR(S1244) — exact binary roundtrip
 
@@ -196,6 +197,7 @@ def test_binary_text_roundtrip() -> None:
 def test_binary_date_roundtrip() -> None:
     d = dt.date(2026, 5, 27)
     encoded = t.value_to_binary(d, OID_DATE)
+    assert encoded is not None
     assert t.value_from_binary(encoded, OID_DATE) == d
     # Epoch is 2000-01-01.
     assert t.value_to_binary(dt.date(2000, 1, 1), OID_DATE) == struct.pack(">i", 0)
@@ -204,6 +206,7 @@ def test_binary_date_roundtrip() -> None:
 def test_binary_timestamp_roundtrip() -> None:
     ts = dt.datetime(2026, 5, 27, 12, 34, 56, 789000)
     encoded = t.value_to_binary(ts, OID_TIMESTAMP)
+    assert encoded is not None
     assert t.value_from_binary(encoded, OID_TIMESTAMP) == ts
     # Epoch.
     assert t.value_to_binary(dt.datetime(2000, 1, 1), OID_TIMESTAMP) == struct.pack(">q", 0)
@@ -245,8 +248,9 @@ def test_literal_numbers() -> None:
 
 
 def test_literal_non_finite_float_rejected() -> None:
+    nan = float("nan")
     with pytest.raises(ValueError):
-        t.literal_for_substitution(float("nan"))
+        t.literal_for_substitution(nan)
 
 
 def test_literal_string_is_quoted_and_escaped() -> None:

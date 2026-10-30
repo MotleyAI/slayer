@@ -163,7 +163,7 @@ class TestVersionGating:
         assert "SERVERPROPERTY('ProductMajorVersion')" in probe
 
     @pytest.mark.parametrize(("row", "version"), [
-        (("16",), (16, 0)), (("17",), (17, 0)), ((15,), (15, 0)), (("garbage",), None), ((None,), None),
+        (("16",), (16, 0, 0)), (("17",), (17, 0, 0)), ((15,), (15, 0, 0)), (("garbage",), None), ((None,), None),
     ])
     def test_sql_server_profile_parse(self, row: tuple, version) -> None:
         assert get_dialect("tsql").parse_server_profile(base_row=row).version == version
@@ -220,7 +220,7 @@ class TestLogLowering:
     async def test_bigquery_log2_takes_the_base_argument(self) -> None:
         sql = (await emit_lib(lib_query("log2(x)"), dialect="bigquery")).upper()
         assert "LOG2(" not in sql, sql
-        assert "LOG(LIB.X, 2)" in sql, sql
+        assert "LOG(CASE WHEN LIB.X > 0 THEN LIB.X END, 2)" in sql, sql
 
 
 class TestTrimLowering:
@@ -339,7 +339,9 @@ class TestSQLServerNumbers:
 
 class TestSQLServerQuirks:
     async def test_split_part_before_the_first_field_is_empty(self) -> None:
-        assert "< 0 THEN ''" in await _tsql("split_part(s, '/', -4)")
+        sql = await _tsql("split_part(s, '/', -4)")
+        assert "WHEN 4 >" in sql, sql
+        assert "THEN ''" in sql, sql
 
     async def test_replacement_ampersand_is_literal(self) -> None:
         sql = await _tsql("regexp_replace(tag, 'USD', '$ & co')")
@@ -362,8 +364,20 @@ class TestClickHouseLowering:
 
     async def test_ln_reads_the_exact_log2(self) -> None:
         sql = await _clickhouse("ln(x)")
-        assert "log2(lib.x) * 0.6931471805599453" in sql, sql
+        assert "log2(CASE WHEN lib.x > 0 THEN lib.x END) * 0.6931471805599453" in sql, sql
         assert "LN(" not in sql.upper(), sql
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("log(x, 8)", "log2(8) / log2(CASE WHEN lib.x > 0 AND lib.x <> 1 THEN lib.x END)"),
+        ("log(3, x)", "log2(CASE WHEN lib.x > 0 THEN lib.x END) / log2(3)"),
+    ])
+    async def test_based_log_is_a_ratio_of_log2(self, expr: str, expected: str) -> None:
+        sql = await _clickhouse(expr)
+        assert expected in sql, sql
+        assert "LOG(" not in sql.upper(), sql
+
+    async def test_base_two_log_stays_native(self) -> None:
+        assert "log2(CASE WHEN lib.x > 0 THEN lib.x END)" in await _clickhouse("log(2, x)")
 
     async def test_negative_right_keeps_a_length(self) -> None:
         sql = await _clickhouse("right(s, -1)")

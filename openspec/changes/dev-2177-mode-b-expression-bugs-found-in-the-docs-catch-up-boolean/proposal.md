@@ -18,7 +18,7 @@ Probing found two more instances of the same causes:
 - A filtered aggregate never shares a name or a value with its unfiltered twin, internally or publicly.
 - Every value-returning conditional (`CASE` / `iif`, `coalesce`, `ifnull`, `greatest`, `least`) joins its branch types at plan time, in every position and on every dialect. A provable mismatch is rejected with a typed error, which covers a `||` / `concat` branch, a joined-column branch, an arithmetic branch and a conditional nested in an aggregate. **BREAKING** on SQLite only: a mixed-type conditional that SQLite used to return as mixed values now fails at plan time, as it already does on Postgres and DuckDB.
 - Measure and dimension types that are inferred, rather than declared, are derived from the expression after the plan-time coercions.
-- `architecture/system.arc42.md` §3 gains principle 17, "One typing", targeted at DEV-2180.
+- `architecture/system.arc42.md` §3 gains principle 21, "One typing", targeted at DEV-2180.
 
 ## Capabilities
 

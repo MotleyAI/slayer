@@ -39,5 +39,5 @@
   - in the aggregation docs: boolean `weight=` / `other=` read as 0/1, custom aggregations receive raw booleans.
 
   Verify that `docs/` has no remaining stale wording, e.g. a FILTER key described as "includes the condition".
-- [ ] 5.2 The `architecture/system.arc42.md` §3 item 17 "One typing" [target: DEV-2180] has already landed in pr-plan (user, approved wording). Verify that `poetry run la-arch-check` is OK.
+- [ ] 5.2 The `architecture/system.arc42.md` §3 item 21 "One typing" [target: DEV-2180] has already landed in pr-plan (user, approved wording). Verify that `poetry run la-arch-check` is OK.
 - [ ] 5.3 Run the full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors against the baseline). Verify that all three are green.

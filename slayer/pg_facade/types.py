@@ -1,4 +1,4 @@
-"""Type mapping + value (de)serialisation for the Postgres facade (DEV-1486).
+"""Type mapping + value (de)serialisation for the Postgres facade.
 
 Three concerns:
 
@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from slayer.core.enums import DataType
-from slayer.core.format import list_json_text
+from slayer.core.format import encode_text
 from slayer.pg_facade.protocol import (
     OID_BOOL,
     OID_DATE,
@@ -65,9 +65,7 @@ def datatype_to_oid(dt: DataType | None) -> int:
 # --- text-format output ------------------------------------------------------
 
 
-def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
-    value: Any, oid: int = OID_TEXT,
-) -> bytes | None:
+def value_to_text(value: Any, oid: int = OID_TEXT) -> bytes | None:
     """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL).
 
     ``oid`` lets the encoder coerce values to match the declared column type.
@@ -79,47 +77,24 @@ def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
     """
     if value is None:
         return None
-    if isinstance(value, (list, tuple)):
-        return list_json_text(list(value)).encode()
     # OID-driven coercion runs first so a datetime in a DATE column is
-    # narrowed to a date before the per-Python-type dispatch below.
+    # narrowed to a date before the per-type dispatch below.
     if oid == OID_DATE and isinstance(value, _dt.datetime):
         value = value.date()
-    # DEV-1566: symmetric widening for CAST(<DATE col> AS TIMESTAMP). The
-    # bare `dt.date` branch below emits `YYYY-MM-DD`, which pgjdbc /
-    # psycopg2 mis-parse for an OID_TIMESTAMP-declared column. Widen to
-    # `dt.datetime` so the timestamp formatter emits `YYYY-MM-DD HH:MM:SS`.
+    # CAST(<DATE col> AS TIMESTAMP): widen so the timestamp text is
+    # `YYYY-MM-DD HH:MM:SS`, which pgjdbc / psycopg2 parse for OID_TIMESTAMP.
     if (
         oid == OID_TIMESTAMP
         and isinstance(value, _dt.date)
         and not isinstance(value, _dt.datetime)
     ):
         value = _dt.datetime(value.year, value.month, value.day)
-    # DEV-1566: CAST(<bool> AS TEXT) must emit `true`/`false` (Postgres
-    # text shape), not the BOOL wire shape `t`/`f` the next branch would
-    # produce. Check OID_TEXT BEFORE the bool branch.
-    if oid == OID_TEXT and isinstance(value, bool):
-        return b"true" if value else b"false"
-    if isinstance(value, bool):
+    # The BOOL wire shape is `t`/`f`; a text column carries the codec's `true`/`false`.
+    if isinstance(value, bool) and oid != OID_TEXT:
         return b"t" if value else b"f"
-    if isinstance(value, float):
-        if math.isnan(value):
-            return b"NaN"
-        if math.isinf(value):
-            return b"Infinity" if value > 0 else b"-Infinity"
-        return repr(value).encode("utf-8")
-    if isinstance(value, Decimal):
-        return str(value).encode("utf-8")
-    if isinstance(value, int):
-        return str(value).encode("utf-8")
     if isinstance(value, _dt.datetime):
         return _format_timestamp(value).encode("utf-8")
-    if isinstance(value, _dt.date):
-        return value.isoformat().encode("utf-8")
-    if isinstance(value, bytes):
-        # Defensive: re-encode through UTF-8 so the wire payload is valid text.
-        return value.decode("utf-8", errors="replace").encode("utf-8")
-    return str(value).encode("utf-8")
+    return encode_text(value).encode("utf-8")
 
 
 def _format_timestamp(value: _dt.datetime) -> str:

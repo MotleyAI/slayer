@@ -28,6 +28,7 @@ from slayer.engine.ingestion import (
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.schema_drift import EditModelDelete, validate_datasource
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
@@ -40,7 +41,14 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._sql_mode_retype_fixtures import (
+    check_query_carries_finding,
+    check_reingest_retypes,
+    check_validation_finding,
+    sql_shapes,
+    stale_sql_model,
+)
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -259,6 +267,39 @@ class TestBigQueryReingest:
         assert discount.description == "Discount applied"
 
 
+@pytest.fixture
+def second_dataset(bq_dataset):
+    """Another dataset in the project, holding a same-named ``plain`` twin."""
+    client, _ = bq_dataset
+    other_id = f"slayer_test_{uuid.uuid4().hex[:12]}"
+    client.create_dataset(bigquery.Dataset(f"{_PROJECT}.{other_id}"))
+    try:
+        client.create_table(bigquery.Table(
+            f"{_PROJECT}.{other_id}.plain",
+            schema=[bigquery.SchemaField("ghost", "STRING")],
+        ))
+        yield other_id
+    finally:
+        client.delete_dataset(f"{_PROJECT}.{other_id}", delete_contents=True, not_found_ok=True)
+
+
+class TestBigQueryDriftWithSecondDataset:
+    async def test_bare_models_resolve_in_the_url_dataset(self, bq_dataset, second_dataset) -> None:
+        _, dataset_id = bq_dataset
+        ds = _ds_config(dataset_id, name="bqdrift")
+        models = ingest_datasource(datasource=ds)
+        assert {m.sql_table for m in models} == {"orders", "plain"}
+        plain = next(m for m in models if m.name == "plain")
+        plain.columns.append(Column(name="ghost", type=DataType.TEXT))
+
+        entries = await validate_datasource(datasource=ds, models=models)
+
+        assert [
+            (type(e).__name__, e.model_name, e.remove.columns if isinstance(e, EditModelDelete) else None)
+            for e in entries
+        ] == [("EditModelDelete", "plain", ["ghost"])]
+
+
 def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
     client, dataset_id = bq_dataset
     dry_run = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
@@ -381,3 +422,47 @@ async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> Non
         await engine.execute(stale)
     assert "skills" in str(info.value), str(info.value)
     assert "ingest" in str(info.value).lower(), str(info.value)
+
+
+# NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's typed ``[]`` fallback must unify with their ARRAY_AGG.
+_AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
+                "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
+_AMOUNT_COLUMNS = ("n", "big", "i")
+
+
+@pytest.fixture(scope="module")
+def bq_amounts(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    client.query(f"CREATE TABLE {dataset_id}.amounts "
+                 "(id INT64, team STRING, n NUMERIC, big BIGNUMERIC, i INT64)").result()
+    client.query(f"INSERT INTO {dataset_id}.amounts VALUES {_AMOUNT_ROWS}").result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
+    run_sync(storage.save_datasource(ds))
+    for model in ingest_datasource(datasource=ds, include_tables=["amounts"]):
+        run_sync(storage.save_model(model))
+    return storage
+
+
+async def test_collect_over_exact_numerics(bq_amounts) -> None:
+    resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
+        "source_model": "amounts", "dimensions": ["team"],
+        "measures": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+    }))
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+           for r in resp.data}
+    assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
+                   "b": {"n": [], "big": [], "i": []}}, resp.sql
+    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
+
+
+# Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
+# REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
+async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: DataType) -> None:
+    storage, ds = bq_lists
+    engine = SlayerQueryEngine(storage=storage)
+    await storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, column=column)
+    await check_query_carries_finding(engine, column=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

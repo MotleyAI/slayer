@@ -18,8 +18,8 @@ from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    LIST_VALUE, ExtremumFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either, element_lambda, lit,
-    operand_copy,
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
+    element_lambda, lit, operand_copy, text_try_cast,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -175,9 +175,14 @@ class SnowflakeDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
-    regex_flavour: ClassVar[RegexFlavour] = POSIX
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = POSIX
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
     database_name: ClassVar[str] = "Snowflake"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "SPLIT_PART", "PI", "CBRT",
+    })
 
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
         """The connector returns an ARRAY (type code 10) as JSON text."""
@@ -236,10 +241,6 @@ class SnowflakeDialect(SqlDialect):
         found = exp.GT(this=anon("ARRAY_SIZE", matched), expression=lit(0))
         return exp.Coalesce(this=found, expressions=[exp.false()])
 
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        """An untyped ``[]``: a semi-structured ARRAY never meets a structured one."""
-        return exp.Array(expressions=[])
-
     def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
         """Skips NULLs and returns ``[]`` over none."""
         order = self.distinct_sorted(value)
@@ -255,7 +256,7 @@ class SnowflakeDialect(SqlDialect):
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """A digits-only string is no time point (Snowflake would read it as epoch seconds)."""
-        converted = super().build_try_cast(value, to)
+        converted = text_try_cast(value, to)
         if to.this not in exp.DataType.TEMPORAL_TYPES:
             return converted
         digits = anon("REGEXP_LIKE", anon("TRIM", as_text(value)), lit("[+-]?[0-9]+"))
