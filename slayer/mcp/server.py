@@ -922,7 +922,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
+                'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
                 '"label", "granularity"}; type TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
                 'ARRAY with element_type (one of the others); unique marks '
