@@ -152,7 +152,14 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
-17. **One treatment per model source**: an `sql`-mode model is typed,
+17. **Honest wire catalogs**: every column a BI wire protocol advertises is
+    selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
+18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
+    consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+19. **One writer of result values**: every output path encodes result values
+    with one codec in `core.format`; none encodes a value itself.
+    [enforced: test:tests/test_dev2172_value_codec.py]
+20. **One treatment per model source**: an `sql`-mode model is typed,
     re-typed, validated and drift-checked exactly like a `sql_table` model
     wherever the live database can tell the same about both; any difference
     is a documented exception. [review]

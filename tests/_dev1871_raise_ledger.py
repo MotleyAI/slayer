@@ -509,4 +509,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='Dimension … is a list, which cannot be grouped on.'
          + SUGGEST + 'Group by its elements: ….',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='check_list_order_key', exc='ListTypeError',
+         message='Order key … is a list, which has no sort order.'
+         + SUGGEST + 'Order by a scalar column, or by length(...) of the list.',
+         category='checker', family='lists', user=True, owner='checker'),
 )

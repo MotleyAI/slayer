@@ -1668,12 +1668,21 @@ def check_list_operands(*, roots: Sequence[ValueKey], typing: ListTyping) -> Non
                 _check_list_aggregation(key, typing=typing)
 
 
-def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping) -> None:
-    """A list is never a dimension: its elements are, through ``L.value``."""
-    if typing.is_list(key):
+def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping, will_group_by: bool) -> None:
+    """A list is never a group key: its elements are, through ``L.value``."""
+    if will_group_by and typing.is_list(key):
         raise ListTypeError(
             summary=f"Dimension {name!r} is a list, which cannot be grouped on.",
             suggestion=f"Group by its elements: {_list_display(key)}.",
+        )
+
+
+def check_list_order_key(*, key: ValueKey, typing: ListTyping) -> None:
+    """A list has no sort order."""
+    if typing.is_list(key):
+        raise ListTypeError(
+            summary=f"Order key {_list_display(key)} is a list, which has no sort order.",
+            suggestion="Order by a scalar column, or by length(...) of the list.",
         )
 
 

@@ -556,7 +556,7 @@ def _inferred_elements(
     return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
-# --- sql-mode result types (system P17) ---
+# --- sql-mode result types (system P20) ---
 
 
 class ResultList(BaseModel):
@@ -1802,7 +1802,7 @@ async def _adopt_stored_sanitized_names(
 async def _retype_sql_models(
     *, datasource: DatasourceConfig, storage: StorageBackend, failures: DocumentLoadFailures,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (system P17):
+    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (system P20):
     ``({model: re-typed columns}, {model: error})``."""
     retyped: dict[str, list[str]] = {}
     errors: dict[str, str] = {}
