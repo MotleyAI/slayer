@@ -7,7 +7,7 @@ Defines what a Mode-B expression means when a TEXT value meets a number, so comp
 
 ### Requirement: TEXT against a number is numeric
 
-When a TEXT operand meets an INT or DOUBLE operand in a comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`), `IN`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, arithmetic (`+`, `-`, `*`, `/`, `%`) or `greatest` / `least`, the TEXT side SHALL be read as `TRY_CAST(text AS DOUBLE)` with the meaning of `queries/casts` — invalid text yields NULL — and the operation SHALL be numeric on every dialect. Arithmetic with a TEXT operand SHALL type as DOUBLE. On Postgres older than 16, or of unknown version, the conversion SHALL follow `TRY_CAST`'s contract there (a plain cast).
+When a TEXT operand meets an INT or DOUBLE operand in a comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`), `IN`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, arithmetic (`+`, `-`, `*`, `/`, `%`) or `greatest` / `least`, the TEXT side SHALL be read as `TRY_CAST(text AS DOUBLE)` with the meaning of `queries/casts` — invalid text yields NULL — and the operation SHALL be numeric on every dialect that translates `TRY_CAST`; on any other dialect the query SHALL fail at plan time as `queries/scalar-functions` requires. Arithmetic with a TEXT operand SHALL type as DOUBLE. On Postgres older than 16, or of unknown version, the conversion SHALL follow `TRY_CAST`'s contract there (a plain cast).
 
 #### Scenario: Comparison against an integer literal
 
