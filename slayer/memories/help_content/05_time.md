@@ -45,3 +45,4 @@ incomplete bucket.
 `month(created_at)` in `dimensions`, `time_dimensions`, filters or order buckets the
 column, or any DATE/TIMESTAMP expression (`month(coalesce(shipped_at, created_at))`): second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter,
 year, or a custom granularity defined on the datasource (fiscal years and the like).
+`date_trunc('month', x)` is the same call as `month(x)`.

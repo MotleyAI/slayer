@@ -1152,8 +1152,9 @@ class SlayerQuery(BaseModel):
             "Otherwise root where the facts are (rows without facts then drop out), or omit to "
             "infer the smallest model determining every dimension and row-level condition column "
             '(reported in the response). A saved model or stage name, an inline extension '
-            '{"source_name": ..., "columns" / "measures" / "joins": [...]} adding per-query '
-            "columns, or a full inline model."
+            '{"source_name": ..., "columns" / "measures" / "joins": [...]}, or a full inline '
+            "model. Write a per-query column as an expression in the position that uses it (a "
+            "dimension, a filter, an aggregation's argument)."
         ),
     )
     measures: MeasuresField = Field(
@@ -1165,6 +1166,8 @@ class SlayerQuery(BaseModel):
             "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
             "- Aggregations: count(*), sum(amount), count_distinct(customer_id), "
             "avg(amount - cost), percentile(amount, p=0.9); a joined model's field by dotted path.\n"
+            "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
+            "count(*) FILTER (WHERE status = 'paid').\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
             "spell its keys exactly like the query's dimensions (a joined column by its dotted "
             "path; its bare name fails). Share of group: "
@@ -1283,7 +1286,9 @@ class SlayerQuery(BaseModel):
         description=(
             "Conditions, AND-ed; each routes automatically to row filtering (WHERE), aggregate "
             "filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, "
-            "between, like / ilike, is null / is not null, and / or / not, regex x ~ '^A[0-9]{3}', "
+            "between, like / ilike, is null / is not null, IS [NOT] TRUE / FALSE (NULL counts as "
+            "not true), IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe =), and / or / not, "
+            "CAST(x AS DATE), regex x ~ '^A[0-9]{3}', "
             "JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the "
             "column's sampled values.\n"
             "- Aggregates and transforms filter too, by formula or by a measure's name: "
@@ -1291,7 +1296,8 @@ class SlayerQuery(BaseModel):
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
-            "- A list tags: contains(tags, 'x') or tags.value = 'x'.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
+            "'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
             "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
@@ -1306,7 +1312,11 @@ class SlayerQuery(BaseModel):
         default=None,
         description=(
             "{placeholder} values scoped to this query object / stage; the "
-            "tool-level variables argument overrides."
+            "tool-level variables argument overrides. A placeholder binds a literal value only: "
+            "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
+            "a list as the whole right-hand side of IN (status in ({statuses})) or as a "
+            "list-function argument (an empty list only there). A placeholder in a name position "
+            "is an error."
         ),
     )
     order: OrderField = Field(

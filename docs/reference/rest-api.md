@@ -68,7 +68,13 @@ The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, 
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`.
 - `to_many_handling` (str, default `"broadcast"`) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-model-measures): `broadcast` (repeat the safe-grain value and warn), `associate` (per-cell value over the distinct associated entities), or `error` (refuse). Rejected on run-by-name bodies (`{"name": ...}`) — declare it on the stored query instead; the retired `strict` flag is rejected with this remedy.
 
-Run-by-name bodies (`{"name": ...}`) take query clauses only inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
+Run-by-name bodies (`{"name": ...}`) run a query-backed model's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
+
+```bash
+curl -X POST http://localhost:5143/query \
+  -H "Content-Type: application/json" \
+  -d '{"name": "monthly_revenue", "variables": {"region": "US"}}'
+```
 
 Multi-stage DAG bodies use `{"queries": [...]}` — each stage in the list honours its own `distinct_dimension_values`.
 
@@ -93,7 +99,23 @@ curl http://localhost:5143/models/orders
 curl -X POST http://localhost:5143/models \
   -H "Content-Type: application/json" \
   -d '{"name": "orders", "sql_table": "public.orders", "data_source": "mydb", ...}'
+
+# Create a query-backed model
+curl -X POST http://localhost:5143/models \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monthly_revenue",
+    "data_source": "mydb",
+    "source_queries": [{
+      "source_model": "orders",
+      "measures": ["sum(amount)"],
+      "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+    }],
+    "query_variables": {"region": "US"}
+  }'
 ```
+
+A query-backed model's `columns` are generated at save, so supplying them returns 400.
 
 ### Datasources
 
@@ -111,6 +133,23 @@ curl http://localhost:5143/datasources
 # Get datasource (credential fields shown as ***)
 curl http://localhost:5143/datasources/my_postgres
 ```
+
+### Datasource priority
+
+```
+GET /datasources/priority   # {"priority": [...]}, most preferred first
+PUT /datasources/priority   # body {"priority": [...]}; [] clears it
+```
+
+A bare model name that exists in several datasources resolves to the first listed datasource that has it; a name in the list that is not a registered datasource returns 400.
+
+### Validate models
+
+`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the list of deletes needed to keep them valid; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+
+### Recommend a root model
+
+`POST /recommend-root-model` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable or cross-datasource items return 400. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
 
 ### Ingestion
 

@@ -13,7 +13,8 @@ first two become the FROM clause at query time.
 ## Columns
 
 Row-level SQL expressions; the role (group-by key or aggregation source) is decided
-per query. A column's `sql` is Mode-A SQL: any dialect expression, dotted join paths
+per query. A list column (`type: ARRAY`) is neither, beyond `count`: group by or aggregate
+its elements, `tags.value`. A column's `sql` is Mode-A SQL: any dialect expression, dotted join paths
 allowed, but no aggregations or {{product}} transforms. A column `filter` becomes
 CASE WHEN inside aggregates — `sum(active_revenue)` counts only matching rows,
 without affecting sibling measures. `allowed_aggregations` whitelists what may

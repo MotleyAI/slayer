@@ -181,18 +181,21 @@ class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
     sql: str | None = None
-    type: DataType = DataType.TEXT
+    type: DataType = Field(
+        default=DataType.TEXT,
+        description="TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN (opaque), or ARRAY (a list).",
+    )
     element_type: DataType | None = Field(
         default=None,
-        description="A list's element type.",
+        description="A list's element type: required with ARRAY, forbidden otherwise; any type but ARRAY.",
     )
     db_type: str | None = Field(
         default=None,
         description=(
             "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
             "retained when the declared DataType loses information. Populated "
-            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
-            "columns; None when the mapped type carries everything needed."
+            "by ingestion for UNKNOWN (opaque), exact NUMERIC/DECIMAL, JSON, "
+            "zoned-timestamp and list columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False

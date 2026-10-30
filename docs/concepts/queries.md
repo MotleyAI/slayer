@@ -172,9 +172,9 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 
 ## TimeDimension
 
-A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension`.
+A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead. The column may also be given under the key `column` as an alias of `dimension`; the object always serializes with `dimension` as a string, and the legacy object form `{"name": "created_at", "model": "orders"}` is read as `orders.created_at`.
 
-`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension).
+`dimension` may be any row-level expression typed DATE or TIMESTAMP (`"coalesce(shipped_at, created_at)"`, `"CAST(created_txt AS DATE)"`, also as `month(coalesce(shipped_at, created_at))`), and an optional `name` sets its result key and lets `main_time_dimension` and `partition_by=` refer to it (an unnamed expression is named like a computed dimension). Names are unique across a query's dimensions and time dimensions. A named time dimension's key never carries a granularity suffix; unnamed time dimensions sharing one source at different granularities get one each (`orders.created_at.month`, `orders.created_at.year`).
 
 ```json
 {
@@ -187,9 +187,9 @@ A time dimension with a required granularity and an optional date range. Support
 
 **Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
 
-A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too.
+A `dimensions` or `time_dimensions` entry may also be written functionally as the string `gran(col)` (e.g. `"month(created_at)"`) — equivalent to a `TimeDimension` with that dimension and granularity (use the dict form above to add `date_range` or `label`), and usable as an `order` key too, where it must match a projected time dimension on the same expression at that granularity or the query fails.
 
-A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error.
+A downstream stage of a multi-stage query may declare a time dimension on any DATE/TIMESTAMP column of its upstream stage — re-bucketing a column the upstream already truncated only at the same or a nesting-coarser granularity (e.g. `month` → `year`). The same rule applies to a model column that carries a `granularity` (a query-backed model's bucketed cache column, or a hand-set one): a finer or non-nesting time dimension over it is the same typed error, judged for every bucketed column an expression time dimension reads (`CAST(month_col AS DATE)` at `day` fails).
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
@@ -323,7 +323,10 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `not like` | `"name not like '%test%'"` |
 | `ilike` | `"name ilike '%acme%'"` |
 | `between` | `"amount between 100 and 1000"` |
-| `is distinct from` | `"discount is distinct from 0"` |
+| `is distinct from` | `"discount is distinct from 0"` (NULL-safe `<>`) |
+| `is not distinct from` | `"discount is not distinct from 0"` (NULL-safe `=`) |
+| `IS TRUE` / `IS FALSE` | `"is_paid IS TRUE"` (NULL is neither) |
+| `IS NOT TRUE` / `IS NOT FALSE` | `"is_paid IS NOT TRUE"` (keeps false and NULL) |
 
 The right-hand side of `in` / `not in` must be a non-empty tuple of literal
 values (strings, numbers, or booleans) — references and expressions on the
@@ -365,7 +368,8 @@ Filters in `SlayerQuery.filters` accept the
 [portable function library](references.md#the-portable-function-library) — strings
 (`lower`, `left`, `split_part`, `concat_ws`, …), math (`round`, `div`, `atan2`, …), null
 handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
-`payload ->> 'key'`) and [date functions](references.md#date-and-time-functions) — each with
+`payload ->> 'key'`), the [list functions](#list-columns) `contains`, `contains_any`,
+`contains_all` and `length`, and [date functions](references.md#date-and-time-functions) — each with
 one meaning on every database. The SQL `||` concat operator is rewritten to `concat(...)`
 automatically.
 
@@ -442,6 +446,22 @@ A list column `skills` is also a join hop to its elements, one row per non-NULL 
 {"source_model": "contractors", "dimensions": ["skills.value"], "measures": ["count(*)"], "to_many_handling": "associate"}
 ```
 
+Under the default `broadcast`, a parent aggregate sliced by `skills.value` repeats its total on every element with a `broadcast` warning.
+
+What a list can't do, each a typed error naming the remedy:
+
+- be a dimension (group by `skills.value`), and neither can a list literal or a `collect` result;
+- be an operand of `=`, `<>`, `<`, `>`, `IN`, `BETWEEN` or `IS DISTINCT FROM` (use `contains` / `contains_any`, or compare `skills.value`); `IS NULL` / `IS NOT NULL` work;
+- take any aggregation but `count` (non-NULL lists), including `collect` and custom aggregations;
+- hold a NULL element in a list literal (`['go', NULL]`);
+- have `UNKNOWN` elements and still give element access: such a list supports only `length` and NULL tests.
+
+A text value against a numeric list is converted like any mixed-type comparison, so `contains(scores, '5')` tests for the element `5`.
+
+Element access composes like any join hop: through a to-one join (`contractors.skills.value` from a model joined to `contractors`), on a derived list column, and on a list column of a query stage, including a stage's `collect` result. One query may aggregate the parent's rows (`count(*)`) and the elements (`count(skills.value)`), each over its own rows. Saving a model whose list column has the name of a hop reachable from it (an edge or joined-model name) fails.
+
+`inspect`, `search` and `models_summary` show a list column's type as `ARRAY<TEXT>` with its operations, and its element samples once profiled.
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
@@ -473,7 +493,7 @@ The same placeholders work in measure formulas, computed- and time-dimension exp
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings, numbers, or **lists**, and every value binds as a literal: **you write the surrounding quotes** for a string (`status = '{status}'`, an embedded `'` is doubled), an unquoted placeholder takes a number (a numeric string included), and a placeholder in a name position (`sum({col})`, `customers.{c}`, `{f}(x)`, `partition_by={x}`) is rejected, so no value can change the expression's structure; non-finite floats (`nan`/`inf`) are rejected.
+- Values must be strings, numbers, booleans or **lists**, and every value binds as a literal: **you write the surrounding quotes** for a string (`status = '{status}'`, an embedded `'` is doubled), an unquoted placeholder takes a number (a numeric string included) or a boolean, and a placeholder in a name position (`sum({col})`, `customers.{c}`, `{f}(x)`, `partition_by={x}`) is rejected, so no value can change the expression's structure; non-finite floats (`nan`/`inf`) are rejected.
 - **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
 
     ```json
@@ -485,8 +505,8 @@ This produces the filter `status = 'completed' AND amount > 100`.
     }
     ```
 
-    An empty list raises (`IN ()` is invalid SQL).
-- `{{` and `}}` produce literal `{` and `}`
+    An empty list there raises, and a literal `x IN []` is rejected; an empty list binds only as a list-function argument (`contains_all(tags, {wanted})`).
+- `{{` and `}}` produce literal `{` and `}`; a brace pair holding only digits, commas and spaces (`'{1,2}'`, `'{}'`, `'[0-9]{3}'`) is literal text in any string
 - Undefined variables raise an error
 - The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
 

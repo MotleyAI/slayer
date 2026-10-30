@@ -2691,8 +2691,9 @@
    "origin": "Malloy",
    "cells": {
     "slayer": {
-     "verdict": "no",
-     "text": "Array and struct columns are opaque."
+     "verdict": "partial",
+     "how": "<code>count_distinct(tags.value)</code> · <code>contains(tags, 'vip')</code>",
+     "caveat": "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
     },
     "malloy": {
      "verdict": "yes",

@@ -30,8 +30,8 @@ A measure may combine query-dimension values with aggregates (`quantity * count(
 
 ### Expression aggregation
 
-An aggregation additionally accepts a same-model scalar **expression** as its
-aggregated value, not just a bare column:
+An aggregation additionally accepts a row-level **expression** over its model and
+its to-one joins as its aggregated value, not just a bare column:
 
 ```text
 sum(amount - cost)                     — aggregate a row-level expression
@@ -65,6 +65,8 @@ A source mixing row-level columns with attached values
 — the attached value broadcasts onto each base row, weighted per row — while a
 fully-attached source is a
 [re-aggregation](#re-aggregation-aggregate-over-an-attached-value).
+`first` / `last` take such a source too, as a ranked pick: `first(quantity * avg(price, partition_by=product))`
+is the earliest row's `quantity` times its product's average price.
 An attached value — an aggregate or a grained transform
 (`weight=rank(sum(amount, partition_by=region), direction='desc')`) — may also arrive as a
 *parameter* of a row-level aggregation
@@ -83,6 +85,7 @@ reject a confidently non-numeric expression (`sum(lower(name))`).
 ### Filtered aggregation (`FILTER (WHERE …)`)
 
 Any aggregation takes a SQL `FILTER (WHERE c)` clause with a row-level condition `c` and aggregates only the rows passing it, every row-level input included (`count(*) FILTER (WHERE status = 'paid')`, `last(amount) FILTER (WHERE amount > 0)` picks the newest passing row).
+An aggregate, transform or measure inside `c` is rejected, the clause composes with `partition_by=` and `window=` (`sum(amount, window='3m') FILTER (WHERE status = 'paid')`), and an unnamed filtered aggregation's result key derives from the whole expression, condition included, so it never collides with the unfiltered one.
 
 ### Windowed aggregations
 
@@ -107,7 +110,7 @@ the query granularity (overlapping windows), equal to it (equivalent to normal
 bucket is included).
 
 An aggregate over no rows — an empty trailing interval, or a parent with no rows across a
-join (`count(orders.id)` for a customer without orders) — yields 0 for the `count` family and
+join (`count(orders.id)` for a customer without orders) — yields 0 for the `count` family, `[]` for `collect` and
 NULL for every other aggregation, including custom and formula-overridden ones; `first`/`last` pick the earliest/latest interval row by their ranking time
 column; and reference-bearing parameters (a column, an attached aggregate, a
 definition-default column) are read on each interval row while literals pass through.
@@ -257,8 +260,7 @@ Measure formulas define what aggregated values a query returns. They go in the `
 "measures": [
   "count(*)",
   {"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"},
-  "cumsum(sum(revenue))",
-  ...
+  "cumsum(sum(revenue))"
 ]
 ```
 
@@ -278,6 +280,9 @@ When a measure is renamed via `name`, query filters and ORDER BY entries in the 
 | `%` | `"sum(quantity) % 12"` | `SUM(quantity) % 12` |
 
 Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`. Division by zero is NULL on every backend.
+
+Precedence, tightest first: `::`, `**`, unary `-` / `+`, `*` / `/` / `%`, `+` / `-`, `||` / `->` / `->>`, comparisons (`=`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS`, `~`, …), `NOT`, `AND`, `OR` — so `NOT a = b` is `NOT (a = b)` and `'a' || 'b' = 'ab'` is true.
+`**` is right-associative and binds tighter than a sign (`2 ** 3 ** 2` is 512, `-2 ** 2` is -4), and `%` takes the sign of its left operand (`-7 % 3` is -1, `7 % -3` is 1).
 
 All measure names referenced in the formula must exist in the model (except `*` which is always available). For measures from joined models, use a dotted path inside the aggregation: `"avg(customers.score)"` or multi-hop: `"sum(customers.regions.population)"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
 
@@ -441,7 +446,7 @@ Models and queries saved before `direction=` existed load with `direction='desc'
 
 **Ranking within a partition (`partition_by=`):**
 
-To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at plan time (HTTP 400). Naming a query time-dimension partitions by its truncated bucket, not the raw timestamp.
+To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at plan time (HTTP 400). Naming a query time-dimension partitions by its truncated bucket, not the raw timestamp. A key may also be a time dimension's `name` (`partition_by=yr`) or a row-level expression equal to a query computed dimension or time dimension (`partition_by=upper(customers.name)` beside that computed dimension).
 
 ```json
 {
@@ -487,7 +492,7 @@ Not to be confused with the [`first`/`last` aggregation types](models.md#the-fir
 
 ## Scalar Math Functions
 
-Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you can call standard scalar math functions. They pass through to the underlying database via sqlglot — the formula parser does not need to know about them.
+In Mode-A SQL (`Column.sql`, `Aggregation.formula`) any database function passes through. In Mode-B formulas and query fields, scalar functions come from the closed [portable function library](references.md#the-portable-function-library), each translated per backend; a name outside it (`initcap`, `random`) is rejected. The math functions:
 
 | Function | Args | Behaviour |
 |----------|------|-----------|
@@ -500,10 +505,14 @@ Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you c
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
 | `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0). `ndigits` must be an integer literal. |
 | `abs(x)` | 1 | Absolute value. |
+| `floor(x)` / `ceil(x)` | 1 | Round down / up to an integer value (`ceiling` is `ceil`). |
+| `trunc(x)` | 1 | Round toward zero. |
+| `sign(x)` | 1 | -1, 0 or 1. |
+| `mod(a, b)` | 2 | Remainder, with the sign of `a` (as `a % b`). |
 
 Query and measure formulas also take `div`, `pi`, `sin` … `atan2` and `cbrt` from the [portable function library](references.md#the-portable-function-library).
 
-Unlike the other scalar functions above — which pass through only when embedded in a larger `Column.sql` or arithmetic expression — `round` and `abs` are also valid as the **top-level** form of a query measure or `ModelMeasure.formula`:
+Any scalar function can wrap aggregates as the **top-level** form of a query measure or `ModelMeasure.formula` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
 
 ```python
 {"formula": "round(sum(revenue), 2)"}        # round an aggregate
@@ -542,9 +551,9 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
 - A missing `ELSE` yields `NULL`. `iif(cond, then, otherwise)` is an equivalent
   spelling — an allowlisted scalar function taking exactly three arguments.
   Everything renders to a portable SQL `CASE` on every Tier-1 dialect.
-- Inside a `WHEN` condition you may use SQL operators (`=`, `<>`, `AND`, `OR`,
-  `NOT`, `LIKE`) even in a measure formula; `THEN` / `ELSE` values are taken
-  as-is (a string literal like `'a AND b'` is never rewritten).
+- Conditions and `THEN` / `ELSE` values are full expressions in the same grammar —
+  SQL operators, function calls, aggregates (`THEN sum(amount) * 2`) — and a string
+  literal like `'a AND b'` is never rewritten.
 - The result **type is the join of the branches** (Postgres semantics):
   identical types pass through, a numeric mix widens to `DOUBLE`, a `NULL`
   branch is absorbed by the other, and any other mix is a plan-time error

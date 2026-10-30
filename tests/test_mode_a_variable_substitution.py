@@ -924,7 +924,7 @@ class TestSubstituteVariablesHardened:
     def test_escape_regime_parameter_is_gone(self) -> None:
         with pytest.raises(TypeError):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": 1}, escape="sql", backslash_escapes=False,
+                filter_str="x = {v}", variables={"v": 1}, escape="sql", backslash_escapes=False,  # pyright: ignore[reportCallIssue]  # the removed parameter must fail
             )
 
 

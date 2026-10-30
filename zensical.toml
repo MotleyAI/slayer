@@ -90,6 +90,7 @@ nav = [
       "examples/07_aggregations/aggregations.md",
       { "Notebook" = "examples/07_aggregations/aggregations_nb.ipynb" },
     ]},
+    { "MCP Introspection" = "examples/08_mcp_introspect/mcp_introspect_nb.ipynb" },
     { "Lightning Talk" = [
       "examples/09_lightning_talk/lightning_talk.md",
       { "Notebook" = "examples/09_lightning_talk/lightning_talk_nb.ipynb" },

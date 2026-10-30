@@ -6,6 +6,8 @@ SLayer provides a command-line interface for server management, querying, and mo
 
 All commands accept a `--storage` flag to specify where models and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
 
+The `SLAYER_NOW` environment variable pins the "now" that relative time points resolve against (see [Time](../concepts/time.md#relative-tokens)); every command validates it first and exits non-zero on an invalid value.
+
 ## Errors, `--debug` and `--version`
 
 A failing command prints one `Error: …` line on stderr and exits 1; add `--debug` (before or after the command) to see the full traceback, and run `slayer --version` to print the installed version.
@@ -56,6 +58,43 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 | `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
+### `slayer pg-serve`
+
+Start the Postgres wire-protocol server for BI tools (see [SQL API](../interfaces/pg-facade.md)); the connection's database name selects the SLayer datasource.
+
+```bash
+slayer pg-serve --demo                                   # loopback, no token
+slayer pg-serve --host 0.0.0.0 --token "$SLAYER_PG_TOKEN"
+psql "host=127.0.0.1 port=5145 dbname=jaffle_shop"
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `0.0.0.0` (`127.0.0.1` with `--demo` and no token) | Bind address |
+| `--port` | `5145` | Port number |
+| `--token` | `$SLAYER_PG_TOKEN` | Password token; required when binding a non-loopback address |
+| `--tls-cert` / `--tls-key` | | TLS certificate and private key (PEM) |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
+### `slayer flight-serve`
+
+Start the Arrow Flight SQL server, wire-compatible with the dbt Semantic Layer JDBC driver (see [Flight SQL](../interfaces/flight-sql.md)); needs the `flight` extra.
+
+```bash
+slayer flight-serve --demo                               # loopback, no token
+slayer flight-serve --host 0.0.0.0 --token "$SLAYER_FLIGHT_TOKEN"
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `0.0.0.0` (`127.0.0.1` with `--demo` and no token) | Bind address |
+| `--port` | `5144` | Port number |
+| `--token` | `$SLAYER_FLIGHT_TOKEN` | Bearer token; required when binding a non-loopback address |
+| `--tls-cert` / `--tls-key` | | TLS certificate and private key (PEM) |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
 ### `slayer query`
 
 Execute a query from the terminal.
@@ -78,7 +117,13 @@ slayer query @query.json --explain
 
 # Run a saved query by name, refined
 slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
+
+# Pass runtime variables (always overrides query.variables / model.query_variables)
+slayer query monthly_revenue --variables region=US --variables threshold=100
+slayer query @query.json --variables-json '{"region": "US"}'
 ```
+
+The positional argument is a JSON query if it starts with `{` or `[`, a file path if it starts with `@`, and otherwise the name of a query-backed model whose stored backing query runs.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -87,6 +132,8 @@ slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run the database's EXPLAIN on the query |
 | `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
+| `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
+| `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
 
 ### `slayer ingest`
 
@@ -262,6 +309,24 @@ Columns declared `unique` (or `primary_key`) that the data shows have duplicates
 Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
 
 
+### `slayer recommend-root-model`
+
+Recommend the query root (population) for a set of `model.column` / `model.metric` items, with each item's reference path from it. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
+
+```bash
+slayer recommend-root-model customers.name products.category
+slayer recommend-root-model "sum(orders.revenue)" regions.name --format json
+slayer recommend-root-model customers.name products.category --root-hint orders
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `items` | | One or more `model.column` / `model.metric` items (aggregation suffixes allowed) |
+| `--data-source X` | priority list | Datasource that scopes name resolution |
+| `--root-hint M` | | Intended root (bare name or `<data_source>.<model>`); honoured when it reaches every item, else a warning explains the auto-pick |
+| `--format` | `text` | `text` or `json` |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
 ### `slayer import-dbt`
 
 Import dbt Semantic Layer definitions into SLayer.
@@ -276,6 +341,24 @@ slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-mod
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
 | `--datasource` | Yes | SLayer datasource name for the imported models |
 | `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
+
+### `slayer import-cube`
+
+Import Cube (Cube.js / Cube.dev) YAML and JavaScript data models into SLayer. See [Importing Cube definitions](../cube/cube_import.md).
+
+```bash
+slayer import-cube ./cube_project --datasource my_postgres
+slayer import-cube ./cube_project/model --datasource my_postgres --report ./report.json
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `cube_project_path` | Yes | Path to the Cube project (or its model directory) |
+| `--datasource` | Yes | SLayer datasource name to file the imported models under |
+| `--report` | No | Path for the JSON conversion report (default: `<storage>/cube_import_report.json`) |
+| `--include-hidden` | No | Also print hidden (`public: false`) models in the summary |
+| `--ignore-required-meta` | No | Emit every `FILTER_PARAMS` pushdown as an optional filter, ignoring a member's `meta.required` marker |
+| `--storage` | No | Storage path |
 
 ### `slayer import-osi`
 
@@ -475,6 +558,21 @@ slayer memory forget kb.brooklyn-pos
 | `save` | `--id ID` | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to auto-allocate (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved. |
 | `forget` | `<id>` (positional) | Memory id. Cascade-strips every `memory:<id>` reference to it from every other memory's `entities` list. |
 
+### `slayer storage`
+
+Storage maintenance. `migrate-types` introspects each model's datasource and refines `DOUBLE` to `INT` on base columns whose live SQL type is integer; it fails if a datasource is unreachable.
+
+```bash
+slayer storage migrate-types --dry-run
+slayer storage migrate-types --data-source jaffle_shop
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-source X` | all | Limit to one datasource |
+| `--dry-run` | off | Report the planned refinements without writing them |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
 ### `slayer usage-reporting`
 
 Show or change [usage reporting](usage-reporting.md).
@@ -485,3 +583,15 @@ slayer usage-reporting show      # the report the next send would contain (sends
 slayer usage-reporting disable   # persist off; delete the install ID and unsent data
 slayer usage-reporting enable    # persist on
 ```
+
+## Conceptual help
+
+SLayer's conceptual help ships as a predefined set of **help memories** (`memory:help.intro` … `memory:help.queries`): read one with `inspect` (compact never shortens a `help.*` memory), or find the relevant one with `search`.
+
+```bash
+slayer inspect memory:help.intro --type memory        # overview + judgment calls
+slayer inspect memory:help.models --type memory       # authoring models, joins, result keys
+slayer search --question "how do joins resolve"       # surface the relevant topic
+```
+
+`memory:help.intro` lists the deep-dive topics (`memory:help.models`, `memory:help.workflow`, `memory:help.aggregations`, `memory:help.transforms`, `memory:help.time`, `memory:help.joins`, `memory:help.queries`); the query syntax itself is on the MCP `query` tool's schema fields.

@@ -41,7 +41,9 @@ Tables with no FK references use their plain table name with no joins.
 
 SLayer introspects each table's column types and generates a model:
 
-- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`string` / `number` / `boolean` / `time` / `date`), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query.
+- **One `Column`** per non-joined column on the source table — name, `type` inferred from the database (`TEXT` / `INT` / `DOUBLE` / `BOOLEAN` / `DATE` / `TIMESTAMP`, or `UNKNOWN` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each column is used as a group-by dimension or as an aggregation source is decided per query, except for a list column, which is never a group-by key and aggregates only with `count`.
+- **List columns** become `type: ARRAY` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
+- **`db_type`** keeps the raw database type where `type` loses information (`UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a model written by hand without it reads the column as `TEXT`.
 - **Column and table comments** stored in the database become `Column.description` and `SlayerModel.description` (see [Comments and descriptions](#comments-and-descriptions) below).
 - **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during join-cardinality inference rather than being flattened onto individual columns.
 - On DuckDB (1.1 or later), columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
@@ -101,7 +103,7 @@ The probe is **idempotent re-ingest aware**: a persisted `Column.type = INT` is 
 
 Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip the probe entirely — their type systems are strict and this class of bug doesn't exist.
 
-Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DEV-1361 DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
 
 ## Schema scope
 
@@ -255,14 +257,14 @@ freshly-created demo.
 
 Each per-datasource pass refreshes embeddings for the datasource doc,
 every visible model + its visible children, **and every memory whose
-canonical entities are rooted at the datasource** (DEV-1416). A stale
+canonical entities are rooted at the datasource**. A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
 `memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.
 
-### Defense-in-depth dangling-ref cleanup (DEV-1428)
+### Defense-in-depth dangling-ref cleanup
 
 The same per-datasource memory pass also walks each memory's
 `entities` list and probes every reference against storage. Refs

@@ -33,8 +33,8 @@ from tests._mcp_idiom_fixtures import (
 )
 
 DESCRIPTION_BUDGET = 2048
-# The query schema ships with every request; set from the size measured after the rewrite + ~10%, raised for list columns.
-QUERY_SCHEMA_BUDGET = 28_250
+# The query schema ships with every request; the measured size + ~10%, raised for the SQL-grammar guidance.
+QUERY_SCHEMA_BUDGET = 32_000
 FIVE_TOPICS = {"help.aggregations", "help.transforms", "help.time", "help.joins", "help.queries"}
 
 #: Distinctive guidance phrase → its one owning ($defs model, field) in the query schema.

@@ -19,17 +19,17 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
 
 ## 2. Docs: wrong statements (A)
 
-- [ ] 2.1 A1–A4, A7, A8: ranking order (`models.md:297`), the scalar allowlist (`formulas.md:490`), top-level measure wrappers (`formulas.md:506`), `collect` (`07_queries.md:40`, the `models.md` / `03_aggregations.md` catalogues, the empty-input rule), THEN / ELSE values (`formulas.md:545-547`). Verify: each cited line reads correctly against the code.
-- [ ] 2.2 A5, A13: row-level expressions, not only columns, and to-one hops allowed (`time.md`, `references.md`, `formulas.md:33`, `03_aggregations.md:3-4`), including the temporal operands `CAST(… AS DATE)` and typed literals. Verify by reading the cited lines.
-- [ ] 2.3 A6: variables in every Mode-B surface (`references.md:28`, `reference/mcp.md:105`); the deleted escaping regime (`models.md:515`); empty lists per the design's A6 decision (`queries.md:477-488`); the variables example page. Verify by reading the cited lines.
-- [ ] 2.4 A9–A12: canonical column-type spellings (MCP `create_model` / `edit_model` text, `models.md:79`), the `db_type` description (`models.py:189-196`), lists not usable as group keys / aggregation inputs (`models.md:69`, `terminology.md:9`, `ingestion.md:44`, `help_content/01_models.md`), the per-query expression form (`06_joins.md:45-47`, `02_workflow.md:45-46`). Verify by reading the cited lines.
-- [ ] 2.5 A14: the precise `==` sentence in `help_content/03_aggregations.md`. Verify by reading it.
+- [x] 2.1 A1–A4, A7, A8: ranking order (`models.md:297`), the scalar allowlist (`formulas.md:490`), top-level measure wrappers (`formulas.md:506`), `collect` (`07_queries.md:40`, the `models.md` / `03_aggregations.md` catalogues, the empty-input rule), THEN / ELSE values (`formulas.md:545-547`). Verify: each cited line reads correctly against the code.
+- [x] 2.2 A5, A13: row-level expressions, not only columns, and to-one hops allowed (`time.md`, `references.md`, `formulas.md:33`, `03_aggregations.md:3-4`), including the temporal operands `CAST(… AS DATE)` and typed literals. Verify by reading the cited lines.
+- [x] 2.3 A6: variables in every Mode-B surface (`references.md:28`, `reference/mcp.md:105`); the deleted escaping regime (`models.md:515`); empty lists per the design's A6 decision (`queries.md:477-488`); the variables example page. Verify by reading the cited lines.
+- [x] 2.4 A9–A12: canonical column-type spellings (MCP `create_model` / `edit_model` text, `models.md:79`), the `db_type` description (`models.py:189-196`), lists not usable as group keys / aggregation inputs (`models.md:69`, `terminology.md:9`, `ingestion.md:44`, `help_content/01_models.md`), the per-query expression form (`06_joins.md:45-47`, `02_workflow.md:45-46`). Verify by reading the cited lines.
+- [x] 2.5 A14: the precise `==` sentence in `help_content/03_aggregations.md`. Verify by reading it.
 
 ## 3. Docs: missing rules (B) and site hygiene (C)
 
-- [ ] 3.1 B / grammar (DEV-2101 bullets): FILTER, literal-only binding (booleans and numeric strings included), `IS [NOT] TRUE|FALSE`, operators, casts, interval and date literals, reject hints, identifiers and errors, the `reference/mcp.md:117-121` tables. Each at the place the issue names. Verify by reading.
-- [ ] 3.2 B / row-level expressions (DEV-2119 bullets): the TimeDimension rules (`queries.md:175-196`) and ranking (`formulas.md:61-67`, `:444`, `:458-460`). Verify by reading.
-- [ ] 3.3 B / portable library (DEV-2120 bullets):
+- [x] 3.1 B / grammar (DEV-2101 bullets): FILTER, literal-only binding (booleans and numeric strings included), `IS [NOT] TRUE|FALSE`, operators, casts, interval and date literals, reject hints, identifiers and errors, the `reference/mcp.md:117-121` tables. Each at the place the issue names. Verify by reading.
+- [x] 3.2 B / row-level expressions (DEV-2119 bullets): the TimeDimension rules (`queries.md:175-196`) and ranking (`formulas.md:61-67`, `:444`, `:458-460`). Verify by reading.
+- [x] 3.3 B / portable library (DEV-2120 bullets):
   - JSON inputs and the `db_type` fields-table row;
   - literal string matching;
   - `json_value`, regex, coercion, braces;
@@ -37,7 +37,7 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
   - one `help_content` line each for `TRY_CAST`, `::`, `FILTER (WHERE …)`, `ILIKE`.
 
   Verify by reading.
-- [ ] 3.4 B / lists (DEV-2137 bullets):
+- [x] 3.4 B / lists (DEV-2137 bullets):
   - the Field descriptions for `Column.type` and `element_type`;
   - ingestion type mapping;
   - restrictions, plus a row in the `02_workflow.md` error table;
@@ -47,22 +47,22 @@ Item ids (A1–A14, the B bullets, C, D) refer to the DEV-2173 issue body; desig
   - the smaller rules.
 
   Verify by reading.
-- [ ] 3.5 C / orphans: fold the listed unique content into `reference/{cli,mcp,rest-api}.md`, then delete `docs/interfaces/{cli,mcp,python-client,rest-api}.md`. Verify: 1.6 passes and `grep` finds no inbound link to a deleted page.
-- [ ] 3.6 C / reference gaps: add the 4 MCP tools, 3 REST routes and 5 CLI commands listed in design.md, each checked against `slayer/mcp/server.py`, `slayer/api/server.py` and `slayer/cli.py`. Verify by reading against the code.
+- [x] 3.5 C / orphans: fold the listed unique content into `reference/{cli,mcp,rest-api}.md`, then delete `docs/interfaces/{cli,mcp,python-client,rest-api}.md`. Verify: 1.6 passes and `grep` finds no inbound link to a deleted page.
+- [x] 3.6 C / reference gaps: add the 4 MCP tools, 3 REST routes and 5 CLI commands listed in design.md, each checked against `slayer/mcp/server.py`, `slayer/api/server.py` and `slayer/cli.py`. Verify by reading against the code.
 - [ ] 3.7 C / nav: add notebook 08 under Tutorials as "MCP Introspection", after Aggregations. Verify: 1.1 passes.
-- [ ] 3.8 C / issue numbers: remove every `DEV-<n>` from `docs/` outside the sibling-owned pages (full inventory across all file types first). Verify: 1.2 passes.
-- [ ] 3.9 C / DEV-1768 drift items: case-sensitivity claim, `order[].column` conflict, `*:count` → `_count`. Each is verified and fixed where it remains. Verify by reading.
+- [x] 3.8 C / issue numbers: remove every `DEV-<n>` from `docs/` outside the sibling-owned pages (full inventory across all file types first). Verify: 1.2 passes.
+- [x] 3.9 C / DEV-1768 drift items: case-sensitivity claim, `order[].column` conflict, `*:count` → `_count`. Each is verified and fixed where it remains. Verify by reading.
 
 ## 4. MCP query schema
 
-- [ ] 4.1 Add the one-clause guidance to `measures`, `filters`, `SlayerQuery.variables` and `source_model` in `slayer/core/query.py`, replacing the inline-extension-column advice. Verify: 1.5 and the existing one-owner / sole-owner tests pass.
-- [ ] 4.2 Measure the `query` input schema, set `QUERY_SCHEMA_BUDGET` to that size plus ~10%, and update its comment. Verify: `test_query_schema_within_size_budget` passes.
+- [x] 4.1 Add the one-clause guidance to `measures`, `filters`, `SlayerQuery.variables` and `source_model` in `slayer/core/query.py`, replacing the inline-extension-column advice. Verify: 1.5 and the existing one-owner / sole-owner tests pass.
+- [x] 4.2 Measure the `query` input schema, set `QUERY_SCHEMA_BUDGET` to that size plus ~10%, and update its comment. Verify: `test_query_schema_within_size_budget` passes.
 
 ## 5. Other artefacts
 
-- [ ] 5.1 `examples/comparisons/matrix.yaml` Q22 → `partial` with the right note; regenerate `matrix.json` with `export_matrix.py`. Verify: `matrix.json` diff shows only Q22.
-- [ ] 5.2 Notebook 02, cells 10–12 and 14: rewrite to the direct day-of-week form, then `jupyter nbconvert --to notebook --execute --inplace`. Verify: the outputs are saved and the cells run clean.
-- [ ] 5.3 Notebook 08: move the narrative from `inspect_model` to `inspect`, then re-execute in place. Verify: the outputs are saved and the cells run clean.
+- [x] 5.1 `examples/comparisons/matrix.yaml` Q22 → `partial` with the right note; regenerate `matrix.json` with `export_matrix.py`. Verify: `matrix.json` diff shows only Q22.
+- [x] 5.2 Notebook 02, cells 10–12 and 14: rewrite to the direct day-of-week form, then `jupyter nbconvert --to notebook --execute --inplace`. Verify: the outputs are saved and the cells run clean.
+- [x] 5.3 Notebook 08: move the narrative from `inspect_model` to `inspect`, then re-execute in place. Verify: the outputs are saved and the cells run clean.
 
 ## 6. Dead code (D)
 

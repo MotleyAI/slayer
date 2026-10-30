@@ -713,9 +713,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         description: Annotated[str | None, Field(description="What one row of this model represents.")] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Column definitions: {"name", "sql", "type"} with type string, number, time, date or '
-                "boolean; optional primary_key, unique (single-column uniqueness other than the "
-                "primary key), allowed_aggregations, filter (a condition masking the column's value "
+                'Column definitions: {"name", "sql", "type"} with type TEXT, INT, DOUBLE, BOOLEAN, '
+                "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
+                "primary_key, unique (single-column uniqueness other than the primary key), "
+                "allowed_aggregations, filter (a condition masking the column's value "
                 "inside aggregates), granularity (only for a column truly bucketed at that grain), "
                 "label, description, hidden, meta."
             ),
@@ -750,7 +751,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "number"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
+        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "DOUBLE"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
         """
@@ -923,7 +924,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description=(
                 'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; type string, number, time, date or boolean; unique marks '
+                '"label", "granularity"}; type TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
+                'ARRAY with element_type (one of the others); unique marks '
                 "single-column uniqueness other than the primary key (used for join cardinality); set "
                 "granularity only for a column truly bucketed at that grain (null clears it)."
             ),
@@ -970,7 +972,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "string"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
+        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "TEXT"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
         """
         try:
             model = await storage.get_model(model_name, data_source=data_source)
