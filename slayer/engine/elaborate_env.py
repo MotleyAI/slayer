@@ -67,6 +67,7 @@ from slayer.core.keys import (
     is_local_partitioned_agg,
     is_reaggregation_key,
     boolean_valued,
+    conditional_branch_conflict,
     elements_as_numbers,
     list_element_type,
     list_valued,
@@ -1141,8 +1142,19 @@ def _count_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]
 
 
 def _require_temporal(fn: str, operand: object, *, column_type: ColumnTypeFn) -> None:
-    if temporal_type(operand, column_type=column_type) is None:
+    if temporal_type(operand, column_type=column_type) is not None:
+        return
+    conflict = (
+        conditional_branch_conflict(operand, column_type=column_type) if isinstance(operand, ScalarCallKey) else None
+    )
+    if conflict is not None:
+        a, b = conflict
         raise DateOperandTypeError(
+            summary=f"{fn}() needs a DATE or TIMESTAMP operand; `{_operand_display(operand)}` is not one: its "
+            f"branches return both {a.value} and {b.value}.",
+            suggestion="CAST every non-temporal branch to DATE or TIMESTAMP.",
+        )
+    raise DateOperandTypeError(
             summary=f"{fn}() needs a DATE or TIMESTAMP operand; "
             f"`{_operand_display(operand)}` is not one.",
             suggestion="Pass a column declared DATE / TIMESTAMP (set Column.type), "
@@ -1174,6 +1186,24 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
     for key in keys:
         if isinstance(key, ScalarCallKey) and key.name in DATE_OPERAND_ARGS:
             _check_date_call(key, column_type=column_type)
+
+
+def check_conditional_branches(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn) -> None:
+    """Every value-returning conditional's branches must share one type."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            if not isinstance(key, ScalarCallKey):
+                continue
+            conflict = conditional_branch_conflict(key, column_type=column_type)
+            if conflict is None:
+                continue
+            a, b = conflict
+            call = "CASE" if key.name == "iif" else f"{key.name}()"
+            raise ScalarOperandTypeError(
+                summary=f"{call} `{_operand_display(key)}` returns both {a.value} and {b.value}; its branches "
+                f"must share one type.",
+                suggestion=f"CAST one branch so both are {a.value} (or both {b.value}).",
+            )
 
 
 _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})

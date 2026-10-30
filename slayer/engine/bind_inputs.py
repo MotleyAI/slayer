@@ -54,12 +54,7 @@ from slayer.core.query import (
     granularity_call_argument,
     granularity_call_parts,
 )
-from slayer.core.refs import (
-    dotted_key_display,
-    AGG_REF_RE,
-    auto_name_from_expression,
-    canonical_agg_name,
-)
+from slayer.core.refs import dotted_key_display
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
@@ -73,6 +68,7 @@ from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, s
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
     check_computed_dimension,
+    check_conditional_branches,
     check_date_operands,
     check_list_dimension,
     check_list_order_key,
@@ -124,6 +120,7 @@ from slayer.core.syntax import (
     TransformCall,
     canonical_measure_text,
     parse_expr,
+    walk_parsed,
 )
 from slayer.ir.bound import (
     GranularityConflict,
@@ -135,7 +132,7 @@ from slayer.ir.bound import (
 )
 from slayer.ir.prebound import PreboundQuery, partition_declared_measures
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
-from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted
+from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, formula_text_alias
 
 __all__ = [
     "bind_query_inputs",
@@ -563,6 +560,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    check_conditional_branches(
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        column_type=column_type,
+    )
+    declared_measures = _retyped_after_coercion(
+        declared_measures, n_grain=n_dims + n_tds, scope=scope, bundle=bundle,
+    )
     granularity_conflicts: List[GranularityConflict] = []
     if query.whole_periods_only:
         bound_filters, bound_filter_texts, n_date_range, granularity_conflicts = _snap_whole_periods(
@@ -809,6 +817,18 @@ def _type_for_measure_formula(
     if scope.source_model is None:
         return None
     return measure_key_type(model=scope.source_model, key=bound.value_key, bundle=bundle)
+
+
+def _retyped_after_coercion(
+    declared_measures: List[DeclaredMeasure], *, n_grain: int, scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+) -> List[DeclaredMeasure]:
+    """Inferred computed-dimension and measure types re-derived from their coerced keys."""
+    return [
+        dm.model_copy(update={"type": _type_for_measure_formula(scope=scope, bound=dm.bound, bundle=bundle)})
+        if dm.is_dimension or (i >= n_grain and not dm.type_is_explicit) else dm
+        for i, dm in enumerate(declared_measures)
+    ]
 
 
 def _joined_column_type(
@@ -1221,12 +1241,12 @@ def _canonical_alias_for_formula(
     parsed: Optional[ParsedExpr] = None,
     bundle: Optional[ResolvedSourceBundle] = None,
 ) -> str:
-    """Canonical public alias for a measure formula: ``canonical_aggregate_alias``
-    for an AggregateKey root, ``canonical_agg_name`` for a plain ``agg(col)``
-    text shape, else the text sanitised via ``auto_name_from_expression``. The
-    text shape runs over the canonical legacy colon-spelling rendering of
-    ``parsed`` when given, so both spellings of one formula derive one alias."""
-    if bound is not None and isinstance(bound.value_key, AggregateKey):
+    """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an unfiltered
+    AggregateKey root, else :func:`formula_text_alias` of the canonical text of ``parsed`` (so every
+    spelling of one formula derives one alias)."""
+    filtered = parsed is not None and any(
+        isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
+    if bound is not None and isinstance(bound.value_key, AggregateKey) and not filtered:
         spelled = bound.value_key if parsed is None or bundle is None else spelled_aggregate_key(
             parsed=parsed, key=bound.value_key, bundle=bundle)
         # stage_formula profile prefixes the join path relative to the stage (``count(customers.*)`` → ``customers._count``).
@@ -1234,19 +1254,7 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    text = (
-        canonical_measure_text(parsed) if parsed is not None else formula.strip()
-    )
-    # Fullmatch only — a substring heuristic here once mis-captured arithmetic
-    # composites and leaked ``:``/``/`` into SQL aliases.
-    match = AGG_REF_RE.fullmatch(text)
-    if match is not None and match.group(3) is None:
-        base, agg = match.group(1), match.group(2)
-        if base.endswith(".*"):
-            prefix, star = base[:-2], "*"
-            return f"{prefix}.{canonical_agg_name(measure_name=star, aggregation_name=agg)}"
-        return canonical_agg_name(measure_name=base, aggregation_name=agg)
-    return auto_name_from_expression(text)
+    return formula_text_alias(canonical_measure_text(parsed) if parsed is not None else formula.strip())
 
 
 def _resolve_shift_units(key: ValueKey, *, bundle: ResolvedSourceBundle) -> ValueKey:

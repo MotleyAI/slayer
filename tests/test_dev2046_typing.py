@@ -111,9 +111,9 @@ class TestMeasureKeyType:
         assert measure_key_type(model=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
 
     def test_mixed_coalesce_is_not_boolean_typed(self) -> None:
-        """Scenario: mixed-type coalesce is not boolean — no boolean typing."""
+        """Scenario: mixed-type coalesce is not boolean — the boolean branch reads as its integer."""
         key = _bind("sum(coalesce(flag, amount))")
-        assert measure_key_type(model=ORDERS, key=key, bundle=BUNDLE) is None
+        assert measure_key_type(model=ORDERS, key=key, bundle=BUNDLE) is DataType.INT
 
 
 class TestStageMeasureType:

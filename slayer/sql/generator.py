@@ -40,7 +40,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -159,6 +159,7 @@ class ResolvedAggKwarg(BaseModel):
 
     kind: Literal["expr"] = "expr"
     value: Expression
+    input_type: Optional[DataType] = None
 
 
 class AggRenderSpec(BaseModel):
@@ -1176,7 +1177,7 @@ class SQLGenerator:
         name: str,
         agg_name: str,
     ) -> Expression:
-        """A named parameter's bound SQL; a missing one fails closed."""
+        """A named parameter's bound SQL, read like the aggregated value; a missing one fails closed."""
         value = spec.agg_kwargs.get(name)
         if value is None:
             raise ValueError(
@@ -1185,7 +1186,7 @@ class SQLGenerator:
                 f"(e.g., '{agg_name}(measure, {name}=column)')."
             )
         # A copy: sqlglot re-parents a node on attach.
-        return value.value.copy()
+        return aggregate_input(value=value.value.copy(), aggregation=spec.aggregation, input_type=value.input_type)
 
     def _build_agg(
         self,
@@ -2127,7 +2128,10 @@ class SQLGenerator:
         """Resolve a LOCAL aggregate's row-valued parameters through ``scope``, registering
         the joins they cross (a row-attached placeholder resolves to its producer column)."""
         resolved = {
-            kname: ResolvedAggKwarg(value=scope.resolve(kval))
+            kname: ResolvedAggKwarg(
+                value=scope.resolve(kval),
+                input_type=aggregation_source_type(kval, column_type=scope.column_type),
+            )
             for kname, kval in getattr(key, "kwargs", ())
             if _is_row_param(kval)
         }
@@ -2554,7 +2558,10 @@ class SQLGenerator:
                 key=_pp.key, ctx=RenderContext(scope=src_scope, dialect=self._dialect),
             )
             src_cols.append(_picked.as_(_p_alias))
-            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(value=_src_col(_p_alias))
+            picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
+                value=_src_col(_p_alias),
+                input_type=aggregation_source_type(_pp.key, column_type=src_scope.column_type),
+            )
 
         # A windowed first/last ranks the interval rows by this key, projected as
         # _w_rank (uncast, like the plain ranked path).
@@ -3254,8 +3261,9 @@ class SQLGenerator:
         for _i, _pp in enumerate(picked_params):
             _p_alias = f"_p{_i}"
             _picked = render_value_key(key=_pp.key, ctx=ctx)
+            _picked_type = aggregation_source_type(_pp.key, column_type=scope.column_type)
             inner_cols.append(exp.Alias(
-                this=pick(_picked, input_type=aggregation_source_type(_pp.key, column_type=scope.column_type)),
+                this=pick(_picked, input_type=_picked_type),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
@@ -3263,6 +3271,7 @@ class SQLGenerator:
                     this=exp.to_identifier(_p_alias),
                     table=exp.to_identifier("_base"),
                 ),
+                input_type=_picked_type,
             )
 
         self._resolve_where_filter_joins_via_scope(
@@ -5742,14 +5751,17 @@ class SQLGenerator:
                         f"{value!r}; a parameter binds at query binding, never as SQL text."
                     )
             elif _is_row_param(value):
-                out[name] = ResolvedAggKwarg(value=scope.resolve(value))
+                out[name] = ResolvedAggKwarg(
+                    value=scope.resolve(value),
+                    input_type=aggregation_source_type(value, column_type=scope.column_type),
+                )
             elif isinstance(value, VALUE_KEY_TYPES):
                 raise RuntimeError(
                     f"Aggregation {key.agg!r} parameter {name!r} ({type(value).__name__}) "
                     f"reached the renderer unattached."
                 )
             else:
-                out[name] = ResolvedAggKwarg(value=_literal(value))
+                out[name] = ResolvedAggKwarg(value=_literal(value), input_type=literal_type(value))
         return out
 
     def _formula_reads(self, *, agg: str, formula: Optional[str]) -> frozenset:

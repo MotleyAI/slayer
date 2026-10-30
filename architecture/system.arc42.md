@@ -167,6 +167,8 @@ All code, old and new, MUST obey these.
     re-typed, validated and drift-checked exactly like a `sql_table` model
     wherever the live database can tell the same about both; any difference
     is a documented exception. [review]
+21. **One typing**: a value's type is derived from its key in one place; every
+    check, coercion and metadata lift reads that derivation. [target: DEV-2180]
 
 ## 4. Enforcement
 
