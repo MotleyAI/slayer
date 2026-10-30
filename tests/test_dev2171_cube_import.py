@@ -288,6 +288,21 @@ class TestCalculatedMeasures:
         col = column(model, parsed.source.name)
         assert (col.physical_name, col.filter, col.is_base) == ("amount", None, True)
 
+    @pytest.mark.parametrize("p", ["0.5", "0.9"], ids=["median", "percentile"])
+    @pytest.mark.parametrize("target", ["mysql", "mssql"])
+    def test_percentile_refused_by_the_target_is_dropped(self, p: str, target: str) -> None:
+        project = CubeProject.model_validate({"cubes": [cube(measures=[
+            meas("p", "number", f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {{CUBE}}.amount)")])]})
+        result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=target).convert()
+        assert not has_measure(result, "orders", "p")
+        assert [i for i in cube_issues(result, "p") if "not supported" in i.message], result.report.issues
+
+    def test_percentile_disc_is_dropped(self) -> None:
+        result = import_cube([cube(measures=[
+            meas("p", "number", "PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)")])])
+        assert not has_measure(result, "orders", "p")
+        assert [i for i in cube_issues(result, "p") if "PERCENTILE_DISC" in i.message], result.report.issues
+
     @pytest.mark.parametrize(("sql", "construct"), [
         ("SUM({CUBE}.amount) OVER ()", ""),
         ("SUM({missing_member})", "missing_member"),

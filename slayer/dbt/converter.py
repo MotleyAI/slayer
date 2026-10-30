@@ -51,6 +51,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
     LiveSource,
     Typed,
@@ -104,7 +105,6 @@ _STANDARD_GRAINS: frozenset = frozenset({
 # Dialects with no GROUP-BY percentile / median aggregate. A percentile/median
 # measure imports fine but fails at query time on these, so the converter emits
 # an info-level caveat when ``target_dialect`` is one of them.
-_NO_PERCENTILE_DIALECTS: frozenset = frozenset({"mysql", "tsql", "mssql", "sqlserver"})
 
 # Shared workaround text for an unreachable cross-model filter (used by the
 # simple / ratio / derived push-down paths).
@@ -227,7 +227,8 @@ class DbtToSlayerConverter:
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
-        self._dialect = dialect_for_ds_type(target_dialect).sqlglot_name if target_dialect else None
+        self._sql_dialect = dialect_for_ds_type(target_dialect) if target_dialect else None
+        self._dialect = self._sql_dialect.sqlglot_name if self._sql_dialect is not None else None
         self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=self._dialect)
         # {dbt model: {column: declared data_type}}
@@ -726,6 +727,7 @@ class DbtToSlayerConverter:
         """Build the ``<agg>(<col>)`` formula for a dbt measure, or ``None`` if
         it clean-fails (percentile without a value / discrete-approx flags)."""
         mapped = _map_agg(m.agg)
+        suffix = mapped
         if mapped == "percentile":
             ap = m.agg_params
             if ap is None or ap.percentile is None:
@@ -749,11 +751,12 @@ class DbtToSlayerConverter:
                     raw={"agg_params": ap.model_dump()},
                 )
                 return None
-            self._maybe_dialect_caveat(m.name, "percentile")
-            return functional_agg_text(source=col_name, suffix=f"percentile(p={ap.percentile})")
-        if mapped == "median":
-            self._maybe_dialect_caveat(m.name, "median")
-        return functional_agg_text(source=col_name, suffix=mapped)
+            suffix = f"percentile(p={ap.percentile})"
+        if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
+            self._fail_measure(m, sm_name, model_meta, category="percentile", severity="dropped",
+                               message=f"Measure '{m.name}' dropped: {refusal}", raw={"agg": m.agg})
+            return None
+        return functional_agg_text(source=col_name, suffix=suffix)
 
     def _emit_model_measure(
         self, measures: list[ModelMeasure], m: DbtMeasure, formula: str, sm_name: str
@@ -777,21 +780,6 @@ class DbtToSlayerConverter:
                     f"dbt measure '{m.name}' could not be converted to a "
                     f"ModelMeasure: {exc}"
                 ),
-            ))
-
-    def _maybe_dialect_caveat(self, name: str, agg: str) -> None:
-        """Emit an info caveat when the target dialect lacks ``agg``."""
-        if self.target_dialect and self.target_dialect.lower() in _NO_PERCENTILE_DIALECTS:
-            self._warnings.append(ConversionWarning(
-                metric_name=name,
-                category="percentile",
-                severity="info",
-                message=(
-                    f"'{name}' uses {agg}, which is not supported on dialect "
-                    f"'{self.target_dialect}'; the measure imports but will fail "
-                    f"at query time."
-                ),
-                suggestion="Query on a dialect with native percentile/median support.",
             ))
 
     # ── Clean-fail helpers ─────────────────────────────────────────────

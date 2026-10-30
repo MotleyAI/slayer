@@ -53,7 +53,7 @@ measures:
   - { name: total_revenue, formula: "sum(amount)" }
 ```
 
-- `count` with no `sql` → `count(*)`; `count_distinct_approx` → `count_distinct`.
+- `count` with no `sql` → `count(*)`; `count_distinct_approx` stays `count_distinct_approx`.
 - Conditional `filters:` become a `CASE WHEN` on the `filter` of a hidden `<measure>_col` column, shared by
   measures with the same expression, filter and type.
 - A finite trailing `rolling_window` becomes a windowed aggregation

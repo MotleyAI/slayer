@@ -321,6 +321,7 @@ class CubeToSlayerConverter:
             dialect = dialect_for_ds_type(target_dialect)
         elif sa_engine is not None:
             dialect = dialect_for_sa_backend(sa_engine.dialect.name)
+        self._sql_dialect = dialect
         self._dialect = dialect.sqlglot_name if dialect is not None else None
         self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
                                     db_type=self.target_dialect, dialect=self._dialect)
@@ -806,12 +807,7 @@ class CubeToSlayerConverter:
 
     def _convert_agg_measure(self, build: _CubeBuild, meas: CubeMeasure, report) -> None:
         cube = build.cube
-        agg = "count_distinct" if meas.type == "count_distinct_approx" else meas.type
-        if meas.type == "count_distinct_approx":
-            report.add(CubeConversionIssue(
-                category=CubeIssueCategory.LOSSY_MAPPING, severity="info",
-                cube=cube.name, member=meas.name,
-                message="count_distinct_approx → exact count_distinct (SLayer has no approx)."))
+        agg = meas.type
 
         window = _window_from_rolling(meas.rolling_window, report, cube=cube.name, member=meas.name) \
             if meas.rolling_window else None
@@ -853,7 +849,7 @@ class CubeToSlayerConverter:
         if "\x00" in found.text:
             raise Unconvertible("FILTER_PARAMS in a calculated measure has no formula form")
         policy = _CubeOperands(converter=self, build=build, measure=meas.name)
-        result = convert_aggregates(found.text, policy=policy, dialect=self._dialect)
+        result = convert_aggregates(found.text, policy=policy, sql_dialect=self._sql_dialect, dialect=self._dialect)
         if not result.ok or result.formula is None:
             raise Unconvertible(f"its SQL {meas.sql!r} has no formula form ({result.reason})")
         if self._emit_measure(build, name=name, formula=result.formula, meas=meas, report=report,

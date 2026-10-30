@@ -23,6 +23,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.keys import SCALAR_PASSTHROUGH, check_scalar_arity
 from slayer.core.refs import functional_agg_text
 from slayer.core.syntax import parse_expr
+from slayer.sql.dialects import SqlDialect
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
@@ -289,10 +290,27 @@ def _func_args(node: exp.Func, *, name: str) -> list[exp.Expr]:
     return args
 
 
+def dialect_refusal(agg: str, *, dialect: SqlDialect | None) -> str | None:
+    """Why ``dialect`` cannot compute the aggregation ``agg``, else ``None``."""
+    probe = exp.column("x")
+    builders: dict[str, Callable[[SqlDialect], Expression]] = {
+        "median": lambda d: d.build_median(inner=probe),
+        "percentile": lambda d: d.build_percentile(p=exp.Literal.number("0.5"), col_expr=probe),
+    }
+    build = builders.get(agg)
+    if dialect is None or build is None:
+        return None
+    try:
+        build(dialect)
+    except NotImplementedError as exc:
+        return str(exc)
+    return None
+
+
 class _Translator:
-    def __init__(self, policy: OperandPolicy, percentile_unsupported: bool) -> None:
+    def __init__(self, policy: OperandPolicy, sql_dialect: SqlDialect | None) -> None:
         self.policy = policy
-        self.percentile_unsupported = percentile_unsupported
+        self.sql_dialect = sql_dialect
         self.warnings: list[str] = []
 
     # ---- one outermost aggregate ----
@@ -355,7 +373,9 @@ class _Translator:
 
     def _percentile_ref(self, node: exp.WithinGroup, *, mask: exp.Expr | None) -> str:
         inner = node.this
-        if not isinstance(inner, (exp.PercentileCont, exp.PercentileDisc)):
+        if isinstance(inner, exp.PercentileDisc):
+            raise Unconvertible("PERCENTILE_DISC picks an observed value, but SLayer's percentile interpolates")
+        if not isinstance(inner, exp.PercentileCont):
             raise Unconvertible("unsupported WITHIN GROUP aggregate")
         p_node = inner.this
         if not (isinstance(p_node, exp.Literal) and p_node.is_number):
@@ -372,14 +392,10 @@ class _Translator:
         if not isinstance(col_node, exp.Column):
             raise Unconvertible("percentile ORDER BY must be a bare column")
         self._refuse_list(col_node, "PERCENTILE")
-        agg = "median" if isinstance(inner, exp.PercentileCont) and math.isclose(p_val, 0.5) else "percentile"
+        agg = "median" if math.isclose(p_val, 0.5) else "percentile"
+        if (refusal := dialect_refusal(agg, dialect=self.sql_dialect)) is not None:
+            raise Unconvertible(refusal)
         ref = self.policy.operand(col_node, mask=mask, agg=agg)
-
-        if self.percentile_unsupported:
-            self.warnings.append(
-                "percentile/median has no GROUP BY aggregate on the target dialect; "
-                "the measure imports but fails at query time there."
-            )
         return functional_agg_text(source=ref, suffix="median" if agg == "median" else f"percentile(p={p_node.name})")
 
     # ---- residual validation ----
@@ -459,11 +475,12 @@ class _Translator:
 
 
 def convert_aggregates(
-    expr: str | exp.Expr, *, policy: OperandPolicy, percentile_unsupported: bool = False,
+    expr: str | exp.Expr, *, policy: OperandPolicy, sql_dialect: SqlDialect | None = None,
     dialect: str | None = None,
 ) -> ExprResult:
-    """Convert a source SQL aggregation expression into a SLayer formula under ``policy``."""
-    translator = _Translator(policy=policy, percentile_unsupported=percentile_unsupported)
+    """Convert a source SQL aggregation expression into a SLayer formula under ``policy``; ``sql_dialect`` is the
+    target's, whose refused aggregations fail."""
+    translator = _Translator(policy=policy, sql_dialect=sql_dialect)
     if isinstance(expr, str):
         try:
             tree = sqlglot.parse_one(expr, read=dialect)
@@ -480,7 +497,7 @@ def convert_expression(
     entity_name: str,
     owner_of: OwnerOf,
     ref_of: RefOf,
-    percentile_unsupported: bool = False,
+    sql_dialect: SqlDialect | None = None,
     name_taken: NameTaken = lambda model, name: False,
     target: str | None = None,
     is_list: IsList = lambda qualifier, column: False,
@@ -492,4 +509,4 @@ def convert_expression(
     """
     policy = InlineOperands(entity_name=entity_name, owner_of=owner_of, ref_of=ref_of, name_taken=name_taken,
                             target=target, is_list=is_list)
-    return convert_aggregates(expr, policy=policy, percentile_unsupported=percentile_unsupported)
+    return convert_aggregates(expr, policy=policy, sql_dialect=sql_dialect)

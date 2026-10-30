@@ -164,6 +164,12 @@ class TestTypingOrder:
         assert source_column(model, "n_notes").type == DataType.TEXT
         assert source_column(model, "paid").type == DataType.INT
 
+    @pytest.mark.parametrize("target", ["mysql", "mssql"])
+    def test_median_refused_by_the_target_is_dropped(self, target: str) -> None:
+        result = import_dbt([sm(measures=[meas("mid", "median", "amount")])], target_dialect=target)
+        assert not has_measure(result, "orders", "mid")
+        assert [e for e in entries(result, "mid") if "not supported" in e.message], result.warnings
+
     def test_unreachable_datasource_is_tried_once(self, tmp_path: Path) -> None:
         project = DbtProject.model_validate({"semantic_models": [sm(), sm(name="orders_b")]})
         with unreachable_engine(tmp_path) as (engine, attempts):

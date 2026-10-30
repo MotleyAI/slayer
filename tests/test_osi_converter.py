@@ -1156,7 +1156,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     assert {m.name: m for m in orders.measures}["tot"].formula == "sum(amount)"
 
 
-def test_target_dialect_percentile_caveat(shop_engine):
+def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
@@ -1167,8 +1167,7 @@ def test_target_dialect_percentile_caveat(shop_engine):
     )
     result = _convert(shop_engine, doc, target_dialect="mysql")
     orders = {m.name: m for m in result.models}["orders"]
-    # measure still created, but an info caveat is reported.
-    assert "p90" in {meas.name for meas in orders.measures}
+    assert "p90" not in {meas.name for meas in orders.measures}
     assert _reported(result)
 
 

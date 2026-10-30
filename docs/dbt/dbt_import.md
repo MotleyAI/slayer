@@ -189,7 +189,7 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | Cross-model filter on an unreachable model | No join from the source model | Add the required join, or filter locally |
 | Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
 
-Percentile/median measures on a dialect that lacks them (MySQL / T-SQL) import fine but get an **info** caveat — pass `target_dialect=` to surface it at import time.
+A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it (MySQL, T-SQL).
 
 #### Conversion report
 

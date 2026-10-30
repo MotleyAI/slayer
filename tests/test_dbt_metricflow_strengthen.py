@@ -1221,7 +1221,7 @@ def test_semantic_model_label_preserved_in_meta() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
-def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
+def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1234,11 +1234,8 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
     result = DbtToSlayerConverter(
         project=project, data_source="test", target_dialect=dialect
     ).convert()
-    # The measure still imports (formula valid), but a report caveat warns it
-    # won't execute on this dialect.
-    assert _measure(result, "p95").formula == "percentile(latency, p=0.95)"
-    assert any("percentile" in e.message.lower() or "percentile" in (getattr(e, "category", "") or "").lower()
-               for e in _all_report_entries(result))
+    assert all(m.name != "p95" for model in result.models for m in model.measures)
+    assert any("p95" in e.message and "not supported" in e.message for e in _all_report_entries(result))
 
 
 # ───────── Filtered special aggs / derived input filters ─────────

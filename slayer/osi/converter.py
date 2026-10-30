@@ -50,9 +50,6 @@ from slayer.osi.source import parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-# Target dialects lacking a GROUP BY percentile/median aggregate.
-_NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql"})
-
 _DATATYPES: dict[str, DataType] = {
     "String": DataType.TEXT, "Integer": DataType.INT, "Decimal": DataType.DOUBLE,
     "Float": DataType.DOUBLE, "Boolean": DataType.BOOLEAN, "Date": DataType.DATE,
@@ -913,7 +910,7 @@ class OsiToSlayerConverter:
 
         result = convert_expression(
             tree, entity_name=metric.name, owner_of=owner_of, ref_of=self._make_ref_of(anchor=anchor),
-            percentile_unsupported=self._target in _NO_PERCENTILE_DIALECTS,
+            sql_dialect=self._dialect,
             name_taken=self._model_has_name, target=self._target, is_list=self._make_is_list(owner_of),
         )
         if not result.ok or result.formula is None:
