@@ -75,6 +75,7 @@ from slayer.engine.elaborate_env import (
     check_computed_dimension,
     check_date_operands,
     check_list_dimension,
+    check_list_order_key,
     check_list_operands,
     coerce_list_arguments,
     ListTyping,
@@ -536,6 +537,8 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ],
         typing=lists,
     )
+    for spec in order_specs:
+        check_list_order_key(key=spec.bound.value_key, typing=lists)
     check_date_operands(
         roots=[
             *(dm.bound.value_key for dm in declared_measures),
@@ -976,6 +979,10 @@ def _saved_measure_public_name(
     return ref[2] if ref is not None else None
 
 
+def _will_group_by(query: SlayerQuery) -> bool:
+    return bool(query.measures) or query.distinct_dimension_values
+
+
 def _reject_computed_dim_name_collision(
     *, name: str, query: SlayerQuery, scope: ModelScope | StageSchema,
 ) -> None:
@@ -1014,7 +1021,8 @@ def _declared_computed_dimension(
         name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
     )
-    check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle))
+    check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
+                         will_group_by=_will_group_by(query))
     dim_type = _type_for_measure_formula(scope=scope, bound=bound, bundle=bundle)
     return DeclaredMeasure(
         bound=bound,
@@ -1072,12 +1080,13 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
                 bundle=bundle,
             )
             canonical = bound.routed_dotted or full
-            check_list_dimension(name=canonical, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle))
+            check_list_dimension(name=canonical, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
+                                 will_group_by=_will_group_by(query))
             # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
             check_opaque_grouping_dim(
                 full_name=canonical,
                 dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
-                will_group_by=bool(query.measures) or query.distinct_dimension_values,
+                will_group_by=_will_group_by(query),
             )
             flat_name = _flatten_dotted(canonical)
             _guard_flatten(flat_name=flat_name, origin=canonical)
