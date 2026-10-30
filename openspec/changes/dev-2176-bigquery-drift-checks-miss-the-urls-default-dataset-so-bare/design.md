@@ -33,9 +33,8 @@ Reproduced on DuckDB with the default forced to `None` and a bare model `contrac
 - No new fail-closed rule for a bare name when the default is genuinely unknown (e.g. a
   BigQuery URL without a dataset): the database cannot resolve that bare name either, so the
   delete verdict is accurate.
-- No change to how drift handles a schema that disappears between enumeration and listing
-  (it still fails closed with `IntrospectionUnavailable`); CI serialization removes that race
-  for the shared project instead.
+- No change to how drift handles a schema that disappears between enumeration and listing:
+  refusing with `IntrospectionUnavailable` is the intended behaviour (Decision 6).
 
 ## Decisions
 
@@ -63,9 +62,10 @@ Reproduced on DuckDB with the default forced to `None` and a bare model `contrac
 5. **CI serialization** (user). The `bigquery-example` job joins one repo-wide concurrency
    group with `cancel-in-progress: false` and `queue: max`, so overlapping runs queue (up to
    100 pending) and none is cancelled. It is the only job using the shared GCP project.
-6. **Vanished-schema re-check not adopted** (user). Re-reading the schema list after a
-   listing failure would not be a guarantee — BigQuery's dataset listing can lag a
-   deletion — so the race is removed in CI by serialization (Decision 5) instead.
+6. **A listing failure keeps refusing the run** (user). A schema that vanishes mid-pass
+   makes drift refuse with `IntrospectionUnavailable`, as today; the run is re-triggered
+   manually, which beats recovering on the fly. CI serialization (Decision 5) keeps the
+   shared project's runs from tripping it.
 7. **Live test owns its second dataset** (default). The new integration test creates (and
    tears down) a uniquely-named second dataset rather than relying on another run's, ingests
    the fixture dataset with no `schema` (bare `sql_table`s) and asserts `validate_models`
@@ -91,8 +91,8 @@ Reproduced on DuckDB with the default forced to `None` and a bare model `contrac
 
 - [The base probe stays text SQL in `dialects/base.py`] → kept verbatim to avoid regressing
   untestable Tier-2 drivers; BigQuery no longer runs it.
-- [A schema deleted mid-drift-pass still refuses the run] → out of scope (Decision 6); CI
-  serialization covers the shared project.
+- [A schema deleted mid-drift-pass refuses the run] → intended (Decision 6): re-run
+  manually; CI serialization keeps the shared project's runs from tripping it.
 - [Serialized BigQuery CI lengthens wall-clock for overlapping PRs] → accepted; the job is
   short and `queue: max` never cancels.
 - [`validate_models` on BigQuery enumerates every dataset in the project] → unchanged
