@@ -185,6 +185,28 @@ class TestTypingOrder:
         found = entries(result, "latest")
         assert [e for e in found if "datasource" in e.message.lower() and "type" in e.message.lower()], found
 
+    def test_filtered_metric_over_a_dropped_measure_is_dropped(self) -> None:
+        metric = {"name": "late_paid", "type": "simple", "type_params": {"measure": "latest"},
+                  "filter": "{{ Dimension('order__status') }} = 'paid'"}
+        result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
+                            metrics=[metric])
+        assert not has_measure(result, "orders", "late_paid")
+        assert [e for e in entries(result, "late_paid") if "was dropped" in e.message], result.unconverted_metrics
+
+    def test_filtered_metric_column_keeps_the_declared_type(self) -> None:
+        metric = {"name": "late_paid", "type": "simple", "type_params": {"measure": "latest"},
+                  "filter": "{{ Dimension('order__status') }} = 'paid'"}
+        result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
+                            regular_models=typed(("created_at", "timestamp")), metrics=[metric])
+        assert source_column(models_of(result)["orders"], "late_paid").type is DataType.TIMESTAMP
+
+    def test_model_sql_with_a_trailing_semicolon_is_typed_live(self, db: Path) -> None:
+        orders_q = {**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
+        result = import_dbt([orders_q], regular_models=[{"name": "orders_q", "raw_code": "SELECT * FROM orders;"}],
+                            db=db)
+        col = source_column(models_of(result)["orders"], "tag_cnt")
+        assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_dbt([sm(measures=[meas("tag_cnt", "count", "tags")])], db=db)
         col = source_column(models_of(result)["orders"], "tag_cnt")

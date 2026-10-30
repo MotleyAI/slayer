@@ -1276,8 +1276,10 @@ def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
                            filter="{{ Dimension('orders__region') }} = 'US'")],
     )
     result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
-    assert all(m.name != "us_latency" for model in result.models for m in model.measures)
-    assert any("us_latency" in e.message and "not supported" in e.message for e in _all_report_entries(result))
+    assert all(m.name not in ("latency_agg", "us_latency") for model in result.models for m in model.measures)
+    messages = [e.message for e in _all_report_entries(result)]
+    assert any("latency_agg" in msg and "not supported" in msg for msg in messages), messages
+    assert any("us_latency" in msg and "was dropped" in msg for msg in messages), messages
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:

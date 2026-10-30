@@ -1633,10 +1633,20 @@ class DbtToSlayerConverter:
         aggregates with ``sum``; ``percentile`` keeps its ``p=`` argument
         (and clean-fails on a missing value / discrete / approximate flags).
         """
+        base = slayer_model.get_measure(dbt_measure.name)
+        if base is None:
+            self._fail_metric(metric, category="typing", severity="dropped",
+                              message=f"Filtered metric '{metric.name}' wraps measure '{dbt_measure.name}', "
+                                      f"which was dropped.")
+            return None
         leaf = self._filtered_leaf_spec(metric, dbt_measure)
         if leaf is None:
             return None  # clean-failed inside _filtered_leaf_spec
         column_expr, col_type, col_format, agg_call = leaf
+        source = _aggregated_column(base.formula)
+        typed = slayer_model.get_column(source[0]) if source is not None and col_type is not DataType.INT else None
+        element_type = typed.element_type if typed is not None else None
+        col_type = typed.type if typed is not None else col_type
 
         slayer_filter = self._convert_filter(raw_filter, source_sm)
         key = (slayer_model.name, column_expr, slayer_filter)
@@ -1647,7 +1657,8 @@ class DbtToSlayerConverter:
                 name=col_name,
                 sql=column_expr,
                 type=col_type,
-                format=col_format,
+                element_type=element_type,
+                format=col_format if col_type in (DataType.INT, DataType.DOUBLE) else None,
                 filter=slayer_filter,
             ))
             self._filtered_columns[key] = col_name
@@ -1688,10 +1699,6 @@ class DbtToSlayerConverter:
             else dbt_measure.name
         )
         mapped = _map_agg(dbt_measure.agg)
-        if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
-            self._fail_metric(metric, category="percentile", severity="dropped",
-                              message=f"Filtered metric '{metric.name}' dropped: {refusal}")
-            return None
         if mapped == "percentile":
             ap = dbt_measure.agg_params
             if ap is None or ap.percentile is None or ap.use_discrete_percentile or ap.use_approximate_percentile:

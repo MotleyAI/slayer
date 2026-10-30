@@ -104,7 +104,7 @@ class LiveSource:
         self.data_source = data_source
         self.db_type = db_type
         self.dialect = dialect
-        self._from = sql_table if sql_table else f"({sql}) AS _slayer_src"
+        self._from = sql_table if sql_table else f"({(sql or '').strip().rstrip(';')}) AS _slayer_src"
         self.columns: dict[str, Typed] = self._reflect(sql_table) if sql_table else self._described()
 
     def _reflect(self, sql_table: str) -> dict[str, Typed]:
