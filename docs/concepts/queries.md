@@ -370,7 +370,7 @@ Filters in `SlayerQuery.filters` accept the
 handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
 `payload ->> 'key'`), the [list functions](#list-columns) `contains`, `contains_any`,
 `contains_all` and `length`, and [date functions](references.md#date-and-time-functions) — each with
-one meaning on every database. The SQL `||` concat operator is rewritten to `concat(...)`
+one meaning on every database that translates it. The SQL `||` concat operator is rewritten to `concat(...)`
 automatically.
 
 ```json

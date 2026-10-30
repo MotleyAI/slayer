@@ -24,11 +24,6 @@ NAV_EXEMPT = frozenset({
     "api_gaps.md",
     "getting-started/flight-sql.md",  # DEV-2103 adds it to the nav
 })
-#: Issue numbers DEV-2172 removes from the SQL API page; delete this baseline in the merge that brings it in.
-ISSUE_NUMBER_BASELINE = frozenset({
-    ("interfaces/pg-facade.md", token)
-    for token in ("DEV-1562", "DEV-1565", "DEV-1566", "DEV-1567", "DEV-1568", "DEV-1569", "DEV-1572")
-})
 _ISSUE_NUMBER = re.compile(rb"\bDEV-\d+\b", re.IGNORECASE)
 #: A git hook's repository-location variables would point ``git ls-files`` away from ``_ROOT``.
 _GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"})
@@ -87,7 +82,7 @@ def test_no_issue_numbers_in_docs() -> None:
         if _rel(path) != "CLAUDE.md"
         for token in _ISSUE_NUMBER.findall(path.read_bytes())
     }
-    assert found == ISSUE_NUMBER_BASELINE
+    assert found == set()
 
 
 # --------------------------------------------------------------------------- #

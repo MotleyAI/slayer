@@ -33,7 +33,7 @@ A query with dimensions only returns distinct combinations; set
 ## Functions
 
 Conditions and formulas take one portable library with the same meaning on every
-database: strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
+database that translates it (others refuse the function at plan time): strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
 regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`), JSON
 (`json_value(x, '$.a' RETURNING INT)`, `x ->> 'a'`), lists (`contains(tags, 'x')`,
 `contains_any(tags, ['x', 'y'])`, `contains_all(tags, ['x', 'y'])`, `length(tags)`; the
@@ -41,7 +41,8 @@ aggregation `collect(x)` builds one per group); text compared with a number read
 a number (`amount_txt > 100`). `starts_with`, `ends_with`, `contains`, `strpos`, `replace`
 and the `split_part` delimiter match literally, case- and accent-sensitively, whatever the
 collation. Casts: `CAST(x AS INT)` or `x::INT`; `TRY_CAST(x AS INT)` gives NULL where a value
-does not convert (on Postgres before 16, or of unknown version, it fails like `CAST`).
+does not convert (on Postgres before 16, or of unknown version, it fails like `CAST`; MariaDB and a MySQL server
+reporting a version before 8.0 refuse it to a number).
 
 ## Variables
 
