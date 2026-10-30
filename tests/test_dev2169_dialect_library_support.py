@@ -283,6 +283,10 @@ class TestPresto:
         sql = await emit_lib(lib_query(filters=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
         assert any("(?s)" in s for s in _strings(sql, read="presto")), sql
 
+    async def test_end_anchor_is_absolute(self) -> None:
+        sql = await emit_lib(lib_query(filters=["regexp_like(code, '^ab$')"]), dialect="presto")
+        assert "(?s)^ab\\z" in _strings(sql, read="presto"), sql
+
     @pytest.mark.parametrize(("expr", "function"), [
         ("regexp_extract(notes, 'a(b)', 1)", "REGEXP_EXTRACT"),
         ("json_value(payload, '$.a.b')", "JSON_EXTRACT_SCALAR"),

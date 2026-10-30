@@ -7,7 +7,7 @@
 - [x] 1.5 Presto emission tests (`tests/dialects/test_default_tier2.py` or a new file): JAVA flavour with `(?s)` and `\z`, `REGEXP_EXTRACT`, `JSON_EXTRACT_SCALAR`, Presto `split_part` / `repeat`, no Postgres-only token.
 - [x] 1.6 MySQL version gates: regex functions / operators, numeric `TRY_CAST` and coercion need 8.0; `json_value` 8.0.21 (8.0.20 refuses, 8.0.21 emits); unknown emits; version parsing of `8.0.21-…`, `10.11.6-MariaDB`, malformed; MariaDB refusals intact; `profile_needed` true for implicit numeric `TRY_CAST`, aliases and regex operators.
 - [x] 1.7 `ServerProfile.version` as `(major, minor, patch)`: Postgres, SQL Server and MySQL parsers; the version error prints every part.
-- [ ] 1.8 Live Postgres (`pytest-postgresql`, unit suite): `VARCHAR[]` and `BIGINT[]` list columns × `contains` / `contains_any` / `contains_all` against text / integer literals and against another list column (`TEXT[]`, `INTEGER[]`).
+- [x] 1.8 Live Postgres (`pytest-postgresql`, unit suite): `VARCHAR[]` and `BIGINT[]` list columns × `contains` / `contains_any` / `contains_all` against text / integer literals and against another list column (`TEXT[]`, `INTEGER[]`).
 - [x] 1.9 `collect` over a column whose physical type differs from its declared DataType, all-NULL group → `[]`, on DuckDB and live Postgres. The pre-seeded BigQuery `test_collect_over_exact_numerics` stays as written.
 - [x] 1.10 `_PG_OID_MAP` codes 1185, 1014, 2951, 199, 3807, 1001 → `list`, one assertion each.
 - [x] 1.11 ClickHouse cell reader round-trip over every escape, Windows paths, doubled / trailing backslash, malformed `\x`; unknown-escape expectation taken from a live ClickHouse round-trip (testcontainers) and pinned.

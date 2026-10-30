@@ -62,7 +62,6 @@ async def pg(postgresql, tmp_path):
         engine_factory.invalidate_engine(ds)
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize(("expr", "kept"), [
     ("contains(skills, 'go')", {1}),
     ("contains(levels, 2)", {1, 2}),
@@ -82,7 +81,6 @@ async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) 
     assert {int(r["typed.id"]) for r in resp.data} == kept, resp.sql
 
 
-@pytest.mark.integration
 async def test_collect_over_numeric(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": ["team"],
                                                         "measures": [measure("collect(amount)", "c")]}))
@@ -90,7 +88,6 @@ async def test_collect_over_numeric(pg) -> None:
     assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
-@pytest.mark.integration
 async def test_collect_over_uuid(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": ["team"],
                                                         "measures": [measure("collect(uid)", "c")]}))
@@ -98,7 +95,6 @@ async def test_collect_over_uuid(pg) -> None:
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fn", ["contains_any", "contains_all"])
 async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
     # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
