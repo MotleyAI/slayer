@@ -70,6 +70,20 @@ def _fragment_refs(sql: str):
     ]
 
 
+def definition_reads(
+    *, column: Column, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> list[tuple[str, str]]:
+    """Every ``(model, column)`` the ``Column.sql`` / ``Column.filter`` of ``column`` names, base columns included."""
+    out: list[tuple[str, str]] = []
+    texts = [] if column.sql is None or is_trivial_base(column=column) else [column.sql]
+    for text in [*texts, *([column.filter] if column.filter else [])]:
+        for quals, leaf in _fragment_refs(text) or []:
+            target = resolve_ref_target(qualifiers=quals, source_model=host, models_by_name=reachable)
+            if target is not None and target.get_column(leaf) is not None:
+                out.append((target.name, leaf))
+    return out
+
+
 def _column_dependencies(
     *,
     column: Column,

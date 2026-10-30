@@ -1,18 +1,35 @@
 """SlayerModel v15 / SlayerQuery v6 / Memory v4: stored Mode-B text adopts the SQL string and identifier rules.
 
 A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one and a ``|``
-concatenation becomes ``||``. Stored-only: a fresh payload is never rewritten.
+concatenation becomes ``||``. Stored-only: a fresh payload is never rewritten, nor is text the old grammar
+could not have held.
 """
 
 import ast
 import io
+import logging
+import re
 import tokenize
+from collections.abc import Callable
 
-from slayer.storage.migrations import register_migration
-from slayer.storage.rank_direction_migration import rewrite_model_texts, rewrite_query_texts, stamp_memory_query
+from slayer.storage.migrations import document_label, register_migration
+from slayer.storage.rank_direction_migration import rewrite_model_texts_at, rewrite_query_texts_at, stamp_memory_query
+
+logger = logging.getLogger(__name__)
 
 _SKIP = frozenset({tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
                    tokenize.ENDMARKER})
+# The old parser's pre-pass: ``x:agg`` / ``*:count`` refs and ``*`` sources become plain names.
+_COLON_REF = re.compile(r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\.\*)?|\*)\s*:\s*[A-Za-z_]\w*")
+
+
+def _star_sources_named(text: str) -> str:
+    """``text`` with each ``*`` standing as an argument or path tail (``count(*)``, ``t.*``) as ``_``."""
+    return "".join(
+        "_" if ch == "*" and text[:i].rstrip()[-1:] in ("(", ".", ",") and text[i + 1:].lstrip()[:1] in (")", ",")
+        else ch
+        for i, ch in enumerate(text)
+    )
 
 
 def sql_quote_strings(text: str) -> str:
@@ -33,6 +50,15 @@ def sql_quote_strings(text: str) -> str:
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text
+
+
+def is_old_grammar(text: str) -> bool:
+    """Whether the pre-SQL grammar could have held ``text``."""
+    try:
+        ast.parse(_star_sources_named(_COLON_REF.sub("_", text)).strip(), mode="eval")
+    except SyntaxError:
+        return False
+    return True
 
 
 def _edits(tokens: list[tokenize.TokenInfo], *, line_starts: list[int]) -> list[tuple[int, int, str]] | None:
@@ -77,12 +103,24 @@ def _pipe_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
     return (i > 0 and touches(tokens[i - 1], tokens[i])) or (i + 1 < len(tokens) and touches(tokens[i], tokens[i + 1]))
 
 
+def _gated(document: str | None) -> Callable[[str, str], str]:
+    def rewrite(text: str, field: str) -> str:
+        if is_old_grammar(text):
+            return sql_quote_strings(text)
+        # The text itself is not logged: it may hold sensitive literals.
+        logger.warning(
+            "stored document %r, field %s: not in the grammar its version claims; left unchanged", document, field,
+        )
+        return text
+    return rewrite
+
+
 def rewrite_model_strings(data: dict) -> dict:
-    return rewrite_model_texts(data, sql_quote_strings)
+    return rewrite_model_texts_at(data, _gated(document_label(data)))
 
 
 def rewrite_query_strings(data: dict) -> dict:
-    return rewrite_query_texts(data, sql_quote_strings)
+    return rewrite_query_texts_at(data, _gated(document_label(data)))
 
 
 register_migration(entity="SlayerModel", source_version=15, stored_only=True)(rewrite_model_strings)

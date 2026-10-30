@@ -55,7 +55,7 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
     assert model is not None
     assert "backing_query_sql" not in model.model_dump()
     doc = await raw_doc(storage, "rev")
-    assert doc["version"] == 17
+    assert doc["version"] == 18
     assert "backing_query_sql" not in doc
 
 

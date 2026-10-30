@@ -88,14 +88,17 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    LibraryNameShadowWarning,
     NarrowedAccessWarning,
     NormalizationWarning,
     SemiJoinPushedWarningPayload,
+    SlayerLibraryNameShadowWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholePeriodsNonNestingWarningPayload,
+    announced_by_caller,
 )
 from slayer.core.refs import functional_agg_text
 from slayer.core.recommend import (
@@ -145,6 +148,8 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
+from slayer.engine.statement_reads import StatementReads, statement_reads
+from slayer.engine.binding import collect_bind_records
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
@@ -603,6 +608,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
         elif isinstance(w, UnrelatedDatasetWarningPayload):
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
+        elif isinstance(w, LibraryNameShadowWarning):
+            _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
 
 
 class SlayerResponse(BaseModel):
@@ -663,6 +670,8 @@ class _Prepared(BaseModel):
     expected_columns: List[str]
     # The persisted models the statement reads (drift-attribution scope).
     touched: Set[str]
+    # The elements of those models it reads (drift attribution).
+    reads: StatementReads = PydanticField(default_factory=StatementReads)
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
@@ -687,6 +696,7 @@ class _Rendered(BaseModel):
     model: SlayerModel
     # Models whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
+    element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
@@ -929,21 +939,22 @@ class SlayerQueryEngine:
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
         run_input = resolve_run_input(query, refine)
-        main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
-            run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
-        )
-        response = await self._execute_pipeline(
-            query=main_query,
-            named_queries=named_queries,
-            splice_chain=splice_chain,
-            runtime_kwarg=runtime_kwarg,
-            dry_run=dry_run,
-            explain=explain,
-            prefer_data_source=prefer_data_source,
-            cache=cache,
-            original_input=run_input,
-            original_data_source=data_source,
-        )
+        with announced_by_caller():
+            main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(
+                run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+            )
+            response = await self._execute_pipeline(
+                query=main_query,
+                named_queries=named_queries,
+                splice_chain=splice_chain,
+                runtime_kwarg=runtime_kwarg,
+                dry_run=dry_run,
+                explain=explain,
+                prefer_data_source=prefer_data_source,
+                cache=cache,
+                original_input=run_input,
+                original_data_source=data_source,
+            )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
         _emit_python_warnings(response)
@@ -1090,6 +1101,7 @@ class SlayerQueryEngine:
             attributes=attributes,
             expected_columns=list(expected_columns),
             touched=rendered.reads,
+            reads=rendered.element_reads,
             model=rendered.model,
             slack_warnings=rendered.warnings,
             population=rendered.population,
@@ -1097,7 +1109,16 @@ class SlayerQueryEngine:
             reads_clock=plans_read_clock(rendered.emitted_list),
         )
 
-    async def _plan_and_render(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
+    async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
+        """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
+        with collect_bind_records() as records:
+            rendered = await self._plan_and_render_statement(**kwargs)
+        reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
+        # A pruned stage's shadowing call is not made by the statement.
+        shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
+        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
+
+    async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
         *,
         query: SlayerQuery,
@@ -1428,7 +1449,8 @@ class SlayerQueryEngine:
                 explained = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                    err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                    reads=prepared.reads,
                 )
                 raise
             return SlayerResponse(
@@ -1481,7 +1503,8 @@ class SlayerQueryEngine:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, datasource=prepared.datasource, read_set=prepared.touched
+                err=exc, datasource=prepared.datasource, read_set=prepared.touched,
+                reads=prepared.reads,
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
@@ -1823,19 +1846,17 @@ class SlayerQueryEngine:
         err: BaseException,
         datasource: DatasourceConfig,
         read_set: "Set[str]",
+        reads: StatementReads,
     ) -> None:
-        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
-        models; else return so the caller re-raises. Attribution errors are swallowed."""
+        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
+        statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            findings: List[ListRetypeFinding] = []
+            found: List[ListRetypeFinding] = []
             entries = await self._validate_read_set(
-                datasource=datasource, read_set=read_set, findings_out=findings,
+                datasource=datasource, read_set=read_set, findings_out=found,
             )
-            # An "invalid_sql" entry is not drift evidence — it restates the
-            # query failure itself, so the original error must propagate.
-            filtered = [
-                e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
-            ]
+            filtered = [e for e in entries if reads.touched_by(e)]
+            findings = [f for f in found if reads.touched_by(f)]
             if filtered or findings:
                 raise SchemaDriftError(
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
@@ -2834,6 +2855,12 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Persist a SlayerModel verbatim (author spelling preserved); query-backed models reject cache fields and validate via dry-run.
         Narrowed-access warnings go to ``warnings_out`` when given, else are emitted as Python warnings."""
+        with announced_by_caller():
+            return await self._save_model(model, warnings_out=warnings_out)
+
+    async def _save_model(
+        self, model: SlayerModel, *, warnings_out: Optional[List[NarrowedAccessWarning]],
+    ) -> SlayerModel:
         # Save preserves the author's formula spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         # Capture the previous data_source so a moved query-backed model's stale

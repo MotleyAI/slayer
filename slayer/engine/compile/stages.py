@@ -28,9 +28,9 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.engine.reference_closure import (
@@ -267,7 +267,7 @@ def _stable_text(obj: Any) -> str:
     if isinstance(obj, BaseModel):
         fields = ",".join(
             _stable_text(getattr(obj, f)) for f in type(obj).model_fields
-            if not (f in OPTIONAL_KEY_FIELDS and getattr(obj, f) is None)
+            if f not in NON_IDENTITY_KEY_FIELDS and not (f in OPTIONAL_KEY_FIELDS and getattr(obj, f) is None)
         )
         return f"{type(obj).__name__}({fields})"
     if isinstance(obj, (set, frozenset)):
@@ -927,7 +927,7 @@ def _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
             bundle=bundle, alias=alias, target_rooted=target_rooted,
         )
-        if agg_key.agg in RANKED_AGGREGATIONS else None
+        if is_ranked(agg_key) else None
     )
     # Reference-bearing parameters read per interval row, each key remapped through
     # the sub-plan's regroup substitutions so an attached-aggregate parameter reads
@@ -996,7 +996,7 @@ def _kernel_decision(
         return _KernelDecision(kind="association", answer=answer)
     if windowed and window_kwarg_of(answer) is not None:
         return _KernelDecision(kind="trailing_window", answer=answer)
-    if answer.agg in RANKED_AGGREGATIONS:
+    if is_ranked(answer):
         return _KernelDecision(kind="ranked", answer=answer)
     return None
 
