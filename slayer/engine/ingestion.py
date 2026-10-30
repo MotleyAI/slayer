@@ -40,6 +40,7 @@ from slayer.sql.dialects.reflection import (
 from slayer.engine.schema_scope import (
     SchemaRef,
     SkippedSchema,
+    connection_default_schema,
     default_schema_ref,
     resolve_ingest_scope,
     schema_ref_from_token,
@@ -408,7 +409,7 @@ def _generate_joins(
         table_name=source_table,
         table_set=table_set,
         schema=schema_name if schema_name is not None else schema,
-        default_schema=getattr(inspector, "default_schema_name", None),
+        default_schema=connection_default_schema(inspector, engine),
         dialect=getattr(inspector, "dialect", None),
     )
     joins = []
