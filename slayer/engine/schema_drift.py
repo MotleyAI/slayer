@@ -1772,6 +1772,13 @@ class _SqlTrial(BaseModel):
     invalid_sql: bool
     list_types: dict[str, str] = Field(default_factory=dict)
 
+    @classmethod
+    def of(cls, types: "ingestion.SqlResultTypes | None", *, invalid_sql: bool) -> "_SqlTrial":
+        if types is None:
+            return cls(live_columns=None, invalid_sql=invalid_sql)
+        return cls(live_columns=types.columns, invalid_sql=invalid_sql,
+                   list_types={name: found.db_type for name, found in types.lists.items()})
+
 
 class DriftSnapshot(BaseModel):
     """One datasource's reusable live-schema facts for query-time attribution."""
@@ -2448,10 +2455,7 @@ async def _sql_trials(
             raise
     flags = await asyncio.gather(*map(_invalid_sql, pending.values(), live))
     for sql_text, live_cols, invalid_sql in zip(pending, live, flags):
-        trials[sql_text] = _SqlTrial(
-            live_columns=None if live_cols is None else live_cols.columns, invalid_sql=invalid_sql,
-            list_types={} if live_cols is None else {n: found.db_type for n, found in live_cols.lists.items()},
-        )
+        trials[sql_text] = _SqlTrial.of(live_cols, invalid_sql=invalid_sql)
         if snapshot is not None:
             snapshot.sql_trials[sql_text] = trials[sql_text]
     return trials
