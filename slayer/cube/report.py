@@ -39,6 +39,7 @@ class CubeIssueCategory(str, Enum):
     SAVE_FAILED = "save_failed"
     FILTER_PARAMS_VARIABLE = "filter_params_variable"
     FILTER_PARAMS_UNSUPPORTED = "filter_params_unsupported"
+    TYPING = "typing"
 
 
 Severity = Literal["info", "warning", "error"]

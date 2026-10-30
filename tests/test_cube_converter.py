@@ -137,7 +137,7 @@ def test_filtered_measures_same_sql_get_distinct_columns():
     assert filtered.filter == "status = 'completed'"
 
 
-def test_count_distinct_approx_maps_to_count_distinct_with_lossy_report():
+def test_count_distinct_approx_maps_to_count_distinct_approx():
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
         measures=[CubeMeasure(name="uniq_users", type="count_distinct_approx",
@@ -145,8 +145,8 @@ def test_count_distinct_approx_maps_to_count_distinct_with_lossy_report():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert measure(models["orders"], "uniq_users").formula.startswith("count_distinct(")
-    assert any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
+    assert measure(models["orders"], "uniq_users").formula.startswith("count_distinct_approx(")
+    assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
 def test_calculated_number_measure_becomes_dsl_formula():
@@ -403,8 +403,9 @@ def test_count_distinct_exact():
 
 @pytest.mark.parametrize("agg", ["avg", "min", "max"])
 def test_simple_aggregation_passthrough(agg):
-    models, _ = convert(_orders_with(
-        [CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")]))
+    project = _orders_with([CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")])
+    project.cubes[0].dimensions.append(CubeDimension(name="amount", sql="{CUBE}.amount", type="number"))
+    models, _ = convert(project)
     assert measure(models["orders"], f"m_{agg}").formula.startswith(f"{agg}(")
 
 

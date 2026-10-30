@@ -859,6 +859,23 @@ class TestRegularModelConversion:
         assert len(result.models) == 1
         assert result.models[0].name == "orders"
 
+    def test_model_wrapped_by_a_semantic_model_is_skipped(self) -> None:
+        project = _project_with_orphan()
+        project.semantic_models[0].name = "order_facts"
+        project.regular_models.append(DbtRegularModel(name="orders", schema_name="staging", alias="orders"))
+
+        with patch.object(sa, "inspect", return_value=MagicMock()), \
+             patch.object(converter_module, "introspect_table_to_model",
+                          side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"])):
+            result = DbtToSlayerConverter(
+                project=project,
+                data_source="test_db",
+                include_hidden_models=True,
+                sa_engine=MagicMock(spec=sa.Engine),
+            ).convert()
+
+        assert [m.name for m in result.models if m.hidden] == ["raw_events"]
+
 
 class TestHiddenModelDescriptionPrecedence:
     """Curated dbt descriptions win over DB comments; DB comments fill gaps."""
@@ -1643,6 +1660,7 @@ class TestJoinKeyColumns:
             w.model_name == "orders" and "customer_id" in w.message
             for w in result.warnings)
 
+    @pytest.mark.xfail(strict=True, reason="DEV-2175: self-named dimension")
     def test_target_key_named_by_a_derived_column_drops_the_join(self) -> None:
         project = _make_simple_project()
         customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")

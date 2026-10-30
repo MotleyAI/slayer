@@ -103,9 +103,10 @@ def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     scope_node_ids: dict[int, ScopeType] = {}
     for scope in traverse_scope(wrapper):
         scope_node_ids[id(scope.expression)] = scope.scope_type
+    bound = _comprehension_bound_ids(parsed)
     if not scope_node_ids:
         # No SELECTs in the fragment at all — every column is root-scope.
-        return {id(c) for c in parsed.find_all(exp.Column)}
+        return {id(c) for c in parsed.find_all(exp.Column)} - bound
     # Re-walk the WRAPPER (which holds copies) — but we need ids from the
     # ORIGINAL parsed tree. Pair them up positionally: find_all yields
     # nodes in document order on both wrapper.this[0] and parsed.
@@ -132,7 +133,20 @@ def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
             node = node.parent
         if scope_type == ScopeType.ROOT:
             root_ids.add(id(p_col))
-    return root_ids
+    return root_ids - bound
+
+
+def _comprehension_bound_ids(parsed: exp.Expr) -> set[int]:
+    """Ids of the names a list comprehension (``[e FOR e IN xs IF p]``) binds, wherever they appear in it."""
+    bound: set[int] = set()
+    for node in parsed.find_all(exp.Comprehension):
+        var = node.expression
+        if not isinstance(var, exp.Column):
+            continue
+        for part in (node.this, var, node.args.get("condition")):
+            if isinstance(part, exp.Expr):
+                bound |= {id(c) for c in part.find_all(exp.Column) if not c.table and c.name == var.name}
+    return bound
 
 
 class _PathSink(Protocol):

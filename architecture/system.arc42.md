@@ -167,6 +167,10 @@ All code, old and new, MUST obey these.
     re-typed, validated and drift-checked exactly like a `sql_table` model
     wherever the live database can tell the same about both; any difference
     is a documented exception. [review]
+21. **Importers preserve meaning**: an importer emits a construct only when
+    SLayer reads it with the source's meaning, up to SLayer's documented NULL
+    conventions; anything else is dropped with a report.
+    [enforced: test:tests/test_dev2171_importers_preserve_meaning.py]
 
 ## 4. Enforcement
 

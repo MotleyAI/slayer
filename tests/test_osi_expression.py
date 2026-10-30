@@ -1,4 +1,4 @@
-"""OSI metric/field expression -> SLayer formula transform (slayer/osi/expression.py).
+"""OSI metric/field expression -> SLayer formula transform (slayer/importers/aggregates.py).
 
 ``convert_expression`` walks a SQL aggregation expression with sqlglot and emits a
 SLayer functional-syntax formula, materializing hidden derived Columns for non-bare
@@ -16,7 +16,8 @@ from slayer.core.enums import DataType
 from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.syntax import parse_expr
-from slayer.osi.expression import convert_expression
+from slayer.importers.aggregates import convert_expression, formula_refusal
+from slayer.sql.dialects import dialect_for_ds_type
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
 OWNER = lambda q, c: "orders"          # noqa: E731
@@ -150,10 +151,10 @@ def test_percentile_cont_half_is_median():
     )
 
 
-def test_percentile_disc():
-    assert _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)").formula == (
-        "percentile(amount, p=0.9)"
-    )
+def test_percentile_disc_clean_fails():
+    r = _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)")
+    assert not r.ok
+    assert "PERCENTILE_DISC" in (r.reason or "")
 
 
 def test_percentile_out_of_range_clean_fails():
@@ -167,14 +168,28 @@ def test_percentile_nonliteral_clean_fails():
     assert not r.ok
 
 
-def test_percentile_unsupported_dialect_warns_but_emits():
-    r = _run(
-        "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)",
-        percentile_unsupported=True,
-    )
-    assert r.ok
-    assert r.formula == "percentile(amount, p=0.9)"
-    assert r.warnings
+@pytest.mark.parametrize("sql", ["SUM(ARRAY_LENGTH(tags, 2))", "SUM(ARRAY_SIZE(tags, 2))"])
+def test_array_length_with_a_dimension_clean_fails(sql: str):
+    r = _run(sql)
+    assert not r.ok
+    assert "dimension" in (r.reason or "")
+
+
+@pytest.mark.parametrize("formula", [
+    "sum(length(tags))", "count(*) FILTER (WHERE contains(tags, 'a'))",
+    "count(*) FILTER (WHERE contains_any(tags, tags))", "count(*) FILTER (WHERE contains_all(tags, tags))",
+    "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
+])
+def test_library_call_refused_by_the_target(formula: str):
+    assert formula_refusal(formula, dialect=dialect_for_ds_type("mysql"))
+    assert formula_refusal(formula, dialect=dialect_for_ds_type("postgres")) is None
+
+
+@pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
+def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
+    r = _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)", sql_dialect=dialect_for_ds_type(ds_type))
+    assert not r.ok
+    assert "not supported" in (r.reason or "")
 
 
 # ───────────────────────────── clean-fails ─────────────────────────────────

@@ -479,14 +479,15 @@ def _read_only_transaction_sql(db_type: str | None) -> str | None:
     return None
 
 
-def _get_column_types_sync(
+def _probe_sync(
     sql: str,
     *,
     db_type: str | None,
     engine: sa.Engine,
+    read: Callable[[Any], dict[str, Any]],
     datasource_name: str | None = None,
-) -> dict[str, str]:
-    """Infer column types read-only (rolled back) so a trial probe can't mutate."""
+) -> dict[str, Any]:
+    """``read`` over a read-only (rolled back) type probe of ``sql``, so a trial probe can't mutate."""
     limit_sql = _build_type_probe_sql(sql, db_type)
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
@@ -495,10 +496,21 @@ def _get_column_types_sync(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
-        result = _exec_verbatim(conn=conn, sql=limit_sql)
-        types = _extract_types_from_cursor(result, db_type=db_type)
+        found = read(_exec_verbatim(conn=conn, sql=limit_sql))
         conn.rollback()
-    return types
+    return found
+
+
+def _get_column_types_sync(
+    sql: str,
+    *,
+    db_type: str | None,
+    engine: sa.Engine,
+    datasource_name: str | None = None,
+) -> dict[str, str]:
+    """Infer column types read-only (rolled back) so a trial probe can't mutate."""
+    return _probe_sync(sql, db_type=db_type, engine=engine, datasource_name=datasource_name,
+                       read=lambda result: _extract_types_from_cursor(result, db_type=db_type))
 
 
 def get_column_types_sync(
@@ -506,6 +518,17 @@ def get_column_types_sync(
 ) -> dict[str, str]:
     """Public sync column-type inference over an existing engine (stable entry point)."""
     return _get_column_types_sync(sql, db_type=db_type, engine=engine, datasource_name=datasource_name)
+
+
+def get_column_type_names_sync(
+    sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
+) -> dict[str, str | None]:
+    """The driver's type name per column of ``sql`` (``None`` when it reports only a numeric code)."""
+    def read(result: Any) -> dict[str, str | None]:
+        codes = [desc[1] for desc in result.cursor.description or []]
+        return {col: None if code is None or isinstance(code, int) else str(code)
+                for col, code in zip(result.keys(), codes)}
+    return _probe_sync(sql, db_type=db_type, engine=engine, datasource_name=datasource_name, read=read)
 
 
 async def _get_column_types_async(

@@ -13,11 +13,12 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from slayer.dbt.manifest import load_or_generate_manifest, regular_models_from_manifest
-from slayer.dbt.models import DbtMetric, DbtProject, DbtRegularModel, DbtSemanticModel
+from slayer.dbt.models import DbtColumnMeta, DbtMetric, DbtProject, DbtRegularModel, DbtSemanticModel
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ def parse_dbt_project(
     """
     all_semantic_models: list[DbtSemanticModel] = []
     all_metrics: list[DbtMetric] = []
+    declared: dict[str, DbtRegularModel] = {}
 
     yaml_paths = _collect_yaml_paths(project_path)
     if not yaml_paths:
@@ -153,6 +155,8 @@ def parse_dbt_project(
                 all_semantic_models.append(sm)
             except Exception as e:
                 logger.warning("Failed to parse semantic model in %s: %s", path, e)
+
+        declared.update((m.name, m) for m in _declared_models(data.get("models"), path=path))
 
         # Parse metrics (plural list)
         raw_metrics = data.get("metrics", [])
@@ -187,12 +191,11 @@ def parse_dbt_project(
                 by_name[name].raw_code = raw_code
             else:
                 by_name[name] = DbtRegularModel(name=name, raw_code=raw_code)
-        regular_models = list(by_name.values())
     else:
-        regular_models = [
-            DbtRegularModel(name=name, raw_code=raw_code)
-            for name, raw_code in sql_by_name.items()
-        ]
+        by_name = {name: DbtRegularModel(name=name, raw_code=raw_code) for name, raw_code in sql_by_name.items()}
+    for name, schema_model in declared.items():
+        _overlay_declared_columns(by_name.setdefault(name, DbtRegularModel(name=name)), schema_model)
+    regular_models = list(by_name.values())
 
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
@@ -203,6 +206,33 @@ def parse_dbt_project(
         metrics=all_metrics,
         regular_models=regular_models,
     )
+
+
+def _declared_models(raw: Any, *, path: str) -> list[DbtRegularModel]:
+    """The ``models:`` entries of one YAML file, with their declared columns."""
+    out: list[DbtRegularModel] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        columns = [c for c in entry.get("columns") or [] if isinstance(c, dict) and isinstance(c.get("name"), str)]
+        try:
+            out.append(DbtRegularModel(name=entry["name"], description=entry.get("description"), columns=[
+                DbtColumnMeta(name=c["name"], description=c.get("description"), data_type=c.get("data_type"))
+                for c in columns]))
+        except Exception as e:  # noqa: BLE001 — one malformed entry never blocks the project
+            logger.warning("Failed to parse model columns in %s: %s", path, e)
+    return out
+
+
+def _overlay_declared_columns(model: DbtRegularModel, declared: DbtRegularModel) -> None:
+    """Fill ``model``'s column ``data_type``s (and missing columns) from a schema-YAML declaration."""
+    by_name = {c.name: c for c in model.columns}
+    for col in declared.columns:
+        existing = by_name.get(col.name)
+        if existing is None:
+            model.columns.append(col)
+        elif existing.data_type is None:
+            existing.data_type = col.data_type
 
 
 def _parse_regular_models(project_path: str) -> list[DbtRegularModel]:
