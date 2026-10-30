@@ -265,6 +265,8 @@ def encode_text(value: object) -> str:
     """The text form of one result cell; NULL is the empty string."""
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, (list, tuple, dict)):
         return encode_json(value)
     if isinstance(value, str):

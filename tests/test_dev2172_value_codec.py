@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
+from slayer.core.format import encode_json, encode_text
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.facade.translator import QueryResult
@@ -338,6 +339,14 @@ class TestScenarios:
     def test_timezone_aware_timestamp_keeps_its_utc_conversion_on_the_postgres_wire(self) -> None:
         value = dt.datetime(2024, 2, 29, 10, 30, tzinfo=PLUS_TWO)
         assert value_to_text(value, proto.OID_TIMESTAMP) == b"2024-02-29 08:30:00"
+
+    def test_boolean_text_form_is_lowercase(self) -> None:
+        assert encode_text(True) == "true"
+        assert value_to_text(False, proto.OID_TEXT) == b"false"
+        assert encode_json({True: 1}) == '{"true": 1}'
+
+    def test_boolean_wire_column_keeps_the_bool_shape(self) -> None:
+        assert value_to_text(True, proto.OID_BOOL) == b"t"
 
     def test_null_stays_null_on_the_wire(self) -> None:
         assert value_to_text(None, proto.OID_TEXT) is None

@@ -89,10 +89,8 @@ def value_to_text(value: Any, oid: int = OID_TEXT) -> bytes | None:
         and not isinstance(value, _dt.datetime)
     ):
         value = _dt.datetime(value.year, value.month, value.day)
-    # CAST(<bool> AS TEXT) is `true`/`false`; the BOOL wire shape is `t`/`f`.
-    if isinstance(value, bool):
-        if oid == OID_TEXT:
-            return b"true" if value else b"false"
+    # The BOOL wire shape is `t`/`f`; a text column carries the codec's `true`/`false`.
+    if isinstance(value, bool) and oid != OID_TEXT:
         return b"t" if value else b"f"
     if isinstance(value, _dt.datetime):
         return _format_timestamp(value).encode("utf-8")
