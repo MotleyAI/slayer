@@ -39,5 +39,5 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Full unit suite `poetry run pytest -m "not integration"`, ruff, basedpyright (ratchet), `la-arch-check` all pass
-- [ ] 6.2 CI integration suite (incl. `pg-facade-e2e`, `metabase-e2e`) passes; any Metabase expectation re-blessed only where the new per-record count is the SQL-correct one, each named in the PR description
+- [x] 6.1 Full unit suite `poetry run pytest -m "not integration"`, ruff, basedpyright (ratchet), `la-arch-check` all pass
+- [x] 6.2 CI integration suite (incl. `pg-facade-e2e`, `metabase-e2e`) passes; any Metabase expectation re-blessed only where the new per-record count is the SQL-correct one, each named in the PR description
