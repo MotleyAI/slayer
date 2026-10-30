@@ -32,7 +32,7 @@ Every column reference an importer takes from the source's own SQL (a reference 
 
 ### Requirement: Self-named transforms are dropped with a report
 
-A source member whose definition reads the physical column of its own name SHALL be dropped with a report naming it, in every importer; the rest of the model SHALL import and save.
+A source dimension or field whose definition transforms the physical column of its own name SHALL be dropped with a report naming it, in every importer; the rest of the model SHALL import and save.
 
 #### Scenario: Cube self-named dimension
 - **WHEN** a Cube cube over `orders` declares dimension `status` with `sql: UPPER({CUBE}.status)`
