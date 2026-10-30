@@ -184,6 +184,28 @@ def cbrt(x: float) -> float:
     return math.copysign(abs(x) ** (1 / 3), x)
 
 
+@_nulls
+def positive(fn: Callable[[float], float], x: float) -> Optional[float]:
+    return fn(x) if x > 0 else None
+
+
+@_nulls
+def pg_log(b: float, x: float) -> Optional[float]:
+    return math.log(x, b) if x > 0 and b > 0 and b != 1 else None
+
+
+@_nulls
+def pg_sqrt(x: float) -> Optional[float]:
+    return math.sqrt(x) if x >= 0 else None
+
+
+@_nulls
+def pg_pow(b: float, e: float) -> Optional[float]:
+    if (b < 0 and e != int(e)) or (b == 0 and e < 0):
+        return None
+    return b ** e
+
+
 def num_text(value: Any) -> Optional[float]:
     """``TRY_CAST(text AS DOUBLE)``."""
     if value is None:
@@ -379,6 +401,20 @@ def _math_cases() -> list[Case]:
         _v("percent|int", ["%"], "i % 3", every(lambda r: None if r["i"] is None else int(math.fmod(r["i"], 3)))),
         _v("percent|double", ["%"], "x % 2", on_x(lambda v: math.fmod(v, 2))),
         _v("arith|minus-times", ["-", "*"], "qty * 2 - 1", every(lambda r: None if r["qty"] is None else r["qty"] * 2 - 1)),
+        # Out of domain: NULL, never an error (``x`` holds 1, 0, -1 and other signs).
+        _v("ln|domain", ["ln"], "ln(x)", every(lambda r: positive(math.log, r["x"]))),
+        _v("log10|domain", ["log10"], "log10(x)", every(lambda r: positive(math.log10, r["x"]))),
+        _v("log2|domain", ["log2"], "log2(x)", every(lambda r: positive(math.log2, r["x"]))),
+        _v("log|one-arg-domain", ["log"], "log(x)", every(lambda r: positive(math.log10, r["x"]))),
+        _v("log|base-literal-domain", ["log"], "log(2, x)", every(lambda r: pg_log(2, r["x"]))),
+        _v("log|base-column-domain", ["log"], "log(x, 8)", every(lambda r: pg_log(r["x"], 8))),
+        _v("sqrt|domain", ["sqrt"], "sqrt(x)", every(lambda r: pg_sqrt(r["x"]))),
+        _v("pow|domain-fraction", ["pow"], "pow(x, 0.5)", every(lambda r: pg_pow(r["x"], 0.5))),
+        _v("pow|domain-integer", ["pow"], "pow(x, 3)", every(lambda r: pg_pow(r["x"], 3))),
+        _v("pow|domain-zero-negative", ["pow"], "pow(x, -1)", every(lambda r: pg_pow(r["x"], -1))),
+        _v("pow|domain-scaled", ["pow"], "pow(x * 16, 0.5)",  # 0.25 * 16 = 4 → 2; -8 * 16 → NULL
+           every(lambda r: None if r["x"] is None else pg_pow(r["x"] * 16, 0.5))),
+        _v("power|domain", ["power"], "power(x, y)", every(lambda r: pg_pow(r["x"], r["y"]))),
     ]
 
 
@@ -645,7 +681,7 @@ def lib_ids(resp: SlayerResponse) -> set[int]:
     return {int(r["lib.id"]) for r in resp.data}
 
 
-def patch_profile(monkeypatch: Any, *, version: Optional[tuple[int, int]] = None, fail: bool = False) -> list[int]:
+def patch_profile(monkeypatch: Any, *, version: Optional[tuple[int, ...]] = None, fail: bool = False) -> list[int]:
     """Stub the server-profile probe; the returned list records each probe."""
     calls: list[int] = []
 

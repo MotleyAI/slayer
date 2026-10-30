@@ -40,7 +40,7 @@ from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
-from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
@@ -198,10 +198,16 @@ def scope_column_type(*, scope: ModelScope | StageSchema, bundle) -> ColumnTypeF
     return model_column_type(model=scope.source_model, models_by_name=bundle.models_by_name)
 
 
+def bundle_dialect(bundle) -> SqlDialect:
+    """The datasource's own dialect (``MariadbDialect`` for a MariaDB source), else the sqlglot name's."""
+    own = dialect_for_ds_type(bundle.datasource_type)
+    return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
+
+
 def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callable[[object], bool]:
     """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
     reads naive)."""
-    dialect = get_dialect(bundle.dialect)
+    dialect = bundle_dialect(bundle)
     if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.source_model is None:
         return lambda _key: False
     lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)

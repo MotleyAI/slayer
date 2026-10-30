@@ -172,7 +172,7 @@ Within the read models, a failure SHALL be attributed to schema drift only on a 
 
 #### Scenario: Unrelated drifted column leaves the database error
 
-- **WHEN** on SQLite a model over `t(id, x, s, ts)` declares `ts` as `INT` while the live column is `TEXT`, and a query for `sum(ln(x))` fails because `x` holds 0
+- **WHEN** on SQLite a model over `t(id, x, s, ts)` declares `ts` as `INT` while the live column is `TEXT`, and a query for `sum(bad)` fails because the derived column `bad` calls a function SQLite lacks
 - **THEN** the original database error propagates, not `SchemaDriftError`
 
 #### Scenario: A read drifted column wraps

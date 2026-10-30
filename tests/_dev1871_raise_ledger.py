@@ -459,7 +459,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category='control', family='positions', user=False, owner='compiler'),
     _row(module=_EE, function='_check_native_lists', exc='ListTypeError',
          message='… needs a database with native lists; … has none.'
-         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse or Trino).',
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino or Presto).',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
          message="The list literal … holds a NULL element; a list's elements are its non-NULL elements."

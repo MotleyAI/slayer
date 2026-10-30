@@ -24,6 +24,7 @@ from slayer.core.time_points import parse_temporal_value
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     FALSE_WORDS,
+    PORTABLE_LIBRARY,
     TRUE_WORDS,
     VENDOR_ONLY_CAST_TYPES,
     ExtremumFn,
@@ -277,49 +278,28 @@ class _CovarPopAgg(_PairAgg):
         return self._c / self._n
 
 
-def _ln(x):
-    if x is None:
-        return None
-    return math.log(x)
+def _in_domain(fn):
+    """``fn`` NULL-propagating, and NULL for an argument outside its domain; overflow still raises."""
+    def wrapped(*args):
+        if any(a is None for a in args):
+            return None
+        try:
+            return fn(*args)
+        except (ValueError, ZeroDivisionError):
+            return None
+    return wrapped
 
 
-def _log10(x):
-    if x is None:
-        return None
-    return math.log10(x)
-
-
-def _log2(x):
-    # Overrides SQLite >=3.35's built-in so domain errors propagate, as in Postgres.
-    if x is None:
-        return None
-    return math.log2(x)
-
-
-def _log_base_x(b, x):
-    """``log(B, X)`` returns log_B(X). Base first, value second."""
-    if b is None or x is None:
-        return None
-    return math.log(x, b)
-
-
-def _exp(x):
-    if x is None:
-        return None
-    return math.exp(x)
-
-
-def _sqrt(x):
-    if x is None:
-        return None
-    return math.sqrt(x)
-
-
-def _pow(x, n):
-    """``math.pow``, not ``**``: raises on a negative base's fractional power, no big-ints."""
-    if x is None or n is None:
-        return None
-    return math.pow(x, n)
+_ln = _in_domain(math.log)
+_log10 = _in_domain(math.log10)
+# Overrides SQLite >=3.35's built-ins, so every database reads the same domain.
+_log2 = _in_domain(math.log2)
+# ``log(B, X)`` returns log_B(X): base first, value second.
+_log_base_x = _in_domain(lambda b, x: math.log(x, b))
+_exp = _in_domain(math.exp)
+_sqrt = _in_domain(math.sqrt)
+# ``math.pow``, not ``**``: a negative base's fractional power is a domain error, never a complex number.
+_pow = _in_domain(math.pow)
 
 
 _SUB_DAY_DELTAS = {"second": "seconds", "minute": "minutes", "hour": "hours"}
@@ -563,7 +543,6 @@ def _like_source(pattern: LikePattern) -> str:
 
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQLite"
     # Any type name is a column affinity on SQLite.
     vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
@@ -581,8 +560,9 @@ class SqliteDialect(SqlDialect):
     max_identifier_bytes: int | None = None  # unbounded
     url_scheme: str | None = "sqlite"
 
-    regex_flavour: ClassVar[RegexFlavour] = PYTHON
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = PYTHON
     json_db_types: ClassVar[frozenset[str]] = frozenset()
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """SQLite lacks the padding, reversing, repeating and separator functions: registered ones stand in."""

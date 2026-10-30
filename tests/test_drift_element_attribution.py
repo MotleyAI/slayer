@@ -34,8 +34,8 @@ INSERT INTO customers VALUES (1, 'US');
 INSERT INTO orders VALUES (1, 10.0, 1);
 """
 
-# Fails on SQLite for a non-drift reason: ln(0) raises inside the UDF.
-_LN_FAILURE = {"source_model": "t", "measures": [{"formula": "sum(ln(x))"}]}
+# Fails on SQLite for a non-drift reason: the derived column calls a function SQLite lacks.
+_DB_FAILURE = {"source_model": "t", "measures": [{"formula": "sum(bad)"}]}
 
 
 def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
@@ -48,6 +48,7 @@ def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
             Column(name="s", type=DataType.TEXT),
             Column(name="ts", type=ts),
             Column(name="y", sql="x * 2", type=DataType.DOUBLE),
+            Column(name="bad", sql="no_such_fn(x)", type=DataType.DOUBLE),
         ],
         filters=filters or [],
         measures=measures or [],
@@ -115,14 +116,14 @@ def _removes(err: SchemaDriftError, *, model: str, column: str) -> bool:
 class TestUnreadDriftLeavesTheError:
     async def test_unrelated_drifted_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(ts=DataType.INT)) as env:
-            err = await _unwrapped(env.engine, _LN_FAILURE)
-        assert "user-defined function" in str(err).lower(), err
+            err = await _unwrapped(env.engine, _DB_FAILURE)
+        assert "no_such_fn" in str(err).lower(), err
 
     async def test_unread_dropped_column_and_its_measure(self, tmp_path: Path) -> None:
         model = _t(measures=[ModelMeasure(name="n_s", formula="count_distinct(s)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN s")
-            await _unwrapped(env.engine, _LN_FAILURE)
+            await _unwrapped(env.engine, _DB_FAILURE)
 
     async def test_a_host_column_named_like_a_producer_column(self, tmp_path: Path) -> None:
         customers, orders = _shop()
@@ -263,7 +264,8 @@ def _dated(*, ts: DataType, d: DataType) -> SlayerModel:
         Column(name="id", type=DataType.INT, primary_key=True),
         Column(name="x", type=DataType.DOUBLE),
         Column(name="ts", type=ts),
-        Column(name="d", type=d)])
+        Column(name="d", type=d),
+        Column(name="bad", sql="no_such_fn(x)", type=DataType.DOUBLE)])
 
 
 class TestSqliteTemporalOverText:
@@ -274,7 +276,7 @@ class TestSqliteTemporalOverText:
 
     async def test_query_time_attribution_does_not_blame_it(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.TIMESTAMP, d=DataType.DATE)) as env:
-            await _unwrapped(env.engine, _LN_FAILURE)
+            await _unwrapped(env.engine, _DB_FAILURE)
 
     async def test_a_non_temporal_declaration_over_text_is_still_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.INT, d=DataType.DATE)) as env:

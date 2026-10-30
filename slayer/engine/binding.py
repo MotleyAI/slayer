@@ -64,7 +64,7 @@ from slayer.core.models import (
 )
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine import dimension_routing
-from slayer.engine.key_metadata import scope_column_type
+from slayer.engine.key_metadata import bundle_dialect, scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
@@ -106,6 +106,7 @@ from slayer.core.scalar_args import (
     check_split_index,
     slot_name,
 )
+from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
 from slayer.sql.sql_expr import build_cast_type, has_window_function, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
@@ -1952,7 +1953,7 @@ def _bind_scalar(
             dim_alias_map=dim_alias_map,
         )
     spelled = [n for n in map(keyword_spelling, parsed.args) if n is not None]
-    _check_scalar_call(parsed, spelled=spelled)
+    _check_scalar_call(parsed, spelled=spelled, bundle=bundle)
 
     def bind(a: ParsedExpr, *, in_temporal_slot: bool) -> ValueKey:
         key = _bind(
@@ -1976,7 +1977,7 @@ def _bind_scalar(
     return ScalarCallKey(name=parsed.name, args=args)
 
 
-def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str]) -> None:
+def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str], bundle: ResolvedSourceBundle) -> None:
     """An allowlisted name, its arity and its literal-only arguments; ``spelled`` are ``name = value`` arguments."""
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
@@ -2007,7 +2008,7 @@ def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str]) -> None:
             "'round' ndigits (2nd argument) must be an integer literal; got "
             f"{canonical_measure_text(parsed.args[1])!r}."
         )
-    _check_library_literals(parsed)
+    _check_library_literals(parsed, bundle=bundle)
 
 
 def _text_literal(parsed: ScalarCall, pos: int) -> str:
@@ -2023,9 +2024,12 @@ def _text_literal(parsed: ScalarCall, pos: int) -> str:
     return value
 
 
-def _check_library_literals(parsed: ScalarCall) -> None:
+def _check_library_literals(parsed: ScalarCall, *, bundle: ResolvedSourceBundle) -> None:
     """The literal-only arguments of a library call: patterns, replacements, paths, flags, groups, indices, domains."""
     name, args = parsed.name, parsed.args
+    if name in LIBRARY_FUNCTIONS and not is_list_fn(name):
+        # A refusal outranks argument errors; a list-overloaded name is decided once its arguments are typed.
+        require_library(bundle_dialect(bundle), name)
     if name in REGEX_FUNCTIONS:
         pattern = check_pattern(name, _text_literal(parsed, 1))
         if name == "regexp_replace":
@@ -2039,10 +2043,7 @@ def _check_library_literals(parsed: ScalarCall) -> None:
         check_path(name, _text_literal(parsed, 1))
     elif name == "split_part":
         check_split_index(_fold_to_scalar(args[2]))
-    for pos, arg in enumerate(args):
-        value = _fold_to_scalar(arg)
-        if value is not _NOT_SCALAR:
-            check_domain(name, pos, value, text=canonical_measure_text(arg))
+    check_domain(name, [_fold_to_scalar(arg) for arg in args], texts=[canonical_measure_text(arg) for arg in args])
 
 
 def _json_input(arg: ValueKey, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> ValueKey:

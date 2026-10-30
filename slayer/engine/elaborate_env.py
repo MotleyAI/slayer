@@ -1512,7 +1512,7 @@ def _check_native_lists(key: ValueKey, *, typing: ListTyping) -> None:
         raise ListTypeError(
             summary=f"{construct} needs a database with native lists; {typing.database} has none.",
             suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
-            "ClickHouse or Trino).",
+            "ClickHouse, Trino or Presto).",
         )
 
 

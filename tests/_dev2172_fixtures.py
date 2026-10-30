@@ -17,7 +17,6 @@ from typing import Any, LiteralString, cast
 import psycopg
 import pyarrow as pa
 import pyarrow.flight as fl
-import pytest
 from google.protobuf.any_pb2 import Any as PbAny
 from pydantic import BaseModel, ConfigDict
 
@@ -99,9 +98,6 @@ def statements() -> list[str]:
         "INSERT INTO orders VALUES " + ", ".join(f"({i}, '{s}', {r}, '{t}')" for i, s, r, t in ORDERS),
     ]
 
-
-#: ``collect``'s empty-list fallback is typed from the declared type, not the column's database type.
-COLLECT_FALLBACK_XFAIL = pytest.mark.xfail(strict=True, reason="DEV-2169 types collect's empty-list fallback from the column")
 
 
 SAVED_MEASURES: dict[str, list[ModelMeasure]] = {

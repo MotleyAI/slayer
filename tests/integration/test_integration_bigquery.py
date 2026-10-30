@@ -41,7 +41,7 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
@@ -422,6 +422,38 @@ async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> Non
         await engine.execute(stale)
     assert "skills" in str(info.value), str(info.value)
     assert "ingest" in str(info.value).lower(), str(info.value)
+
+
+# NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's typed ``[]`` fallback must unify with their ARRAY_AGG.
+_AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
+                "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
+_AMOUNT_COLUMNS = ("n", "big", "i")
+
+
+@pytest.fixture(scope="module")
+def bq_amounts(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    client.query(f"CREATE TABLE {dataset_id}.amounts "
+                 "(id INT64, team STRING, n NUMERIC, big BIGNUMERIC, i INT64)").result()
+    client.query(f"INSERT INTO {dataset_id}.amounts VALUES {_AMOUNT_ROWS}").result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
+    run_sync(storage.save_datasource(ds))
+    for model in ingest_datasource(datasource=ds, include_tables=["amounts"]):
+        run_sync(storage.save_model(model))
+    return storage
+
+
+async def test_collect_over_exact_numerics(bq_amounts) -> None:
+    resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
+        "source_model": "amounts", "dimensions": ["team"],
+        "measures": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+    }))
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+           for r in resp.data}
+    assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
+                   "b": {"n": [], "big": [], "i": []}}, resp.sql
+    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
 
 
 # Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
