@@ -21,7 +21,7 @@ Every Mode-B scalar function SHALL return the same value for the same inputs on 
 
 ### Requirement: Out-of-domain arguments yield NULL
 
-A function argument outside the function's domain — `asin` / `acos` beyond ±1, `div` by zero, a `chr` code point that is a surrogate or above `0x10FFFF`, `ln` / `log10` / `log2` / one-argument `log` of a value ≤ 0, two-argument `log(b, x)` with `x` ≤ 0 or a base `b` ≤ 0 or equal to 1, `sqrt` of a negative value, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative exponent — SHALL yield NULL on every dialect, as `/` by zero does. When the out-of-domain arguments are literals, the query SHALL be rejected at plan time with a typed error naming the function and the argument. A result too large to represent (overflow, e.g. `exp(1000)`) is outside this rule: it SHALL be the database's own behaviour, and that is documented.
+A function argument outside the function's domain — `asin` / `acos` beyond ±1, `div` by zero, a `chr` code point that is a surrogate or above `0x10FFFF`, `ln` / `log10` / `log2` / one-argument `log` of a value ≤ 0, two-argument `log(b, x)` with `x` ≤ 0 or a base `b` ≤ 0 or equal to 1, `sqrt` of a negative value, `pow` / `power` of a negative base to a non-integer exponent or of 0 to a negative exponent — SHALL yield NULL on every dialect that translates the function, as `/` by zero does. When the out-of-domain arguments are literals, the query SHALL be rejected at plan time with a typed error naming the function and the argument. A result too large to represent (overflow, e.g. `exp(1000)`) is outside this rule: it SHALL be the database's own behaviour, and that is documented.
 
 #### Scenario: Column argument out of domain
 
