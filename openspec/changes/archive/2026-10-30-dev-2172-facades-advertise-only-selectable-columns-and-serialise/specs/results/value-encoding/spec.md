@@ -22,7 +22,9 @@ and Arrow Flight UTF-8 columns. The forms SHALL be:
 | decimal | a JSON number with exactly the decimal's digits, never rounded through a float | the decimal's exact digits |
 | non-finite number (NaN, ±Infinity, float or decimal) | `null` | a scalar cell: `NaN` / `Infinity` / `-Infinity`; inside a list or JSON text: `null` |
 | date / timestamp | ISO-8601 string (a timestamp with a time zone keeps its offset) | ISO-8601 text |
-| text / integer / boolean | the JSON string / number / `true` / `false` | as before |
+| text / integer | the JSON string / number | as before |
+| boolean | `true` / `false` | `true` / `false`; a Postgres-wire boolean column keeps its native `t` / `f` |
+| NULL | `null` | an empty cell in csv / markdown / the CLI table; SQL NULL on the Postgres wire; null on Arrow Flight |
 
 A JSON value the database driver has already decoded to a scalar SHALL be written as that scalar. Every JSON form
 SHALL be valid JSON.

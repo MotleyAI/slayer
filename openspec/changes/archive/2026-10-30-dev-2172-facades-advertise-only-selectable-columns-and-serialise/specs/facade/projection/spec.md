@@ -8,9 +8,9 @@ that every column a facade catalog advertises can be selected as advertised.
 ### Requirement: A plain projection returns one row per record
 
 A facade `SELECT` whose select list has no aggregate and no metric, and which has no `GROUP BY`, no `HAVING`, no
-`DISTINCT` and no measure reference in `WHERE` or `ORDER BY`, SHALL return one row per record of its table (joined
+`DISTINCT` and no measure reference in `WHERE`, SHALL return one row per record of its table (joined
 rows included), as SQL does. A `SELECT DISTINCT`, a `GROUP BY`, a `HAVING`, an aggregate or metric in the select
-list, or a measure reference in `WHERE` / `ORDER BY` SHALL return grouped rows, one per distinct combination of
+list, or a measure reference in `WHERE` SHALL return grouped rows, one per distinct combination of
 the projected dimensions. A time-grain projection such as `month(ordered_at)` SHALL follow the same rule: one
 truncated value per record in a plain projection, one per bucket when grouped.
 
