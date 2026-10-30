@@ -22,7 +22,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousJoinPathError, UnsupportedServerFunctionError
 from slayer.core.syntax import parse_expr
 from slayer.core.join_walker import resolve_hop
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, join_key_error
@@ -463,7 +463,7 @@ class OsiToSlayerConverter:
             return None
         try:
             rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
-        except Unconvertible as exc:
+        except (Unconvertible, UnsupportedServerFunctionError) as exc:
             self._warn(f"{label}: {exc}; skipping.", model_name=ds.name, category="expression")
             return None
         return render(selection.candidate, rendered, target=self._target), tree

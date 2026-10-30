@@ -16,7 +16,7 @@ from slayer.core.enums import DataType
 from slayer.core.join_search import shortest_route
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.syntax import parse_expr
-from slayer.importers.aggregates import convert_expression
+from slayer.importers.aggregates import convert_expression, formula_refusal
 from slayer.sql.dialects import dialect_for_ds_type
 
 # Single-model context: everything is owned by "orders"; refs are local (bare).
@@ -173,6 +173,16 @@ def test_array_length_with_a_dimension_clean_fails(sql: str):
     r = _run(sql)
     assert not r.ok
     assert "dimension" in (r.reason or "")
+
+
+@pytest.mark.parametrize("formula", [
+    "sum(length(tags))", "count(*) FILTER (WHERE contains(tags, 'a'))",
+    "count(*) FILTER (WHERE contains_any(tags, tags))", "count(*) FILTER (WHERE contains_all(tags, tags))",
+    "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
+])
+def test_library_call_refused_by_the_target(formula: str):
+    assert formula_refusal(formula, dialect=dialect_for_ds_type("mysql"))
+    assert formula_refusal(formula, dialect=dialect_for_ds_type("postgres")) is None
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])

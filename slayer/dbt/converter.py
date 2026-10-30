@@ -299,7 +299,7 @@ class DbtToSlayerConverter:
             self._prune_model_measures(model)
 
     def _prune_model_measures(self, model: SlayerModel) -> None:
-        problems = measure_problems(model, models_by_name=self._models_by_name)
+        problems = measure_problems(model, models_by_name=self._models_by_name, dialect=self._sql_dialect)
         for m, problem in zip(model.measures, problems):
             if problem is not None:
                 self._unconverted.append(ConversionWarning(

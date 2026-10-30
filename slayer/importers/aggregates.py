@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Callable, Optional
+from typing import Callable, Optional, get_args
 
 import sqlglot
 from pydantic import BaseModel
@@ -22,8 +22,10 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.keys import SCALAR_PASSTHROUGH, check_scalar_arity
 from slayer.core.refs import functional_agg_text
-from slayer.core.syntax import parse_expr
+from slayer.core.errors import UnsupportedServerFunctionError
+from slayer.core.syntax import AggCall, ScalarCall, parse_expr, walk_parsed
 from slayer.sql.dialects import SqlDialect
+from slayer.sql.dialects.base import ListFn
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
@@ -327,21 +329,35 @@ def _func_args(node: exp.Func, *, name: str) -> list[exp.Expr]:
     return args
 
 
-def dialect_refusal(agg: str, *, dialect: SqlDialect | None) -> str | None:
-    """Why ``dialect`` cannot compute the aggregation ``agg``, else ``None``."""
+def dialect_refusal(name: str, *, dialect: SqlDialect | None) -> str | None:
+    """Why ``dialect`` cannot compute the aggregation or list function ``name``, else ``None``."""
     probe = exp.column("x")
     builders: dict[str, Callable[[SqlDialect], Expression]] = {
         "median": lambda d: d.build_median(inner=probe),
         "percentile": lambda d: d.build_percentile(p=exp.Literal.number("0.5"), col_expr=probe),
+        "collect": lambda d: d.build_collect(probe, None),
+        **{fn: (lambda d, fn=fn: d.build_list_call(fn, (probe, probe))) for fn in get_args(ListFn)},
     }
-    build = builders.get(agg)
+    build = builders.get(name)
     if dialect is None or build is None:
         return None
     try:
         build(dialect)
-    except NotImplementedError as exc:
+    except (NotImplementedError, UnsupportedServerFunctionError) as exc:
         return str(exc)
     return None
+
+
+def formula_refusal(formula: str, *, dialect: SqlDialect | None) -> str | None:
+    """Why ``dialect`` cannot compute an aggregation or list function ``formula`` calls, else ``None``."""
+    if dialect is None:
+        return None
+    try:
+        tree = parse_expr(formula)
+    except ValueError:
+        return None  # not yet parseable (markers still in it); validated once resolved
+    names = [n.agg if isinstance(n, AggCall) else n.name for n in walk_parsed(tree) if isinstance(n, (AggCall, ScalarCall))]
+    return next((r for name in names if (r := dialect_refusal(name, dialect=dialect)) is not None), None)
 
 
 class _Translator:
@@ -430,8 +446,6 @@ class _Translator:
             raise Unconvertible("percentile ORDER BY must be a bare column")
         self._refuse_list(col_node, "PERCENTILE")
         agg = "median" if math.isclose(p_val, 0.5) else "percentile"
-        if (refusal := dialect_refusal(agg, dialect=self.sql_dialect)) is not None:
-            raise Unconvertible(refusal)
         ref = self.policy.operand(col_node, mask=mask, agg=agg)
         return functional_agg_text(source=ref, suffix="median" if agg == "median" else f"percentile(p={p_node.name})")
 
@@ -525,7 +539,11 @@ def convert_aggregates(
             return translator._fail(f"could not parse expression: {exc}")
     else:
         tree = expr.copy()
-    return translator.convert(tree)
+    result = translator.convert(tree)
+    if result.ok and result.formula is not None and (
+            refusal := formula_refusal(result.formula, dialect=sql_dialect)) is not None:
+        return translator._fail(refusal)
+    return result
 
 
 def convert_expression(

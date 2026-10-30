@@ -249,6 +249,14 @@ class TestJoinedCubesPhysicalColumn:
         assert not any(has_measure(result, "orders", m) for m in ("tag_total", "double_total"))
         assert [i for i in cube_issues(result, "tag_total") if "list (ARRAY)" in i.message], result.report.issues
 
+    def test_calculated_percentile_over_a_joined_column_refused_by_the_target(self) -> None:
+        sql = "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY {customers}.id)"
+        project = CubeProject.model_validate({"cubes": [
+            cube(measures=[meas("p90", "number", sql)], joins=[self.JOIN]), CUSTOMERS]})
+        result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect="mysql").convert()
+        assert not has_measure(result, "orders", "p90")
+        assert [i for i in cube_issues(result, "p90") if "not supported" in i.message], result.report.issues
+
     def test_filtered_measure_over_a_cube_not_joined_is_dropped(self) -> None:
         result = import_cube([cube(measures=[meas("m", "sum", "{customers}.id", filters=PAID)]), CUSTOMERS])
         assert not has_measure(result, "orders", "m")

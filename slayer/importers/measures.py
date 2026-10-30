@@ -12,17 +12,22 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.syntax import AggCall, DottedRef, Ref, measure_dependency_problems, parse_expr, walk_parsed
+from slayer.importers.aggregates import formula_refusal
 from slayer.importers.column_types import list_refusal, refused_over_list
 from slayer.sql.column_expansion import reference_sites, resolve_ref_target, root_scope_column_ids
+from slayer.sql.dialects import SqlDialect
 
 
-def measure_problems(model: SlayerModel, *, models_by_name: Mapping[str, SlayerModel]) -> list[str | None]:
-    """Per measure of ``model``: why it cannot resolve, else ``None``."""
+def measure_problems(model: SlayerModel, *, models_by_name: Mapping[str, SlayerModel],
+                     dialect: SqlDialect | None = None) -> list[str | None]:
+    """Per measure of ``model``: why it cannot resolve (or ``dialect``, the target's, cannot compute it), else
+    ``None``."""
     def join_path(parts: tuple[str, ...]) -> bool:
         return _path_column(parts, model=model, models_by_name=models_by_name) is not None
 
     found = {i: p for i, m in enumerate(model.measures)
-             if (p := _list_problem(m, model=model, models_by_name=models_by_name)) is not None}
+             if (p := _list_problem(m, model=model, models_by_name=models_by_name)
+                 or formula_refusal(m.formula, dialect=dialect)) is not None}
     while True:  # a measure reading a dropped one is dropped too
         kept = [(i, m) for i, m in enumerate(model.measures) if i not in found]
         problems = measure_dependency_problems(

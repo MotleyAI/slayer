@@ -1226,7 +1226,8 @@ class CubeToSlayerConverter:
                                    ) -> list[ModelMeasure]:
         """``measures`` that resolve among their peers (and, given ``model``, its columns and join paths)."""
         if model is not None:
-            problems = measure_problems(model.model_copy(update={"measures": measures}), models_by_name=self._models)
+            problems = measure_problems(model.model_copy(update={"measures": measures}), models_by_name=self._models,
+                                        dialect=self._sql_dialect)
         else:
             problems = measure_dependency_problems([(m.name, m.formula) for m in measures])
         for m, problem in zip(measures, problems):

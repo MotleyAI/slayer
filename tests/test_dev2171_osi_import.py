@@ -146,6 +146,18 @@ class TestArrayFunctions:
         assert not has_column(result, "orders", "n_dim")
         assert [e for e in entries(result, "n_dim") if "dimension" in e.message], result.warnings
 
+    @pytest.mark.parametrize("target", ["mysql", "sqlite"])
+    def test_field_list_call_the_target_refuses_is_reported(self, db: Path, target: str) -> None:
+        result = import_osi(flat([orders([*LIST_FIELDS, f("n_tags", "CARDINALITY(tags)")])]), db=db, target_dialect=target)
+        assert not has_column(result, "orders", "n_tags")
+        assert [e for e in entries(result, "n_tags") if "not supported" in e.message], result.warnings
+
+    @pytest.mark.parametrize("sql", ["SUM(CARDINALITY(tags))", "ARRAY_AGG(DISTINCT status)"], ids=["length", "collect"])
+    def test_metric_list_function_the_target_refuses_is_unconverted(self, db: Path, sql: str) -> None:
+        result = import_osi(flat([orders(LIST_FIELDS, metrics=[m("listy", sql)])]), db=db, target_dialect="mysql")
+        assert unconverted(result, "listy")
+        assert [e for e in mentions(result, "listy") if "not supported" in e.message], result.unconverted_metrics
+
     @pytest.mark.parametrize("target", ["postgres", "snowflake", "bigquery"])
     @pytest.mark.parametrize(("sql", "fn", "args"), [
         ("ARRAY_CONTAINS(tags, 'a')", "contains", (exp.column("tags"), exp.Literal.string("a"))),
