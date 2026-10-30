@@ -8,7 +8,11 @@ from decimal import Decimal
 from typing import Any, Optional
 
 _BOOL_TEXT = {"true": True, "false": False}
-_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "f": "\f"}
+_ESCAPES = {
+    "n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "f": "\f", "a": "\a", "v": "\v", "e": "\x1b",
+    "\\": "\\", "'": "'", '"': '"',
+}
+_HEX = frozenset("0123456789abcdefABCDEF")
 _WRAPPERS = ("Nullable(", "LowCardinality(")
 
 
@@ -60,12 +64,24 @@ def _quoted(text: str, i: int) -> tuple[str, int]:
     buf, i = [], i + 1
     while text[i] != "'":
         if text[i] == "\\":
-            i += 1
-            buf.append(_ESCAPES.get(text[i], text[i]))
+            char, i = _escape(text, i)
+            buf.append(char)
         else:
             buf.append(text[i])
-        i += 1
+            i += 1
     return "".join(buf), i + 1
+
+
+def _escape(text: str, i: int) -> tuple[str, int]:
+    """The escape at ``text[i]`` (a backslash) and the index after it; an unknown or malformed one is the
+    backslash itself, as ClickHouse reads it."""
+    char = text[i + 1]
+    if char in _ESCAPES:
+        return _ESCAPES[char], i + 2
+    digits = text[i + 2:i + 4]
+    if char == "x" and len(digits) == 2 and set(digits) <= _HEX:
+        return chr(int(digits, 16)), i + 4
+    return "\\", i + 1
 
 
 def _bare(text: str, i: int, n: int) -> tuple[Optional[str], int]:

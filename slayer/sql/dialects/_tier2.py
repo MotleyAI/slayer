@@ -1,10 +1,10 @@
 """Tier-2 dialect subclasses (no live integration tests).
 
 Each Tier-2 dialect differs from its base only in scalar config (sqlglot
-name, EXPLAIN prefix/postfix, log10/log2 native flags) — no SQL-shape
-logic. They live together in one file because they're data-shaped, not
-logic-shaped. ``PrestoDialect`` inherits the Presto-family grammar from
-``slayer/sql/dialects/trino.py``.
+name, EXPLAIN prefix/postfix, log10/log2 native flags, the library functions
+it translates) — no SQL-shape logic. They live together in one file because
+they're data-shaped, not logic-shaped. ``PrestoDialect`` inherits the
+Presto-family grammar and library from ``slayer/sql/dialects/trino.py``.
 
 BigQuery, Snowflake and Trino were promoted out of this file to their own
 Tier 1 modules.
@@ -17,14 +17,21 @@ from typing import ClassVar
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import PORTABLE_LIBRARY, NativeFn, SqlDialect
 from slayer.sql.dialects.trino import PrestoFamilyDialect
+
+#: What Redshift, Databricks, Spark and Oracle translate: LIKE / ILIKE, trimming, replacing, finding, extrema.
+TIER2_LIBRARY = frozenset({
+    "like", "ilike", "trim", "ltrim", "rtrim", "replace", "instr", "strpos", "greatest", "least",
+})
+_EXTREMA: frozenset[NativeFn] = frozenset({"GREATEST", "LEAST"})
 
 
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "Redshift"
+    library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
     ilike_native: ClassVar[bool] = True
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
@@ -47,14 +54,16 @@ class RedshiftDialect(SqlDialect):
 class PrestoDialect(PrestoFamilyDialect):
     sqlglot_name: str = "presto"
     database_name: ClassVar[str] = "Presto"
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
 
 
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "Databricks"
+    library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
     sa_backend_names: frozenset[str] = frozenset({"databricks"})
@@ -68,8 +77,9 @@ class DatabricksDialect(SqlDialect):
 
 class SparkDialect(SqlDialect):
     sqlglot_name: str = "spark"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "Spark"
+    library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"spark"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
@@ -82,8 +92,10 @@ class SparkDialect(SqlDialect):
 
 class OracleDialect(SqlDialect):
     sqlglot_name: str = "oracle"
-    native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "Oracle"
+    library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
+    extremum_propagates_null: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
     sa_backend_names: frozenset[str] = frozenset({"oracle"})
     explain_prefix: str | None = "EXPLAIN PLAN FOR"

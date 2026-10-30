@@ -152,7 +152,13 @@ _PG_OID_MAP: dict[int, str] = {
     1022: "list",    # float8[]
     1182: "list",    # date[]
     1115: "list",    # timestamp[]
+    1185: "list",    # timestamptz[]
+    1014: "list",    # bpchar[]
     1231: "list",    # numeric[]
+    2951: "list",    # uuid[]
+    199: "list",     # json[]
+    3807: "list",    # jsonb[]
+    1001: "list",    # bytea[]
 }
 
 # MySQL field-type codes (aiomysql wire protocol)

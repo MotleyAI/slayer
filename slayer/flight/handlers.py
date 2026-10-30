@@ -1,4 +1,4 @@
-"""Flight SQL command handlers (DEV-1390 §4.2, §6.4).
+"""Flight SQL command handlers.
 
 Decodes incoming Flight SQL commands from ``descriptor.cmd``, ``action.body``
 and ticket bytes; dispatches to per-command logic; serialises responses.
@@ -20,7 +20,8 @@ from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer import usage_reporting
 from slayer.async_utils import run_sync
-from slayer.core.format import list_json_text
+from slayer.core.enums import DataType
+from slayer.core.format import encode_text
 from slayer.core.models import SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight import _flight_sql_pb2 as fsql_pb
@@ -92,6 +93,19 @@ def _pack_any(msg: object, type_url_suffix: str) -> bytes:
 
 
 # --- result-set shapes for the catalog commands ------------------------------
+
+
+def _arrow_cell(value: object, dt: DataType | None) -> object:
+    """An engine value fitted to its column's Arrow type; utf8 columns carry the codec's text form."""
+    if value is None:
+        return None
+    if dt is None or datatype_to_arrow(dt) == pa.utf8():
+        return encode_text(value)
+    if dt == DataType.DOUBLE and isinstance(value, decimal.Decimal):
+        return float(value)
+    if dt == DataType.INT and isinstance(value, decimal.Decimal):
+        return int(value)
+    return value
 
 
 def _empty_table(schema: pa.Schema) -> pa.Table:
@@ -383,7 +397,7 @@ class FlightHandlers:
         usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [
-            self._rewrite_row(row, result.column_name_mapping)
+            self._rewrite_row(row, result.column_name_mapping, result.projection_types)
             for row in response.data
         ]
         return pa.Table.from_pylist(rows, schema=schema)
@@ -401,18 +415,13 @@ class FlightHandlers:
 
     @staticmethod
     def _rewrite_row(
-        row: dict, mapping: list[tuple[str, str]],
+        row: dict, mapping: list[tuple[str, str]], types: "list[DataType | None]",
     ) -> dict:
-        """Rewrite an engine row's keys into projected names + coerce Decimals."""
-        out: dict = {}
-        for engine_alias, projected_name in mapping:
-            value = row.get(engine_alias)
-            if isinstance(value, decimal.Decimal):
-                value = float(value)
-            elif isinstance(value, (list, tuple)):
-                value = list_json_text(list(value))
-            out[projected_name] = value
-        return out
+        """Rewrite an engine row's keys into projected names, each cell fitted to its Arrow column."""
+        return {
+            projected_name: _arrow_cell(row.get(engine_alias), dt)
+            for (engine_alias, projected_name), dt in zip(mapping, types)
+        }
 
     @staticmethod
     def _serialise_schema(schema: pa.Schema) -> bytes:

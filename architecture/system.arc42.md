@@ -125,8 +125,12 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1954_canonical_paths.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
-    canonical function library, extended never forked. [review] Every Mode B
-    construct means the same on every dialect. [enforced: test:tests/test_dev2120_library_matrix.py]
+    canonical function library, extended never forked. [review]
+    - **10.1** Every Mode B construct means the same on every dialect.
+      [enforced: test:tests/test_dev2120_library_matrix.py]
+    - **10.2** A dialect without its own translation of a Mode B construct
+      refuses it with a typed error; a base-class default is never another
+      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
 11. **Versioned persistence**: models/queries/datasource configs carry
     `version`; migrations run automatically on load. [review]
 12. **Pydantic v2 for all models; never dataclasses.** [review]
@@ -146,7 +150,14 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
-17. **Importers preserve meaning**: an importer emits a construct only when
+17. **Honest wire catalogs**: every column a BI wire protocol advertises is
+    selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
+18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
+    consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+19. **One writer of result values**: every output path encodes result values
+    with one codec in `core.format`; none encodes a value itself.
+    [enforced: test:tests/test_dev2172_value_codec.py]
+20. **Importers preserve meaning**: an importer emits a construct only when
     SLayer reads it with the source's meaning, up to SLayer's documented NULL
     conventions; anything else is dropped with a report.
     [enforced: test:tests/test_dev2171_importers_preserve_meaning.py]
