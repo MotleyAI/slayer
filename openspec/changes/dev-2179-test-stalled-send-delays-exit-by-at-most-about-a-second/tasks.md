@@ -5,6 +5,6 @@
 
 ## 2. Verification (pr-implement stage)
 
-- [ ] 2.1 Load harness (scratchpad only): 64 `python3 -c "while True: pass"` burners, then rounds of 16 parallel `poetry run pytest -p no:cacheprovider -q <test id>` invocations, counting non-zero exit codes. With the OLD test (`git show origin/main:tests/test_usage_reporting_isolation.py`, run from a scratchpad copy) the harness reproduces failures; with the NEW test, 128 runs give 0 failures.
-- [ ] 2.2 Mutation probes — throwaway edits to `slayer/usage_reporting/recorder.py`, each reverted immediately and confirmed by `git diff --stat` showing no production change: (a) `shutdown()` joins without a timeout → the new test fails with `exit_wait` ≈ 10 s; (b) `_send_in_background` starts a non-daemon thread → the new test fails.
+- [x] 2.1 Load harness (scratchpad only): 64 `python3 -c "while True: pass"` burners, then rounds of 16 parallel `poetry run pytest -p no:cacheprovider -q <test id>` invocations, counting non-zero exit codes. With the OLD test (`git show origin/main:tests/test_usage_reporting_isolation.py`, run from a scratchpad copy) the harness reproduces failures; with the NEW test, 128 runs give 0 failures.
+- [x] 2.2 Mutation probes — throwaway edits to `slayer/usage_reporting/recorder.py`, each reverted immediately and confirmed by `git diff --stat` showing no production change: (a) `shutdown()` joins without a timeout → the new test fails with `exit_wait` ≈ 10 s; (b) `_send_in_background` starts a non-daemon thread → the new test fails.
 - [ ] 2.3 Full unit suite `poetry run pytest -m "not integration" -n auto` green; `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) clean; CI `lint-and-test` green on 3.11 and 3.14.
