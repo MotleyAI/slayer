@@ -1839,7 +1839,9 @@ def walk_parsed(node: Any) -> Iterator[Any]:
         return
     yield node
     for field in type(node).model_fields:
-        yield from walk_parsed(getattr(node, field))
+        # ``written_args`` records a spelling as written; ``args`` is the tree.
+        if field != "written_args":
+            yield from walk_parsed(getattr(node, field))
 
 
 # ---------------------------------------------------------------------------

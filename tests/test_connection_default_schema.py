@@ -221,10 +221,10 @@ class TestQueryTimeAttribution:
     ) -> None:
         await query_engine.storage.save_model(_model("contractors", sql_table="contractors", columns=_WITH_SKILLS))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
+        reads = StatementReads(columns={("contractors", "skills")})
         with _live(bq_engine, layout, schemas=schemas), pytest.raises(SchemaDriftError) as exc:
             await query_engine._maybe_raise_schema_drift(
-                err=_UNRELATED, datasource=_DS, read_set={"contractors"},
-                reads=StatementReads(columns={("contractors", "skills")}),
+                err=_UNRELATED, datasource=_DS, read_set={"contractors"}, reads=reads,
             )
         assert _verdicts(exc.value.to_delete) == [("EditModelDelete", "contractors", ["skills"])]
 
