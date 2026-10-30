@@ -1,4 +1,4 @@
-"""Schema identity and ingest-scope resolution (DEV-1758).
+"""Schema identity and ingest-scope resolution.
 
 ``SchemaRef`` is the single owner of a schema's identity — its catalog, its
 name, whether it was explicitly requested, and whether it is the connection
@@ -8,7 +8,8 @@ columns / PKs / comments, or lists ingestable objects goes through a
 catalog-qualified token that keeps DuckDB's ``Inspector`` from sweeping every
 attached catalog is carried end to end.
 
-The module is a leaf: it depends only on SQLAlchemy. The behavioural contract
+Dialect facts (the connection default, catalog-qualified tokens) come from the
+``SqlDialect`` registry. The behavioural contract
 (qualify matrix, dialect-gated catalog split, system-schema filter, scope
 conflict validation) is pinned by ``tests/test_schema_scope.py``; resolution
 precedence / dedup / current-catalog preference is pinned end-to-end on DuckDB
@@ -23,6 +24,8 @@ from typing import Optional
 import sqlalchemy as sa
 from pydantic import BaseModel
 
+from slayer.sql.dialects import dialect_for_sa_backend
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,13 +35,6 @@ class SchemaEnumerationError(Exception):
     datasource; the default / requested branches still work from a bare default.
     """
 
-
-# Dialects whose ``get_schema_names()`` emits catalog-qualified
-# ``catalog.schema`` tokens (DuckDB lists every attached catalog's schemas), so
-# a dotted token there must be split into ``(catalog, name)``. Everywhere else a
-# dot inside a schema name is part of the name (Postgres allows
-# ``CREATE SCHEMA "foo.bar"``) and must not be read as a catalog.
-_CATALOG_QUALIFYING_DIALECTS = frozenset({"duckdb"})
 
 # System / bookkeeping schemas never ingested. Matched on the LAST dotted
 # segment (``system.information_schema`` → ``information_schema``) …
@@ -58,7 +54,7 @@ _SYSTEM_FIRST_SEGMENTS = frozenset({"system", "temp"})
 
 
 def _dialect_qualifies_tokens(dialect_name: Optional[str]) -> bool:
-    return (dialect_name or "").lower() in _CATALOG_QUALIFYING_DIALECTS
+    return dialect_for_sa_backend((dialect_name or "").lower()).catalog_qualified_schema_tokens
 
 
 class SchemaRef(BaseModel, frozen=True):
@@ -221,28 +217,12 @@ def _current_catalog(sa_engine: sa.Engine) -> Optional[str]:
         return None
 
 
-def _default_schema_name(
+def connection_default_schema(
     inspector: sa.engine.Inspector, sa_engine: Optional[sa.Engine]
 ) -> Optional[str]:
-    """The connection's default schema name (bare, e.g. ``main`` / ``public``).
-
-    Only a real string counts (a mock inspector's attribute is ignored)."""
-    try:
-        name = inspector.default_schema_name
-    except Exception:  # noqa: BLE001
-        name = None
-    if isinstance(name, str) and name:
-        return name
-    if sa_engine is not None:
-        try:
-            with sa_engine.connect() as conn:
-                row = conn.execute(sa.text("SELECT current_schema()")).fetchone()
-            value = row[0] if row else None
-            if isinstance(value, str) and value:
-                return value
-        except Exception:  # noqa: BLE001 — dialect may lack current_schema()
-            pass
-    return name if isinstance(name, str) else None
+    """The connection's default schema name (bare, e.g. ``main`` / ``public``), from its dialect."""
+    dialect = dialect_for_sa_backend(_dialect_name(sa_engine))
+    return dialect.reflect_default_schema(sa_engine=sa_engine, inspector=inspector)
 
 
 def _dialect_name(engine: Optional[sa.Engine]) -> Optional[str]:
@@ -267,7 +247,7 @@ def default_schema_ref(
     )
     return SchemaRef(
         catalog=catalog,
-        name=_default_schema_name(inspector, engine),
+        name=connection_default_schema(inspector, engine),
         is_default=True,
     )
 
@@ -470,7 +450,7 @@ def resolve_ingest_scope(
     dialect = _dialect_name(sa_engine)
     qualifies = _dialect_qualifies_tokens(dialect)
     current_catalog = _current_catalog(sa_engine) if qualifies else None
-    default_schema = _default_schema_name(inspector, sa_engine)
+    default_schema = connection_default_schema(inspector, sa_engine)
 
     own_refs, skipped, enum_ok = _enumerate_own_schemas(
         inspector=inspector, dialect=dialect, qualifies=qualifies,
