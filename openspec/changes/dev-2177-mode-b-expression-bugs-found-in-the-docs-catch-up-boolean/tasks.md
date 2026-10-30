@@ -29,7 +29,7 @@
 
 - [x] 4.1 Make `value_type` / `_scalar_value_type` in `slayer/core/keys.py` return the joined type of `iif`, `coalesce`, `ifnull`, `greatest` and `least` through `join_conditional_branch_types`. This must never raise: on a mismatch it returns `None`, and `DataType.UNKNOWN` counts as untyped. Verify the existing `tests/test_dev1740_conditional_typing.py` and new unit cases.
 - [x] 4.2 Add `check_conditional_branches(roots, column_type)` to `slayer/engine/elaborate_env.py`. It raises `ScalarOperandTypeError` naming the call and both types and suggesting a CAST. Call it after the coercion pass in `bind_inputs.py` over every position's roots, dimensions and time dimensions included, for model and stage scopes. Verify test 1.4.
-- [ ] 4.3 Route `measure_key_type`'s conditional arm through `value_type`, and delete `_branch_type` and `_literal_data_type` from `slayer/engine/key_metadata.py`. Verify that the full unit suite passes.
+- [x] 4.3 Route `measure_key_type`'s conditional arm through `value_type`, and delete `_branch_type` and `_literal_data_type` from `slayer/engine/key_metadata.py`. Verify that the full unit suite passes.
 - [x] 4.4 Derive every inferred (non-explicit) measure and dimension type from the post-coercion key. Verify test 1.5 (response metadata and stage schema agree).
 
 ## 5. Docs, principles and gates (pr-implement)
@@ -40,4 +40,4 @@
 
   Verify that `docs/` has no remaining stale wording, e.g. a FILTER key described as "includes the condition".
 - [x] 5.2 The `architecture/system.arc42.md` §3 item 21 "One typing" [target: DEV-2180] has already landed in pr-plan (user, approved wording). Verify that `poetry run la-arch-check` is OK.
-- [ ] 5.3 Run the full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors against the baseline). Verify that all three are green.
+- [x] 5.3 Run the full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors against the baseline). Verify that all three are green.
