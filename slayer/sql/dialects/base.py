@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
 from collections.abc import Callable, Sequence
 
+import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
@@ -49,8 +50,6 @@ from slayer.sql.dialects.reflection import (
 from slayer.sql.naming_bijection import decode_alias, encode_alias
 
 if TYPE_CHECKING:
-    import sqlalchemy as sa
-
     from slayer.core.models import DatasourceConfig
 
 
@@ -325,6 +324,9 @@ class SqlDialect(BaseModel):
 
     # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
     primary_key_inspector_only: bool = False
+
+    # ``get_schema_names()`` yields ``catalog.schema`` tokens; elsewhere a dot is part of the name.
+    catalog_qualified_schema_tokens: bool = False
 
     @property
     def sync_driver(self) -> str | None:
@@ -1087,8 +1089,26 @@ class SqlDialect(BaseModel):
             .where(all_of(where))
         )
 
+    def reflect_default_schema(self, *, sa_engine: sa.Engine | None, inspector: Any) -> str | None:
+        """The connection's default schema: the Inspector's, else ``current_schema()``; ``None`` when unknown."""
+        try:
+            name = inspector.default_schema_name
+        except Exception:  # noqa: BLE001
+            name = None
+        if isinstance(name, str) and name:
+            return name
+        if sa_engine is None:
+            return None
+        try:
+            with sa_engine.connect() as conn:
+                row = conn.execute(sa.text("SELECT current_schema()")).fetchone()
+        except Exception:  # noqa: BLE001 — dialect may lack current_schema()
+            return None
+        value = row[0] if row else None
+        return value if isinstance(value, str) and value else None
+
     def reflect_schema_description(
-        self, *, sa_engine: "sa.Engine", schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
+        self, *, sa_engine: sa.Engine, schema: str | None, configured_schema: str | None,  # NOSONAR(S1172) — no-op hook default
     ) -> str | None:
         """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
         return None
