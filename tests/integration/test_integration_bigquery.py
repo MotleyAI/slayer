@@ -18,11 +18,12 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import Column, DatasourceConfig
 from slayer.engine.ingestion import (
     ingest_datasource,
     ingest_datasource_idempotent,
 )
+from slayer.engine.schema_drift import EditModelDelete, validate_datasource
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
@@ -240,6 +241,39 @@ class TestBigQueryReingest:
         loaded = await storage.get_model("orders", data_source="bqtest")
         discount = next(c for c in loaded.columns if c.name == "discount")
         assert discount.description == "Discount applied"
+
+
+@pytest.fixture
+def second_dataset(bq_dataset):
+    """Another dataset in the project, holding a same-named ``plain`` twin."""
+    client, _ = bq_dataset
+    other_id = f"slayer_test_{uuid.uuid4().hex[:12]}"
+    client.create_dataset(bigquery.Dataset(f"{_PROJECT}.{other_id}"))
+    try:
+        client.create_table(bigquery.Table(
+            f"{_PROJECT}.{other_id}.plain",
+            schema=[bigquery.SchemaField("ghost", "STRING")],
+        ))
+        yield other_id
+    finally:
+        client.delete_dataset(f"{_PROJECT}.{other_id}", delete_contents=True, not_found_ok=True)
+
+
+class TestBigQueryDriftWithSecondDataset:
+    async def test_bare_models_resolve_in_the_url_dataset(self, bq_dataset, second_dataset) -> None:
+        _, dataset_id = bq_dataset
+        ds = _ds_config(dataset_id, name="bqdrift")
+        models = ingest_datasource(datasource=ds)
+        assert {m.sql_table for m in models} == {"orders", "plain"}
+        plain = next(m for m in models if m.name == "plain")
+        plain.columns.append(Column(name="ghost", type=DataType.TEXT))
+
+        entries = await validate_datasource(datasource=ds, models=models)
+
+        assert [
+            (type(e).__name__, e.model_name, e.remove.columns if isinstance(e, EditModelDelete) else None)
+            for e in entries
+        ] == [("EditModelDelete", "plain", ["ghost"])]
 
 
 def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
