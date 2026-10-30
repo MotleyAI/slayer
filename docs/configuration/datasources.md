@@ -67,6 +67,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 
 A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another.
 A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
+On BigQuery the dataset in `bigquery://project/dataset` is the default schema, so a bare `sql_table` resolves there however many datasets the project holds.
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
 dependencies — the bundled demo datasource and the SQL API both need

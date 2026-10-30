@@ -101,6 +101,7 @@ class DuckdbDialect(SqlDialect):
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
+    catalog_qualified_schema_tokens: bool = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     database_name: ClassVar[str] = "DuckDB"
     native_lists: ClassVar[bool] = True

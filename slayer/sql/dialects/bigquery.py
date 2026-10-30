@@ -255,11 +255,16 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             .order_by(col("ordinal_position"))
         )
 
+    def reflect_default_schema(self, *, sa_engine: sa.Engine | None, inspector: Any) -> str | None:  # NOSONAR(S1172) — hook signature
+        """The connection URL's dataset (the driver reports no ``default_schema_name``); no SQL runs."""
+        dataset = getattr(getattr(sa_engine, "dialect", None), "dataset_id", None)
+        return dataset if isinstance(dataset, str) and dataset else None
+
     def reflect_schema_description(
         self, *, sa_engine: sa.Engine, schema: str | None, configured_schema: str | None,
     ) -> str | None:
         """The dataset's description via the driver's client; ``None`` when unresolvable or failing."""
-        dataset = schema or getattr(sa_engine.dialect, "dataset_id", None) or configured_schema
+        dataset = schema or self.reflect_default_schema(sa_engine=sa_engine, inspector=None) or configured_schema
         if not dataset:
             return None
         try:
