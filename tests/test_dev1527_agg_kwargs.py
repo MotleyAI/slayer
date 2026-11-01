@@ -104,6 +104,11 @@ class TestResolvedAggKwarg:
         assert rk.kind == "expr"
         assert rk.value.sql(dialect="postgres") == "customers__regions.weight"
 
+    def test_input_type_is_required(self) -> None:
+        col = exp.column("weight")
+        with pytest.raises(ValidationError):
+            ResolvedAggKwarg.model_validate({"kind": "expr", "value": col})
+
     def test_agg_render_spec_accepts_expr_kind(self) -> None:
         spec = AggRenderSpec(
             sql="price", name="price", model_name="sales",
