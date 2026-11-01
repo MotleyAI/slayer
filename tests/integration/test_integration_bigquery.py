@@ -42,6 +42,13 @@ from tests._dev2120_fixtures import (
     server_table_statements as dev2120_table_statements,
 )
 from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._sql_mode_retype_fixtures import (
+    check_query_carries_finding,
+    check_reingest_retypes,
+    check_validation_finding,
+    sql_shapes,
+    stale_sql_model,
+)
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -447,3 +454,15 @@ async def test_collect_over_exact_numerics(bq_amounts) -> None:
     assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
                    "b": {"n": [], "big": [], "i": []}}, resp.sql
     assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
+
+
+# Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
+# REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
+async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: DataType) -> None:
+    storage, ds = bq_lists
+    engine = SlayerQueryEngine(storage=storage)
+    await storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, column=column)
+    await check_query_carries_finding(engine, column=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

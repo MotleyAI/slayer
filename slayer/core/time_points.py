@@ -175,6 +175,15 @@ def is_time_point_shape(text: str) -> bool:
     return _parse(text) is not None or any(r.fullmatch(token) for r in (_CALENDAR_RE, _LAST_NEXT_N_RE, _AGO_RE))
 
 
+def relative_unit_word(text: str) -> Optional[str]:
+    """The unit word (lower-cased, plural as written) of a relative-token-shaped ``text``, else ``None``."""
+    token = " ".join(text.lower().split())
+    for regex, group in ((_CALENDAR_RE, 2), (_LAST_NEXT_N_RE, 3), (_AGO_RE, 2)):
+        if m := regex.fullmatch(token):
+            return m.group(group)
+    return None
+
+
 def is_relative_token(text: str, *, units: Units = _NO_UNITS) -> bool:
     """Whether ``text`` is a relative token (its meaning depends on the clock); its unit is built-in or one of ``units``."""
     return isinstance(_parse(text, units=units), _Relative)

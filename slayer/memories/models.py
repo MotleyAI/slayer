@@ -21,10 +21,10 @@ must use the ``memory:<id>`` prefix.
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ModelWrapValidatorHandler, field_validator, model_validator
 
 from slayer.core.query import SlayerQuery
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
 
 
 def _utcnow() -> datetime:
@@ -93,6 +93,13 @@ class Memory(BaseModel):
     entities: list[str] = Field(default_factory=list)
     query: SlayerQuery | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["Memory"]) -> "Memory":
+        memory_id = data.get("id") if isinstance(data, dict) else None
+        with migrating_document(None if memory_id is None else str(memory_id)):
+            return handler(data)
 
     @model_validator(mode="before")
     @classmethod

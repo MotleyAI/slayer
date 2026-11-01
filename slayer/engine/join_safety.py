@@ -10,7 +10,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Ty
 
 from pydantic import BaseModel
 
-from slayer.core.enums import JoinCardinality, RANKED_AGGREGATIONS
+from slayer.core.enums import JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
 from slayer.core.join_search import HopFilter, routes
 from slayer.core.join_walker import (
@@ -27,6 +27,7 @@ from slayer.core.join_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL
 from slayer.core.keys import (
+    is_ranked,
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
     ColumnKey,
@@ -844,7 +845,7 @@ def crossing_local_root_predicate(
             # host-rooted producer (as ``_local_broadcasts`` excludes).
             and k.locus != "host"
             and window_kwarg_of(k) is None
-            and k.agg not in RANKED_AGGREGATIONS
+            and not is_ranked(k)
             and host_model is not None
             and _crosses(k, host=host_model)
         )

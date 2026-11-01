@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from slayer.core.enums import RANKED_AGGREGATIONS
 from slayer.core.keys import (
+    is_ranked,
     AggregateKey,
     TransformKey,
     ValueKey,
@@ -95,7 +95,7 @@ def home_path_for(
     input_paths: List[Path] = list(source_leaf_paths(agg.source)) or [anchor]
     # A ranked aggregate's positional args are ranking keys, not value inputs;
     # they stay attributable from the source and never pull the home shallower.
-    arg_values = () if agg.agg in RANKED_AGGREGATIONS else agg.args
+    arg_values = () if is_ranked(agg) else agg.args
     for v in (*arg_values, *(val for _, val in agg.kwargs)):
         input_paths.extend(key_host_path(leaf) for leaf in parameter_row_leaves(v))
     seed_paths = list(input_paths)

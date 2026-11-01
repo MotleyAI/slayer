@@ -37,9 +37,8 @@ class TestExistingNamesUnaffected:
         agg = Aggregation(name="my_median", formula="MEDIAN({x})")
         assert agg.name == "my_median"
 
-    def test_scalar_name_still_rejected(self) -> None:
-        with pytest.raises(pydantic.ValidationError, match="scalar"):
-            Aggregation(name="round", formula="ROUND({x})")
+    def test_scalar_name_accepted(self) -> None:
+        assert Aggregation(name="round", formula="ROUND({x})").name == "round"
 
     def test_transform_name_still_rejected(self) -> None:
         with pytest.raises(pydantic.ValidationError, match="transform"):

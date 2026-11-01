@@ -43,6 +43,7 @@ from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
+    without_none,
 )
 from slayer.storage.content_fingerprint import StatKey, stat_key, tree_fingerprint
 from slayer.storage.document_loading import Loaded, stored_document_boundary
@@ -63,6 +64,13 @@ _MD_FENCE = "---\n"
 # ---- memory <-> .md --------------------------------------------
 
 
+def _memory_dict_to_md(data: dict[str, Any]) -> str:
+    """A stored memory dict as ``.md`` text: ``id`` is the file name, ``learning`` the body."""
+    front = {k: v for k, v in data.items() if k not in ("id", "learning")}
+    fm = yaml.safe_dump(without_none(front), sort_keys=True, default_flow_style=False, allow_unicode=True)
+    return f"{_MD_FENCE}{fm}{_MD_FENCE}{data.get('learning', '')}"
+
+
 def _memory_to_md(memory: Memory) -> str:
     """Serialise a :class:`Memory` to ``---\\n{frontmatter}---\\n{learning}``.
 
@@ -79,10 +87,8 @@ def _memory_to_md(memory: Memory) -> str:
         data.pop("description", None)
     if not data.get("entities"):
         data.pop("entities", None)
-    if data.get("query") is None:
-        data.pop("query", None)
     fm = yaml.safe_dump(
-        data, sort_keys=True, default_flow_style=False, allow_unicode=True,
+        without_none(data), sort_keys=True, default_flow_style=False, allow_unicode=True,
     )
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
 
@@ -333,13 +339,38 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         return raw if isinstance(raw, dict) else None
 
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        path = self._model_path(data_source, name)
+        self._model_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=name)
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        self._datasource_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for memory_id in self._memory_ids_on_disk():
+            try:
+                with open(self._memory_md_path(memory_id), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                    out[memory_id] = _md_to_memory_dict(memory_id, f.read())
+            except (OSError, yaml.YAMLError):
+                continue
+        return out
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        with self._memories_file_lock():
+            _atomic_write_text(path=self._memory_md_path(memory_id), text=_memory_dict_to_md(data))
+
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
         target_dir = os.path.join(self.models_dir, model.data_source)
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
-        data = model.model_dump(mode="json", exclude_none=True)
+        data = without_none(model.model_dump(mode="json"))
         self._model_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
@@ -455,7 +486,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self.check_datasource_id_collision(datasource.name)
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
-        data = datasource.model_dump(mode="json", exclude_none=True)
+        data = without_none(datasource.model_dump(mode="json"))
         self._datasource_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
@@ -483,6 +514,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             else:
                 with open(path) as f:
                     data = yaml.safe_load(f)
+                data = await self._with_library_granularities_renamed(name=name, data=data)
                 ds = DatasourceConfig.model_validate(data)
                 admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
                 if admit is not None:

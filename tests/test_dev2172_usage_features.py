@@ -116,6 +116,11 @@ def test_filter_counts(text: str, functions: list[str], flags: list[str]) -> Non
     assert counts["aggregations"] == Counter(["count"])
 
 
+def test_a_spelling_counts_its_arguments_once() -> None:
+    counts = _counts(_filters("strpos(lower(name), 'x') > 0"))
+    assert counts["functions"] == Counter(["instr", "lower"])
+
+
 def test_library_functions_by_name_scenario() -> None:
     found = query_features({"source_model": "m", "measures": ["count(*)"], "filters": [
         "lower(name) = 'a'", "regexp_like(name, 'a')", "payload ->> 'k' = 'v'", "contains_any(skills, ['go'])"]})

@@ -725,6 +725,19 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
     assert "orders" in warnings_emitted[0].message
 
 
+def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> None:
+    secret = "alice@example.com"
+    inline = {"name": "inline_orders", "sql_table": "orders", "data_source": "ds",
+              "columns": [{"name": "email", "type": "string"}],
+              "measures": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning) as caught:
+        SlayerQuery.model_validate({"version": 2, "source_model": inline, "dry_run": True})
+    texts = [r.getMessage() for r in caplog.records] + [str(w.message) for w in caught]
+    assert any("inline_orders" in t for t in texts), texts
+    assert not [t for t in texts if secret in t], texts
+
+
 def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
     """A v2 query without dry_run/explain migrates silently."""
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")

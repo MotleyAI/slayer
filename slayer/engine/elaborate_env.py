@@ -16,7 +16,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import LIST_AGGREGATIONS, RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
 from slayer.core.errors import (
     AssociationError,
     CanonicalAliasShadowsColumnError,
@@ -1522,7 +1522,7 @@ def _list_construct(key: ValueKey, *, typing: ListTyping) -> Optional[str]:
         return f"{key.name}() over a list"
     if isinstance(key, ArrayLiteralKey):
         return "A list literal"
-    if isinstance(key, AggregateKey) and key.agg.lower() in LIST_AGGREGATIONS:
+    if isinstance(key, AggregateKey) and list_valued(key, column_type=typing.column_type):
         return f"{key.agg}()"
     if isinstance(key, (ColumnKey, StarKey)) and typing.element_access(key):
         return f"Element access `{_operand_display(key)}`"
@@ -1640,7 +1640,7 @@ def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
             f"cannot take it.",
             suggestion=f"Aggregate its elements: {remedy}." if remedy else "Aggregate the list's elements instead.",
         )
-    if agg in LIST_AGGREGATIONS:
+    if list_valued(key, column_type=typing.column_type):
         source_type = value_type(source, column_type=typing.column_type)
         if source_type is not None and source_type.is_opaque:
             raise ListTypeError(
