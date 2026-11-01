@@ -738,8 +738,13 @@ class SlayerQueryEngine:
         policy: Optional[SessionPolicy] = None,
         cache_config: Optional[CacheConfig] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        client_factory: Optional[Callable[[DatasourceConfig], SlayerSQLClient]] = None,
     ):
         self.storage = storage
+        # Optional override for SQL-client construction. Lets callers route every
+        # statement through a gateway/proxy (no direct DB credentials) while
+        # keeping SQL generation and planning unchanged.
+        self._client_factory = client_factory
         # Read once per execution; relative time points resolve against it.
         self._clock = clock if clock is not None else host_clock()
         # Per-engine, opt-in query result cache (defaults to cache-indefinitely).
@@ -1342,8 +1347,15 @@ class SlayerQueryEngine:
         """Reuse (or lazily construct) the cached SQL client for a datasource."""
         ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
-            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
+            self._sql_clients[ds_key] = self._new_client(datasource)
         return self._sql_clients[ds_key]
+
+    def _new_client(self, datasource: DatasourceConfig) -> SlayerSQLClient:
+        """Construct a SQL client, honouring an injected ``client_factory``."""
+        factory = self._client_factory
+        if factory is not None:
+            return factory(datasource)
+        return SlayerSQLClient(datasource=datasource)
 
     async def _execute_pipeline(
         self,
@@ -1877,10 +1889,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        ds_key = _sql_client_cache_key(datasource)
-        if ds_key not in self._sql_clients:
-            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
-        client = self._sql_clients[ds_key]
+        client = self._client_for(datasource)
 
         probe_query = self._build_type_probe_query(model=model)
         # An expanded (query-backed) model is virtual sql-mode — pass it inline
@@ -2482,7 +2491,7 @@ class SlayerQueryEngine:
         sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
         findings: list[JoinCardinalityFinding] = []
         persist_entries: list[tuple] = []
-        client = SlayerSQLClient(datasource=ds_cfg)
+        client = self._client_for(ds_cfg)
         try:
             for m in scope:
                 for join in m.joins:
