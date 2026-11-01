@@ -19,8 +19,8 @@ boolean-valued. The same recognition SHALL drive binding gates, result typing an
 
 #### Scenario: Mixed-type coalesce is not boolean
 - **WHEN** a measure is written `sum(coalesce(flag, amount))` with `flag` BOOLEAN and `amount` INT
-- **THEN** it is aggregated as a plain numeric expression, with no boolean lowering and no
-  boolean typing
+- **THEN** the input is not boolean-valued: it is typed INT, `flag` reads as its integer inside
+  the `coalesce`, and the sum aggregates it as a plain number
 
 #### Scenario: nullif follows its first argument
 - **WHEN** a measure is written `sum(nullif(flag, false))`
