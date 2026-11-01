@@ -1642,16 +1642,6 @@
                 }
             }
         ],
-        "./slayer/osi/expression.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/pg_facade/connection.py": [
             {
                 "code": "reportArgumentType",

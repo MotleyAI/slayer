@@ -31,6 +31,13 @@ Each dbt semantic model becomes one SLayer model:
 - `time` → `type: time`
 - `expr` → `sql` (omitted if same as name)
 - `label` and `description` preserved directly
+- an `expr` reading a physical column whose name another dimension holds, or transforming the one of its own name (`status: UPPER(status)`),
+  is dropped with a report
+- a column's type is the live database type when `--datasource` resolves (with or without
+  `--include-hidden-models`), else the `data_type` declared for it in `schema.yml` or the manifest (`array<string>`,
+  `text[]` and `ARRAY<INT64>` become lists of their element type), else the measure's aggregation; a `min`/`max`
+  measure over a column none of these sources types, or an aggregation SLayer refuses over a list, is dropped with a
+  report
 
 ### Entities → Primary Keys + Joins
 
@@ -182,7 +189,7 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | Cross-model filter on an unreachable model | No join from the source model | Add the required join, or filter locally |
 | Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
 
-Percentile/median measures on a dialect that lacks them (MySQL / T-SQL) import fine but get an **info** caveat — pass `target_dialect=` to surface it at import time.
+A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it (MySQL, T-SQL).
 
 #### Conversion report
 
