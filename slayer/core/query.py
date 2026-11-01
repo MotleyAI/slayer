@@ -792,7 +792,8 @@ class TimeDimension(BaseModel):
         default=None, json_schema_extra=_advertise_string_date_range,
         description=(
             'The buckets to return: one period ("2025", "2025-Q1", "last month") or [lower, upper] '
-            "with either bound null (one-sided). change, change_pct, time_shift and window= "
+            'with either bound null (one-sided); a bound may be a {var} placeholder, written unquoted ("{start}"). '
+            "change, change_pct, time_shift and window= "
             "aggregates read rows before the range (a forward time_shift, after it) by themselves, "
             "so each month of 2025 with its "
             'change vs the previous month is just "2025": never widen the range and drop rows '

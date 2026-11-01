@@ -149,11 +149,11 @@ A bare model name that exists in several datasources resolves to the first liste
 
 ### Validate models
 
-`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the list of deletes needed to keep them valid; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-models` with body `{"data_source": null}` (or a datasource name) diffs the stored models against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `list_retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
 ### Recommend a root model
 
-`POST /recommend-root-model` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable or cross-datasource items return 400. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
+`POST /recommend-root-model` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
 
 ### Ingestion
 
