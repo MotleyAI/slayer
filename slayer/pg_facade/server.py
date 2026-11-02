@@ -193,12 +193,19 @@ def run_pg_serve(
 
     scheme = "postgresql+tls" if tls_ctx is not None else "postgresql"
     print(f"SLayer Postgres facade serving at {scheme}://{host}:{args.port}", flush=True)
-    server = _StoppableRun(
-        lambda: serve(host=host, port=args.port, engine=engine, storage=engine.storage, token=token, tls_ctx=tls_ctx)
-    )
+
+    async def _serve() -> None:
+        try:
+            await serve(host=host, port=args.port, engine=engine, storage=engine.storage, token=token, tls_ctx=tls_ctx)
+        finally:
+            await engine.aclose()  # on the serving loop, which owns the async resources
+
+    server = _StoppableRun(_serve)
     try:
         serve_until_terminated(run=server.run, stop=server.stop)
     except ValueError as exc:
         # validate_bind_address rejection (non-loopback without a token).
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
+    finally:
+        engine.close()

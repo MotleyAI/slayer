@@ -324,6 +324,8 @@ class PgConnection:
         self._writer = writer
         self._engine = engine
         self._storage = storage
+        # What the catalog reads; a scoped engine's storage view replaces it after auth.
+        self._read_storage = storage
         # Optional per-connection scoping: when ``storage_provider`` is given the
         # storage (and engine, via ``engine_factory``) is resolved from the
         # authenticated principal after auth — e.g. a tenant-scoped store.
@@ -567,12 +569,13 @@ class PgConnection:
                 self._engine = self._engine_factory(self._storage)
             else:
                 self._engine = _default_engine_factory(self._storage, client_factory=self._client_factory)
+            self._read_storage = getattr(self._engine, "storage", self._storage)
             # Mark only after BOTH constructions succeed — partial state
             # would leave teardown unsure which side to dispose.
             self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
-        storage = cast(StorageBackend, self._storage)
+        storage = cast(StorageBackend, self._read_storage)
         models_by_datasource: dict[str, list[SlayerModel]] = {}
         schema_by_datasource: dict[str, str] = {}
         failures = DocumentLoadFailures()
@@ -599,7 +602,7 @@ class PgConnection:
         if self._catalog_ttl_seconds is None:
             return None
         try:
-            return await self._storage.graph_fingerprint()
+            return await cast(StorageBackend, self._read_storage).graph_fingerprint()
         except OSError:
             return None
 
