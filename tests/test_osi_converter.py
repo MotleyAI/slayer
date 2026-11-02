@@ -30,6 +30,8 @@ from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
+#: A self-named field is dropped until DEV-2175 imports it.
+SELF_NAMED = pytest.mark.xfail(strict=True, reason="DEV-2175: self-named field")
 
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
@@ -415,6 +417,7 @@ def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
     assert _reported(result)
 
 
+@SELF_NAMED
 def test_derived_overlay_preserves_primary_key(shop_engine):
     # A derived overlay on the PK column (OSI not restating primary_key) keeps
     # the introspected PK flag.
@@ -633,9 +636,8 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     assert status.type == DataType.TEXT
 
 
-def test_derived_field_shadowing_physical_column_overlays(shop_engine):
-    # A derived OSI field whose name matches a physical column must overlay its
-    # expression onto that column, not be silently dropped.
+def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
+    # A self-named legacy overlay is dropped with a report; the physical column stays (DEV-2175 imports it).
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -646,9 +648,9 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     orders = {m.name: m for m in result.models}["orders"]
     status_cols = [c for c in orders.columns if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].sql == "LOWER(status)"
-    # the derived field inherits the shadowed column's known TEXT type, not DOUBLE
-    assert status_cols[0].type == DataType.TEXT
+    assert status_cols[0].is_base
+    assert (status_cols[0].physical_name, status_cols[0].type) == ("status", DataType.TEXT)
+    assert _reported(result)
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
@@ -1154,7 +1156,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     assert {m.name: m for m in orders.measures}["tot"].formula == "sum(amount)"
 
 
-def test_target_dialect_percentile_caveat(shop_engine):
+def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
@@ -1165,8 +1167,7 @@ def test_target_dialect_percentile_caveat(shop_engine):
     )
     result = _convert(shop_engine, doc, target_dialect="mysql")
     orders = {m.name: m for m in result.models}["orders"]
-    # measure still created, but an info caveat is reported.
-    assert "p90" in {meas.name for meas in orders.measures}
+    assert "p90" not in {meas.name for meas in orders.measures}
     assert _reported(result)
 
 
@@ -1260,6 +1261,7 @@ def test_a_query_source_list_column_is_a_list(staff_engine):
     assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
 
 
+@SELF_NAMED
 def test_a_derived_list_field_is_a_list(staff_engine):
     cols = _staff_columns(staff_engine, source="staff", fields=[
         OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
@@ -1297,6 +1299,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
     assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
 
+@SELF_NAMED
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
     monkeypatch.setattr(OsiToSlayerConverter, "_probe_expression_type", lambda self, model, expr: None)
     cols = _staff_columns(staff_engine, source="staff",

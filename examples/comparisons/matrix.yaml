@@ -451,8 +451,9 @@ rows:
   intent: Query arrays and repeated records with fan-out-safe aggregation.
   origin: Malloy
   slayer:
-    verdict: 'no'
-    text: Array and struct columns are opaque.
+    verdict: partial
+    how: "`count_distinct(tags.value)` · `contains(tags, 'vip')`"
+    caveat: "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
   malloy:
     verdict: 'yes'
     how: "`tags.each.sum()`"
