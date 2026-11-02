@@ -24,7 +24,7 @@ from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import dialect_of, reflect_columns, reflect_table_keys, table_location
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient
+from slayer.sql.client import ObjectNotFound, SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys
 from slayer.engine.schema_scope import (
@@ -141,6 +141,13 @@ def _logical_column_name(live_name: str) -> str:
     return "count_col" if live_name == "_count" else live_name
 
 
+class _Unread:
+    """Marks a ``default_schema`` the callee reads itself (``None`` is a real value)."""
+
+
+_UNREAD = _Unread()
+
+
 async def _generate_joins(
     *,
     client: SqlClient,
@@ -150,12 +157,14 @@ async def _generate_joins(
     model_name_by_table: dict[str, str] | None = None,
     schema_name: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
+    default_schema: str | None | _Unread = _UNREAD,
 ) -> list[ModelJoin]:
     """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
 
     Joins name the MODEL (via ``model_name_by_table``); a target with no model is dropped.
-    ``keys_by_table`` memoizes each table's keys across calls.
+    ``keys_by_table`` memoizes each table's keys across calls; ``default_schema`` is read when not given.
     """
+    resolved_default = await client.default_schema() if isinstance(default_schema, _Unread) else default_schema
     ref = _ref_from_token(client, schema)
     cache = keys_by_table if keys_by_table is not None else {}
 
@@ -170,7 +179,7 @@ async def _generate_joins(
         table_name=source_table,
         table_set=table_set,
         schema=schema_name if schema_name is not None else schema,
-        default_schema=await client.default_schema(),
+        default_schema=resolved_default,
         dialect=dialect_of(client),
     )
     joins = []
@@ -559,6 +568,7 @@ async def _build_one_model(
     model_name_by_table: dict[str, str] | None = None,
     internal_tool: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
+    default_schema: str | None | _Unread = _UNREAD,
 ) -> SlayerModel:
     """Introspect one live object into a model; raises on failure.
 
@@ -575,6 +585,7 @@ async def _build_one_model(
         model_name_by_table=model_name_by_table,
         schema_name=ref.name,
         keys_by_table=keys_by_table,
+        default_schema=default_schema,
     )
     keys = keys_by_table[obj.name]
     columns = await _introspect_table_columns(
@@ -636,6 +647,11 @@ async def _scan_one_schema(
     skipped: list[SkippedTable] = []
     internal_tables: list[InternalTable] = []
     keys_by_table: dict[str, TableKeys] = {}
+    default_schema: str | None | _Unread = _UNREAD
+    try:
+        default_schema = await client.default_schema() if entries else None
+    except Exception:  # noqa: BLE001 — each object then reads it inside its own isolated build
+        logger.debug("default-schema read failed; reading it per object", exc_info=True)
     for model_name, obj in entries:
         # Classified on the live name; still recorded under ``surface_internals``.
         tool = internal_table_rule(obj.name)
@@ -651,6 +667,7 @@ async def _scan_one_schema(
                     model_name_by_table=name_by_object,
                     internal_tool=None if surface_internals else tool,
                     keys_by_table=keys_by_table,
+                    default_schema=default_schema,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — per-object isolation
@@ -715,7 +732,10 @@ async def ingest_datasource_report(
 
     scanned: list[tuple[SchemaRef, IngestableObject]] = []
     for ref in scope.schemas:
-        objs = await list_ingestable_objects(client=client, ref=ref, include_views=include_views)
+        try:
+            objs = await list_ingestable_objects(client=client, ref=ref, include_views=include_views)
+        except ObjectNotFound:
+            objs = []  # a missing schema scans empty; callers then name the schemas that exist
         if include_tables:
             objs = [o for o in objs if o.name in include_tables]
         if exclude_tables:

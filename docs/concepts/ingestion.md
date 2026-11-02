@@ -163,14 +163,17 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 async def main():
     engine = SlayerQueryEngine(storage=storage)
-    result = await ingest_datasource_idempotent(
-        datasource=ds,
-        storage=storage,
-        client=engine.client_for(ds),  # the database is read through the engine's client
-        schema="public",
-        include_tables=["orders", "customers"],  # Optional filter
-        exclude_tables=["migrations"],            # Optional exclusion
-    )
+    try:
+        result = await ingest_datasource_idempotent(
+            datasource=ds,
+            storage=storage,
+            client=engine.client_for(ds),  # the database is read through the engine's client
+            schema="public",
+            include_tables=["orders", "customers"],  # Optional filter
+            exclude_tables=["migrations"],            # Optional exclusion
+        )
+    finally:
+        await engine.aclose()  # release the client's resources on this event loop
     # result.additions  — what was added (new models / columns / joins)
     # result.to_delete  — pending validate_models drift entries
     # result.errors     — per-model failures (best-effort, doesn't abort)

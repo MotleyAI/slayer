@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 import slayer.api.server as api_server
 import slayer.mcp.server as mcp_server
 from slayer.api.server import create_app
+from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, ModelMeasure
@@ -312,6 +313,27 @@ class TestEngineOwnsItsClients:
         response = engine.run_sync(engine.execute(COUNT_ORDERS))
         assert _n(response) == 4
         assert factory.clients[0].acloses == 1
+
+    def test_a_failing_client_release_neither_skips_others_nor_masks_the_result(
+        self, tmp_path: Path, shop: Shop,
+    ) -> None:
+        twin_db = str(tmp_path / "twin.db")
+        shutil.copy(shop.db, twin_db)
+        run_sync(shop.storage.save_datasource(shop_datasource(twin_db, name="twin")))
+        run_sync(shop.storage.save_model(orders_model(data_source="twin"), _validate=False))
+        factory = GatewayFactory()
+        engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
+
+        async def _both() -> int:
+            await engine.execute(COUNT_ORDERS, data_source=DS_NAME)
+            factory.clients[0].aclose = _failing_aclose  # type: ignore[method-assign]
+            return _n(await engine.execute(COUNT_ORDERS, data_source="twin"))
+
+        async def _failing_aclose() -> None:
+            raise RuntimeError("release failed")
+
+        assert engine.run_sync(_both()) == 4
+        assert factory.clients[1].acloses == 1
 
     def test_create_model_from_query_sync_releases_clients(self, shop: Shop, monkeypatch: pytest.MonkeyPatch) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=GatewayFactory())

@@ -6,10 +6,12 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.async_utils import run_sync
 from slayer.cli import _run_datasources_create, _run_ingest, main
 from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
@@ -155,6 +157,23 @@ class TestIngestExitCodes:
         assert out.strip(), "ingest must not be silent on an empty result"
         assert "analytics" in out
         assert "no tables or views found" in out.lower()
+
+    def test_unknown_schema_lists_the_available_ones(self, workspace: Path, capsys) -> None:
+        db = workspace / "x.duckdb"
+        con = duckdb.connect(str(db))
+        con.execute("CREATE SCHEMA sales")
+        con.execute("CREATE TABLE sales.orders (id INTEGER PRIMARY KEY)")
+        con.close()
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        run_sync(storage.save_datasource(DatasourceConfig(name="ds", type="duckdb", database=str(db))))
+
+        args = _args(workspace, schema="typo")
+        with pytest.raises(SystemExit) as exc:
+            _run_ingest(args)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out.lower()
+        assert "no tables or views found" in out
+        assert "sales" in out
 
     def test_errors_still_exit_nonzero(
         self, workspace: Path, monkeypatch

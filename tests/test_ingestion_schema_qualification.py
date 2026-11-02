@@ -399,7 +399,7 @@ def _duck_keys(engine: sa.Engine, *, table: str, schema: str) -> TableKeys:
 
 
 class TestAttachedCatalogs:
-    async def test_get_schema_names_are_catalog_qualified(self, attached_paths) -> None:
+    def test_get_schema_names_are_catalog_qualified(self, attached_paths) -> None:
         """Sanity: the fixture actually attached, and DuckDB qualifies tokens."""
         with _open_attached(attached_paths) as engine:
             names = set(sa.inspect(engine).get_schema_names())
@@ -875,7 +875,7 @@ class TestSelfHeal:
 
 
 class TestAdditionRendering:
-    async def test_updated_line_names_the_qualifier_repair(self) -> None:
+    def test_updated_line_names_the_qualifier_repair(self) -> None:
         """A qualifier repair adds no columns, so the ``Updated:`` line must be
         driven by ``sql_table_change`` alone (§3.7 rendering)."""
         addition = ModelAddition(
@@ -1283,7 +1283,7 @@ class TestFirstDotParsers:
 
 
 class TestForcedFilterProbe:
-    async def test_probe_reads_the_current_catalog_column(self, attached_paths) -> None:
+    def test_probe_reads_the_current_catalog_column(self, attached_paths) -> None:
         """The forced-filter presence probe reads columns through the engine's
         resolved dialect; with same-named tables across catalogs it must see the
         current catalog's columns, never the union."""
@@ -1447,7 +1447,7 @@ class TestRestParity:
         with pytest.raises(ValidationError):
             IngestRequest(datasource="ds", all_schemas=True, schemas=["b"])
 
-    async def test_legacy_schema_name_still_accepted(self) -> None:
+    def test_legacy_schema_name_still_accepted(self) -> None:
         req = IngestRequest(datasource="ds", schema_name="public")
         assert req.schema_name == "public"
 

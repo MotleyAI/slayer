@@ -876,7 +876,10 @@ class SlayerQueryEngine:
         """Release every client's loop-bound resources; the clients stay cached and usable."""
         self._drift_snapshots.clear()
         for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: a concurrent client_for may add a client during the await
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception:
+                logger.warning("Failed to release a SQL client during engine aclose.", exc_info=True)
 
     def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
         """Run one whole synchronous workflow in one bridged loop, releasing the clients' loop-bound

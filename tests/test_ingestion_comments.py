@@ -450,7 +450,7 @@ class TestColumnCommentsFallback:
         )
         assert comments == {"a": None, "b": None, "c": "ok"}
 
-    async def test_generic_fallback_merges_comments(self) -> None:
+    def test_generic_fallback_merges_comments(self) -> None:
         comments, _ = _fallback_comments(backend="postgresql", comments=[("id", "row id")], table="t")
         assert comments == {"id": "row id", "x": None}
 
@@ -477,7 +477,7 @@ class TestDuckDBEndToEnd:
         customers = _model_by_name(duckdb_models, "customers")
         assert _col(customers, "region").description == "Sales region"
 
-    async def test_uncommented_stays_none(self, duckdb_models) -> None:
+    def test_uncommented_stays_none(self, duckdb_models) -> None:
         orders = _model_by_name(duckdb_models, "orders")
         assert _col(orders, "status").description is None
         assert _model_by_name(duckdb_models, "customers").description is None

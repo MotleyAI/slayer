@@ -14,10 +14,11 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
     _generate_joins,
     _is_cross_schema_fk,
+    ingest_datasource,
     ingest_datasource_idempotent,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult
-from slayer.sql.client import SlayerSQLClient, SqlClient
+from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
 from slayer.sql.dialects import PostgresDialect, SqliteDialect, TableKeys
 from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
 from slayer.storage.sqlite_conn import transaction
@@ -183,6 +184,61 @@ class TestCompositeFk:
         finally:
             await client.aclose()
             client.close()
+
+
+    async def test_a_scan_reads_the_default_schema_once(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_schema(db_path)
+        client = _CountsDefaultSchema(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
+        try:
+            models = await ingest_datasource(client.datasource, client=client)
+        finally:
+            await client.aclose()
+            client.close()
+        assert len(models) > 1
+        assert client.default_schema_reads <= 2  # scope resolution + one per scanned schema
+
+
+    async def test_a_failed_scan_read_falls_back_to_per_object_reads(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_schema(db_path)
+        client = _FailsFirstScanRead(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
+        try:
+            models = await ingest_datasource(client.datasource, client=client)
+        finally:
+            await client.aclose()
+            client.close()
+        assert client.failed
+        assert {m.name for m in models} >= {"customers", "orders", "memberships"}
+
+
+class _FailsFirstScanRead(DelegatingSqlClient):
+    """Fails the first default-schema read issued after the object listing."""
+
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.listed = False
+        self.failed = False
+
+    async def list_objects(self, schema: str | None):
+        self.listed = True
+        return await self.inner.list_objects(schema)
+
+    async def default_schema(self) -> str | None:
+        if self.listed and not self.failed:
+            self.failed = True
+            raise RuntimeError("transient metadata failure")
+        return await self.inner.default_schema()
+
+
+class _CountsDefaultSchema(DelegatingSqlClient):
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.default_schema_reads = 0
+
+    async def default_schema(self) -> str | None:
+        self.default_schema_reads += 1
+        return await self.inner.default_schema()
 
 
 # ---------------------------------------------------------------------------
