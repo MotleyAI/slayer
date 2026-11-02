@@ -6,8 +6,10 @@ import datetime
 import json
 import shutil
 import socket
-import time
+import subprocess
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,7 @@ from slayer.usage_reporting import sender, settings
 from tests._usage_reporting_capture import CaptureServer, RefusedEndpoint
 from tests._usage_reporting_helpers import (
     SENT,
+    SUBPROCESS_TIMEOUT,
     assert_no_sentinel,
     build_storage,
     cli,
@@ -181,22 +184,50 @@ def test_send_never_raises_when_config_dir_vanishes(tmp_path) -> None:
     sender.send(paths, now=datetime.datetime.now(datetime.timezone.utc), url="http://127.0.0.1:9/")
 
 
-def test_stalled_send_delays_exit_by_at_most_about_a_second(store: str, usage_reporting_env) -> None:
-    args = ["models", "--storage", store, "list"]
-    off_env = usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off")
-    started = time.monotonic()
-    assert run_slayer(args, env=off_env).returncode == 0
-    off_duration = time.monotonic() - started
+_EXIT_WAIT_WRAPPER = """
+import atexit, runpy, time
+from pathlib import Path
+atexit.register(lambda: Path({exit_stamp!r}).write_text(repr(time.monotonic())))
+try:
+    runpy.run_module("slayer", run_name="__main__", alter_sys=True)
+finally:
+    Path({work_done_stamp!r}).write_text(repr(time.monotonic()))
+"""
 
+
+def _read_stamp(path: Path, result: subprocess.CompletedProcess[str]) -> float:
+    try:
+        return float(path.read_text())
+    except (OSError, ValueError):
+        raise AssertionError(f"{path.name} stamp missing or unparseable; stderr:\n{result.stderr}") from None
+
+
+def _run_slayer_timing_exit_wait(
+    args: list[str], *, env: dict[str, str], stamp_dir: Path,
+) -> tuple[subprocess.CompletedProcess[str], float]:
+    """Run the CLI; also return seconds from the command's return to the last exit hook."""
+    work_done, exit_stamp = stamp_dir / "work_done", stamp_dir / "exit"
+    wrapper = _EXIT_WAIT_WRAPPER.format(exit_stamp=str(exit_stamp), work_done_stamp=str(work_done))
+    result = subprocess.run(
+        [sys.executable, "-c", wrapper, *args],
+        env=env, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
+    )
+    return result, _read_stamp(exit_stamp, result) - _read_stamp(work_done, result)
+
+
+def test_stalled_send_delays_exit_by_at_most_about_a_second(
+    store: str, usage_reporting_env, tmp_path: Path,
+) -> None:
+    args = ["models", "--storage", store, "list"]
     run_slayer(args, env=usage_reporting_env.subprocess_env())
     make_due()
     usage_reporting_env.capture.behaviour.delay = 10
-    started = time.monotonic()
-    result = run_slayer(args, env=usage_reporting_env.subprocess_env())
-    on_duration = time.monotonic() - started
+    result, exit_wait = _run_slayer_timing_exit_wait(
+        args, env=usage_reporting_env.subprocess_env(), stamp_dir=tmp_path,
+    )
     assert result.returncode == 0, result.stderr
     assert usage_reporting_env.capture.arrivals == 1
-    assert on_duration - off_duration < 2.0
+    assert exit_wait < 2.0
 
     usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=1))
     assert usage(show(), "cli:models.list")["ok"] == 2
