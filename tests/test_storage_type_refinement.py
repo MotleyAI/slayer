@@ -30,7 +30,7 @@ from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.type_refinement import (
     has_refineable_columns,
@@ -283,7 +283,7 @@ class TestRefineDictWithLiveSchema:
             username="nobody",
             password="nope",  # NOSONAR(S2068) — test fixture, not a real credential; targets a closed port to assert hard-fail
         )
-        with pytest.raises(OperationalError):
+        with pytest.raises(DatabaseUnavailable):
             await _refine(d, ds)
 
 
@@ -408,7 +408,7 @@ class TestYamlStorageRefinementOnLoad:
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
 
         def _boom(*_args, **_kw):
-            raise OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
+            raise OperationalError("simulated", None, Exception("connection refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
         # DEV-1551: every engine consumer goes through engine_factory.get_engine;
         # patching it surfaces the same connect failure the legacy
@@ -421,7 +421,7 @@ class TestYamlStorageRefinementOnLoad:
         finally:
             await engine.aclose()
             engine.close()
-        assert isinstance(ei.value.__cause__, OperationalError)
+        assert isinstance(ei.value.__cause__, DatabaseUnavailable)
 
 
 def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_called check fires first
@@ -577,7 +577,7 @@ class TestRefineSqliteAffinityProbe:
             username="nobody",
             password="nope",  # NOSONAR(S2068)
         )
-        with pytest.raises(OperationalError):
+        with pytest.raises(DatabaseUnavailable):
             await _refine(d, ds)
 
     async def test_sqlite_int_with_pure_int_storage_stays_int(

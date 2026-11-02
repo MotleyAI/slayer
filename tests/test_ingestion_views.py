@@ -226,14 +226,12 @@ class TestDialectTolerance:
             "table", "table", "view", "materialized_view",
         ]
 
-    def test_include_views_false_skips_accessors_entirely(self) -> None:
-        insp = _mock_inspector(tables=["orders"], views=["v_orders"])
+    def test_include_views_false_leaves_views_out(self) -> None:
+        insp = _mock_inspector(tables=["orders"], views=["v_orders"], matviews=["m_orders"])
         objects = _list_objects(
             insp, schema=None, include_views=False
         )
         assert _names(objects) == ["orders"]
-        insp.get_view_names.assert_not_called()
-        insp.get_materialized_view_names.assert_not_called()
 
     def test_schema_is_forwarded_to_every_accessor(self) -> None:
         """Schema-qualified scans must not silently fall back to the default

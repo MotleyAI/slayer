@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
+from slayer.sql.client import DatabaseUnavailable
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -119,7 +120,8 @@ _LOAD_FAILURES: dict[str, tuple[Callable[[], dict], Any, Callable[[BaseException
         _orders_v5_double, None, _is_value_error("unavailable for type refinement")),
     "refinement-driver-error": (
         _orders_v5_double, _UNREACHABLE_PG,
-        lambda cause: isinstance(cause, sqlalchemy.exc.OperationalError)),
+        lambda cause: isinstance(cause, DatabaseUnavailable)
+        and isinstance(cause.__cause__, sqlalchemy.exc.OperationalError)),
     "malformed-version": (_orders_bad_version, "live", _is_value_error("abc")),
 }
 
