@@ -1,11 +1,11 @@
-"""Flight SQL command handlers (DEV-1390 §4.2, §6.4).
+"""Flight SQL command handlers.
 
 Decodes incoming Flight SQL commands from ``descriptor.cmd``, ``action.body``
 and ticket bytes; dispatches to per-command logic; serialises responses.
 
 All public methods are synchronous because pyarrow's ``FlightServerBase``
-dispatches each RPC on its own gRPC thread. SLayer's storage / engine
-are async; we bridge through :func:`slayer.async_utils.run_sync`.
+dispatches each RPC on its own gRPC thread. Storage calls bridge through
+:func:`slayer.async_utils.run_sync`, engine calls through ``engine.run_sync``.
 """
 
 from __future__ import annotations
@@ -363,22 +363,15 @@ class FlightHandlers:
         # (caught here rather than at do_get for a clearer error path).
         zero_query = result.query.model_copy(update={"limit": 0})
 
-        async def execute_zero():
-            return await self._engine.execute(query=zero_query)
-
-        run_sync(execute_zero())  # only the side-effect; ignore the empty rows.
+        self._engine.run_sync(self._engine.execute(query=zero_query))  # only the side-effect; ignore the empty rows.
         return self._build_schema(result)
 
     def _execute_full(self, result: "QueryResult") -> pa.Table:
         """Run the full query, coerce rows, return a pa.Table matching the
         catalog projection's column names."""
-
-        async def execute_full():
-            return await self._engine.execute(query=result.query)
-
         usage_reporting.observe_query(result.query)
         with usage_reporting.counting(surface="flight", token="query"):
-            response = run_sync(execute_full())
+            response = self._engine.run_sync(self._engine.execute(query=result.query))
         usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [

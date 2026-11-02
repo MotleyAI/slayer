@@ -670,7 +670,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
-        engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
         try:
             rec = await engine.recommend_root_model(
                 request.items, data_source=request.data_source,

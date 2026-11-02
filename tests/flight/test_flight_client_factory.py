@@ -9,7 +9,10 @@ import pytest
 from pydantic import BaseModel
 
 import slayer.flight.server as flight_server
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight.cli import run_flight_serve
+from slayer.flight.handlers import FlightHandlers
+from slayer.facade.translator import QueryResult
 from tests._gateway_harness import (
     GatewayFactory,
     customers_model,
@@ -61,3 +64,20 @@ async def test_flight_builder_passes_the_factory_to_its_engine(tmp_path: Path, m
     response = await engine.execute(COUNT_ORDERS)
     assert response.data[0]["orders.n"] == 4
     assert response.sql in factory.all_statements()
+
+
+async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path) -> None:
+    db = str(tmp_path / "shop.db")
+    seed_shop(db)
+    storage = await shop_storage(
+        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+    )
+    factory = GatewayFactory()
+    handlers = FlightHandlers(engine=SlayerQueryEngine(storage=storage, client_factory=factory), storage=storage)
+    sql = "SELECT status, amount_sum FROM orders"
+    result = handlers._translate(sql)
+    assert isinstance(result, QueryResult), result
+    handlers._derive_query_schema(result)
+    assert [c.acloses for c in factory.clients] == [1]
+    handlers.do_get_for_sql(sql)
+    assert [c.acloses for c in factory.clients] == [2]

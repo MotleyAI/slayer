@@ -875,7 +875,7 @@ class SlayerQueryEngine:
     async def aclose(self) -> None:
         """Release every client's loop-bound resources; the clients stay cached and usable."""
         self._drift_snapshots.clear()
-        for client in list(self._sql_clients.values()):
+        for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: a concurrent client_for may add a client during the await
             await client.aclose()
 
     def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
@@ -897,7 +897,7 @@ class SlayerQueryEngine:
         resources are released by ``aclose()`` on their event loop, not here.
         """
         try:
-            for client in list(self._sql_clients.values()):
+            for client in list(self._sql_clients.values()):  # NOSONAR(S7504) — snapshot: another thread's client_for may add a client meanwhile
                 try:
                     client.close()
                 except Exception:
@@ -2262,16 +2262,7 @@ class SlayerQueryEngine:
         root_hint: str | None = None,
     ) -> RootModelRecommendation:
         """Synchronous wrapper for :meth:`recommend_root_model`."""
-
-        async def _run() -> RootModelRecommendation:
-            try:
-                return await self.recommend_root_model(
-                    items, data_source=data_source, root_hint=root_hint
-                )
-            finally:
-                await self.aclose()
-
-        return run_sync(_run())
+        return self.run_sync(self.recommend_root_model(items, data_source=data_source, root_hint=root_hint))
 
 
     async def edit_model_remove(
@@ -2694,7 +2685,7 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
 
-        return run_sync(
+        return self.run_sync(
             self.create_model_from_query(
                 query=query,
                 name=name,

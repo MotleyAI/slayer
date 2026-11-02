@@ -175,7 +175,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
         await client.aclose()
         await execute_rows()
 
-    async def close_idempotent() -> None:
+    async def close_idempotent() -> None:  # NOSONAR(S7503) — every check is awaited by run_conformance
         client.close()
         client.close()
 

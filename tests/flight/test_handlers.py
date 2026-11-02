@@ -6,7 +6,7 @@ Covers:
   return correctly-shaped pa.Tables built from a real ``FlightCatalog``.
 * Stubbed commands return well-typed empty pa.Tables.
 * The Any-wrapped command/ticket decoder round-trips against the
-  capture-corpus fixtures (DEV-1390 §1.1).
+  capture-corpus fixtures.
 * Prepared-statement creation produces a ``dataset_schema`` derived
   from the LIMIT-0 schema (with an in-memory mock engine).
 """
@@ -22,6 +22,7 @@ import pyarrow.flight as fl
 import pytest
 from google.protobuf.any_pb2 import Any as PbAny
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import SlayerResponse
@@ -74,6 +75,9 @@ class _FakeEngine:
 
     async def execute(self, *, query):  # noqa: ARG002  # NOSONAR(S7503) — must match async interface (called via await in production)
         return self._response
+
+    def run_sync(self, workflow):
+        return run_sync(workflow)
 
 
 def _orders_model() -> SlayerModel:

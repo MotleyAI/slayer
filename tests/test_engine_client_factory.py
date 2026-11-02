@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 
+import slayer.api.server as api_server
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
@@ -311,6 +312,18 @@ class TestEngineOwnsItsClients:
         assert _n(response) == 4
         assert factory.clients[0].acloses == 1
 
+    def test_create_model_from_query_sync_releases_clients(self, shop: Shop, monkeypatch: pytest.MonkeyPatch) -> None:
+        engine = SlayerQueryEngine(storage=shop.storage, client_factory=GatewayFactory())
+        released: list[bool] = []
+
+        async def _aclose() -> None:
+            released.append(True)
+
+        monkeypatch.setattr(engine, "aclose", _aclose)
+        model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
+        assert model.name == "rev_by_status"
+        assert released == [True]
+
 
 class TestEntryPoints:
     async def test_the_local_python_client_passes_the_factory_through(self, shop: Shop) -> None:
@@ -338,6 +351,20 @@ class TestEntryPoints:
         assert validated.status_code == 200, validated.text
         assert ingested.status_code == 200, ingested.text
         assert {"execute", "list_objects", "reflect_columns"} <= {c.op for c in factory.all_calls()}
+
+    def test_rest_requests_share_the_app_engine(self, shop: Shop, monkeypatch: pytest.MonkeyPatch) -> None:
+        built: list[SlayerQueryEngine] = []
+
+        class _Counting(SlayerQueryEngine):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                built.append(self)
+
+        monkeypatch.setattr(api_server, "SlayerQueryEngine", _Counting)
+        http = TestClient(create_app(storage=shop.storage, client_factory=GatewayFactory()))
+        recommended = http.post("/recommend-root-model", json={"items": ["orders.amount", "customers.id"]})
+        assert recommended.status_code == 200, recommended.text
+        assert len(built) == 1
 
     async def test_mcp_builder_passes_the_factory_to_every_engine(self, shop: Shop) -> None:
         factory = GatewayFactory()

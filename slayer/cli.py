@@ -60,7 +60,7 @@ from slayer.pg_facade.server import run_pg_serve
 from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
-from slayer.storage.base import default_storage_path, resolve_storage
+from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.type_refinement import (
     has_refineable_columns,
@@ -2223,17 +2223,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     if include_hidden and ds is not None:
         await converter.collect_metadata(client=engine.client_for(ds))
     result = converter.convert()
-
-    hidden_count = 0
-    for model in result.models:
-        await storage.save_model(model)
-        suffix = " [hidden]" if model.hidden else ""
-        if model.hidden:
-            hidden_count += 1
-        print(
-            f"Imported model: {model.name}{suffix} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
-        )
+    hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
 
     # Grouped, category-keyed conversion report + a severity tally.
     if result.unconverted_metrics or result.warnings:
@@ -2246,6 +2236,21 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
+
+
+async def _save_imported_dbt_models(*, storage: StorageBackend, models: list[SlayerModel]) -> int:
+    """Save and report each imported model; returns the hidden count."""
+    hidden_count = 0
+    for model in models:
+        await storage.save_model(model)
+        suffix = " [hidden]" if model.hidden else ""
+        if model.hidden:
+            hidden_count += 1
+        print(
+            f"Imported model: {model.name}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    return hidden_count
 
 
 def _run_import_cube(args):
