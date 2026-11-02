@@ -15,6 +15,7 @@ Monthly sum: 2024-10 10, -11 20, -12 45, 2025-01 150, -02 70, -03 30, -04 60, -0
 Per customer: Alice 170 (5), Bob 130 (3), Carol 190 (3); total 490. Status: paid 345 (7), open 145 (4);
 every ordering customer has both statuses, so their credit (600) attributes to each status.
 ``with_namesake`` adds customer 6 Alice R1 0 and order 12 (6, paid, 2025-07-01, 40).
+``with_last_year`` adds orders 13 (Bob, paid, 2024-01-05, 8) and 14 (Carol, open, 2024-06-30, 12).
 
 Child dataset (``make_child_engine``): ``orders`` and ``returns`` both join ``customers``.
 
@@ -27,6 +28,12 @@ events (id, kind), joined to nothing: 1 a | 2 b | 3 a | 4 c | 5 a | 6 b
 
 Orders: Alice 30, Bob 35, Carol 40, Dan 50, parentless 13; total 168. Returns: Alice 7, Carol 8; total 15.
 By region: North 65, South 40, NULL 63 (Dan + parentless).
+
+Items dataset (``make_items_engine``), one model ``items``:
+
+items (id, code, flag, status, tags):
+   1 A123  true  paid    [x, y] | 2 A12  false NULL    [x] | 3 B123 NULL paid [y]
+   4 A1234 true  open    []     | 5 XA123 false shipped NULL
 """
 
 from __future__ import annotations
@@ -67,6 +74,8 @@ STAGE_COLUMN = "customers__regions__name"
 SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
+AGG_FILTER = "count(*) FILTER (WHERE status = 'paid')"
+IN_LIST_VARIABLE = "status in ({statuses})"
 CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
 #: Guidance marker for an aggregate over a model no join path reaches; owned by ``measures``.
 UNRELATED_MODEL = "no join path reaches"
@@ -78,6 +87,7 @@ STAGE_NEEDED = "a cross-row value must still see"
 READABLE_LABEL = "never by an id alone"
 ONE_QUERY = "ONE QUESTION = ONE QUERY"
 FAN_OUT = "NEVER fans out or double counts"
+PER_QUERY_EXPRESSION = "in the position that uses it"
 
 #: Example text or schema-owned marker → (owning $defs model, field) in the query tool's input schema.
 EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
@@ -103,6 +113,9 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
     STAGE_NOT_NEEDED: ("SlayerQuery", "name"),
     STAGE_NEEDED: ("SlayerQuery", "name"),
     READABLE_LABEL: ("SlayerQuery", "dimensions"),
+    AGG_FILTER: ("SlayerQuery", "measures"),
+    IN_LIST_VARIABLE: ("SlayerQuery", "variables"),
+    PER_QUERY_EXPRESSION: ("SlayerQuery", "source_model"),
 }
 
 
@@ -164,9 +177,16 @@ def _values(rows: list[tuple]) -> str:
     )
 
 
-def _idiom_seed(*, with_namesake: bool) -> Callable[[str], None]:
+_LAST_YEAR_ROWS = [(13, 2, "paid", "2024-01-05", 8), (14, 3, "open", "2024-06-30", 12)]
+
+
+def _idiom_seed(*, with_namesake: bool, with_last_year: bool) -> Callable[[str], None]:
     customers = _CUSTOMER_ROWS + ([(6, "Alice", 1, 0)] if with_namesake else [])
-    orders = _ORDER_ROWS + ([(12, 6, "paid", "2025-07-01", 40)] if with_namesake else [])
+    orders = (
+        _ORDER_ROWS
+        + ([(12, 6, "paid", "2025-07-01", 40)] if with_namesake else [])
+        + (_LAST_YEAR_ROWS if with_last_year else [])
+    )
 
     def seed(db_path: str) -> None:
         duckdb = pytest.importorskip("duckdb")
@@ -186,10 +206,13 @@ def _idiom_seed(*, with_namesake: bool) -> Callable[[str], None]:
     return seed
 
 
-async def make_idiom_engine(*, with_namesake: bool = False) -> AsyncIterator[SlayerQueryEngine]:
+async def make_idiom_engine(
+    *, with_namesake: bool = False, with_last_year: bool = False,
+) -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect="duckdb", seed=_idiom_seed(with_namesake=with_namesake), models=idiom_models(),
+        dialect="duckdb", seed=_idiom_seed(with_namesake=with_namesake, with_last_year=with_last_year),
+        models=idiom_models(),
     ) as (engine, _):
         yield engine
 
@@ -265,6 +288,37 @@ async def make_child_engine(*, with_regionless: bool = True) -> AsyncIterator[Sl
     async with seeded_exec_engine(
         dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), models=_child_models(),
     ) as (engine, _):
+        yield engine
+
+
+def _items_model(*, data_source: str = "test") -> SlayerModel:
+    return SlayerModel(
+        name="items", sql_table="items", data_source=data_source,
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="code", type=DataType.TEXT),
+            Column(name="flag", type=DataType.BOOLEAN),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT),
+        ],
+    )
+
+
+def _items_seed(db_path: str) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect(db_path)
+    for stmt in (
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, code VARCHAR, flag BOOLEAN, status VARCHAR, tags VARCHAR[])",
+        "INSERT INTO items VALUES (1, 'A123', true, 'paid', ['x', 'y']), (2, 'A12', false, NULL, ['x']), "
+        "(3, 'B123', NULL, 'paid', ['y']), (4, 'A1234', true, 'open', []), (5, 'XA123', false, 'shipped', NULL)",
+    ):
+        con.execute(stmt)
+    con.close()
+
+
+async def make_items_engine() -> AsyncIterator[SlayerQueryEngine]:
+    pytest.importorskip("duckdb")
+    async with seeded_exec_engine(dialect="duckdb", seed=_items_seed, models=[_items_model()]) as (engine, _):
         yield engine
 
 

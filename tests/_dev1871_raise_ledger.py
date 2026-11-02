@@ -459,7 +459,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category='control', family='positions', user=False, owner='compiler'),
     _row(module=_EE, function='_check_native_lists', exc='ListTypeError',
          message='… needs a database with native lists; … has none.'
-         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse or Trino).',
+         + SUGGEST + 'Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino or Presto).',
          category='checker', family='lists', user=True, owner='checker'),
     _row(module=_EE, function='_check_list_literal', exc='ListTypeError',
          message="The list literal … holds a NULL element; a list's elements are its non-NULL elements."
@@ -508,5 +508,9 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function='check_list_dimension', exc='ListTypeError',
          message='Dimension … is a list, which cannot be grouped on.'
          + SUGGEST + 'Group by its elements: ….',
+         category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function='check_list_order_key', exc='ListTypeError',
+         message='Order key … is a list, which has no sort order.'
+         + SUGGEST + 'Order by a scalar column, or by length(...) of the list.',
          category='checker', family='lists', user=True, owner='checker'),
 )

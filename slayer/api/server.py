@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -19,7 +19,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     SchemaDriftError,
 )
-from slayer.core.format import NumberFormat
+from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
 from slayer.async_utils import run_sync
@@ -313,6 +313,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     @app.post(
         "/query",
+        response_model=QueryResponse,
         responses={
             400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
             422: {
@@ -328,7 +329,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def query(
         request: QueryRequest | QueryListRequest,
-    ) -> QueryResponse:
+    ) -> Response:
         try:
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
             # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
@@ -412,7 +413,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
             if dry_run or explain:
                 response.sql = result.sql
-            return response
+            body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
+            return Response(content=encode_json(body), media_type="application/json")
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,

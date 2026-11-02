@@ -23,6 +23,7 @@ from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
@@ -1751,7 +1752,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         return
 
     if args.format == "json":
-        print(json.dumps(result.data, indent=2, default=str))
+        print(encode_json(result.data, indent=2))
     else:
         if args.explain:
             print(f"SQL:\n{result.sql}\n")
@@ -2189,27 +2190,21 @@ def _run_import_dbt(args):
     if not project.semantic_models and not (include_hidden and project.regular_models):
         _fail(f"No semantic models found in {args.dbt_project_path}")
 
-    sa_engine = None
-    ds = run_sync(storage.get_datasource(args.datasource))
-    if include_hidden:
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-            _fail(
-                f"Datasource '{args.datasource}' not found in {storage_path}; "
-                "required for --include-hidden-models."
-            )
-        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
-
-    # Pass the datasource dialect (best-effort) so the converter can
-    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
-    target_dialect = ds.type if ds is not None else None
+    ds, sa_engine, offline_reason = _import_datasource(storage, args.datasource)
+    if include_hidden and ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        _fail(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "required for --include-hidden-models."
+        )
 
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
         sa_engine=sa_engine,
         include_hidden_models=include_hidden,
-        target_dialect=target_dialect,
+        target_dialect=ds.type if ds is not None else None,
+        offline_reason=offline_reason,
     )
     result = converter.convert()
     # Cached engine — engine_factory owns its lifecycle; don't dispose.
@@ -2238,6 +2233,20 @@ def _run_import_dbt(args):
     )
 
 
+def _import_datasource(storage, name: str):
+    """``(config, engine, offline reason)`` for an importer's ``--datasource``, best-effort."""
+    try:
+        ds = run_sync(storage.get_datasource(name))
+    except Exception as exc:  # noqa: BLE001 — an import still completes without its datasource
+        return None, None, f"datasource {name!r} could not be resolved: {type(exc).__name__}"
+    if ds is None:
+        return None, None, f"datasource {name!r} is not configured"
+    try:
+        return ds, engine_factory.get_engine(ds.resolve_env_vars()), None
+    except Exception as exc:  # noqa: BLE001
+        return ds, None, f"datasource {name!r} could not be reached: {type(exc).__name__}"
+
+
 def _run_import_cube(args):
     storage = _resolve_storage(args)
     project, parse_issues = parse_cube_project(args.cube_project_path)
@@ -2245,9 +2254,11 @@ def _run_import_cube(args):
     if not project.cubes and not project.views:
         _fail(f"No cubes or views found in {args.cube_project_path}")
 
+    ds, sa_engine, offline_reason = _import_datasource(storage, args.datasource)
     result = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
-        honor_required_meta=not args.ignore_required_meta,
+        honor_required_meta=not args.ignore_required_meta, sa_engine=sa_engine,
+        target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
     ).convert()
     saved = 0
     for model in result.models:

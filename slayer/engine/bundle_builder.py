@@ -114,6 +114,7 @@ async def build_resolved_source_bundle(
     ds = await storage.get_datasource(source_model.data_source) if source_model.data_source else None
     return ResolvedSourceBundle(
         dialect=dialect_for_ds_type(ds.type if ds else None).sqlglot_name,
+        datasource_type=ds.type if ds else None,
         source_model=source_model,
         referenced_models=referenced_models,
         inline_extensions=inline_extensions,

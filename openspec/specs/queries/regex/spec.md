@@ -89,7 +89,7 @@ A pattern SHALL be validated at plan time against the portable subset: literal c
 
 ### Requirement: One pattern meaning on every dialect
 
-On every Tier-1 dialect: `.` SHALL match any character, newline included; `^` and `$` SHALL match only at the start and end of the whole string (never before a trailing newline); `\d`, `\w` and `\s` SHALL be the ASCII classes `[0-9]`, `[A-Za-z0-9_]` and `[ \t\n\r\f\v]`, inside bracket expressions too; `\n`, `\t` and `\r` SHALL be newline, tab and carriage return; the `'i'` flag SHALL fold at least ASCII letters, non-ASCII folding being the database's own.
+On every dialect that runs the regex functions — every Tier-1 dialect, and Presto / Athena: `.` SHALL match any character, newline included; `^` and `$` SHALL match only at the start and end of the whole string (never before a trailing newline); `\d`, `\w` and `\s` SHALL be the ASCII classes `[0-9]`, `[A-Za-z0-9_]` and `[ \t\n\r\f\v]`, inside bracket expressions too; `\n`, `\t` and `\r` SHALL be newline, tab and carriage return; the `'i'` flag SHALL fold at least ASCII letters, non-ASCII folding being the database's own.
 
 #### Scenario: Dot matches newline
 
@@ -115,6 +115,11 @@ On every Tier-1 dialect: `.` SHALL match any character, newline included; `^` an
 
 - **WHEN** a dimension is `regexp_extract(notes, '^[^\n]*')` over a row holding `'line1` newline `line2'`
 - **THEN** it yields `'line1'`
+
+#### Scenario: Presto spells the same pattern
+
+- **WHEN** the dot-matches-newline and true-end filters are rendered for Presto
+- **THEN** the patterns carry the same flags and end anchor as Trino's, so they mean the same there
 
 ### Requirement: Replacement strings
 

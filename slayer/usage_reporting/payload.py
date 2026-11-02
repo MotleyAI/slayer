@@ -1,8 +1,10 @@
 """The usage report: every leaf is SLayer vocabulary (enum token, bool, bucket, date, UUID, count)."""
 
 import datetime
+import json
 import uuid
-from typing import Annotated, Any, Literal, get_args
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,6 +53,7 @@ ErrorToken = Literal[
 FlagToken = Literal[
     "multistage", "inline_source", "time_dimensions", "filters",
     "computed_dimensions", "saved_query", "to_many_handling",
+    "cast", "try_cast", "aggregate_filter", "list_literal",
 ]
 
 TransformToken = Literal[
@@ -62,6 +65,16 @@ AggregationToken = Literal[
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "first", "last", "weighted_avg", "median", "percentile", "stddev_samp", "stddev_pop",
     "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "collect", "custom",
+]
+
+FunctionToken = Literal[
+    "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
+    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
+    "date_part", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr", "interval",
+    "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim", "mod",
+    "now", "nullif", "pi", "pow", "power", "regexp_extract", "regexp_like", "regexp_replace", "repeat", "replace",
+    "reverse", "right", "round", "rpad", "rtrim", "sign", "sin", "split_part", "sqrt", "starts_with", "substr",
+    "substring", "tan", "trim", "trunc", "upper",
 ]
 
 DialectToken = Literal[
@@ -89,6 +102,7 @@ USAGE_KEYS: frozenset[str] = frozenset(get_args(UsageKey))
 FLAGS: frozenset[str] = frozenset(get_args(FlagToken))
 TRANSFORMS: frozenset[str] = frozenset(get_args(TransformToken))
 AGGREGATIONS: frozenset[str] = frozenset(get_args(AggregationToken))
+FUNCTIONS: frozenset[str] = frozenset(get_args(FunctionToken))
 DIALECTS: frozenset[str] = frozenset(get_args(DialectToken))
 CLIENTS: frozenset[str] = frozenset(get_args(ClientToken))
 EXTRAS: tuple[ExtraToken, ...] = get_args(ExtraToken)
@@ -100,6 +114,56 @@ def known_usage_key(*, surface: str, key: str) -> str | None:
         return key
     other = f"{surface}:other"
     return other if other in USAGE_KEYS else None
+
+
+def fold_retired_usage_keys(data: Any) -> Any:
+    """Count a usage key this version no longer defines as its surface's ``other`` (or drop it)."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
+        return data
+    entries = {
+        key: entry.model_dump() if isinstance(entry, UsageEntry) else entry for key, entry in usage.items()
+    }
+    if not all(isinstance(entry, dict) for entry in entries.values()):
+        return data
+    folded: dict[str, dict] = {}
+    for key, entry in entries.items():
+        target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
+        if target is None:
+            continue
+        merged = folded.setdefault(target, {"ok": 0, "errors": {}})
+        merged["ok"] += entry.get("ok", 0)
+        for token, count in (entry.get("errors") or {}).items():
+            merged["errors"][token] = merged["errors"].get(token, 0) + count
+    return {**data, "usage": folded}
+
+
+def _known_parts(data: Any, annotation: Any) -> Any:
+    """``data`` without the fields and literal dict keys ``annotation`` does not define."""
+    if get_origin(annotation) is Annotated:
+        return _known_parts(data, get_args(annotation)[0])
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if not isinstance(data, dict):
+            return data
+        fields = {(f.alias or n): f.annotation for n, f in annotation.model_fields.items()}
+        fields |= {n: f.annotation for n, f in annotation.model_fields.items()}
+        return {k: _known_parts(v, fields[k]) for k, v in data.items() if k in fields}
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is dict and isinstance(data, dict):
+        key_type, value_type = args
+        keep = (lambda k: k in get_args(key_type)) if get_origin(key_type) is Literal else (lambda _k: True)
+        return {k: _known_parts(v, value_type) for k, v in data.items() if keep(k)}
+    if origin is list and isinstance(data, list):
+        return [_known_parts(v, args[0]) for v in data]
+    if origin in (Union, UnionType) and data is not None:
+        (inner,) = [a for a in args if a is not type(None)] or [annotation]
+        return _known_parts(data, inner)
+    return data
+
+
+def read_spooled(raw: bytes) -> "Batch":
+    """A spool file's batch, keeping every counter this version names and dropping the rest."""
+    return Batch.model_validate(_known_parts(fold_retired_usage_keys(json.loads(raw)), Batch))
 
 
 class _Strict(BaseModel):
@@ -120,6 +184,7 @@ class Features(_Strict):
     flags: dict[FlagToken, Count] = Field(default_factory=dict)
     transforms: dict[TransformToken, Count] = Field(default_factory=dict)
     aggregations: dict[AggregationToken, Count] = Field(default_factory=dict)
+    functions: dict[FunctionToken, Count] = Field(default_factory=dict)
 
 
 class Dialects(_Strict):
@@ -154,25 +219,7 @@ class Batch(_Strict):
     @model_validator(mode="before")
     @classmethod
     def _fold_retired_usage_keys(cls, data: Any) -> Any:
-        """Count a key this version no longer defines as its surface's ``other`` (or drop it)."""
-        usage = data.get("usage") if isinstance(data, dict) else None
-        if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
-            return data
-        entries = {
-            key: entry.model_dump() if isinstance(entry, UsageEntry) else entry for key, entry in usage.items()
-        }
-        if not all(isinstance(entry, dict) for entry in entries.values()):
-            return data
-        folded: dict[str, dict] = {}
-        for key, entry in entries.items():
-            target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
-            if target is None:
-                continue
-            merged = folded.setdefault(target, {"ok": 0, "errors": {}})
-            merged["ok"] += entry.get("ok", 0)
-            for token, count in (entry.get("errors") or {}).items():
-                merged["errors"][token] = merged["errors"].get(token, 0) + count
-        return {**data, "usage": folded}
+        return fold_retired_usage_keys(data)
 
 
 class Env(_Strict):
@@ -219,6 +266,7 @@ def merge(batches: list[Batch]) -> Batch:
         _add(features.flags, batch.features.flags)
         _add(features.transforms, batch.features.transforms)
         _add(features.aggregations, batch.features.aggregations)
+        _add(features.functions, batch.features.functions)
         _add(dialects.queries, batch.dialects.queries)
         for dialect, buckets in batch.dialects.datasources.items():
             _add(dialects.datasources.setdefault(dialect, {}), buckets)

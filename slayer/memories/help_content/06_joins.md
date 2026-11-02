@@ -42,6 +42,6 @@ a dimension it cannot be attributed to (an order's status for customer credit),
   `associate` counts the rows per element. Every `tags.value` condition reads the same
   element, so `tags.value = 'x'` with `tags.value = 'y'` matches nothing: write
   `contains_all(tags, ['x', 'y'])`; `not contains(tags, 'x')` keeps the rows without x.
-- A per-query column or join: `source_model` as an inline extension,
-  `{"source_name": "orders", "columns": [{"name": "is_big", "sql": "amount > 100",
-  "type": "boolean"}]}`.
+- A per-query column: an expression where it is used, e.g. the computed dimension
+  `{"expression": "amount > 100", "name": "is_big"}`. A per-query join: `source_model`
+  as an inline extension `{"source_name": "orders", "joins": [...]}`.

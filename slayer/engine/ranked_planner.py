@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, cast
 
-from slayer.core.enums import RANKED_AGGREGATIONS
 from slayer.core.keys import (
+    is_ranked,
     VALUE_KEY_TYPES,
     AggregateKey,
     TimeTruncKey,
@@ -36,7 +36,7 @@ __all__ = [
 
 def explicit_ranking_key(key: AggregateKey) -> Optional[ValueKey]:
     """The explicit ranking key (the first positional, a row-level expression), or ``None``."""
-    if key.agg not in RANKED_AGGREGATIONS:
+    if not is_ranked(key):
         return None
     for arg in key.args:
         return cast(ValueKey, arg) if isinstance(arg, VALUE_KEY_TYPES) else None

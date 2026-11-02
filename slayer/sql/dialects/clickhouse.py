@@ -22,8 +22,10 @@ from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGra
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    NativeFn,
     LIST_ELEMENT,
     LIST_VALUE,
+    PORTABLE_LIBRARY,
     ExtremumFn,
     ListRelation,
     ServerProfile,
@@ -88,23 +90,34 @@ def _bool_as_int(cast: Expression, to: exp.DataType) -> Expression:
     """A boolean as 0 / 1, like ClickHouse's own predicates: the HTTP driver returns ``Bool`` as text."""
     return anon("toUInt8", cast) if to.is_type(exp.DataType.Type.BOOLEAN) else cast
 
+
+def _based_log(node: Expression) -> Expression:
+    """``LOG(b, x)`` as ``log2(x) / log2(b)`` (``log`` takes one argument); base 2 or 10 stays for its native alias."""
+    if not isinstance(node, exp.Log) or node.args.get("expression") is None:
+        return node
+    base = node.this
+    if isinstance(base, exp.Literal) and base.is_number and float(base.this) in (2, 10):
+        return node
+    return exp.Div(this=anon("log2", node.expression), expression=anon("log2", base))
+
+
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
-_CORRELATED_MIN_VERSION = (25, 4)
-_CORRELATED_DEFAULT_ON_VERSION = (25, 8)
+_CORRELATED_MIN_VERSION = (25, 4, 0)
+_CORRELATED_DEFAULT_ON_VERSION = (25, 8, 0)
 _TIMEOUT_SETTING = "max_execution_time"
 _ABSENT = object()
 _BOOL_SETTING_VALUES = {"1": True, "true": True, "0": False, "false": False}
 _BOOL_TYPES = frozenset({"Bool", "Nullable(Bool)"})
 
 
-def _parse_clickhouse_version(raw: Any) -> tuple[int, int] | None:
-    """Parse a ClickHouse ``version()`` string to ``(major, minor)``; ``None`` if unparseable."""
+def _parse_clickhouse_version(raw: Any) -> tuple[int, ...] | None:
+    """Parse a ClickHouse ``version()`` string to ``(major, minor[, patch])``; ``None`` if unparseable."""
     if not isinstance(raw, str):
         return None
-    match = re.match(r"\s*v?(\d+)\.(\d+)", raw)
+    match = re.match(r"\s*v?(\d+)\.(\d+)(?:\.(\d+))?", raw)
     if not match:
         return None
-    return (int(match.group(1)), int(match.group(2)))
+    return tuple(int(part) for part in match.groups() if part is not None)
 
 
 def _parse_readonly(raw: Any) -> int | None:
@@ -189,10 +202,13 @@ _CH_ADD_FUNCTIONS = {
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
     ilike_native: ClassVar[bool] = True
-    regex_flavour: ClassVar[RegexFlavour] = RE2
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
     like_escape_clause: ClassVar[bool] = False
     database_name: ClassVar[str] = "ClickHouse"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
 
     def list_length(self, values: Expression) -> Expression:
         return anon("length", _compact(values))
@@ -205,9 +221,6 @@ class ClickhouseDialect(SqlDialect):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         return anon("hasAll", values, _compact(other))
-
-    def empty_list(self, element: Optional[DataType]) -> Expression:
-        return exp.Array(expressions=[])
 
     def result_readers(self, description: Sequence[Any]) -> dict[int, Callable[[Any], Any]]:
         """The HTTP driver returns ``Bool`` and ``Array(T)`` cells as their text."""
@@ -245,6 +258,9 @@ class ClickhouseDialect(SqlDialect):
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """Character, not byte, semantics for substring / lower / upper / position."""
         return tree.transform(_utf8)
+
+    def rewrite_library_ast(self, tree: Expression) -> Expression:
+        return tree.transform(_based_log)
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         if fn == "left":

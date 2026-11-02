@@ -27,9 +27,11 @@ from slayer.core.keys import (
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
     NULL_SAFE_COMPARISON_OPS,
+    LIST_ONLY_FUNCTIONS,
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
+    ColumnElementFn,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -42,6 +44,7 @@ from slayer.core.keys import (
     check_scalar_arity,
     integer_valued,
     is_list_call,
+    list_element_type,
     numbers_read_list,
     numeric_boolean_positions,
     temporal_type,
@@ -51,10 +54,14 @@ from slayer.sql.dialects.base import (
     SqlDialect,
     TemporalComparisonOp,
     bare_comparands,
+    case,
     cast_target,
+    either,
     func,
     is_list_fn,
+    lit,
     operand_copy,
+    require_library,
     temporal_type_of,
 )
 from slayer.sql.render.library import json_operands, render_library_call
@@ -273,6 +280,7 @@ def render_cast(
     ``TRY_CAST`` of ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable)."""
     to = cast_target(key.type_text, dialect=dialect)
     if key.try_:
+        require_library(dialect, "try_cast")
         to = dialect.try_cast_type(to, data_type=key.data_type)
     source = key.source
     if key.try_ and direct and isinstance(source, ScalarCallKey) and source.name == "json_value":
@@ -305,6 +313,7 @@ def render_scalar_call(
     library = render_library_call(name=name, args=args, dialect=dialect)
     if library is not None:
         return dialect.rewrite_library_ast(dialect.rewrite_target_ast(library))
+    args = in_domain(name, args, dialect=dialect)
     if name == "mod":
         return dialect.build_modulo(args[0], args[1], True)
     if name == "ln":
@@ -315,9 +324,77 @@ def render_scalar_call(
     return passthrough_call(name=name, args=args, dialect=dialect)
 
 
+def _number(node: Expression) -> Optional[Decimal]:
+    """A numeric literal's value (``-2`` included), else ``None``."""
+    negative = isinstance(node, exp.Neg)
+    inner = node.this if negative else node
+    if not (isinstance(inner, exp.Literal) and inner.is_number):
+        return None
+    return -Decimal(inner.this) if negative else Decimal(inner.this)
+
+
+def _guarded(x: Expression, condition: Expression, *, holds: bool) -> Expression:
+    return x if holds else case((condition, x.copy()))
+
+
+def _positive(x: Expression) -> Expression:
+    value = _number(x)
+    return _guarded(x, exp.GT(this=operand_copy(x), expression=lit(0)), holds=value is not None and value > 0)
+
+
+def _log_base(base: Expression) -> Expression:
+    value = _number(base)
+    valid = exp.And(this=exp.GT(this=operand_copy(base), expression=lit(0)),
+                    expression=exp.NEQ(this=operand_copy(base), expression=lit(1)))
+    return _guarded(base, valid, holds=value is not None and value > 0 and value != 1)
+
+
+def _non_negative(x: Expression) -> Expression:
+    value = _number(x)
+    return _guarded(x, exp.GTE(this=operand_copy(x), expression=lit(0)), holds=value is not None and value >= 0)
+
+
+def _power_args(base: Expression, exponent: Expression, *, dialect: SqlDialect) -> List[Expression]:
+    b, e = _number(base), _number(exponent)
+    if (b is not None and b > 0) or (e is not None and e >= 0 and e == e.to_integral_value()):
+        return [base, exponent]
+    fractional = exp.NEQ(this=operand_copy(exponent), expression=dialect.truncate(exponent))
+    undefined = either(
+        exp.And(this=exp.LT(this=operand_copy(base), expression=lit(0)), expression=fractional),
+        exp.And(this=exp.EQ(this=operand_copy(base), expression=lit(0)),
+                expression=exp.LT(this=operand_copy(exponent), expression=lit(0))),
+    )
+    return [case((undefined, exp.Null()), default=base.copy()), exponent]
+
+
+def in_domain(name: str, args: List[Expression], *, dialect: SqlDialect) -> List[Expression]:
+    """``args`` with an argument outside the function's domain read as NULL, so the call yields NULL; NULLing the
+    argument (not wrapping the call) holds on an engine that evaluates every CASE branch. A literal already in
+    the domain stays as written."""
+    if name in ("ln", "log10", "log2") or (name == "log" and len(args) == 1):
+        return [_positive(args[0])]
+    if name == "log":
+        return [_log_base(args[0]), _positive(args[1])]
+    if name == "sqrt":
+        return [_non_negative(args[0])]
+    if name in ("pow", "power"):
+        return _power_args(args[0], args[1], dialect=dialect)
+    return args
+
+
+def _shared_element(
+    key: ScalarCallKey, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
+) -> Optional[DataType]:
+    """The one element type of ``contains_any`` / ``contains_all``'s two lists, when known."""
+    if key.name not in LIST_ONLY_FUNCTIONS:
+        return None
+    types = {list_element_type(a, column_type=column_type, column_element=column_element) for a in key.args} - {None}
+    return types.pop() if len(types) == 1 else None
+
+
 def render_scalar_key(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
-    part: Callable[[Any], Expression],
+    part: Callable[[Any], Expression], column_element: Optional[ColumnElementFn] = None,
 ) -> Expression:
     """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
     if key.name == "mod":
@@ -328,8 +405,13 @@ def render_scalar_key(
             each = DataType.TEXT if numbers.try_ else DataType.DOUBLE
             return dialect.rewrite_target_ast(
                 dialect.build_list_call(key.name, (args[0], part(numbers.source)), each=each))
-        return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args)))
+        element = _shared_element(key, column_type=column_type, column_element=column_element or _no_element)
+        return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args), element=element))
     return render_scalar_call(name=key.name, args=args, dialect=dialect)
+
+
+def _no_element(_key: Any) -> Optional[DataType]:
+    return None
 
 
 def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expression:
@@ -443,6 +525,7 @@ def render_row_expression(
     dialect: SqlDialect,
     resolve_column: Callable[[Any], Expression],
     column_type: ColumnTypeFn,
+    column_element: Optional[ColumnElementFn] = None,
 ) -> Expression:
     """Render an aggregation-free row-level ``ValueKey`` tree (an
     ``AggregateKey``'s expression source) to sqlglot AST.
@@ -457,6 +540,7 @@ def render_row_expression(
         if isinstance(a, _FrozenKey):
             return render_row_expression(
                 key=a, dialect=dialect, resolve_column=resolve_column, column_type=column_type,
+                column_element=column_element,
             )
         return _literal(a, dialect=dialect)
 
@@ -469,7 +553,8 @@ def render_row_expression(
     if isinstance(key, TimeTruncKey):
         return dialect.build_bucket(col_expr=_part(key.source), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
-        return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type)
+        return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type,
+                                column_element=column_element)
     if isinstance(key, InKey):
         (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
         return render_in_predicate(key=key, column=column, dialect=dialect)
@@ -508,10 +593,12 @@ def render_modulo(
 
 def _row_scalar_call(
     *, key: ScalarCallKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    column_element: Optional[ColumnElementFn],
 ) -> Expression:
     if key.name == "iif":
         return iif_case_chain(key=key, part=part, column_type=column_type)
     args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
     if key.name in DATE_FUNCTIONS:
         return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type, part=part)
+    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type, part=part,
+                             column_element=column_element)

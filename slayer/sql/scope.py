@@ -29,7 +29,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
-from slayer.core.join_walker import model_column_lookup, model_column_type, resolved_terminal
+from slayer.core.join_walker import model_column_element, model_column_lookup, model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -132,6 +132,8 @@ class ScopeFrame(BaseModel):
     attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
     #: Temporal types of placeholders substituted for attached aggregates.
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
+    #: Element types of the list-valued ones.
+    placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -469,7 +471,7 @@ class ScopeFrame(BaseModel):
             # registration and derived expansion apply per leaf.
             return render_row_expression(
                 key=ref, dialect=self.dialect, resolve_column=self._anchor,
-                column_type=self.column_type,
+                column_type=self.column_type, column_element=self.column_element,
             )
         if isinstance(ref, str):
             prequoted = prequote_reserved_identifiers(
@@ -495,6 +497,12 @@ class ScopeFrame(BaseModel):
         if ref in self.placeholder_types:
             return self.placeholder_types[ref]
         return model_column_type(model=self.root_model, models_by_name=self._models_by_name())(ref)
+
+    def column_element(self, ref: Ref) -> Optional[DataType]:
+        """The element type of the list column ``ref`` names, or ``None`` when unknown."""
+        if ref in self.placeholder_types:
+            return self.placeholder_elements.get(ref)
+        return model_column_element(model=self.root_model, models_by_name=self._models_by_name())(ref)
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

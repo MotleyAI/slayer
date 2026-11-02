@@ -1,29 +1,66 @@
-"""PostgresDialect: the Postgres-shaped base default made explicit."""
+"""PostgresDialect: the reference meaning of the portable library."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
+from slayer.core.enums import DataType
+from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.sql.dialects.base import ServerProfile, SqlDialect, TextFn, anon, as_text, pad_fill
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.sql.dialects.base import (
+    PORTABLE_LIBRARY,
+    NativeFn,
+    ListFn,
+    ServerProfile,
+    SqlDialect,
+    TextFn,
+    anon,
+    as_text,
+    case,
+    is_empty_array,
+    lit,
+    operand_copy,
+    pad_fill,
+)
+from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
 from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
 
 #: The first Postgres major version with ``pg_input_is_valid``.
-_PG_INPUT_IS_VALID_SINCE = (16, 0)
+_PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
+#: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
+_CANONICAL_ARRAYS = {
+    DataType.TEXT: "TEXT[]", DataType.INT: "BIGINT[]", DataType.DOUBLE: "DOUBLE PRECISION[]",
+    DataType.BOOLEAN: "BOOLEAN[]", DataType.DATE: "DATE[]", DataType.TIMESTAMP: "TIMESTAMP[]",
+}
+
+
+def _server_version(number: int) -> tuple[int, int, int]:
+    """``server_version_num`` as ``(major, minor, patch)``: ``MMmmpp`` before 10, ``MM00mm`` after."""
+    if number < 100000:
+        return number // 10000, number // 100 % 100, number % 100
+    return number // 10000, number % 10000, 0
+
+
+def _numeric(value: Expression) -> Expression:
+    """``value`` as ``numeric``: a number literal already converts, a ``DECIMAL`` cast already is."""
+    if (isinstance(value, exp.Literal) and value.is_number) or (
+            isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.DECIMAL)):
+        return value
+    return exp.cast(value.copy(), "DECIMAL")
 
 
 def _cast_log_arg_to_numeric(node: Expression) -> Expression:
-    """A based ``LOG(b, x)`` has only the ``numeric`` overload: cast ``x`` (Postgres has no ``log2``)."""
+    """A based ``LOG(b, x)`` has only the ``numeric`` overload: cast both (Postgres has no ``log2``)."""
     if not isinstance(node, exp.Log) or node.args.get("expression") is None:
         return node
-    value = node.expression
-    if not (isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.DECIMAL)):
-        node.set("expression", exp.cast(value.copy(), "DECIMAL"))
+    node.set("this", _numeric(node.this))
+    node.set("expression", _numeric(node.expression))
     return node
 
 
@@ -70,6 +107,13 @@ class PostgresDialect(SqlDialect):
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
+    database_name: ClassVar[str] = "Postgres"
+    native_lists: ClassVar[bool] = True
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
+    })
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = POSTGRES
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+."""
@@ -103,17 +147,83 @@ class PostgresDialect(SqlDialect):
             version_num = int(number) if number is not None else None
         except (TypeError, ValueError):
             version_num = None
-        return ServerProfile(version=None if version_num is None else (version_num // 10000, version_num % 10000))
+        return ServerProfile(version=None if version_num is None else _server_version(version_num))
+
+    def validates_input(self) -> bool:
+        """Whether ``pg_input_is_valid`` can check a conversion's input (Postgres 16+)."""
+        version = self.server_profile.version
+        return version is not None and version >= _PG_INPUT_IS_VALID_SINCE
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Postgres 16+ checks the input with ``pg_input_is_valid``; an older or unknown server gets a plain cast."""
-        version = self.server_profile.version
-        if version is None or version < _PG_INPUT_IS_VALID_SINCE:
+        if not self.validates_input():
             return exp.Cast(this=value, to=to)
         check = exp.Anonymous(this="pg_input_is_valid", expressions=[
             as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
         ])
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=value.copy(), to=to))])
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        node = exp.RegexpILike if case_insensitive else exp.RegexpLike
+        return node(this=value.copy(), expression=self.regex_text(pattern))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        match = anon("REGEXP_MATCH", value, self.regex_text(pattern, wrap=True),
+                     *([lit("i")] if case_insensitive else []))
+        picked = exp.Bracket(this=exp.Paren(this=match), expressions=[lit(group)])
+        return self.skipped_group_empty(value, pattern, group, picked)
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement),
+                    lit("gi" if case_insensitive else "g"))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        jsonb = exp.DataType.build("JSONB")
+        already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
+        doc = value.copy() if already else exp.Cast(this=value.copy(), to=jsonb)
+        keys = [lit(str(step)) for step in path.steps]
+        found = anon("JSONB_EXTRACT_PATH", doc, *keys)
+        scalar = exp.In(this=anon("JSONB_TYPEOF", found), expressions=[lit("string"), lit("number"), lit("boolean")])
+        read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
+        if native or not self.validates_input():
+            return read
+        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
+        return case((valid, read))
+
+    def build_list_call(
+        self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,
+        element: Optional[DataType] = None,
+    ) -> Expression:
+        """``&&`` / ``@>`` need one array type on both sides: each list is read as its element's canonical one."""
+        array = _CANONICAL_ARRAYS.get(element) if element is not None else None
+        if fn in ("contains_any", "contains_all") and each is None and array and not is_empty_array(args[1]):
+            to = exp.DataType.build(array, dialect=self.sqlglot_name)
+            args = tuple(exp.Cast(this=a.copy(), to=to.copy()) for a in args)
+        return super().build_list_call(fn, args, each=each, element=element)
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("CARDINALITY", anon("ARRAY_REMOVE", values, exp.Null()))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        found = exp.EQ(this=operand_copy(value), expression=exp.Any(this=exp.Paren(this=values.copy())))
+        return exp.Coalesce(this=found, expressions=[exp.false()])
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return exp.ArrayOverlaps(this=operand_copy(values), expression=operand_copy(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return exp.ArrayContainsAll(this=operand_copy(values), expression=anon("ARRAY_REMOVE", other, exp.Null()))
+
+    def empty_list(self) -> Expression:
+        """``'{}'``: an empty ``ARRAY[]`` has no type to take."""
+        return lit("{}")
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        return self.filtered_collect(value)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         scope = (

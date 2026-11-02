@@ -61,18 +61,6 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, all_or_raise
 
 
-# SQL keywords / function names that look like identifiers — skip when
-# scanning filter expressions for entity refs.
-_FILTER_TOKEN_BLACKLIST: frozenset[str] = frozenset({
-    "and", "or", "not", "is", "null", "in", "like", "between", "true",
-    "false", "case", "when", "then", "else", "end", "exists",
-    # Common SQL functions agents might call — these aren't entities.
-    "coalesce", "nullif", "cast", "ln", "log", "log2", "log10", "exp",
-    "sqrt", "pow", "power", "abs", "round", "floor", "ceil", "ceiling",
-    "current_date", "current_timestamp", "now",
-})
-
-
 def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
     """Return ``True`` iff ``canonical_id`` belongs to ``datasource``
     under the dotted-namespace rule.
@@ -466,45 +454,10 @@ def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
             yield _ref_token(node)
 
 
-_FILTER_AGG_SUFFIX_RE = re.compile(r":\w+(?:\([^)]*\))?")
-_FILTER_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-_FILTER_VAR_RE = re.compile(r"\{[^}]*\}")
-_FILTER_TOKEN_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
-
-
-def _extract_filter_tokens(filter_text: str) -> list[str]:
-    """Extract identifier-shaped tokens from a filter expression that
-    might be entity references.
-
-    Strips quoted literals, ``{variable}`` placeholders, and ``:agg``
-    aggregation suffixes (handled separately by the caller). Skips SQL
-    keywords and common SQL function names.
-    """
-    cleaned = _FILTER_AGG_SUFFIX_RE.sub("", filter_text)
-    cleaned = _FILTER_LITERAL_RE.sub("", cleaned)
-    cleaned = _FILTER_VAR_RE.sub("", cleaned)
-    out: list[str] = []
-    for m in _FILTER_TOKEN_RE.finditer(cleaned):
-        token = m.group(0)
-        # Skip identifiers immediately followed by '(' — they're SQL
-        # function names like coalesce(...), nullif(...).
-        end = m.end()
-        if end < len(cleaned) and cleaned[end] == "(":
-            continue
-        if token.lower() in _FILTER_TOKEN_BLACKLIST:
-            continue
-        if token.replace(".", "").isdigit():
-            continue
-        out.append(token)
-    return out
-
-
 def _field_entity_tokens(kind: FieldKind, text: str) -> list[str]:
     """Entity tokens of one query field; an unparseable formula is a single token."""
     if kind == "ref":
         return [text]
-    if kind == "filter":
-        return _extract_filter_tokens(text)
     try:
         parsed = parse_expr(text)
     # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.

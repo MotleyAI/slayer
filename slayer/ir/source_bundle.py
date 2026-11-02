@@ -52,6 +52,8 @@ class ResolvedSourceBundle(BaseModel):
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
+    # The datasource's type: picks its own dialect where several share a sqlglot name (MariaDB / MySQL).
+    datasource_type: Optional[str] = None
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
     # Stored query-backed models the statement may splice, including result joins.

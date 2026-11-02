@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, Tuple, get_args
+from collections.abc import Iterable
+from typing import Any, Callable, List, Optional, Tuple
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath, parse_json_path
-from slayer.core.keys import ScalarCallKey
+from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.like_pattern import parse_like
 from slayer.core.regex_pattern import parse_regex, parse_replacement
 from slayer.sql.dialects.base import (
-    ExtremumFn,
-    MathFn,
+    LIBRARY_FUNCTIONS,
+    REGEX_LIBRARY,
     SqlDialect,
-    TextFn,
     any_null,
     case,
     is_extremum_fn,
@@ -23,14 +23,19 @@ from slayer.sql.dialects.base import (
     is_text_fn,
     lit,
     literal_int,
+    require_library,
 )
 
-#: Scalars rendered through a dialect hook.
-LIBRARY_FUNCTIONS = frozenset({
-    *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
-    "regexp_like", "regexp_extract", "regexp_replace",
-})
-_REGEX = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+
+def check_library_support(dialect: SqlDialect, keys: Iterable[object]) -> None:
+    """Refuse a library call among ``keys`` that ``dialect`` does not translate, then a ``TRY_CAST`` (one the
+    call itself wraps, as ``RETURNING`` does, names the call)."""
+    keys = list(keys)
+    for key in keys:
+        if isinstance(key, ScalarCallKey) and key.name in LIBRARY_FUNCTIONS:
+            require_library(dialect, key.name)
+    if any(isinstance(key, CastKey) and key.try_ for key in keys):
+        require_library(dialect, "try_cast")
 
 
 def _text(node: Expression) -> str:
@@ -57,12 +62,16 @@ def json_operands(
     key: ScalarCallKey, *, part: Callable[[Any], Expression], dialect: SqlDialect,
 ) -> Tuple[Expression, JsonPath, bool]:
     """``json_value``'s rendered input, its path, and whether the input is the engine's native JSON type."""
+    require_library(dialect, "json_value")
     value = part(key.args[0])
     return value, parse_json_path(_text(part(key.args[1]))), json_input(value, dialect=dialect)
 
 
 def render_library_call(*, name: str, args: List[Expression], dialect: SqlDialect) -> Optional[Expression]:
     """``name(args)`` lowered through its dialect hook; ``None`` for a non-library scalar."""
+    if name not in LIBRARY_FUNCTIONS:
+        return None
+    require_library(dialect, name)
     if is_text_fn(name):
         return dialect.build_text_call(name, tuple(args))
     if is_math_fn(name):
@@ -77,9 +86,9 @@ def render_library_call(*, name: str, args: List[Expression], dialect: SqlDialec
         return dialect.build_like(args[0], written, name == "ilike")
     if name == "json_value":
         return dialect.build_json_value(args[0], parse_json_path(_text(args[1])), json_input(args[0], dialect=dialect))
-    if name in _REGEX:
+    if name in REGEX_LIBRARY:
         return _render_regex(name=name, args=args, dialect=dialect)
-    return None
+    raise RuntimeError(f"library function {name!r} has no render path.")
 
 
 def _split_part(args: List[Expression], *, dialect: SqlDialect) -> Expression:
@@ -100,4 +109,4 @@ def _render_regex(*, name: str, args: List[Expression], dialect: SqlDialect) -> 
     return dialect.build_regexp_replace(args[0], pattern, replacement, len(args) > 3)
 
 
-__all__ = ["LIBRARY_FUNCTIONS", "json_input", "json_operands", "render_library_call"]
+__all__ = ["LIBRARY_FUNCTIONS", "check_library_support", "json_input", "json_operands", "render_library_call"]

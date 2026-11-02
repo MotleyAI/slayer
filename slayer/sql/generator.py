@@ -37,16 +37,17 @@ from slayer.core.errors import (
     MaterialisationStageError,
     QueryBackedCycleError,
 )
-from slayer.core.enums import LIST_AGGREGATIONS, RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_valued, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
     is_lateral_edge,
     is_unrelated_edge,
     join_key_columns,
+    model_column_element,
     model_column_type,
     resolved_terminal,
 )
@@ -915,7 +916,8 @@ class SQLGenerator:
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
         #: Column-type resolvers of the planned queries being rendered (innermost last).
         self._gen_column_types: List[ColumnTypeFn] = []
-        self._gen_placeholder_types: List[Dict[Any, DataType]] = []
+        #: Per planned query: its placeholders' types and their list element types.
+        self._gen_placeholder_types: List[Tuple[Dict[Any, DataType], Dict[Any, DataType]]] = []
         #: Multi-stage statement state: every stage relation, the current
         #: statement's declared reads and its in-flight splice chain.
         # Spine factors of the plans being rendered; the innermost reads its spine relation.
@@ -981,6 +983,7 @@ class SQLGenerator:
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
             placeholder_types=self._placeholder_types(),
+            placeholder_elements=self._placeholder_elements(),
         )
 
     def _current_column_types(self) -> Optional[ColumnTypeFn]:
@@ -1229,7 +1232,7 @@ class SQLGenerator:
     def _empty_value_expr(self, empty: EmptyValue) -> Optional[Expression]:
         """An aggregate's empty value as SQL (``None``: NULL)."""
         if isinstance(empty, EmptyList):
-            return self._dialect.empty_list(empty.element_type)
+            return self._dialect.empty_list()
         return None if empty is None else exp.Literal.number(empty)
 
     def _pick_once(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
@@ -1387,7 +1390,15 @@ class SQLGenerator:
                 DataType.ARRAY if list_valued(sub.original_key, column_type=model_types) else None
             )) is not None
         }
-        self._gen_placeholder_types.append(placeholders)
+        model_elements = model_column_element(model=source_model, models_by_name=bundle.models_by_name)
+        elements = {
+            sub.placeholder: element
+            for attach in planned_query.regroup_attach_plans
+            for sub in attach.substitutions
+            if (element := list_element_type(sub.original_key, column_type=model_types,
+                                             column_element=model_elements)) is not None
+        }
+        self._gen_placeholder_types.append((placeholders, elements))
         self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
         # The outermost spine render declares every sequence CTE rendered within it (nested producers included).
         owns_spine = planned_query.spine is not None and not self._gen_spines
@@ -1413,7 +1424,10 @@ class SQLGenerator:
                 self._gen_spine_ctes = outer_spine_ctes
 
     def _placeholder_types(self) -> Dict[Any, DataType]:
-        return dict(self._gen_placeholder_types[-1]) if self._gen_placeholder_types else {}
+        return dict(self._gen_placeholder_types[-1][0]) if self._gen_placeholder_types else {}
+
+    def _placeholder_elements(self) -> Dict[Any, DataType]:
+        return dict(self._gen_placeholder_types[-1][1]) if self._gen_placeholder_types else {}
 
     def _generate_from_planned_body(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
@@ -2063,6 +2077,7 @@ class SQLGenerator:
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
             placeholder_types=self._placeholder_types(),
+            placeholder_elements=self._placeholder_elements(),
         )
 
     def _render_computed_dims_via_scope(
@@ -5814,7 +5829,10 @@ class SQLGenerator:
             bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
         )
         input_type = aggregation_source_type(source, column_type=param_scope.column_type)
-        element_type = value_type(source, column_type=param_scope.column_type) if key.agg in LIST_AGGREGATIONS else None
+        element_type = (
+            value_type(source, column_type=param_scope.column_type)
+            if list_valued(key, column_type=param_scope.column_type) else None
+        )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
@@ -5836,7 +5854,7 @@ class SQLGenerator:
             )
             # first/last render through a ranked-kernel producer, never this spec builder — a plain render would
             # silently drop the ranking.
-            if key.agg in ("first", "last"):
+            if is_ranked(key):
                 raise RuntimeError(
                     f"first/last aggregate {key!r} reached the plain aggregate "
                     f"renderer; it must render through a ranked-kernel "

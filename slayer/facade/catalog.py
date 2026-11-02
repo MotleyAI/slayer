@@ -541,7 +541,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> list[FacadeMetric]:
 def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
     """Rule 4: column × parameterless custom aggs. Custom aggs are not
     gated by ``DEFAULT_AGGREGATIONS_BY_TYPE``, so we expose them on every
-    non-hidden column."""
+    non-hidden scalar column; a list column takes no custom aggregation."""
     custom = _eligible_custom_aggregations(model=model)
     return [
         FacadeMetric(
@@ -555,7 +555,7 @@ def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
         )
         for agg in custom
         for col in model.columns
-        if not col.hidden
+        if not col.hidden and col.type is not DataType.ARRAY
     ]
 
 

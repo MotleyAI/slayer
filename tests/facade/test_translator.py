@@ -887,15 +887,16 @@ def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
     assert result.query.filters == ["id:count_distinct > 1"]
 
 
-def test_where_aggregate_alias_against_non_literal_raises(dialect) -> None:
-    """An aggregate-alias compared to a non-literal must raise, not emit broken SQL."""
+def test_where_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(dialect) -> None:
+    """Two aggregate aliases compared in WHERE become one aggregate filter."""
     catalog = _catalog()
-    with pytest.raises(TranslationError):
-        translate(
-            sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
-                'FROM orders WHERE "count" > "rev" GROUP BY status',
-            catalog=catalog, dialect=dialect,
-        )
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
+            'FROM orders WHERE "count" > "rev" GROUP BY status',
+        catalog=catalog, dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count > revenue:sum"]
 
 
 def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
@@ -944,15 +945,16 @@ def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
     assert filters[0] == "status = 'paid'"
 
 
-def test_having_aggregate_alias_against_non_literal_raises(dialect) -> None:
-    """HAVING symmetry of the WHERE raise rule. Covers Codex #1."""
+def test_having_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(dialect) -> None:
+    """HAVING symmetry of the WHERE rule."""
     catalog = _catalog()
-    with pytest.raises(TranslationError):
-        translate(
-            sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
-                'FROM orders GROUP BY status HAVING "count" > "rev"',
-            catalog=catalog, dialect=dialect,
-        )
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
+            'FROM orders GROUP BY status HAVING "count" > "rev"',
+        catalog=catalog, dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count > revenue:sum"]
 
 
 @pytest.mark.parametrize("alias_form", [
@@ -2220,6 +2222,68 @@ def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.source_model == "orders"
     assert result.query.filters == ["stores.name = 'Acme'"]
+
+
+_STORES_WITH_METRIC_JOIN = (
+    'SELECT "public"."orders"."status" FROM "public"."orders" '
+    'LEFT JOIN (SELECT "public"."stores"."id" AS "id", "public"."stores"."tax_rate_avg" AS "tax_rate_avg" '
+    'FROM "public"."stores") AS "Stores" ON "public"."orders"."store_id" = "Stores"."id" '
+)
+
+
+@pytest.mark.parametrize("clause", ["WHERE", 'GROUP BY "public"."orders"."status" HAVING'])
+def test_left_join_subquery_filter_on_joined_metric_groups(clause, dialect) -> None:
+    """A joined catalog metric named through the join alias is an aggregate filter."""
+    sql = _STORES_WITH_METRIC_JOIN + f'{clause} "Stores"."tax_rate_avg" > 0.1'
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["stores.tax_rate:avg > 0.1"]
+    assert result.query.distinct_dimension_values is True
+
+
+@pytest.mark.parametrize("renamed", [
+    '"public"."stores"."tax_rate" AS "tax_rate_avg"', '*, "public"."stores"."tax_rate" AS "tax_rate_avg"'])
+def test_left_join_subquery_renamed_column_refused(renamed, dialect) -> None:
+    sql = _metabase_join_sql(projection='"Stores"."name"').replace(
+        '"public"."stores"."tax_rate" AS "tax_rate"', renamed)
+    catalog = _join_catalog()
+    with pytest.raises(TranslationError, match="under their own names"):
+        translate(sql=sql, catalog=catalog, dialect=dialect)
+
+
+@pytest.mark.parametrize("ref", ['"Stores"."tax_rate_avg"', 'stores.tax_rate_avg'])
+def test_left_join_subquery_unprojected_column_refused(ref, dialect) -> None:
+    sql = _metabase_join_sql(projection='"public"."orders"."status"', where=f'{ref} > 0.1')
+    catalog = _join_catalog()
+    with pytest.raises(TranslationError, match="tax_rate_avg is not a column"):
+        translate(sql=sql, catalog=catalog, dialect=dialect)
+
+
+def test_left_join_subquery_case_only_alias_is_an_identity_projection(dialect) -> None:
+    sql = _metabase_join_sql(projection='"Stores"."name"').replace(
+        '"public"."stores"."tax_rate" AS "tax_rate"', '"public"."stores"."tax_rate" AS TAX_RATE')
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+
+
+@pytest.mark.parametrize(("sql", "expected"), [
+    ("SELECT status FROM orders WHERE (revenue_sum > 100)", "(revenue:sum > 100)"),
+    ("SELECT status FROM orders WHERE revenue_sum BETWEEN 1 AND 2", "(revenue:sum >= 1 AND revenue:sum <= 2)"),
+    ("SELECT status FROM orders WHERE revenue_sum > -1", "revenue:sum > -1"),
+    ("SELECT status FROM orders WHERE -1 < revenue_sum", "revenue:sum > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING revenue_sum > 1", "revenue:sum > 1"),
+    ("SELECT status FROM orders GROUP BY status HAVING SUM(revenue) > -1", "revenue:sum > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING (SUM(revenue) > 1)", "revenue:sum > 1"),
+    ("SELECT status FROM orders WHERE ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
+     "ordered_at >= '2024-01-01 00:00:00' OR revenue:sum > 1"),
+    ("SELECT ordered_at FROM orders GROUP BY ordered_at HAVING ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
+     "ordered_at >= '2024-01-01 00:00:00' OR revenue:sum > 1"),
+])
+def test_metric_reference_in_any_predicate_shape_is_an_aggregate_filter(sql, expected, dialect) -> None:
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == [expected]
+    assert result.query.distinct_dimension_values is True
 
 
 def test_left_join_subquery_aggregate_on_joined_col_blocked_by_local_metric_guard(dialect) -> None:

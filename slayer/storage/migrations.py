@@ -11,17 +11,37 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
-from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 17,
-    "SlayerQuery": 8,
-    "DatasourceConfig": 2,
-    "Memory": 6,
+    "SlayerModel": 18,
+    "SlayerQuery": 9,
+    "DatasourceConfig": 3,
+    "Memory": 7,
     "Embedding": 1,
 }
+
+_document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
+
+
+@contextmanager
+def migrating_document(label: str | None) -> Iterator[None]:
+    """Name the stored document whose nested documents migrate inside the block."""
+    token = _document.set(label or _document.get())
+    try:
+        yield
+    finally:
+        _document.reset(token)
+
+
+def document_label(data: dict) -> str | None:
+    """``data``'s own name, else the enclosing stored document's."""
+    name = data.get("name")
+    return name if isinstance(name, str) and name else _document.get()
 
 # Registry: (entity_name, source_version) -> converter producing source_version+1.
 _REGISTRY: dict[tuple[str, int], Callable[[dict], dict]] = {}
@@ -85,6 +105,13 @@ def _model_v9_to_v10(data: dict) -> dict:
 def _model_v10_to_v11(data: dict) -> dict:
     """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
     in the storage load path (``_migrate_and_refine_on_load``)."""
+    return data
+
+
+@register_migration(entity="DatasourceConfig", source_version=2)
+def _datasource_v2_to_v3(data: dict) -> dict:
+    """v3: per-doc no-op; the library-name granularity rename rewrites dependants, so it runs in the
+    storage load path on every load."""
     return data
 
 
@@ -197,3 +224,4 @@ from slayer.storage import rank_direction_migration  # noqa: E402, F401  # ALLOW
 from slayer.storage import stored_repair_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import sql_string_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import time_dimension_text_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import distinct_column_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

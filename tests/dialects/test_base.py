@@ -178,13 +178,13 @@ def test_default_build_covar_2arg_emits_native_covar_samp() -> None:
 # should_use_native_log — default impl
 
 
-def test_default_should_use_native_log_10_is_true() -> None:
-    assert SqlDialect().should_use_native_log(10) is True
+def test_default_should_use_native_log_10_is_false() -> None:
+    """The neutral ``LOG(10, x)``: a single-argument alias is a dialect's own spelling."""
+    assert SqlDialect().should_use_native_log(10) is False
 
 
-def test_default_should_use_native_log_2_is_true() -> None:
-    """Defaults to True (Postgres-shaped)."""
-    assert SqlDialect().should_use_native_log(2) is True
+def test_default_should_use_native_log_2_is_false() -> None:
+    assert SqlDialect().should_use_native_log(2) is False
 
 
 def test_default_should_use_native_log_other_bases_false() -> None:

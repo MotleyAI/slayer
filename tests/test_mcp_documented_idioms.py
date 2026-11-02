@@ -31,6 +31,18 @@ async def namesake_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 @pytest.fixture
+async def last_year_engine() -> AsyncIterator[SlayerQueryEngine]:
+    async for e in fx.make_idiom_engine(with_last_year=True):
+        yield e
+
+
+@pytest.fixture
+async def items_engine() -> AsyncIterator[SlayerQueryEngine]:
+    async for e in fx.make_items_engine():
+        yield e
+
+
+@pytest.fixture
 async def child_engine() -> AsyncIterator[SlayerQueryEngine]:
     async for e in fx.make_child_engine():
         yield e
@@ -404,3 +416,120 @@ async def test_rank_among_all_rows_needs_a_stage(engine: SlayerQueryEngine) -> N
         },
     ])
     assert [(fx.value(r, "customers__name"), fx.value(r, ".rnk")) for r in resp.data] == [("Alice", 2)]
+
+
+async def test_year_over_year_time_shift(last_year_engine: SlayerQueryEngine) -> None:
+    resp = await _run(last_year_engine, {
+        "source_model": "orders", "time_dimensions": _YEAR_2025,
+        "measures": [{"formula": "time_shift(sum(amount), -1, 'year')", "name": "yoy"}],
+    })
+    assert {k: fx.value(r, ".yoy") for k, r in fx.rows_by(resp, key="order_date").items()} == {
+        "2025-01": 8, "2025-02": None, "2025-03": None, "2025-04": None, "2025-06": 12,
+    }
+
+
+async def test_ntile_puts_the_lowest_values_first(child_engine: SlayerQueryEngine) -> None:
+    resp = await _run(child_engine, {
+        "source_model": "customers", "dimensions": ["name"],
+        "measures": [{"formula": "ntile(sum(orders.amount), n=4)", "name": "quartile"}],
+    })
+    assert {fx.value(r, ".name"): fx.value(r, ".quartile") for r in resp.data} == {
+        "Alice": 1, "Bob": 2, "Carol": 3, "Dan": 4,
+    }
+
+
+async def test_filter_clause_restricts_the_aggregated_rows(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "source_model": "orders",
+        "measures": [{"formula": fx.AGG_FILTER, "name": "paid"}, {"formula": "count(*)", "name": "all"}],
+    })
+    assert [(fx.value(r, ".paid"), fx.value(r, ".all")) for r in resp.data] == [(7, 11)]
+
+
+async def test_granularity_calls_bucket_like_a_time_dimension(engine: SlayerQueryEngine) -> None:
+    async def monthly(body: dict[str, Any]) -> dict[str, Any]:
+        resp = await _run(engine, {"source_model": "orders", "measures": ["count(*)"], **body})
+        col = next(c for c in resp.columns if "order_date" in c)
+        return {str(r[col])[:7]: fx.value(r, "._count") for r in resp.data}
+
+    expected = {
+        "2024-10": 1, "2024-11": 1, "2024-12": 1,
+        "2025-01": 2, "2025-02": 1, "2025-03": 1, "2025-04": 1, "2025-06": 3,
+    }
+    assert await monthly({"dimensions": ["month(order_date)"]}) == expected
+    assert await monthly({"time_dimensions": ["month(order_date)"]}) == expected
+    assert await monthly({"time_dimensions": _MONTHLY}) == expected
+
+
+async def test_computed_dimension_over_a_fixed_grain_aggregate(engine: SlayerQueryEngine) -> None:
+    resp = await _run(engine, {
+        "source_model": "orders", "dimensions": [{"expression": fx.SPEND_BAND, "name": "spend_band"}],
+        "measures": ["count(*)"],
+    })
+    assert {k: fx.value(r, "._count") for k, r in fx.rows_by(resp, key=".spend_band").items()} == {
+        "high": 8, "low": 3,
+    }
+
+
+@pytest.mark.parametrize(("condition", "count"), [
+    ("order_date >= '2025-Q1'", 8),
+    ("order_date <= '2025-Q1'", 7),
+    ("order_date in '2025-Q1'", 4),
+])
+async def test_time_points_are_half_open_periods(engine: SlayerQueryEngine, condition: str, count: int) -> None:
+    resp = await _run(engine, {"source_model": "orders", "measures": ["count(*)"], "filters": [condition]})
+    assert [fx.value(r, "._count") for r in resp.data] == [count]
+
+
+async def _codes(engine: SlayerQueryEngine, filters: list[str], variables: dict[str, Any] | None = None) -> set[str]:
+    resp = await _run(engine, {
+        "source_model": "items", "dimensions": ["code"], "filters": filters,
+        **({"variables": variables} if variables is not None else {}),
+    })
+    return {fx.value(r, ".code") for r in resp.data}
+
+
+async def test_regex_braces_are_pattern_text(items_engine: SlayerQueryEngine) -> None:
+    assert await _codes(items_engine, ["code ~ '^A[0-9]{3}'"]) == {"A123", "A1234"}
+
+
+@pytest.mark.parametrize(("condition", "codes"), [
+    ("flag IS NOT TRUE", {"A12", "B123", "XA123"}),
+    ("status IS DISTINCT FROM 'paid'", {"A12", "A1234", "XA123"}),
+])
+async def test_null_aware_boolean_and_distinctness_tests(
+    items_engine: SlayerQueryEngine, condition: str, codes: set[str],
+) -> None:
+    assert await _codes(items_engine, [condition]) == codes
+
+
+@pytest.mark.parametrize(("condition", "codes"), [
+    ("contains(tags, 'x')", {"A123", "A12"}),
+    ("tags.value = 'x'", {"A123", "A12"}),
+    ("contains_any(tags, ['x', 'y'])", {"A123", "A12", "B123"}),
+    ("contains_all(tags, ['x', 'y'])", {"A123"}),
+])
+async def test_list_column_filters(items_engine: SlayerQueryEngine, condition: str, codes: set[str]) -> None:
+    assert await _codes(items_engine, [condition]) == codes
+
+
+async def test_quoted_variable_binds_one_string_literal(items_engine: SlayerQueryEngine) -> None:
+    assert await _codes(items_engine, ["status = '{s}'"], {"s": "paid"}) == {"A123", "B123"}
+
+
+async def test_list_variable_fills_a_whole_in_list(items_engine: SlayerQueryEngine) -> None:
+    assert await _codes(items_engine, [fx.IN_LIST_VARIABLE], {"statuses": ["paid", "shipped"]}) == {
+        "A123", "B123", "XA123",
+    }
+
+
+async def test_empty_list_variable_in_an_in_list_fails_naming_it(items_engine: SlayerQueryEngine) -> None:
+    with pytest.raises(Exception, match="statuses") as info:
+        await _codes(items_engine, [fx.IN_LIST_VARIABLE], {"statuses": []})
+    assert "empty" in str(info.value).lower()
+
+
+async def test_empty_list_variable_binds_as_a_list_function_argument(items_engine: SlayerQueryEngine) -> None:
+    assert await _codes(items_engine, ["contains_all(tags, {wanted})"], {"wanted": []}) == {
+        "A123", "A12", "B123", "A1234",
+    }

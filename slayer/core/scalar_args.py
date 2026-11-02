@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Mapping, Optional, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 from slayer.core.errors import ScalarArgumentError
 from slayer.core.json_path import JsonPath, JsonPathError, parse_json_path
@@ -100,24 +100,90 @@ def check_split_index(value: object) -> int:
     return int(value)
 
 
-def check_domain(fn: str, position: int, value: object, *, text: str) -> None:
-    """A literal argument outside ``fn``'s domain (whose column form yields NULL) is a plan-time error."""
-    if not isinstance(value, Decimal):
-        return
+_Literals = Sequence[Optional[Decimal]]
+_Violation = Optional[Tuple[Tuple[int, ...], str]]
+
+
+def _first(v: _Literals) -> Optional[Decimal]:
+    return v[0] if v else None
+
+
+def _unit_interval(v: _Literals) -> _Violation:
+    first = _first(v)
     low, high = _UNIT_INTERVAL
-    if fn in ("asin", "acos") and not low <= value <= high:
-        reason = "outside [-1, 1]"
-    elif fn == "div" and position == 1 and value == 0:
-        reason = "a zero divisor"
-    elif fn == "chr" and (
-        value != value.to_integral_value() or value < 1 or value > MAX_CODE_POINT
-        or SURROGATES[0] <= value <= SURROGATES[1]
-    ):
-        reason = "not a character code point (1 to 0x10FFFF, surrogates excluded)"
-    else:
+    return ((0,), "outside [-1, 1]") if first is not None and not low <= first <= high else None
+
+
+def _nonzero_divisor(v: _Literals) -> _Violation:
+    return ((1,), "a zero divisor") if len(v) > 1 and v[1] == 0 else None
+
+
+def _code_point(v: _Literals) -> _Violation:
+    first = _first(v)
+    if first is None:
+        return None
+    if first != first.to_integral_value() or not 1 <= first <= MAX_CODE_POINT or SURROGATES[0] <= first <= SURROGATES[1]:
+        return (0,), "not a character code point (1 to 0x10FFFF, surrogates excluded)"
+    return None
+
+
+def _positive(v: _Literals) -> _Violation:
+    first = _first(v)
+    return ((0,), "not positive") if first is not None and first <= 0 else None
+
+
+def _log(v: _Literals) -> _Violation:
+    if len(v) != 2:
+        return _positive(v) if len(v) == 1 else None
+    base, x = v
+    if base is not None and (base <= 0 or base == 1):
+        return (0,), "not a logarithm base (positive and not 1)"
+    return ((1,), "not positive") if x is not None and x <= 0 else None
+
+
+def _non_negative(v: _Literals) -> _Violation:
+    first = _first(v)
+    return ((0,), "negative") if first is not None and first < 0 else None
+
+
+def _power(v: _Literals) -> _Violation:
+    if len(v) != 2:
+        return None
+    base, exponent = v
+    if base is None or exponent is None:
+        return None
+    if base < 0 and exponent != exponent.to_integral_value():
+        return (0, 1), "a negative base with a non-integer exponent"
+    if base == 0 and exponent < 0:
+        return (0, 1), "zero to a negative exponent"
+    return None
+
+
+_DOMAINS: Mapping[str, Callable[[_Literals], _Violation]] = MappingProxyType({
+    "asin": _unit_interval, "acos": _unit_interval, "div": _nonzero_divisor, "chr": _code_point,
+    "ln": _positive, "log10": _positive, "log2": _positive, "log": _log, "sqrt": _non_negative,
+    "pow": _power, "power": _power,
+})
+
+
+def _domain_violation(fn: str, values: Sequence[object]) -> _Violation:
+    """The positions and reason of literal ``values`` outside ``fn``'s domain, else ``None`` (non-literals pass)."""
+    check = _DOMAINS.get(fn)
+    if check is None:
+        return None
+    return check([value if isinstance(value, Decimal) else None for value in values])
+
+
+def check_domain(fn: str, values: Sequence[object], *, texts: Sequence[str]) -> None:
+    """Literal arguments outside ``fn``'s domain (whose column form yields NULL) are a plan-time error."""
+    violation = _domain_violation(fn, values)
+    if violation is None:
         return
+    positions, reason = violation
+    shown = ", ".join(texts[i] for i in positions)
+    noun = "argument" if len(positions) == 1 else "arguments"
     raise _error(
-        f"{fn}() argument {text} is {reason}.",
+        f"{fn}() {noun} {shown} {'is' if len(positions) == 1 else 'are'} {reason}.",
         suggestion=f"Use an argument inside the domain of {fn}(); over a column, out-of-domain values yield NULL.",
     )
 

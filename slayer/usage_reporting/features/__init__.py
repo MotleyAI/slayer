@@ -1,89 +1,69 @@
 """Turn the queries and datasources SLayer has already loaded into usage tokens."""
 
-import io
-import tokenize
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name, ALL_TRANSFORMS
-from slayer.core.keys import RESERVED_SCALAR_NAMES
+from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.syntax import AggCall, ArrayLit, Cast, ScalarCall, TransformCall, parse_expr, walk_parsed
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.usage_reporting.payload import FUNCTIONS
 
 CUSTOM = "custom"
 OTHER = "other"
 _DEMO_DB = ("demo", "jaffle_shop.duckdb")
-_SIGNIFICANT = (tokenize.NAME, tokenize.OP, tokenize.NUMBER, tokenize.STRING)
 
 
 class QueryFeatures(BaseModel):
-    """Structural flags and built-in (or ``custom``) function names of one query attempt."""
+    """Flags and built-in (or ``custom``) names of one query attempt; repeats count."""
 
-    flags: set[str] = Field(default_factory=set)
+    flags: list[str] = Field(default_factory=list)
     transforms: list[str] = Field(default_factory=list)
     aggregations: list[str] = Field(default_factory=list)
+    functions: list[str] = Field(default_factory=list)
 
 
-def _tokens(text: str) -> list[tokenize.TokenInfo]:
-    try:
-        return [t for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type in _SIGNIFICANT]
-    except (tokenize.TokenError, SyntaxError):
-        return []
+def _wraps_aggregate(node: AggCall) -> bool:
+    return any(isinstance(n, (AggCall, TransformCall)) for n in walk_parsed(node.source))
 
 
-def _close_paren(tokens: list[tokenize.TokenInfo], open_at: int) -> int:
-    depth = 0
-    for i in range(open_at, len(tokens)):
-        if tokens[i].string == "(":
-            depth += 1
-        elif tokens[i].string == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-    return len(tokens)
-
-
-def _wraps_aggregate(inner: list[tokenize.TokenInfo]) -> bool:
-    return any(
-        t.string == ":" or (t.type == tokenize.NAME and i + 1 < len(inner) and inner[i + 1].string == "(")
-        for i, t in enumerate(inner)
-    )
-
-
-def _aggregation_token(name: str) -> str:
-    aggregation = normalize_aggregation_name(name)
-    return aggregation if aggregation in BUILTIN_AGGREGATIONS else CUSTOM
-
-
-def _is_call(tokens: list[tokenize.TokenInfo], i: int) -> bool:
-    return i + 1 < len(tokens) and tokens[i + 1].string == "(" and (i == 0 or tokens[i - 1].string != ".")
-
-
-def _count_call(tokens: list[tokenize.TokenInfo], i: int, out: QueryFeatures) -> None:
-    """Count the call at ``tokens[i]`` as a transform or an aggregation; scalar functions are skipped."""
-    name = tokens[i].string.lower()
-    if name in RESERVED_SCALAR_NAMES:
+def _count_agg_call(node: AggCall, out: QueryFeatures) -> None:
+    if node.agg.lower() in GRANULARITY_NAMES:
         return
-    wraps = _wraps_aggregate(tokens[i + 2:_close_paren(tokens, i + 1)])
-    aggregation = _aggregation_token(tokens[i].string)
-    if name in ALL_TRANSFORMS and (wraps or aggregation == CUSTOM):
+    name = normalize_aggregation_name(node.agg)
+    if name in ALL_TRANSFORMS and _wraps_aggregate(node):
         out.transforms.append(name)
     else:
-        out.aggregations.append(aggregation)
+        out.aggregations.append(name if name in BUILTIN_AGGREGATIONS else CUSTOM)
+    if node.filter is not None:
+        out.flags.append("aggregate_filter")
 
 
-def _count_calls(text: str, out: QueryFeatures) -> None:
-    tokens = _tokens(text)
-    for i, tok in enumerate(tokens):
-        if tok.type != tokenize.NAME:
-            continue
-        if i and tokens[i - 1].string == ":":
-            out.aggregations.append(_aggregation_token(tok.string))
-        elif _is_call(tokens, i):
-            _count_call(tokens, i, out)
+def _count_node(node: Any, out: QueryFeatures) -> None:
+    if isinstance(node, AggCall):
+        _count_agg_call(node, out)
+    elif isinstance(node, TransformCall):
+        out.transforms.append(node.op)
+    elif isinstance(node, ScalarCall):
+        if node.name in FUNCTIONS:
+            out.functions.append(node.name)
+    elif isinstance(node, Cast):
+        out.flags.append("try_cast" if node.try_ else "cast")
+    elif isinstance(node, ArrayLit):
+        out.flags.append("list_literal")
+
+
+def _count_expression(text: str, out: QueryFeatures) -> None:
+    try:
+        parsed = parse_expr(text)
+    except Exception:
+        return
+    for node in walk_parsed(parsed):
+        _count_node(node, out)
 
 
 def _stage(raw: Any) -> SlayerQuery | None:
@@ -106,19 +86,30 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
     return {flag for flag, on in present.items() if on}
 
 
+def _expressions(stage: SlayerQuery) -> Iterator[str]:
+    """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order, inline measures."""
+    yield from (m.formula for m in stage.measures or [] if m.formula)
+    yield from (d.expression for d in stage.dimensions or [] if isinstance(d, ComputedDimension))
+    yield from (td.dimension for td in stage.time_dimensions or [] if isinstance(td.dimension, str))
+    yield from stage.filters or []
+    yield from (o.raw_formula for o in stage.order or [] if o.raw_formula)
+    inline_measures = getattr(stage.source_model, "measures", None) or []
+    yield from (m.formula for m in inline_measures if m.formula)
+
+
 def query_features(query: Any) -> QueryFeatures:
     """Features of a query as handed to the engine (a query, a stage list, or a saved query's name)."""
     out = QueryFeatures()
     if isinstance(query, str):
-        out.flags.add("saved_query")
+        out.flags.append("saved_query")
         return out
     raw_stages = query if isinstance(query, list) else [query]
-    if len(raw_stages) > 1:
-        out.flags.add("multistage")
+    structural = {"multistage"} if len(raw_stages) > 1 else set()
     for stage in filter(None, map(_stage, raw_stages)):
-        out.flags |= _stage_flags(stage)
-        for text in [m.formula for m in stage.measures or [] if m.formula] + list(stage.filters or []):
-            _count_calls(text, out)
+        structural |= _stage_flags(stage)
+        for text in _expressions(stage):
+            _count_expression(text, out)
+    out.flags.extend(sorted(structural))
     return out
 
 

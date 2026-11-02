@@ -132,6 +132,12 @@ the query surface is identical:
   supported yet; project the saved measure by name instead.)
 * Wrap a time dimension in a grain: `date_trunc('month', ordered_at)` or `month(ordered_at)`.
 * `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT` / `OFFSET`.
+* A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`)
+  returns one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
+* A list column is selectable as its JSON array text (a NULL list as NULL), and a JSON value as its JSON
+  text; grouping on a list is refused — group by its elements with `<list>.value`.
+* Other values are encoded as on every SLayer output: a UUID as its string, bytes as `\x` followed by
+  lowercase hex, an interval as an ISO-8601 duration (`P1DT2H`), and a decimal with its exact digits.
 * `SELECT *` is rejected on models (project named columns), but allowed on
   `INFORMATION_SCHEMA.*` and `pg_catalog.*`.
 
@@ -283,7 +289,7 @@ pip install motley-slayer
 
 For wire-level / translator changes, the unit suite under `tests/test_pg_facade*.py` covers
 each component in isolation. Behaviour at the *interaction boundary* with a real BI client
-is covered by the live-Metabase end-to-end suite (DEV-1562):
+is covered by the live-Metabase end-to-end suite:
 
 ```bash
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v
@@ -297,15 +303,14 @@ sync, MBQL aggregations and time-grain breakouts, native-SQL probes, wire-format
 round-trips, transactions, concurrency, and error envelopes. Skips cleanly when Docker is
 unavailable.
 
-Known limitations (each tracked by a strict-`xfail` against a Linear ticket — the day the
-referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
-LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
-catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
-ORDER BY (DEV-1568) and per-connection `SET` state (DEV-1569).
+Known limitations (each a strict `xfail` — the day the gap is fixed, the test XPASSes and
+CI flips red, prompting a lift): LEFT JOIN-with-subquery projection, CAST(col AS type)
+projection, catalog fingerprint measure leak, MBQL aggregation-ordinal refs in HAVING /
+ORDER BY and per-connection `SET` state.
 
 Metabase week breakouts emit a Sunday-anchored week wrapper
 (`DATE_TRUNC('week', col + INTERVAL '1 day') - INTERVAL '1 day'`); the translator maps this to
-SLayer's `week_sunday` granularity (DEV-1572), so week breakouts bucket the way Metabase asks.
+SLayer's `week_sunday` granularity, so week breakouts bucket the way Metabase asks.
 
 CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
 `slayer/demo/`, the

@@ -494,6 +494,8 @@ class AggregateKey(_FrozenKey, frozen=True):
     partition_keys: Optional["Grain"] = None
     # A ranked (first / last) aggregate's ``FILTER (WHERE …)``; other families mask their inputs at binding.
     filter: Optional["ValueKey"] = None
+    # The built-in aggregation's semantics (its owner declares no formula for ``agg``); not part of identity.
+    builtin: bool = Field(default=True, repr=False)
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -1000,6 +1002,8 @@ Grain.EMPTY = Grain(keys=frozenset())
 VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
 # Key fields spelled only when set, so a key without one keeps its historical spelling.
 OPTIONAL_KEY_FIELDS = frozenset({"filter"})
+#: Key fields outside identity (never spelled into a name).
+NON_IDENTITY_KEY_FIELDS = frozenset({"builtin"})
 
 
 class KindPolicy(BaseModel):
@@ -1617,7 +1621,7 @@ def list_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, ArrayLiteralKey):
         return True
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in LIST_AGGREGATIONS
+        return key.builtin and key.agg.lower() in LIST_AGGREGATIONS
     if isinstance(key, TransformKey):
         return key.op in _VALUE_PRESERVING_TRANSFORMS and list_valued(key.input, column_type=column_type)
     if isinstance(key, CastKey):
@@ -1708,7 +1712,7 @@ def list_element_type(
         types = {literal_type(v.value) for v in key.values}
         return types.pop() if len(types) == 1 else None
     if isinstance(key, AggregateKey):
-        return value_type(key.source, column_type=column_type) if key.agg.lower() in LIST_AGGREGATIONS else None
+        return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
     if isinstance(key, TransformKey):
         return list_element_type(key.input, column_type=column_type, column_element=column_element)
     if isinstance(key, ScalarCallKey):
@@ -1754,9 +1758,12 @@ def window_kwarg_of(key: ValueKey):
 
 def is_kernel_requiring(key: ValueKey) -> TypeGuard[AggregateKey]:
     """A ranked (``first``/``last``) or windowed aggregate — rendered only as its own kernel producer's answer."""
-    return isinstance(key, AggregateKey) and (
-        key.agg in RANKED_AGGREGATIONS or window_kwarg_of(key) is not None
-    )
+    return isinstance(key, AggregateKey) and (is_ranked(key) or window_kwarg_of(key) is not None)
+
+
+def is_ranked(key: AggregateKey) -> bool:
+    """A ``first`` / ``last`` pick with the built-in ranked semantics."""
+    return key.builtin and key.agg in RANKED_AGGREGATIONS
 
 
 def is_local_partitioned_agg(k: ValueKey) -> bool:

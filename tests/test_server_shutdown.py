@@ -438,7 +438,6 @@ def test_termination_in_a_weakref_callback_prints_nothing(monkeypatch: pytest.Mo
     monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
     guard = slayer_cli._TerminationGuard(token=None)
     try:
-        guard.phase = "running"
         referent = _Referent()
         ref = weakref.ref(referent, lambda _r: guard._handle(signal.SIGTERM, None))  # as during an import's lock
         del referent

@@ -97,7 +97,7 @@ class TestUnitLiterals:
     ])
     def test_unknown_unit_rejected_listing_accepted(self, expr: str, listed: str) -> None:
         with pytest.raises(ValueError, match=listed):
-            parse_expr(expr)
+            _bind(expr)
 
     @pytest.mark.parametrize("expr", [
         "date_part(status, created_at) = 1",
@@ -109,7 +109,7 @@ class TestUnitLiterals:
     ])
     def test_non_literal_unit_rejected(self, expr: str) -> None:
         with pytest.raises(ValueError, match="string literal"):
-            parse_expr(expr)
+            _bind(expr)
 
     def test_bucket_form_is_not_a_date_function(self) -> None:
         assert not isinstance(parse_expr("month(created_at)"), ScalarCall)
@@ -189,6 +189,14 @@ class TestIntervalRewrite:
     ])
     def test_operator_spelling_interns_with_date_add(self, pair) -> None:
         assert _bind(pair[0]) == _bind(pair[1])
+
+    @pytest.mark.timeout(30)
+    def test_a_standalone_interval_beside_nested_spellings_fails_fast(self) -> None:
+        nested = "a"
+        for _ in range(24):
+            nested = f"json_extract_path_text({nested}, 'k', 'j')"
+        with pytest.raises(ValueError, match="interval"):
+            parse_expr(f"{nested} = '1' AND interval(1, 'day') > 0")
 
     def test_bound_filter_interns(self) -> None:
         model = orders_model()

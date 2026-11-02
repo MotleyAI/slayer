@@ -108,6 +108,14 @@ SLayer accepts a single-`FROM` `SELECT` that translates to a `SlayerQuery`:
 | `ORDER BY <col> [DESC \| ASC]` | Resolved against projected names. |
 | `LIMIT N OFFSET M` | Integer literals only. |
 
+A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`) returns
+one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
+
+List columns travel as their JSON array text in a UTF-8 column (a NULL list as NULL), and JSON values as their
+JSON text; grouping on a list is refused — group by its elements with `<list>.value`. Every other text-typed
+value follows SLayer's one encoding: a UUID as its string, bytes as `\x` followed by lowercase hex, an interval
+as an ISO-8601 duration (`P1DT2H`).
+
 **`SELECT *` is rejected** on Flight tables; the error includes a pointer to
 `SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name=...` for discovery. `SELECT *`
 **is** accepted on `INFORMATION_SCHEMA.*` itself.
