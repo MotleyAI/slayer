@@ -66,6 +66,31 @@ async def test_flight_builder_passes_the_factory_to_its_engine(tmp_path: Path, m
     assert response.sql in factory.all_statements()
 
 
+async def test_flight_server_stop_closes_the_factory_clients(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = str(tmp_path / "shop.db")
+    seed_shop(db)
+    storage = await shop_storage(
+        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+    )
+    captured: dict[str, Any] = {}
+
+    def _build_server(**kwargs: Any) -> _StubServer:
+        captured.update(kwargs)
+        return _StubServer()
+
+    def _serve(**_kw: Any) -> None:
+        captured["handlers"].do_get_for_sql("SELECT status, amount_sum FROM orders")
+
+    monkeypatch.setattr(flight_server, "build_server", _build_server)
+    factory = GatewayFactory()
+    run_flight_serve(
+        _Args(), resolve_storage=lambda _args: storage, prepare_demo=lambda *_a: None,
+        serve_until_terminated=_serve, client_factory=factory,
+    )
+    assert factory.clients
+    assert all(c.closes == 1 for c in factory.clients)
+
+
 async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path) -> None:
     db = str(tmp_path / "shop.db")
     seed_shop(db)

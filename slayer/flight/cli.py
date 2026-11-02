@@ -112,7 +112,10 @@ def run_flight_serve(
         f"SLayer Flight SQL serving at {scheme}://{host}:{args.port}",
         flush=True,
     )
-    serve_until_terminated(run=server.wait, stop=server.shutdown)
+    try:
+        serve_until_terminated(run=server.wait, stop=server.shutdown)
+    finally:
+        engine.close()  # each RPC already released its loop-bound resources
 
 
 def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:

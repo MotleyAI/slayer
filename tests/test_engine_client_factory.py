@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 
 import slayer.api.server as api_server
+import slayer.mcp.server as mcp_server
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
@@ -397,6 +398,56 @@ class TestEntryPoints:
         assert guard.attempts == []
         assert not any(t == "E" for t, _ in _messages(writer.buffer))
         assert "execute" in {c.op for c in factory.all_calls()}
+
+
+class TestEntryPointsCloseTheirClients:
+    def test_rest_app_shutdown_closes_the_factory_clients(self, shop: Shop) -> None:
+        factory = GatewayFactory()
+        with TestClient(create_app(storage=shop.storage, client_factory=factory)) as http:
+            assert http.post("/query", json=COUNT_ORDERS).status_code == 200
+        assert factory.clients
+        assert all(c.closes == 1 for c in factory.clients)
+
+    def test_rest_shutdown_closes_every_engine_when_one_release_fails(
+        self, shop: Shop, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        closed: list[str] = []
+
+        class _FailingRelease(SlayerQueryEngine):
+            async def aclose(self) -> None:
+                raise RuntimeError("release failed")
+
+            def close(self) -> None:
+                closed.append("app")
+                super().close()
+
+        class _Recording(SlayerQueryEngine):
+            def close(self) -> None:
+                closed.append("mcp")
+                super().close()
+
+        monkeypatch.setattr(api_server, "SlayerQueryEngine", _FailingRelease)
+        monkeypatch.setattr(mcp_server, "SlayerQueryEngine", _Recording)
+        app = create_app(storage=shop.storage)
+        with pytest.raises(RuntimeError, match="release failed"), TestClient(app):
+            pass
+        assert sorted(closed) == ["app", "mcp"]
+
+    async def test_pg_facade_connection_end_closes_its_engine_clients(self, shop: Shop) -> None:
+        factory = GatewayFactory()
+
+        async def provider(_principal: object) -> YAMLStorage:
+            return shop.storage
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(_startup(user="u", database="acme") + _query("SELECT status FROM orders") + _terminate())
+        reader.feed_eof()
+        await PgConnection(
+            reader, cast(asyncio.StreamWriter, _FakeWriter()), engine=None, storage=shop.storage,
+            storage_provider=provider, client_factory=factory,
+        ).run()
+        assert factory.clients
+        assert all(c.closes == 1 for c in factory.clients)
 
 
 async def _call(server: Any, *, name: str, arguments: dict[str, Any]) -> str:

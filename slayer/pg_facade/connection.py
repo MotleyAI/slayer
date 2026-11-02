@@ -413,9 +413,9 @@ class PgConnection:
 
         Gated on ``_owns_scoped_resources`` so an auth failure before the
         swap leaves any static storage/engine the host wants to keep alive
-        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
-        releases the async SQL-client pools — without this a long-lived
-        facade with ``storage_provider`` leaks one engine per session).
+        untouched. Disposes the engine too (``aclose`` then ``close``, closing
+        its SQL clients — without this a long-lived facade with
+        ``storage_provider`` leaks one engine per session).
         """
         if not self._owns_scoped_resources:
             return
@@ -423,6 +423,12 @@ class PgConnection:
         if engine_aclose is not None:
             try:
                 await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine aclose failed")
+        engine_close = getattr(self._engine, "close", None)
+        if engine_close is not None:
+            try:
+                engine_close()
             except Exception:  # noqa: BLE001 — teardown best-effort
                 logger.exception("pg facade: scoped engine close failed")
         storage_aclose = getattr(self._storage, "aclose", None)

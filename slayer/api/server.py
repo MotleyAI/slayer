@@ -1,7 +1,9 @@
 """FastAPI server for SLayer."""
 
+import contextlib
 import logging
 import sys
+from collections.abc import AsyncIterator
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
@@ -300,7 +302,16 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
-    app = FastAPI(title="SLayer", version=_slayer_version())
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Every step runs even if an earlier one raises; per engine, aclose before close.
+        async with contextlib.AsyncExitStack() as stack:
+            for owned in (engine, getattr(mcp, "_slayer_engine")):
+                stack.callback(owned.close)
+                stack.push_async_callback(owned.aclose)
+            yield
+
+    app = FastAPI(title="SLayer", version=_slayer_version(), lifespan=lifespan)
     app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
