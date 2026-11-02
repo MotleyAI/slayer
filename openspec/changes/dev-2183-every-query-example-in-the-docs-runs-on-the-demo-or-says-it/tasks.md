@@ -19,7 +19,9 @@
 - [x] 1.5 Marker and guard mechanism tests: an unmarked hypothetical query fails; the same block after an
       `!!! note "Illustrative schema"` admonition is exempt and the following block is still checked; a marker
       followed by prose doesn't apply; an empty-result query fails; a block mentioning `source_model` with no
-      extractable query fails unless marked; a dangling `jaffle_shop.` reference fails. Verify: all pass.
+      extractable query fails unless marked; a dangling `jaffle_shop.` reference fails; a
+      `<!-- doc-check: not-a-query -->` comment directly above a block exempts it from the guard only (its
+      queries still run; indented content in between voids it). Verify: all pass.
 - [x] 1.6 The page-level doc check: parametrized per `page:line` over README.md, docs/index.md,
       docs/getting-started/*.md, docs/examples/*.md, docs/examples/*/*.md, docs/reference/*.md — execute each
       query (≥1 row), apply the guard, resolve every `jaffle_shop.<model>[.<path>]` reference as `slayer
@@ -48,8 +50,8 @@
       `partition_by=stores.regions.name`) with its prose. Verify: 1.6 passes for those pages.
 - [x] 3.2 B items per design decision 13: `getting-started/python.md`, `getting-started/rest-api.md` (JS
       example with quoted keys), `getting-started/mcp.md`, `reference/rest-api.md`, `reference/mcp.md`,
-      `reference/python-client.md`, `docs/index.md` (query + bullet explanations; the "Under the hood" diagram's
-      `SlayerQuery (source_model, …)` becomes `SlayerQuery (model, …)` so the guard doesn't flag it),
+      `reference/python-client.md`, `docs/index.md` (query + bullet explanations; the "Under the hood" diagram
+      keeps `SlayerQuery (source_model, …)` behind a `<!-- doc-check: not-a-query -->` comment),
       `examples/04_time/time.md`
       (data-robust `last(...)` filter, decision 8); absolute date ranges → relative; sample responses and demo
       model lists (`regions` added) follow the demo; refine fragments in demo vocabulary. Verify: 1.6 passes for

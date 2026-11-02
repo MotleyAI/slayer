@@ -33,6 +33,7 @@ PYTHON_LANGS = {"python", "py", "python3", "pycon"}
 SHELL_LANGS = {"bash", "sh", "shell", "zsh", "console", "shell-session"}
 
 MARKER_RE = re.compile(r'^!!!\s+note\s+"Illustrative schema"\s*$')
+NOT_A_QUERY_RE = re.compile(r"^<!--\s*doc-check:\s*not-a-query\s*-->$")
 FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>[^`]*)$")
 SOURCE_MODEL_RE = re.compile(r"\bsource_model\b")
 REFERENCE_RE = re.compile(r"(?<![\w/.\-])jaffle_shop(?:\.[A-Za-z_]\w*)+")
@@ -49,8 +50,12 @@ class DocBlock(BaseModel):
     line: int
     lang: str
     marked: bool
-    mentions_source_model: bool
+    not_a_query: bool
+    source_model_mentions: int
     queries: list[DocQuery]
+
+    def has_unextracted_mention(self) -> bool:
+        return self.source_model_mentions > sum(_query_key_count(q.query) for q in self.queries)
 
 
 class DocReference(BaseModel):
@@ -67,7 +72,7 @@ class DocPage(BaseModel):
         return [q for b in self.blocks if not b.marked for q in b.queries]
 
     def unextracted_blocks(self) -> list[DocBlock]:
-        return [b for b in self.blocks if b.mentions_source_model and not b.queries and not b.marked]
+        return [b for b in self.blocks if b.has_unextracted_mention() and not b.marked and not b.not_a_query]
 
 
 def in_scope_pages() -> list[str]:
@@ -82,14 +87,14 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
 
-def _is_marked(lines: list[str], fence_index: int) -> bool:
-    """The last non-blank element before the fence is an Illustrative-schema admonition."""
+def _preceding_line(lines: list[str], fence_index: int, *, skip_indented: bool) -> str:
+    """The last non-blank line before the fence at the fence's indent, or "" if there is none."""
     fence_indent = _indent(lines[fence_index])
     j = fence_index - 1
-    # Skip blank lines and the admonition's indented body.
-    while j >= 0 and (not lines[j].strip() or _indent(lines[j]) > fence_indent):
+    # An admonition's indented body sits between the marker and the fence.
+    while j >= 0 and (not lines[j].strip() or (skip_indented and _indent(lines[j]) > fence_indent)):
         j -= 1
-    return j >= 0 and _indent(lines[j]) == fence_indent and bool(MARKER_RE.match(lines[j].strip()))
+    return lines[j].strip() if j >= 0 and _indent(lines[j]) == fence_indent else ""
 
 
 def parse_page(*, path: str, text: str) -> DocPage:
@@ -112,8 +117,9 @@ def parse_page(*, path: str, text: str) -> DocPage:
         blocks.append(DocBlock(
             line=i + 1,
             lang=lang,
-            marked=_is_marked(lines, i),
-            mentions_source_model=bool(SOURCE_MODEL_RE.search(body)),
+            marked=bool(MARKER_RE.match(_preceding_line(lines, i, skip_indented=True))),
+            not_a_query=bool(NOT_A_QUERY_RE.match(_preceding_line(lines, i, skip_indented=False))),
+            source_model_mentions=len(SOURCE_MODEL_RE.findall(body)),
             queries=[DocQuery(line=i + 2 + rel, query=q) for rel, q in extract_queries(lang=lang, body=body)],
         ))
         i = j + 1
@@ -131,6 +137,15 @@ def parse_page(*, path: str, text: str) -> DocPage:
 
 def _is_query(value: Any) -> bool:
     return isinstance(value, dict) and "source_model" in value
+
+
+def _query_key_count(value: Any) -> int:
+    """Number of ``source_model`` keys anywhere in ``value``."""
+    if isinstance(value, dict):
+        return ("source_model" in value) + sum(_query_key_count(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_query_key_count(v) for v in value)
+    return 0
 
 
 def _queries_in(value: Any) -> Iterator[Any]:
@@ -190,26 +205,28 @@ def _balanced_end(text: str, start: int) -> int | None:
     return None
 
 
-def _parse_literal(text: str) -> Any:
+def _parse_literal(text: str, *, strict: bool) -> Any:
+    """JSON, else (unless ``strict``) a Python literal, else ``_UNPARSED``."""
     try:
         return json.loads(text)
     except ValueError:
-        pass
+        if strict:
+            return _UNPARSED
     try:
         return ast.literal_eval(text)
     except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
         return _UNPARSED
 
 
-def _scan_spans(text: str) -> list[tuple[int, Any]]:
-    """``(offset, value)`` of every bracket span that parses as JSON or a Python literal."""
+def _scan_spans(text: str, *, strict: bool = False) -> list[tuple[int, Any]]:
+    """``(offset, value)`` of every bracket span that parses as JSON or (unless ``strict``) a Python literal."""
     spans: list[tuple[int, Any]] = []
     i = 0
     while i < len(text):
         if text[i] in "{[":
             end = _balanced_end(text, i)
             if end is not None:
-                value = _parse_literal(text[i:end])
+                value = _parse_literal(text[i:end], strict=strict)
                 if value is not _UNPARSED:
                     spans.append((i, value))
                     i = end
@@ -270,8 +287,10 @@ def _shell_literals(body: str) -> list[tuple[int, Any]] | None:
 
 
 def _literals(*, lang: str, body: str) -> list[tuple[int, Any]]:
+    # A ```json block is copied as JSON, so Python-literal syntax there is not a runnable query.
+    strict = lang == "json"
     if lang in JSON_LANGS:
-        whole = _parse_literal(body)
+        whole = _parse_literal(body, strict=strict)
         if whole is not _UNPARSED:
             return [(0, whole)]
     elif lang in PYTHON_LANGS:
@@ -283,7 +302,7 @@ def _literals(*, lang: str, body: str) -> list[tuple[int, Any]]:
         shell = _shell_literals(body)
         if shell is not None:
             return shell
-    return _scan_spans(body)
+    return _scan_spans(body, strict=strict)
 
 
 def extract_queries(*, lang: str, body: str) -> list[tuple[int, Any]]:
@@ -327,7 +346,7 @@ def reference_failure(*, storage: StorageBackend, reference: str) -> str | None:
 def page_failures(*, page: DocPage, storage: StorageBackend) -> list[str]:
     """Every ``page:line: reason`` failure of the doc-example check on ``page``."""
     failures = [
-        f"{page.path}:{b.line}: code block mentions source_model but no query could be extracted"
+        f"{page.path}:{b.line}: code block mentions source_model outside any extracted query"
         for b in page.unextracted_blocks()
     ]
     for q in page.checked_queries():

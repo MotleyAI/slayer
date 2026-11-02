@@ -53,15 +53,13 @@ Storage methods are async: `await` them inside async code, or wrap them with `ru
 ## Query
 
 ```python
-from slayer.core.query import SlayerQuery
-
 engine = SlayerQueryEngine(storage=storage)
 
-result = engine.execute_sync(query=SlayerQuery(
-    source_model="orders",
-    measures=["count(*)", "sum(order_total)"],
-    dimensions=["status"],
-))
+result = engine.execute_sync(query={
+    "source_model": "orders",
+    "measures": ["count(*)", "sum(order_total)"],
+    "dimensions": ["status"],
+})
 
 for row in result.data:
     print(row)
@@ -102,17 +100,16 @@ Connect to a running SLayer server:
 
 ```python
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.query import SlayerQuery
 
 # Connect to remote server
 client = SlayerClient(url="http://localhost:5143")
 
 # Query — returns SlayerResponse (same as embedded mode)
-result = client.query(SlayerQuery(
-    source_model="orders",
-    measures=["count(*)"],
-    dimensions=["status"],
-))
+result = client.query_sync({
+    "source_model": "orders",
+    "measures": ["count(*)"],
+    "dimensions": ["status"],
+})
 print(result.data)
 ```
 
@@ -120,11 +117,11 @@ print(result.data)
 
 ```python
 # With pandas (requires motley-slayer[client] extra)
-df = client.query_df(SlayerQuery(
-    source_model="orders",
-    measures=["count(*)", "sum(order_total)"],
-    dimensions=["status"],
-))
+df = client.query_df({
+    "source_model": "orders",
+    "measures": ["count(*)", "sum(order_total)"],
+    "dimensions": ["status"],
+})
 print(df)
 ```
 

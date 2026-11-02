@@ -68,10 +68,11 @@ One query, and SLayer handles:
 
 ## Under the hood
 
+<!-- doc-check: not-a-query -->
 ```
 Agent --> MCP / REST API / Python SDK
               |
-         SlayerQuery (model, measures, dimensions, filters)
+         SlayerQuery (source_model, measures, dimensions, filters)
               |
          SlayerQueryEngine (resolves model definitions from storage)
               |

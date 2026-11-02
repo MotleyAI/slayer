@@ -23,6 +23,7 @@ from tests._doc_examples import (
 
 COUNT = {"source_model": "orders", "measures": ["count(*)"]}
 MARKER = '!!! note "Illustrative schema"'
+NOT_A_QUERY = "<!-- doc-check: not-a-query -->"
 HYPOTHETICAL = '{"source_model": "orders", "measures": ["sum(website_visits)"]}'
 
 
@@ -150,6 +151,10 @@ class TestExtraction:
         md = _md("```text", f"query = {json.dumps(query)}", "```")
         assert _found(md) == [(2, query)]
 
+    def test_python_literal_in_json_block_is_not_extracted(self) -> None:
+        md = _md("```json", "{'source_model': 'orders', 'measures': ['count(*)']}", "```")
+        assert _found(md) == []
+
     def test_run_by_name_and_file_forms_yield_nothing(self) -> None:
         md = _md(
             "```bash",
@@ -229,6 +234,32 @@ class TestMarkersAndGuard:
         assert len(failures) == 1
         assert failures[0].startswith("page.md:1: ")
         assert _failures(doc_demo_storage, MARKER, "", *block) == []
+
+    def test_unextractable_query_beside_an_extracted_one_fails(self, doc_demo_storage: YAMLStorage) -> None:
+        failures = _failures(
+            doc_demo_storage,
+            "```javascript",
+            'JSON.stringify({"source_model": "orders", "measures": ["count(*)"]})',
+            "JSON.stringify({source_model: 'orders', measures: ['count(*)']})",
+            "```",
+        )
+        assert failures == ["page.md:1: code block mentions source_model outside any extracted query"]
+
+    def test_not_a_query_comment_exempts_block_from_guard(self, doc_demo_storage: YAMLStorage) -> None:
+        block = ["```", "SlayerQuery (source_model, measures, dimensions, filters)", "```"]
+        assert len(_failures(doc_demo_storage, *block)) == 1
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "", *block) == []
+
+    def test_not_a_query_comment_with_indented_content_between_does_not_apply(
+        self, doc_demo_storage: YAMLStorage,
+    ) -> None:
+        block = ["```", "SlayerQuery (source_model, measures, dimensions, filters)", "```"]
+        failures = _failures(doc_demo_storage, NOT_A_QUERY, "    Indented prose.", "", *block)
+        assert [f.split(": ")[0] for f in failures] == ["page.md:4"]
+
+    def test_not_a_query_comment_does_not_exempt_queries(self, doc_demo_storage: YAMLStorage) -> None:
+        failures = _failures(doc_demo_storage, NOT_A_QUERY, "```json", HYPOTHETICAL, "```")
+        assert [f.split(": ")[0] for f in failures] == ["page.md:3"]
 
     def test_datasource_word_does_not_trip_the_guard(self, doc_demo_storage: YAMLStorage) -> None:
         assert _failures(doc_demo_storage, "```", "ingest_datasource_models(datasource_name='mydb')", "```") == []

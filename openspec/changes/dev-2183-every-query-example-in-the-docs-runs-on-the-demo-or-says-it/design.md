@@ -48,7 +48,9 @@ drift, including query forms it cannot parse; the latest-deps unit suite runs da
    store name raises `SlayerError` naming it; the sibling-file build leaves the existing DB in place.
 4. **Opt-out marker: a visible `!!! note "Illustrative schema"` admonition.** (user) One marker serves
    reader and test; a hidden comment would not "say it doesn't". It applies when it is the last non-blank
-   block element before the fence, to that fence only. (codex)
+   block element before the fence, to that fence only. (codex) A block that mentions `source_model` without
+   being a query (the landing-page diagram) is exempted from the guard by a hidden
+   `<!-- doc-check: not-a-query -->` comment directly above its fence instead; it never exempts queries. (user)
 5. **Structural extraction of every query literal.** (user) JSON blocks parsed whole; Python blocks
    walked with `ast` (`SlayerQuery(...)` calls, `literal_eval`-able dict/list literals); other blocks scan
    balanced `{…}`/`[…]` spans, string-aware so `{floor}` / `{? … ?}` inside strings don't break it
