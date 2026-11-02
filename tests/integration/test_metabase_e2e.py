@@ -20,15 +20,8 @@ import time
 from typing import Any
 
 import pytest
+import requests
 
-try:
-    import asyncpg
-    import psycopg2
-    import requests
-except ImportError as exc:
-    pytest.skip(f"Metabase e2e dependency missing: {exc.name}", allow_module_level=True)
-
-# conftest_metabase imports requests, so it must follow the skip above.
 from slayer.async_utils import run_sync
 from slayer.demo.jaffle_shop import DEMO_ENRICHMENT
 from tests.integration.conftest_metabase import (
@@ -36,6 +29,9 @@ from tests.integration.conftest_metabase import (
     encode_mbql_query,
     encode_native_query,
 )
+
+asyncpg = pytest.importorskip("asyncpg")
+psycopg2 = pytest.importorskip("psycopg2")
 
 pytestmark = [pytest.mark.metabase_e2e, pytest.mark.integration]
 
