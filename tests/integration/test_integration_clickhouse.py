@@ -87,6 +87,7 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
@@ -275,6 +276,9 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 
 @pytest.mark.integration
 class TestClickHouseQueries:
+    async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
+        await check_try_cast_targets(clickhouse_env, model="orders")
+
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
         result = await clickhouse_env.execute(query=query)

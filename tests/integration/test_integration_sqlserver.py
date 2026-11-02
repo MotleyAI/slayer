@@ -96,6 +96,7 @@ from tests._dev2046_fixtures import (
     orders_q,
     seed_statements as dev2046_seed_statements,
 )
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2101_fixtures import (
     check_filtered_aggregations,
     check_null_ordering,
@@ -1656,6 +1657,9 @@ class TestSQLServerModeBGrammar:
 
     async def test_try_cast(self, _sqlserver_dev2101_storage) -> None:
         await check_try_cast(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
+
+    async def test_try_cast_integer_targets(self, _sqlserver_dev2101_storage) -> None:
+        await check_try_cast_targets(SlayerQueryEngine(storage=_sqlserver_dev2101_storage), model="orders")
 
     async def test_filtered_aggregations(self, _sqlserver_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
