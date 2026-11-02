@@ -12,6 +12,7 @@ schema on teardown. A ``SELECT 1`` warm-up runs once at fixture entry to
 absorb warehouse-suspend latency.
 """
 
+import asyncio
 import os
 import pathlib
 import tomllib
@@ -33,6 +34,7 @@ from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimens
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
+from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
@@ -602,6 +604,49 @@ def test_column_types_round_trip(sf_engine) -> None:
     assert types["as_bool"] == "boolean"
     assert types["as_date"] == "time"
     assert types["as_ts"] == "time"
+
+
+def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
+    profile = _profile_or_skip()
+    if not all(profile.get(k) for k in ("role", "warehouse", "database")):
+        pytest.skip("profile lacks role / warehouse / database to override")
+    ds = DatasourceConfig(
+        name="sf_overrides", type="snowflake", connection_name=_CONNECTION_NAME,
+        role=profile["role"], warehouse=profile["warehouse"], database=profile["database"],
+        schema_name=sf_transient_schema,
+    )
+    states: dict[int, tuple] = {}
+
+    def _record(dbapi_conn, _conn_record, _proxy) -> None:  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()")
+            states[id(dbapi_conn)] = tuple(cur.fetchone())
+        finally:
+            cur.close()
+
+    sa_engine = engine_factory.get_engine(ds)
+    sa.event.listen(sa_engine, "checkout", _record)
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    locations = [TableLocation(name=n) for n in ("orders", "customers", "products", "regions")]
+
+    async def _reads() -> None:
+        await asyncio.gather(
+            sql_client.list_objects(None),
+            *(sql_client.reflect_columns(loc) for loc in locations),
+            *(sql_client.reflect_table_keys(loc) for loc in locations),
+        )
+
+    try:
+        # A held connection forces the client's reads onto further pooled connections.
+        with sa_engine.connect():
+            run_sync(_reads())
+    finally:
+        sql_client.close()
+        engine_factory.invalidate_engine(ds)
+    expected = tuple(v.upper() for v in (profile["role"], profile["warehouse"], profile["database"], sf_transient_schema))
+    assert len(states) >= 2
+    assert set(states.values()) == {expected}
 
 
 # ---------------------------------------------------------------------------

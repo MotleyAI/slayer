@@ -24,6 +24,8 @@ from slayer.engine.ingestion import (
     ingest_datasource_idempotent,
 )
 from slayer.engine.schema_drift import EditModelDelete, validate_datasource
+from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
@@ -274,6 +276,27 @@ class TestBigQueryDriftWithSecondDataset:
             (type(e).__name__, e.model_name, e.remove.columns if isinstance(e, EditModelDelete) else None)
             for e in entries
         ] == [("EditModelDelete", "plain", ["ghost"])]
+
+
+async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch) -> None:
+    bq_client, dataset_id = bq_dataset
+    second = f"{_PROJECT}.slayer_test_{uuid.uuid4().hex[:12]}"
+    bq_client.create_dataset(bigquery.Dataset(second))
+    ds = _ds_config(dataset_id, name="bqdefault")
+
+    def _no_request(*_args, **_kwargs):
+        raise AssertionError("a request was made to resolve the default schema")
+
+    sa_engine = engine_factory.get_engine(ds)
+    monkeypatch.setattr(sa_engine, "connect", _no_request)
+    monkeypatch.setattr(sa_engine, "raw_connection", _no_request)
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        assert await client.default_schema() == dataset_id
+    finally:
+        client.close()
+        engine_factory.invalidate_engine(ds)
+        bq_client.delete_dataset(second, delete_contents=True, not_found_ok=True)
 
 
 def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:

@@ -1,9 +1,9 @@
 ## 1. Tests first (pr-tests stage)
 
 - [ ] 1.1 Write failing tests for every scenario in `specs/sql/execution/spec.md`, `specs/sql/client-contract/spec.md` and `specs/models/stored-upgrade/spec.md`; verify each fails for the right reason on the current code (unit tests for SQLite/DuckDB/pytest-postgresql; Snowflake/ClickHouse/BigQuery scenarios under their integration files and markers)
-- [ ] 1.2 Write `tests/test_law_database_door.py` (design decision 17) and verify it lists today's direct-access sites outside the trusted boundary
-- [ ] 1.3 Build the routing harness: a full-gateway fake `SqlClient` over a fixture plus a fixture that patches `engine_factory.get_engine`, `sa.inspect` and raw driver connects to raise; verify a plain engine query fails under it today
-- [ ] 1.4 Codex-review the tests against the plan; resolve findings with the user
+- [x] 1.2 Write `tests/test_law_database_door.py` (design decision 17) and verify it lists today's direct-access sites outside the trusted boundary
+- [x] 1.3 Build the routing harness: a full-gateway fake `SqlClient` over a fixture plus a fixture that patches `engine_factory.get_engine`, `sa.inspect` and raw driver connects to raise; verify a plain engine query fails under it today
+- [x] 1.4 Codex-review the tests against the plan; resolve findings with the user
 
 ## 2. Client contract (`slayer/sql/`)
 

@@ -149,3 +149,12 @@ class TestOffline:
         models, memories = await _load_all(offline_store)
         assert models
         assert len(memories) == len(MEMORY_IDS)
+
+    async def test_every_document_loads_through_an_engine_without_a_connection(self, offline_store):
+        engine = SlayerQueryEngine(storage=offline_store)
+        try:
+            models, memories = await _load_all(engine.storage)
+        finally:
+            engine.close()
+        assert models
+        assert len(memories) == len(MEMORY_IDS)
