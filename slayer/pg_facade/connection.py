@@ -33,6 +33,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.engine_view import EngineStorage
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -259,6 +260,14 @@ EngineFactory = Callable[[object], object]
 def _default_engine_factory(storage: object, *, client_factory: "ClientFactory | None" = None) -> object:
     return SlayerQueryEngine(storage=cast(StorageBackend, storage), client_factory=client_factory)
 
+
+def _engine_view_of(*, engine: object, storage: object) -> object:
+    """``engine``'s storage view when it wraps ``storage`` (it refines stored models through the engine), else ``storage``."""
+    view = getattr(engine, "storage", None)
+    if isinstance(view, EngineStorage) and (view is storage or view.inner is storage):
+        return view
+    return storage
+
 # GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
 # drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
@@ -324,8 +333,8 @@ class PgConnection:
         self._writer = writer
         self._engine = engine
         self._storage = storage
-        # What the catalog reads; a scoped engine's storage view replaces it after auth.
-        self._read_storage = storage
+        # What the catalog reads: the engine's view when it wraps this store; a scoped engine's view after auth.
+        self._read_storage = _engine_view_of(engine=engine, storage=storage)
         # Optional per-connection scoping: when ``storage_provider`` is given the
         # storage (and engine, via ``engine_factory``) is resolved from the
         # authenticated principal after auth — e.g. a tenant-scoped store.

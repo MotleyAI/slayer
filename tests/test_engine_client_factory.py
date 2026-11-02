@@ -455,6 +455,21 @@ class TestEntryPointsCloseTheirClients:
             pass
         assert sorted(closed) == ["app", "mcp"]
 
+    async def test_pg_facade_static_catalog_reads_the_engine_view_of_the_same_store(
+        self, tmp_path: Path, shop: Shop,
+    ) -> None:
+        engine = SlayerQueryEngine(storage=shop.storage)
+
+        def _conn(storage: Any) -> PgConnection:
+            return PgConnection(
+                asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeWriter()), engine=engine, storage=storage,
+            )
+
+        other = YAMLStorage(base_dir=str(tmp_path / "other"))
+        assert _conn(shop.storage)._read_storage is engine.storage
+        assert _conn(engine.storage)._read_storage is engine.storage
+        assert _conn(other)._read_storage is other
+
     async def test_pg_facade_connection_end_closes_its_engine_clients(self, shop: Shop) -> None:
         factory = GatewayFactory()
 
