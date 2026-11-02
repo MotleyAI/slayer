@@ -7,6 +7,7 @@ every direct path refused, on an engine whose factory returns a gateway; the res
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -266,17 +267,29 @@ def test_importer_metadata_collects_through_the_bridge_inside_a_running_loop(tmp
 # Live database access never blocks the event loop
 # --------------------------------------------------------------------------- #
 _SLOW_STATEMENT_S = 0.15
-# A statement run on the loop stalls it for the full slow-statement time; CPU work stays well under.
-_MAX_STALL_S = 0.1
+# Only a gross stall; which thread ran each statement is the exact check.
+_MAX_STALL_S = 0.5
 
 
-def _slow_driver(datasource: DatasourceConfig) -> None:
-    """Every statement on the datasource's engine blocks its thread (a slow driver)."""
+def _slow_driver(datasource: DatasourceConfig) -> tuple[list[int], list[int]]:
+    """Every statement on the datasource's engine blocks its thread (a slow driver).
+
+    Returns the ids of the threads that checked out a connection, and of those that ran a statement.
+    """
+    checkouts: list[int] = []
+    statements: list[int] = []
+    engine = engine_factory.get_engine(datasource)
+
+    def _checkout(*_args: Any, **_kwargs: Any) -> None:
+        checkouts.append(threading.get_ident())
 
     def _sleep(*_args: Any, **_kwargs: Any) -> None:
+        statements.append(threading.get_ident())
         time.sleep(_SLOW_STATEMENT_S)
 
-    event.listen(engine_factory.get_engine(datasource), "before_cursor_execute", _sleep)
+    event.listen(engine, "checkout", _checkout)
+    event.listen(engine, "before_cursor_execute", _sleep)
+    return checkouts, statements
 
 
 def _seed_items(db: str, *, dialect: str) -> None:
@@ -307,7 +320,7 @@ class TestTheLoopStaysResponsive:
         engine = SlayerQueryEngine(
             storage=await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=ds, models=[doc]),
         )
-        _slow_driver(ds)
+        checkouts, statements = _slow_driver(ds)
         try:
             with LoopTicker() as ticker:
                 model = await engine.storage.get_model("items", data_source=DS_NAME)
@@ -317,6 +330,8 @@ class TestTheLoopStaysResponsive:
             engine_factory.invalidate_engine(ds)
         assert model is not None
         assert {c.name: c.type for c in model.columns}["amount"] is DataType.INT
+        assert statements
+        assert threading.get_ident() not in checkouts + statements
         assert ticker.max_stall < _MAX_STALL_S
 
     @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource_models"])
@@ -336,10 +351,12 @@ class TestTheLoopStaysResponsive:
             "describe_datasource": {"name": DS_NAME},
             "ingest_datasource_models": {"datasource_name": DS_NAME},
         }[tool]
-        _slow_driver(ds)
+        checkouts, statements = _slow_driver(ds)
         try:
             with LoopTicker() as ticker:
                 await _call(server, tool, arguments)
         finally:
             engine_factory.invalidate_engine(ds)
+        assert statements
+        assert threading.get_ident() not in checkouts + statements
         assert ticker.max_stall < _MAX_STALL_S
