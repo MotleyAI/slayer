@@ -2259,7 +2259,7 @@ async def _sqlite_probe_drifts_for_models(
     """Run the SQLite probe for every model in one worker (shared engine/connection)."""
     if not sql_table_models:
         return {}
-    if (datasource.type or "").lower() != "sqlite":
+    if not dialect_for_ds_type(datasource.type).probes_integer_affinity:
         return {m.name: [] for m in sql_table_models}
 
     def _run() -> dict[str, list[tuple[str, DataType, DeleteReason]]]:

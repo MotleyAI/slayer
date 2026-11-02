@@ -34,7 +34,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect
-from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.mysql import MariadbDialect, MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.sql.dialects.trino import TrinoDialect
@@ -259,3 +259,16 @@ def test_duckdb_dialect_aliases() -> None:
 
 def test_clickhouse_dialect_aliases() -> None:
     assert ClickhouseDialect().ds_type_aliases == frozenset({"clickhouse"})
+
+
+def _flagged(attr: str) -> set[type[SqlDialect]]:
+    return {cls for cls in (*_all_dialect_classes(), MariadbDialect) if getattr(cls(), attr)}
+
+
+def test_duckdb_is_the_only_catalog_qualifying_dialect() -> None:
+    assert _flagged("catalog_qualified_schema_tokens") == {DuckdbDialect}
+    assert SqlDialect().catalog_qualified_schema_tokens is False
+
+
+def test_sqlite_is_the_only_integer_affinity_dialect() -> None:
+    assert _flagged("probes_integer_affinity") == {SqliteDialect}
