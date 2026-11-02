@@ -53,4 +53,4 @@
 - [x] 8.1 Full unit suite `poetry run pytest -m "not integration"` green
 - [x] 8.2 Integration suite (CI invocation) green; Snowflake/ClickHouse/BigQuery scenarios green in their path-gated workflows
 - [x] 8.3 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) clean
-- [ ] 8.4 After merge, ask the user whether to close DEV-2117 as done by this change
+- [x] 8.4 After merge, ask the user whether to close DEV-2117 as done by this change
