@@ -29,24 +29,24 @@
 
 ## 2. Demo extension
 
-- [ ] 2.1 `JAFFLE_SCHEMA_SQL`: `regions(id, name)`, `stores.region_id NOT NULL REFERENCES regions(id)`,
+- [x] 2.1 `JAFFLE_SCHEMA_SQL`: `regions(id, name)`, `stores.region_id NOT NULL REFERENCES regions(id)`,
       `orders.status NOT NULL`; `LOAD_ORDER`/`TABLE_NAMES` include `regions`. Verify: 1.1 schema assertions.
-- [ ] 2.2 Loader: explicit `regions` seed insert after `create_schema`; a derived-columns map adding
+- [x] 2.2 Loader: explicit `regions` seed insert after `create_schema`; a derived-columns map adding
       `stores.region_id` (static name map, unmapped → `SlayerError`) and `orders.status` (`md5(id)`, ≈90/7/3)
       to the loader SELECT; `verify()` gains `stores->regions`. Verify: 1.1, 1.2 pass.
-- [ ] 2.3 Enrichment: `regions` description + labels; `stores.region_id`, `orders.status` labels/descriptions
+- [x] 2.3 Enrichment: `regions` description + labels; `stores.region_id`, `orders.status` labels/descriptions
       (status documents that refunded/cancelled orders keep `order_total`); `total_revenue` description says
       gross of refunded/cancelled. Verify: existing enrichment tests + a fresh demo `inspect`.
 
 ## 3. Docs
 
-- [ ] 3.1 A items: `getting-started/cli.md` and `reference/cli.md` status queries run as written; `is_returned`
+- [x] 3.1 A items: `getting-started/cli.md` and `reference/cli.md` status queries run as written; `is_returned`
       memory examples (`getting-started/cli.md`, `reference/cli.md`, `reference/python-client.md`) → refund
       learning on `jaffle_shop.orders.status`; `slayer inspect` → `jaffle_shop.orders.stores.regions.name`,
       `jaffle_shop.orders.id`; outer stage `stores__name` in `multistage_queries.md` ×2 and `dynamic.md`;
       `aggregations.md` expression example and share-of-parent (dims `stores.regions.name`, `stores.name`,
       `partition_by=stores.regions.name`) with its prose. Verify: 1.6 passes for those pages.
-- [ ] 3.2 B items per design decision 13: `getting-started/python.md`, `getting-started/rest-api.md` (JS
+- [x] 3.2 B items per design decision 13: `getting-started/python.md`, `getting-started/rest-api.md` (JS
       example with quoted keys), `getting-started/mcp.md`, `reference/rest-api.md`, `reference/mcp.md`,
       `reference/python-client.md`, `docs/index.md` (query + bullet explanations; the "Under the hood" diagram's
       `SlayerQuery (source_model, …)` becomes `SlayerQuery (model, …)` so the guard doesn't flag it),
@@ -54,20 +54,20 @@
       (data-robust `last(...)` filter, decision 8); absolute date ranges → relative; sample responses and demo
       model lists (`regions` added) follow the demo; refine fragments in demo vocabulary. Verify: 1.6 passes for
       every page.
-- [ ] 3.3 Delete `docs/interfaces/{cli,rest-api,mcp,python-client}.md` after grepping for inbound links; nav in
+- [x] 3.3 Delete `docs/interfaces/{cli,rest-api,mcp,python-client}.md` after grepping for inbound links; nav in
       `zensical.toml` unchanged. Verify: `grep -rn "interfaces/\(cli\|rest-api\|mcp\|python-client\)" docs README.md zensical.toml` is empty.
-- [ ] 3.4 Re-execute the notebooks whose cells change or whose committed outputs show the demo schema, after
+- [x] 3.4 Re-execute the notebooks whose cells change or whose committed outputs show the demo schema, after
       deleting the git-ignored `docs/examples/jaffle_data/demo` DB and `slayer_models` (run twice). Verify: the
       saved outputs mention `regions` / `status` where they list the schema.
 
 ## 4. CI
 
-- [ ] 4.1 Move the `unit-test-latest-deps` job (same id and steps) from `.github/workflows/ci.yml` to new
+- [x] 4.1 Move the `unit-test-latest-deps` job (same id and steps) from `.github/workflows/ci.yml` to new
       `.github/workflows/latest-deps.yml` with `push` (main), `pull_request` (`'**'`), `schedule: cron
       '0 6 * * *'` and `workflow_dispatch`. Verify: YAML parses; the PR shows the job.
 
 ## 5. Gates
 
-- [ ] 5.1 Full unit suite (`poetry run pytest -m "not integration" -n logical`), integration suite with the CI
+- [x] 5.1 Full unit suite (`poetry run pytest -m "not integration" -n logical`), integration suite with the CI
       invocation (notebooks), `ruff check slayer/ tests/`, `basedpyright` (no baseline growth),
       `la-arch-check`, `openspec validate --strict`. Verify: all green.

@@ -57,11 +57,48 @@ CENTS_COLUMNS = {
     "supplies": ["cost"],
 }
 
-LOAD_ORDER = ["customers", "stores", "products", "orders", "items", "supplies", "tweets"]
+LOAD_ORDER = ["regions", "customers", "stores", "products", "orders", "items", "supplies", "tweets"]
 
 # CSV file stem (jafgen's ``raw_<name>.csv``) → DuckDB table name. Names match
 # 1:1 today, but the mapping keeps the seam open if jafgen renames a file.
 TABLE_NAMES = {name: name for name in LOAD_ORDER}
+
+# Seeded by the loader (jafgen has no regions); region id → name.
+REGIONS = {
+    "northeast": "Northeast",
+    "midwest": "Midwest",
+    "south": "South",
+    "west": "West",
+}
+
+# jafgen store name → region id.
+STORE_REGIONS = {
+    "Philadelphia": "northeast",
+    "Brooklyn": "northeast",
+    "Chicago": "midwest",
+    "San Francisco": "west",
+    "Los Angeles": "west",
+    "New Orleans": "south",
+}
+
+
+def _store_region_sql() -> str:
+    cases = " ".join(f"WHEN '{store}' THEN '{region}'" for store, region in STORE_REGIONS.items())
+    return f"CASE name {cases} END"
+
+
+# Stable per-order bucket 0..99 from the id's md5 (≈90% completed, 7% refunded, 3% cancelled).
+_ORDER_STATUS_SQL = (
+    "CASE WHEN CAST('0x' || substr(md5(id), 1, 8) AS BIGINT) % 100 < 90 THEN 'completed' "
+    "WHEN CAST('0x' || substr(md5(id), 1, 8) AS BIGINT) % 100 < 97 THEN 'refunded' "
+    "ELSE 'cancelled' END"
+)
+
+# Columns computed on load from the CSV row: table → {column: SQL expression over the raw columns}.
+DERIVED_COLUMNS = {
+    "stores": {"region_id": _store_region_sql()},
+    "orders": {"status": _ORDER_STATUS_SQL},
+}
 
 # Tables whose CSV column names diverge from our schema. Maps CSV name → SQL
 # column name. Loader uses an explicit column-list INSERT for these tables so
@@ -79,6 +116,11 @@ DATE_COLUMNS = {
 }
 
 JAFFLE_SCHEMA_SQL = """\
+CREATE TABLE regions (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL
+);
+
 CREATE TABLE customers (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL
@@ -88,7 +130,8 @@ CREATE TABLE stores (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
     opened_at DATE NOT NULL,
-    tax_rate DOUBLE NOT NULL
+    tax_rate DOUBLE NOT NULL,
+    region_id VARCHAR NOT NULL REFERENCES regions(id)
 );
 
 CREATE TABLE products (
@@ -106,7 +149,8 @@ CREATE TABLE orders (
     store_id VARCHAR NOT NULL REFERENCES stores(id),
     subtotal DECIMAL(12,2) NOT NULL,
     tax_paid DECIMAL(12,2) NOT NULL,
-    order_total DECIMAL(12,2) NOT NULL
+    order_total DECIMAL(12,2) NOT NULL,
+    status VARCHAR NOT NULL
 );
 
 CREATE TABLE items (
@@ -213,13 +257,23 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
+                "status": _ColumnEnrichment(
+                    label="Status",
+                    description=(
+                        "Order status: completed, refunded or cancelled. Refunded and "
+                        "cancelled orders keep their order_total."
+                    ),
+                ),
             },
             measures=[
                 ModelMeasure(
                     name="total_revenue",
                     formula="sum(order_total)",
                     label="Total Revenue",
-                    description="Gross sales including tax, in dollars.",
+                    description=(
+                        "Gross sales including tax, in dollars, counting refunded and "
+                        "cancelled orders too."
+                    ),
                     type=DataType.DOUBLE,
                 ),
                 ModelMeasure(
@@ -293,7 +347,7 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
             ],
         ),
         "stores": _TableEnrichment(
-            description="Physical Jaffle Shop locations.",
+            description="Physical Jaffle Shop locations, each in one region.",
             columns={
                 "id": _ColumnEnrichment(label="Store ID"),
                 "name": _ColumnEnrichment(label="Store", description="Store name."),
@@ -305,6 +359,9 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     description="Local sales-tax rate.",
                     format=_percent(),
                 ),
+                "region_id": _ColumnEnrichment(
+                    label="Region ID", description="Region the store belongs to."
+                ),
             },
             measures=[
                 ModelMeasure(
@@ -315,6 +372,13 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     type=DataType.INT,
                 ),
             ],
+        ),
+        "regions": _TableEnrichment(
+            description="Sales regions grouping the stores — one row per region.",
+            columns={
+                "id": _ColumnEnrichment(label="Region ID"),
+                "name": _ColumnEnrichment(label="Region", description="Region name."),
+            },
         ),
         "products": _TableEnrichment(
             description="Menu items sold at the Jaffle Shop — jaffles and beverages.",
@@ -676,6 +740,24 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
             )
 
 
+def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> None:
+    names = {name for (name,) in conn.execute(f"SELECT DISTINCT name FROM {view}").fetchall()}
+    unmapped = sorted(names - STORE_REGIONS.keys())
+    if unmapped:
+        raise SlayerError(f"Demo stores without a region assignment: {', '.join(unmapped)}")
+
+
+def _declared_columns(conn: "duckdb.DuckDBPyConnection", table: str) -> set[str]:
+    return {
+        name
+        for (name,) in conn.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE database_name = current_database() "
+            "AND schema_name = 'main' AND table_name = ?",
+            [table],
+        ).fetchall()
+    }
+
+
 def load_data(
     conn: "duckdb.DuckDBPyConnection",
     data_dir: str,
@@ -683,10 +765,16 @@ def load_data(
 ) -> None:
     """Load jafgen CSVs from ``data_dir`` into the already-created tables.
 
-    Monetary columns listed in ``CENTS_COLUMNS`` are converted exactly from cents
-    to ``DECIMAL(12,2)`` dollars on insert. After loading, all ``DATE_COLUMNS`` are shifted forward
-    so the latest ``orders.ordered_at`` is today (see ``shift_dates_to_today``).
+    Seeds ``REGIONS`` first. Monetary columns listed in ``CENTS_COLUMNS`` are converted exactly
+    from cents to ``DECIMAL(12,2)`` dollars, and the ``DERIVED_COLUMNS`` the schema declares are
+    computed on insert; a store missing from ``STORE_REGIONS`` raises ``SlayerError``. After
+    loading, all ``DATE_COLUMNS`` are shifted forward so the latest ``orders.ordered_at`` is today
+    (see ``shift_dates_to_today``).
     """
+    if _declared_columns(conn, TABLE_NAMES["regions"]):
+        conn.executemany(
+            f"INSERT INTO {TABLE_NAMES['regions']} (id, name) VALUES (?, ?)", list(REGIONS.items())
+        )
     for csv_name in LOAD_ORDER:
         table = TABLE_NAMES[csv_name]
         csv_path = os.path.join(data_dir, f"{prefix}_{csv_name}.csv")
@@ -717,6 +805,13 @@ def load_data(
                     )
                 else:
                     select_parts.append(f"{col} AS {target_col}")
+            declared = _declared_columns(conn, table)
+            derived = {c: e for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared}
+            for target_col, expr in derived.items():
+                target_columns.append(target_col)
+                select_parts.append(f"{expr} AS {target_col}")
+            if csv_name == "stores" and "region_id" in derived:
+                _require_store_regions(conn, view=f"_{table}_raw")
             conn.execute(
                 f"INSERT INTO {table} ({', '.join(target_columns)}) "
                 f"SELECT {', '.join(select_parts)} FROM _{table}_raw"
@@ -742,6 +837,7 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     fk_checks = {
         "orders->customers": "SELECT COUNT(*) FROM orders WHERE customer_id NOT IN (SELECT id FROM customers)",
         "orders->stores": "SELECT COUNT(*) FROM orders WHERE store_id NOT IN (SELECT id FROM stores)",
+        "stores->regions": "SELECT COUNT(*) FROM stores WHERE region_id NOT IN (SELECT id FROM regions)",
         "items->orders": "SELECT COUNT(*) FROM items WHERE order_id NOT IN (SELECT id FROM orders)",
         "items->products": "SELECT COUNT(*) FROM items WHERE sku NOT IN (SELECT sku FROM products)",
         "supplies->products": "SELECT COUNT(*) FROM supplies WHERE sku NOT IN (SELECT sku FROM products)",

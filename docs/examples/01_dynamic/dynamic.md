@@ -66,7 +66,7 @@ Here is the nested-aggregation example, written out in full. The inner query com
   {
     "source_model": "monthly_store_revenue",
     "measures": ["avg(order_total_sum)"],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```

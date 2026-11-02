@@ -24,22 +24,22 @@ Again, **this needs no additional arguments because we already know the time dim
 
 Each of these concepts is very **simple and natural at the semantic level**, but requires **nontrivial SQL semantics** (typically via a subquery) to implement. **SLayer offloads the effort of creating these from the agent, saving tokens, reducing error risk, and freeing the agent’s cognitive capacity and context for tasks you care about.**
 
-Here is a complete example query for “monthly revenue for the last year by region, compared to previous year, for regions whose MoM number of website visits is down”:
+Here is a complete example query on the demo for “monthly revenue for the last year by region, compared to the previous year, for regions whose cumulative revenue has passed $10,000”:
 
 ```json
 {
-  "source_model": "my_model",
+  "source_model": "orders",
   "measures": [
-    "sum(revenue)",
-    "time_shift(sum(revenue), -1, 'year')"
+    "sum(order_total)",
+    "time_shift(sum(order_total), -1, 'year')"
   ],
-  "dimensions": ["region"],
+  "dimensions": ["stores.regions.name"],
   "time_dimensions": [{
-    "dimension": "created_at",
+    "dimension": "ordered_at",
     "granularity": "month",
-    "date_range": ["2025-01-01", "2025-12-31"]
+    "date_range": "last 12 months"
   }],
-  "filters": ["last(change(sum(website_visits))) < 0"]
+  "filters": ["last(cumsum(sum(order_total))) > 10000"]
 }
 ```
 

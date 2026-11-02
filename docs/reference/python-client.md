@@ -19,7 +19,7 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "source_model": "orders",
-    "measures": ["count(*)", "sum(revenue)"],
+    "measures": ["count(*)", "sum(order_total)"],
     "dimensions": ["status"],
     "limit": 10,
 }
@@ -62,8 +62,8 @@ Each also takes `variables=` — runtime values for `{placeholders}`, overriding
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "sum(amount)"}], "dimensions": [{"name": "customer_id"}]},
-    {"source_model": "by_customer", "measures": [{"formula": "avg(amount_sum)"}]},
+    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "sum(order_total)"}], "dimensions": [{"name": "customer_id"}]},
+    {"source_model": "by_customer", "measures": [{"formula": "avg(order_total_sum)"}]},
 ])
 
 # Run-by-name (query-backed model), optionally refined
@@ -74,8 +74,8 @@ client.query_sync("rev_by_status", variables={"status": "refunded"})
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({
     "source_model": "orders",
-    "dimensions": ["status", "amount"],
-    "filters": ["amount > 100"],
+    "dimensions": ["status", "order_total"],
+    "filters": ["order_total > 100"],
     "limit": 100,
     "distinct_dimension_values": False,
 })
@@ -107,24 +107,24 @@ client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```python
 # Compact default: schema skeleton for a model (column / measure / aggregation
 # names + joins, zero DB calls); description-only for the other kinds.
-print(client.inspect_sync(reference="mydb.orders", entity_type="model"))
+print(client.inspect_sync(reference="jaffle_shop.orders", entity_type="model"))
 
 # Collection: all models grouped by datasource (one terse line per model).
 print(client.inspect_sync(reference=None, entity_type="model"))
 
 # Full render of one column (compact=False); join paths resolve to the owner.
 print(client.inspect_sync(
-    reference="mydb.orders.customers.region", entity_type="column",
+    reference="jaffle_shop.orders.stores.regions.name", entity_type="column",
     compact=False,
 ))
 
 # Batch: several same-kind columns in one round-trip.
 print(client.inspect_sync(
-    reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+    reference=["jaffle_shop.orders.order_total", "jaffle_shop.orders.customer_id"],
     entity_type="column", compact=False,
 ))
 
-# async form:  await client.inspect(reference="mydb.orders", entity_type="model")
+# async form:  await client.inspect(reference="jaffle_shop.orders", entity_type="model")
 ```
 
 `entity_type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and asserts the resolved kind. The model-only `num_rows` / `show_sql` / `sections` apply for `entity_type="model"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
@@ -138,9 +138,9 @@ from slayer.async_utils import run_sync
 
 # Save a learning
 run_sync(client.save_memory(
-    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-    linked_entities=["mydb.orders.is_returned"],
-    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+    learning="Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+    linked_entities=["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+    id="kb.orders.refunds",   # optional; auto-allocated if omitted
 ))
 
 # Save a query-bearing memory — pass a SlayerQuery / dict for linked_entities
@@ -148,7 +148,7 @@ run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
         "source_model": "orders",
-        "measures": [{"formula": "sum(amount)", "name": "lifetime_spend"}],
+        "measures": [{"formula": "sum(order_total)", "name": "lifetime_spend"}],
         "dimensions": ["customers.name"],
         "order": [{"column": "lifetime_spend", "direction": "desc"}],
         "limit": 5,
@@ -170,7 +170,7 @@ for hit in resp.results:
         print(f"[{hit.kind}] {hit.id} score={hit.score:.3f}")
 
 # Forget by id (cascade-strips memory:<id> refs from other memories)
-run_sync(client.forget_memory("kb.returns.null-handling"))
+run_sync(client.forget_memory("kb.orders.refunds"))
 ```
 
 `client.search` signature (keyword-only):

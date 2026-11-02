@@ -163,9 +163,10 @@ class TestUnassignedStore:
         finally:
             stale.close()
         before = _sha256(db_path)
+        storage = YAMLStorage(base_dir=store_dir)
 
         with pytest.raises(SlayerError, match="Atlantis"):
-            jaffle_shop.ensure_demo_datasource(YAMLStorage(base_dir=store_dir), storage_path=store_dir, years=1)
+            jaffle_shop.ensure_demo_datasource(storage, storage_path=store_dir, years=1)
         assert _sha256(db_path) == before
 
 
@@ -180,7 +181,8 @@ class TestDemoModels:
         assert "regions" in names
         orders = run_sync(storage.get_model(name="orders", data_source=jaffle_shop.DEMO_NAME))
         stores = run_sync(storage.get_model(name="stores", data_source=jaffle_shop.DEMO_NAME))
-        assert orders is not None and stores is not None
+        assert orders is not None
+        assert stores is not None
         assert "status" in {c.name for c in orders.columns}
         assert "regions" in {j.target_model for j in stores.joins}
 
