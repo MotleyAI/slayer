@@ -166,7 +166,7 @@ async def main():
     try:
         result = await ingest_datasource_idempotent(
             datasource=ds,
-            storage=storage,
+            storage=engine.storage,  # the engine's view upgrades stored models through its client
             client=engine.client_for(ds),  # the database is read through the engine's client
             schema="public",
             include_tables=["orders", "customers"],  # Optional filter

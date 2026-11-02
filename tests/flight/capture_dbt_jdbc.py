@@ -1,4 +1,4 @@
-"""Standalone capture driver for the DEV-1390 Flight SQL facade (spec §1.1).
+"""Standalone capture driver for the Flight SQL facade.
 
 Two modes:
 
@@ -29,16 +29,23 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import tempfile
 import threading
 import time
 import traceback
 import urllib.request
 from pathlib import Path
 
+import jaydebeapi
+import jpype
+
+from slayer.cli import _prepare_demo, _resolve_storage
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.flight._capture_stub import (
     CaptureFlightServer,
     RecordingFlightSqlServer,
 )
+from slayer.flight.handlers import FlightHandlers
 
 JDBC_DRIVER_VERSION = "18.3.0"
 JDBC_DRIVER_URL = (
@@ -190,21 +197,14 @@ def _make_server(*, mode: str, capture_log: Path):
         raise SystemExit(f"unknown capture mode: {mode!r}")
 
     # Live mode: real Flight SQL server backed by the bundled Jaffle Shop demo.
-    import argparse as _argparse
-    import tempfile as _tempfile
-
-    from slayer.cli import _prepare_demo, _resolve_storage
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.flight.handlers import FlightHandlers
-
-    args = _argparse.Namespace(
-        storage=_tempfile.mkdtemp(prefix="capture-live-"),
+    args = argparse.Namespace(
+        storage=tempfile.mkdtemp(prefix="capture-live-"),
         models_dir=None, datasource=None, force=False,
     )
     storage = _resolve_storage(args)
     _prepare_demo(args, storage)
     engine = SlayerQueryEngine(storage=storage)
-    handlers = FlightHandlers(engine=engine, storage=storage)
+    handlers = FlightHandlers(engine=engine)
     server = RecordingFlightSqlServer(
         location="grpc://127.0.0.1:0",
         handlers=handlers,
@@ -228,8 +228,6 @@ def main(out_basename: str = "capture-latest", *, mode: str = "stub") -> int:
     time.sleep(0.3)
 
     # Pre-start the JVM with the ``--add-opens`` flags Arrow needs on Java 17+.
-    import jpype
-
     if not jpype.isJVMStarted():
         jpype.startJVM(
             jpype.getDefaultJVMPath(),
@@ -240,9 +238,7 @@ def main(out_basename: str = "capture-latest", *, mode: str = "stub") -> int:
             convertStrings=True,
         )
 
-    import jaydebeapi
-
-    url = f"jdbc:arrow-flight-sql://127.0.0.1:{port}/?useEncryption=false"
+    url =f"jdbc:arrow-flight-sql://127.0.0.1:{port}/?useEncryption=false"
     print(f"[capture] connecting via {url}")
     conn = None
     try:

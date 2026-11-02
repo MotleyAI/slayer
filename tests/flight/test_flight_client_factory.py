@@ -98,7 +98,7 @@ async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path
         str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
     )
     factory = GatewayFactory()
-    handlers = FlightHandlers(engine=SlayerQueryEngine(storage=storage, client_factory=factory), storage=storage)
+    handlers = FlightHandlers(engine=SlayerQueryEngine(storage=storage, client_factory=factory))
     sql = "SELECT status, amount_sum FROM orders"
     result = handlers._translate(sql)
     assert isinstance(result, QueryResult), result

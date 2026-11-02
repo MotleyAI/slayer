@@ -178,13 +178,13 @@ class TestDialectTolerance:
         objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["orders", "v_orders"]
 
-    def test_arbitrary_accessor_failure_is_survivable(self) -> None:
-        """A non-NotImplementedError from an accessor must not abort the scan."""
+    def test_a_failing_view_listing_fails_the_listing(self) -> None:
+        """An unreadable kind is a failed listing, never an empty one."""
         insp = _mock_inspector(
             tables=["orders"], views=RuntimeError("no view privilege")
         )
-        objects = _list_objects(insp, schema=None)
-        assert _names(objects) == ["orders"]
+        with pytest.raises(RuntimeError, match="no view privilege"):
+            _list_objects(insp, schema=None)
 
     def test_name_returned_as_both_table_and_view_appears_once(self) -> None:
         """A name from both table and view accessors: the view listing is authoritative."""

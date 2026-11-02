@@ -1300,14 +1300,13 @@ def _schema_listed(inspector: Any, schema: str) -> bool:
 
 
 def _object_names(inspector: Any, *, accessor: str, token: str | None) -> list[str]:
-    """An optional ``get_*_names`` accessor's names; ``[]`` when missing, unimplemented or failing."""
+    """An optional ``get_*_names`` accessor's names; ``[]`` when the dialect lacks the kind, raises when reading it fails."""
     read = getattr(inspector, accessor, None)
     if read is None:
         return []
     try:
         return list(read(schema=token) or [])
-    except Exception as exc:  # noqa: BLE001 — optional kinds are best-effort
-        logger.debug("%s failed: %s", accessor, exc)
+    except NotImplementedError:
         return []
 
 

@@ -17,7 +17,7 @@ ds = DatasourceConfig(
     database='slayer_demo', username='sa', password='YourStrong@Passw0rd',
 )
 run_sync(storage.save_datasource(ds))
-result = engine.run_sync(ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds)))
+result = engine.run_sync(ingest_datasource_idempotent(datasource=ds, storage=engine.storage, client=engine.client_for(ds)))
 print(f'Ingested {len(result.additions)} models')
 "
 

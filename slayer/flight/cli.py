@@ -93,7 +93,7 @@ def run_flight_serve(
         prepare_demo(args, storage)
 
     engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
-    handlers = FlightHandlers(engine=engine, storage=engine.storage)
+    handlers = FlightHandlers(engine=engine)
 
     token: str | None = args.token or os.environ.get("SLAYER_FLIGHT_TOKEN")
 

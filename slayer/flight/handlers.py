@@ -39,7 +39,6 @@ from slayer.flight.translator import (
     translate,
 )
 from slayer.flight.types import datatype_to_arrow
-from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
@@ -175,14 +174,8 @@ class FlightHandlers:
     ``FlightCatalog`` per call (§7.2 — no caching).
     """
 
-    def __init__(
-        self,
-        *,
-        engine: SlayerQueryEngine,
-        storage: StorageBackend,
-    ) -> None:
+    def __init__(self, *, engine: SlayerQueryEngine) -> None:
         self._engine = engine
-        self._storage = storage
         # Each RPC's workflow releases the shared clients on its own loop, so run one at a time.
         self._engine_lock = threading.Lock()
 
@@ -196,8 +189,9 @@ class FlightHandlers:
         async def fetch() -> dict[str, list[SlayerModel]]:
             failures = DocumentLoadFailures()
             out: dict[str, list[SlayerModel]] = {}
-            for ds in await self._storage.list_datasources():
-                if models := failures.skip(await self._storage.load_models(data_source=ds)):
+            storage = self._engine.storage  # the engine's view refines stored models through its clients
+            for ds in await storage.list_datasources():
+                if models := failures.skip(await storage.load_models(data_source=ds)):
                     out[ds] = models
             return out
 

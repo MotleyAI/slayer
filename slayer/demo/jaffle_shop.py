@@ -872,7 +872,7 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     ))
     stored = {
         m.name: m
-        for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=datasource.name)))
+        for m in DocumentLoadFailures().skip(engine.run_sync(engine.storage.load_models(data_source=datasource.name)))
     }
     missing = [t for t in TABLE_NAMES if t not in stored]
     if missing:

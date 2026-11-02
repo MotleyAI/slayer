@@ -631,6 +631,14 @@ def _requested_list(
     return None
 
 
+async def _scan_listing(*, client: SqlClient, ref: SchemaRef, include_views: bool) -> list[IngestableObject]:
+    """A scope schema's objects; a missing schema scans empty, so callers name the schemas that exist."""
+    try:
+        return await list_ingestable_objects(client=client, ref=ref, include_views=include_views)
+    except ObjectNotFound:
+        return []
+
+
 async def _scan_one_schema(
     *,
     client: SqlClient,
@@ -732,10 +740,7 @@ async def ingest_datasource_report(
 
     scanned: list[tuple[SchemaRef, IngestableObject]] = []
     for ref in scope.schemas:
-        try:
-            objs = await list_ingestable_objects(client=client, ref=ref, include_views=include_views)
-        except ObjectNotFound:
-            objs = []  # a missing schema scans empty; callers then name the schemas that exist
+        objs = await _scan_listing(client=client, ref=ref, include_views=include_views)
         if include_tables:
             objs = [o for o in objs if o.name in include_tables]
         if exclude_tables:

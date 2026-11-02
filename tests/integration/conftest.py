@@ -1,17 +1,18 @@
-"""Shared integration-test fixtures (DEV-1390).
+"""Shared integration-test fixtures.
 
 Currently hosts the Flight SQL demo-server fixture used by both
 ``test_integration_flight.py`` (JayDeBeAPI) and
 ``test_integration_flight_pyarrow_client.py``.
 
 Also re-exports the ``metabase_e2e_env`` fixture from
-``conftest_metabase.py`` so the live-Metabase suite (DEV-1562) can pick it
+``conftest_metabase.py`` so the live-Metabase suite can pick it
 up via pytest's auto-discovery without an explicit import (which would
 shadow it via parameter binding in every test).
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -20,9 +21,21 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Iterator
 
+import jaydebeapi
+import jpype
 import pytest
 
-from tests.integration._demo_build import prepare_demo_storage
+from slayer.engine.query_engine import SlayerQueryEngine
+from tests.integration._demo_build import build_shared_demo_duckdb, prepare_demo_storage
+
+# The Flight server needs the optional ``flight`` extra; without it only the Flight fixtures are unusable.
+try:
+    from slayer.flight.handlers import FlightHandlers
+    from slayer.flight.server import build_server
+except ModuleNotFoundError as exc:
+    if (exc.name or "").split(".")[0] not in {"pyarrow", "google"}:
+        raise
+    FlightHandlers = build_server = None
 
 # Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
 # ``requests``, which is in the ``all`` poetry extra but not in narrower dev
@@ -117,8 +130,6 @@ def _ensure_jvm_started_for_arrow(jar_path: Path) -> None:
     on the classpath, so JayDeBeAPI's lazy ``startJVM()`` becomes a no-op
     and ``jpype.JClass(...)`` can resolve the driver class).
     """
-    import jpype
-
     if jpype.isJVMStarted():
         return
     jpype.startJVM(
@@ -145,21 +156,14 @@ def pytest_unconfigure(config) -> None:
     we sat for 16 minutes until the 20-minute step ceiling. ``os._exit``
     bypasses every atexit hook and lets pytest's exit code propagate.
     """
-    try:
-        import jpype
-    except ImportError:
-        return
     if not jpype.isJVMStarted():
         return
-    import os
     os._exit(getattr(config, "_slayer_jvm_exit_status", 0))
 
 
 @pytest.fixture
 def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     """Return a factory that opens a JayDeBeAPI connection to a Flight SQL URL."""
-    import jaydebeapi
-
     _ensure_jvm_started_for_arrow(jdbc_jar)
 
     def _connect(url: str, driver_args: list[str] | None = None):
@@ -180,15 +184,13 @@ def _start_flight_demo_server(
 
     Returns ``(server, host, port)``. The caller is responsible for
     ``server.shutdown()`` + ``.wait()``. When ``prebuilt_duckdb`` is given, the
-    demo build reuses that file instead of running jafgen (DEV-1815).
+    demo build reuses that file instead of running jafgen.
     """
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.flight.handlers import FlightHandlers
-    from slayer.flight.server import build_server
-
+    if FlightHandlers is None or build_server is None:
+        pytest.skip("Flight SQL needs the optional 'flight' extra (pyarrow)")
     _args, storage = prepare_demo_storage(prebuilt_duckdb=prebuilt_duckdb, base_dir=base_dir)
     engine = SlayerQueryEngine(storage=storage)
-    handlers = FlightHandlers(engine=engine, storage=storage)
+    handlers = FlightHandlers(engine=engine)
     server = build_server(
         host="127.0.0.1", port=0, handlers=handlers, token=token,
     )
@@ -201,13 +203,11 @@ def _start_flight_demo_server(
 
 @pytest.fixture(scope="session")
 def jaffle_demo_duckdb(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """Build the Jaffle Shop demo DuckDB once per session (DEV-1815).
+    """Build the Jaffle Shop demo DuckDB once per session.
 
     Server fixtures copy this file into their own dir so the expensive jafgen
     build runs once rather than per fixture.
     """
-    from tests.integration._demo_build import build_shared_demo_duckdb
-
     dest = tmp_path_factory.mktemp("jaffle-demo-shared")
     return build_shared_demo_duckdb(str(dest))
 
