@@ -45,12 +45,12 @@
 ## 7. Architecture and docs
 
 - [x] 7.1 Apply the approved `python.sql.arc42.md` §3.13 wording and `system.arc42.md` §3.17 verbatim (design.md); verify `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture` pass
-- [ ] 7.2 Write `docs/configuration/sql-clients.md` (contract, minimal gateway, full gateway, entry points, conformance) and add it to the `zensical.toml` nav; verify the docs build lists it
+- [x] 7.2 Write `docs/configuration/sql-clients.md` (contract, minimal gateway, full gateway, entry points, conformance) and add it to the `zensical.toml` nav; verify the docs build lists it
 - [x] 7.3 One sentence each on `client_factory` in `docs/reference/python-client.md`, `docs/interfaces/python-client.md`, `docs/getting-started/python.md`; verify every new example snippet runs
 
 ## 8. Gates
 
 - [x] 8.1 Full unit suite `poetry run pytest -m "not integration"` green
-- [ ] 8.2 Integration suite (CI invocation) green; Snowflake/ClickHouse/BigQuery scenarios green in their path-gated workflows
+- [x] 8.2 Integration suite (CI invocation) green; Snowflake/ClickHouse/BigQuery scenarios green in their path-gated workflows
 - [x] 8.3 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) clean
 - [ ] 8.4 After merge, ask the user whether to close DEV-2117 as done by this change
