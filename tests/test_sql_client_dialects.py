@@ -61,9 +61,9 @@ async def test_in_memory_sqlite_is_one_database_per_owning_engine(tmp_path: Path
     await storage.save_model(mem_count_model(), _validate=False)
     owner, other = SlayerQueryEngine(storage=storage), SlayerQueryEngine(storage=storage)
     try:
-        await owner._client_for(ds).execute("CREATE TABLE t (v INTEGER)")
-        assert "t" in (await owner._client_for(ds).list_objects(None)).tables
-        assert "t" not in (await other._client_for(ds).list_objects(None)).tables
+        await owner.client_for(ds).execute("CREATE TABLE t (v INTEGER)")
+        assert "t" in (await owner.client_for(ds).list_objects(None)).tables
+        assert "t" not in (await other.client_for(ds).list_objects(None)).tables
         assert (await owner.execute(COUNT_ORDERS_MEM)).data[0]["t.n"] == 0
         with pytest.raises(Exception, match="no such table"):  # NOSONAR(S5958) — the driver's message is the contract
             await other.execute(COUNT_ORDERS_MEM)

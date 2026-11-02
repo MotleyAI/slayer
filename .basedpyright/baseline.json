@@ -1728,14 +1728,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 31,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 42,
                     "endColumn": 50,
                     "lineCount": 1
@@ -1769,14 +1761,6 @@
             }
         ],
         "./slayer/pg_facade/connection.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -19706,16 +19690,6 @@
                 "range": {
                     "startColumn": 37,
                     "endColumn": 44,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_ingest_cli_ux.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 64,
-                    "endColumn": 66,
                     "lineCount": 1
                 }
             }

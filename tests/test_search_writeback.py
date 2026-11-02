@@ -59,7 +59,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     await storage.save_datasource(ds)
     engine = SlayerQueryEngine(storage=storage)
     try:
-        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine._client_for(ds))
+        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
     finally:
         await engine.aclose()
         engine.close()

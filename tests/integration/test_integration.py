@@ -1933,11 +1933,11 @@ async def diamond_env(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingest_datasource(ds, client=engine.client_for(ds))
     for m in models:
         await storage.save_model(m)
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -3217,16 +3217,16 @@ async def search_env(tmp_path):
     )
     await storage.save_datasource(datasource)
 
+    engine = SlayerQueryEngine(storage=storage)
     # Live ingest — populates Column.sampled on every non-pk column via the
     # production code path.
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=engine.client_for(datasource))
 
     await storage.save_memory(
         learning="orders.amount is gross of refunds.",
         entities=["test_sqlite.orders"],
     )
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -3820,8 +3820,8 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
     engine = SlayerQueryEngine(storage=storage)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
     # Persisted model carries Column.type=DOUBLE for tempstabidx.
     persisted = await storage.get_model("sensordata", data_source="vac")

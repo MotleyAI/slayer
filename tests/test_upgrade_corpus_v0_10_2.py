@@ -142,7 +142,7 @@ class TestOnline:
         engine = SlayerQueryEngine(storage=online_store)
         try:
             result = await ingest_datasource_idempotent(
-                datasource=datasource, storage=online_store, client=engine._client_for(datasource),
+                datasource=datasource, storage=online_store, client=engine.client_for(datasource),
             )
         finally:
             await engine.aclose()

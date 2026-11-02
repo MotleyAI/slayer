@@ -880,7 +880,7 @@ class TestMemoryEmbeddingsOnStartup:
             engine = SlayerQueryEngine(storage=storage)
             try:
                 summary = await ingest_all_datasources_idempotent(
-                    storage=storage, client_for=engine._client_for, stream=stream,
+                    storage=storage, client_for=engine.client_for, stream=stream,
                 )
             finally:
                 await engine.aclose()

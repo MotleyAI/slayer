@@ -7,7 +7,7 @@ import asyncio
 import math
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -56,7 +56,7 @@ class TestAsyncEngineDisposal:
         self, workspace: Path,
     ) -> None:
         engine, fake_engine = _build_engine_with_fake_pg_client(workspace)
-        client = next(iter(engine._sql_clients.values()))
+        client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
 
         await engine.aclose()
 
@@ -77,7 +77,7 @@ class TestAsyncEngineDisposal:
         """``_async_engine`` is None'd BEFORE dispose so a failure can't
         leave a half-torn engine cached."""
         engine, fake_engine = _build_engine_with_fake_pg_client(workspace)
-        client = next(iter(engine._sql_clients.values()))
+        client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
 
         def dispose_and_check() -> None:
             assert client._async_engine is None
@@ -233,7 +233,7 @@ class TestAsyncEngineDisposal:
         assert r1.data[0]["t._count"] == 3
         assert r1.data[0]["t.v_sum"] == 60
         assert len(engine._sql_clients) == 1
-        client = next(iter(engine._sql_clients.values()))
+        client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
         sync_engine_first = client._sync_engine
 
         r2 = engine.execute_sync(SlayerQuery(

@@ -88,7 +88,7 @@ def run_converter(converter: MetadataConverter, *, datasource: DatasourceConfig)
     with tempfile.TemporaryDirectory() as tmp:
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmp))
         try:
-            client: SqlClient = engine._client_for(datasource)
+            client: SqlClient = engine.client_for(datasource)
             if _PROBE["disabled"]:
                 client = _NoTypeProbeClient(inner=client)
             engine.run_sync(converter.collect_metadata(client=client))

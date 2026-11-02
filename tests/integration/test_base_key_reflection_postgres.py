@@ -11,6 +11,7 @@ from pytest_postgresql import factories
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import ingest_datasource_report
+from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import PostgresDialect, ReflectedForeignKey, TableKeys
 from tests._engine_helpers import disposable_engine
 
@@ -84,8 +85,13 @@ def test_foreign_keys(pg_engine) -> None:
     ]
 
 
-def test_ingestion_flags_and_joins(pg_ds) -> None:
-    report = ingest_datasource_report(datasource=pg_ds, schemas=["shop"])
+async def test_ingestion_flags_and_joins(pg_ds) -> None:
+    client = SlayerSQLClient(datasource=pg_ds)
+    try:
+        report = await ingest_datasource_report(datasource=pg_ds, client=client, schemas=["shop"])
+    finally:
+        await client.aclose()
+        client.close()
     models = {m.name: m for m in report.models}
     customers, orders = models["customers"], models["orders"]
     assert [c.name for c in customers.columns if c.primary_key] == ["id"]

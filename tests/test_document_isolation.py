@@ -284,7 +284,7 @@ class TestEnumerationSkipsAndWarns:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             result = await ingest_datasource_idempotent(
-                datasource=store.datasource, storage=bad_store, client=engine._client_for(store.datasource),
+                datasource=store.datasource, storage=bad_store, client=engine.client_for(store.datasource),
             )
         finally:
             await engine.aclose()

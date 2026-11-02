@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -96,7 +96,7 @@ class TestStatementsReachTheFactoryClient:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(
             storage=shop.storage, client_factory=factory,
-            cache_config=CacheConfig(refresh_keys=[("orders", "COUNT(*)")]),
+            cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)),
         )
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             await engine.execute(COUNT_ORDERS, cache=True)
@@ -125,7 +125,8 @@ class TestStatementsReachTheFactoryClient:
             await engine.execute(_PUSHED)
         assert guard.attempts == []
         assert "server_profile" in built[0].ops
-        assert built[0].executed and "EXISTS" in built[0].executed[0].upper()
+        assert built[0].executed
+        assert "EXISTS" in built[0].executed[0].upper()
 
     async def test_a_factory_profile_denying_correlated_subqueries_is_honoured(self, tmp_path: Path) -> None:
         built: list[ProfileClient] = []
@@ -201,7 +202,7 @@ class TestOneConstructionPoint:
             await engine.validate_models(DS_NAME)
             response = await engine.execute(COUNT_ORDERS)
         assert guard.attempts == []
-        assert isinstance(engine._client_for(shop.datasource), RecordingClient)
+        assert isinstance(engine.client_for(shop.datasource), RecordingClient)
         assert response.sql in factory.all_statements()
 
     async def test_one_client_per_datasource_name_and_connection_identity(self, tmp_path: Path) -> None:
@@ -298,8 +299,9 @@ class TestEngineOwnsItsClients:
             task.cancel()
             await asyncio.sleep(0)
 
+        workflow = _cancelled()
         with pytest.raises(asyncio.CancelledError):
-            engine.run_sync(_cancelled())
+            engine.run_sync(workflow)
         assert factory.clients[0].acloses >= 1
 
     def test_run_sync_returns_the_workflow_result_and_releases_clients(self, shop: Shop) -> None:
@@ -319,8 +321,9 @@ class TestEntryPoints:
         assert response.sql in factory.all_statements()
 
     def test_remote_mode_rejects_a_factory(self) -> None:
+        factory = GatewayFactory()
         with pytest.raises(ValueError, match="client_factory"):
-            SlayerClient(url="http://localhost:5143", client_factory=GatewayFactory())
+            SlayerClient(url="http://localhost:5143", client_factory=factory)
 
     def test_rest_builder_passes_the_factory_to_every_engine(self, shop: Shop) -> None:
         factory = GatewayFactory()
@@ -361,7 +364,7 @@ class TestEntryPoints:
         writer = _FakeWriter()
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             await PgConnection(
-                reader, writer, engine=None, storage=shop.storage,
+                reader, cast(asyncio.StreamWriter, writer), engine=None, storage=shop.storage,
                 storage_provider=provider, client_factory=factory,
             ).run()
         assert guard.attempts == []

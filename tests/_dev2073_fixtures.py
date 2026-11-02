@@ -126,7 +126,7 @@ class Live(BaseModel):
 
     def client(self) -> SqlClient:
         """The workspace engine's client for the live datasource."""
-        return self.engine()._client_for(self.ds)
+        return self.engine().client_for(self.ds)
 
     async def ingest(self):
         return await ingest_datasource_idempotent(datasource=self.ds, storage=self.storage, client=self.client())

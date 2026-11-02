@@ -14,7 +14,7 @@ from typing import Any
 
 import duckdb
 import pytest
-import sqlalchemy as sa
+from sqlalchemy import event
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
@@ -121,7 +121,7 @@ class TestGatewayServesEveryFeature:
             return await shop_storage(base, datasource=ds)
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
-            result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, client=engine._client_for(ds))
+            result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage, client=engine.client_for(ds))
             assert result.errors == []
             models, _ = await engine.storage.load_models(data_source=DS_NAME)
             return _dumps(models)
@@ -221,7 +221,7 @@ class TestGatewayServesEveryFeature:
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
-            await converter.collect_metadata(client=engine._client_for(ds))
+            await converter.collect_metadata(client=engine.client_for(ds))
             return _dumps(converter.convert().models)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
@@ -237,7 +237,7 @@ class TestGatewayServesEveryFeature:
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             converter = OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect="sqlite")
-            await converter.collect_metadata(client=engine._client_for(ds))
+            await converter.collect_metadata(client=engine.client_for(ds))
             return _dumps(converter.convert().models)
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
@@ -252,7 +252,7 @@ def test_importer_metadata_collects_through_the_bridge_inside_a_running_loop(tmp
     converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
 
     async def _from_a_loop() -> None:
-        engine.run_sync(converter.collect_metadata(client=engine._client_for(ds)))
+        engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
 
     try:
         asyncio.run(_from_a_loop())
@@ -276,7 +276,7 @@ def _slow_driver(datasource: DatasourceConfig) -> None:
     def _sleep(*_args: Any, **_kwargs: Any) -> None:
         time.sleep(_SLOW_STATEMENT_S)
 
-    sa.event.listen(engine_factory.get_engine(datasource), "before_cursor_execute", _sleep)
+    event.listen(engine_factory.get_engine(datasource), "before_cursor_execute", _sleep)
 
 
 def _seed_items(db: str, *, dialect: str) -> None:

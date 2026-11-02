@@ -217,4 +217,5 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
     assert column_of(models["big"], "v").type is DataType.DOUBLE
     assert column_of(models["events"], "group").type is DataType.INT
     assert column_of(models["odd"], "v").type is DataType.INT
-    assert clients and clients[0].statements()
+    assert clients
+    assert clients[0].statements()

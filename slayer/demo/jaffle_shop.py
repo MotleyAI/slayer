@@ -868,7 +868,7 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     """
     engine = SlayerQueryEngine(storage=storage)
     result = engine.run_sync(ingest_datasource_idempotent(
-        datasource=datasource, storage=engine.storage, client=engine._client_for(datasource),
+        datasource=datasource, storage=engine.storage, client=engine.client_for(datasource),
     ))
     stored = {
         m.name: m

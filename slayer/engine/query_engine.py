@@ -743,13 +743,13 @@ class SlayerQueryEngine:
         clock: Optional[Callable[[], datetime]] = None,
         client_factory: Optional[ClientFactory] = None,
     ):
-        self.storage: StorageBackend = EngineStorage(storage, client_source=self._client_for)
+        self.storage: StorageBackend = EngineStorage(storage, client_source=self.client_for)
         self._client_factory = client_factory
         # Read once per execution; relative time points resolve against it.
         self._clock = clock if clock is not None else host_clock()
         # Per-engine, opt-in query result cache (defaults to cache-indefinitely).
         self._cache = QueryCache(config=cache_config or CacheConfig())
-        # One client per datasource name and connection identity, built only by ``_client_for``.
+        # One client per datasource name and connection identity, built only by ``client_for``.
         self._sql_clients: dict[ClientCacheKey, SqlClient] = {}
         self._policy = policy
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
@@ -807,7 +807,7 @@ class SlayerQueryEngine:
         named = f" (filter(s): {', '.join(repr(t) for t in texts)})" if texts else ""
         lead = f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
         try:
-            profile = await self._client_for(datasource).server_profile()
+            profile = await self.client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
             reason = sql_dialect.correlated_subquery_refusal(ServerProfile())
@@ -844,7 +844,7 @@ class SlayerQueryEngine:
             return self._column_presence_cache[key]
         try:
             # Carry the catalog so a same-named twin in another catalog never unions in.
-            cols = await self._client_for(datasource).reflect_columns(
+            cols = await self.client_for(datasource).reflect_columns(
                 TableLocation(name=scoped_table.name, schema_name=schema, catalog=scoped_table.catalog),
             )
         except Exception as exc:  # introspection failed -> cannot confirm
@@ -1352,7 +1352,7 @@ class SlayerQueryEngine:
         """Cache-key datasource fingerprint (``connection_string|runtime_fingerprint``)."""
         return "|".join(_sql_client_cache_key(datasource))
 
-    def _client_for(self, datasource: DatasourceConfig) -> SqlClient:
+    def client_for(self, datasource: DatasourceConfig) -> SqlClient:
         """The one construction point: the cached client for ``datasource``, built by the factory on a miss."""
         key = client_cache_key(datasource)
         client = self._sql_clients.get(key)
@@ -1414,7 +1414,7 @@ class SlayerQueryEngine:
                 })
 
         # Miss (or cache=False) → a SQL client is required.
-        client = self._client_for(prepared.datasource)
+        client = self.client_for(prepared.datasource)
 
         # explain: run dialect-appropriate EXPLAIN on the query. NEVER cached.
         if explain:
@@ -1792,7 +1792,7 @@ class SlayerQueryEngine:
             return await validate_datasource(
                 datasource=datasource,
                 models=models,
-                client=self._client_for(datasource),
+                client=self.client_for(datasource),
                 available_in_ds=available,
                 snapshot=snapshot,
             )
@@ -1881,7 +1881,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        client = self._client_for(datasource)
+        client = self.client_for(datasource)
 
         probe_query = self._build_type_probe_query(model=model)
         # An expanded (query-backed) model is virtual sql-mode — pass it inline
@@ -2476,7 +2476,7 @@ class SlayerQueryEngine:
         sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
         findings: list[JoinCardinalityFinding] = []
         persist_entries: list[tuple] = []
-        client = self._client_for(ds_cfg)
+        client = self.client_for(ds_cfg)
         for m in scope:
             for join in m.joins:
                 try:
@@ -2674,7 +2674,7 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        entries = await validate_datasource(datasource=ds, models=models, client=self._client_for(ds))
+        entries = await validate_datasource(datasource=ds, models=models, client=self.client_for(ds))
         findings = [
             NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
@@ -2912,7 +2912,7 @@ class SlayerQueryEngine:
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert model.sql is not None
         try:
-            await self._client_for(ds).get_column_types(
+            await self.client_for(ds).get_column_types(
                 build_sql_model_trial_query(model.sql)
             )
         except Exception as exc:

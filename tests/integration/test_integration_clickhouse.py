@@ -25,6 +25,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from typing import Any
 import warnings
 from collections.abc import Generator
 from datetime import datetime, timezone
@@ -154,6 +155,15 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
     with disposable_engine(_admin_url(clickhouse_container)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(clickhouse_container, db_name: str) -> DatasourceConfig:
@@ -1129,7 +1139,7 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
     column must produce ``DataType.TIMESTAMP``, not STRING. Int32 / Float64
     must map to INT / DOUBLE."""
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     by_name = {c.name: c for c in orders.columns}
 
@@ -1147,7 +1157,7 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
 @pytest.mark.integration
 def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     assert orders.description == "All orders"
     by_name = {c.name: c for c in orders.columns}
@@ -1281,7 +1291,7 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
 
         datasource = _ds_config(clickhouse_container, db_name)
         model = next(
-            m for m in ingest_datasource(datasource=datasource)
+            m for m in run_sync(_ingest(datasource))
             if m.name == "decimal_orders"
         )
         amount = model.get_column("amount")

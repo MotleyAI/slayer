@@ -297,7 +297,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         engine.run_sync(
             # Via the module so tests can monkeypatch the seam.
             engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, client_for=engine._client_for, stream=sys.stderr,
+                storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
     app = FastAPI(title="SLayer", version=_slayer_version())
@@ -722,7 +722,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
-                client=engine._client_for(ds),
+                client=engine.client_for(ds),
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,

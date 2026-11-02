@@ -1391,7 +1391,7 @@ def _search_question(args) -> str | None:
     return positional if positional is not None else flag
 
 
-async def _refresh_samples_async(*, args, engine) -> "RefreshSamplesResult":
+async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "RefreshSamplesResult":
     """Async core of ``slayer datasources refresh-samples`` — loop datasources
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
@@ -1535,7 +1535,7 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
-async def _migrate_types_workflow(args, *, engine, inner, dry_run: bool) -> int:
+async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner, dry_run: bool) -> int:
     """Refine every in-scope model through the engine's clients; the number refined."""
     data_source_filter = getattr(args, "data_source", None)
     refined_total = 0
@@ -1593,7 +1593,7 @@ def _print_refinement_diff(
 
 
 async def _refine_one_model_for_cli(
-    *, inner, engine, ds_name: str, model_name: str, dry_run: bool,
+    *, inner, engine: SlayerQueryEngine, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1632,7 +1632,7 @@ async def _refine_one_model_for_cli(
     )
     if ds is None:
         return False
-    if not await refine_dict_with_live_schema(upgraded, ds, engine._client_for(ds)):
+    if not await refine_dict_with_live_schema(upgraded, ds, engine.client_for(ds)):
         return False
     _print_refinement_diff(
         ds_name=ds_name, model_name=model_name,
@@ -1837,14 +1837,14 @@ def _run_ingest(args):
     engine.run_sync(_ingest_workflow(args, engine))
 
 
-async def _ingest_workflow(args, engine) -> None:
+async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
     ds = await storage.get_datasource(args.datasource)
     if ds is None:
         storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
         _fail(f"Datasource '{args.datasource}' not found in {storage_path}")
 
-    client = engine._client_for(ds)
+    client = engine.client_for(ds)
     result = await engine_ingestion.ingest_datasource_idempotent(
         datasource=ds,
         storage=storage,
@@ -1981,7 +1981,7 @@ def _resolve_validate_scope(args, storage) -> None:
         sys.exit(1)
 
 
-async def _validate_each_datasource(engine, ds_names: list[str]) -> list[tuple]:
+async def _validate_each_datasource(engine: SlayerQueryEngine, ds_names: list[str]) -> list[tuple]:
     """Validate every datasource concurrently, pairing each result with its name."""
     results = await asyncio.gather(
         *(engine.validate_models(data_source=name) for name in ds_names),
@@ -1990,7 +1990,7 @@ async def _validate_each_datasource(engine, ds_names: list[str]) -> list[tuple]:
     return list(zip(ds_names, results))
 
 
-async def _collect_drift(args, engine, storage) -> tuple[list, list]:
+async def _collect_drift(args, engine: SlayerQueryEngine, storage) -> tuple[list, list]:
     """``(entries, failures)`` for the requested scope, filtered by ``--model``.
 
     Datasources are validated concurrently but attributed one by one:
@@ -2023,7 +2023,7 @@ def _filter_entries_by_model(entries: list, model: str | None) -> list:
     return [e for e in entries if e.model_name == model]
 
 
-async def _collect_cardinality_report(args, engine):
+async def _collect_cardinality_report(args, engine: SlayerQueryEngine):
     """Profile join arity, or ``None`` when neither cardinality flag is set."""
     persist = bool(getattr(args, "persist_cardinality", False))
     if not (persist or getattr(args, "cardinality", False)):
@@ -2096,7 +2096,7 @@ def _print_cardinality_section(report) -> None:
     print(_format_cardinality_report_text(report, indent="  "))
 
 
-async def _apply_force_clean(args, engine, entries) -> None:
+async def _apply_force_clean(args, engine: SlayerQueryEngine, entries) -> None:
     """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",
@@ -2132,7 +2132,7 @@ def _run_validate_models(args):
     engine.run_sync(_validate_models_workflow(args, engine))
 
 
-async def _validate_models_workflow(args, engine) -> None:
+async def _validate_models_workflow(args, engine: SlayerQueryEngine) -> None:
     """Drift, join safety, the optional clean and cardinality profiling, all in one event loop."""
     storage = engine.storage
     entries, failures = await _collect_drift(args, engine, storage)
@@ -2191,7 +2191,7 @@ def _run_import_dbt(args):
     engine.run_sync(_import_dbt_workflow(args, engine))
 
 
-async def _import_dbt_workflow(args, engine) -> None:
+async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
     include_hidden = bool(args.include_hidden_models)
     project = parse_dbt_project(
@@ -2221,7 +2221,7 @@ async def _import_dbt_workflow(args, engine) -> None:
         target_dialect=target_dialect,
     )
     if include_hidden and ds is not None:
-        await converter.collect_metadata(client=engine._client_for(ds))
+        await converter.collect_metadata(client=engine.client_for(ds))
     result = converter.convert()
 
     hidden_count = 0
@@ -2311,7 +2311,7 @@ def _run_import_osi(args):
     engine.run_sync(_import_osi_workflow(args, engine))
 
 
-async def _import_osi_workflow(args, engine) -> None:
+async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
     try:
         documents = parse_osi_path(args.osi_path)
@@ -2336,7 +2336,7 @@ async def _import_osi_workflow(args, engine) -> None:
         target_dialect=ds.type,
     )
     try:
-        await converter.collect_metadata(client=engine._client_for(ds))
+        await converter.collect_metadata(client=engine.client_for(ds))
         result = converter.convert()
     except OsiConversionError as exc:
         _fail(str(exc))
@@ -2454,7 +2454,7 @@ def _datasources_test(storage, args) -> None:
     ds = _datasource_or_exit(storage, args.name)
     engine = SlayerQueryEngine(storage=storage)
     try:
-        engine.run_sync(engine._client_for(ds).ping())
+        engine.run_sync(engine.client_for(ds).ping())
         print(f"OK — connected to '{args.name}' ({ds.type}).")
     except Exception as e:
         print(f"FAILED — {e}", file=sys.stderr)
@@ -2643,7 +2643,7 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
         # path hides recognised internals and skips with no output at all.
         report = engine.run_sync(engine_ingestion.ingest_datasource_report(
             datasource=live_ds,
-            client=engine._client_for(live_ds),
+            client=engine.client_for(live_ds),
             schemas=schema_list,
             all_schemas=all_schemas,
             include_tables=include,

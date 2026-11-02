@@ -195,10 +195,11 @@ class TestTypedFailures:
     async def test_a_missing_table_or_schema_is_not_found(self, shop: Shop) -> None:
         client = SlayerSQLClient(datasource=shop.datasource)
         try:
+            missing = TableLocation(name="no_such_table")
             with pytest.raises(ObjectNotFound):
-                await client.reflect_columns(TableLocation(name="no_such_table"))
+                await client.reflect_columns(missing)
             with pytest.raises(ObjectNotFound):
-                await client.reflect_table_keys(TableLocation(name="no_such_table"))
+                await client.reflect_table_keys(missing)
             with pytest.raises(ObjectNotFound):
                 await client.list_objects("no_such_schema")
         finally:
@@ -272,7 +273,7 @@ class TestReflectedMetadataUsesSlayerTypes:
         ds = DatasourceConfig(name="kinds", type=dialect, database=path)
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
         try:
-            client = engine._client_for(ds)
+            client = engine.client_for(ds)
             report = await ingest_datasource_report(datasource=ds, client=client)
             reflected = await client.reflect_columns(TableLocation(name="kinds"))
         finally:
@@ -370,3 +371,20 @@ class TestDelegatingClient:
             "schema_description",
         ]
         assert client.datasource is shop.datasource
+
+
+class TestEnvironmentReferences:
+    async def test_the_default_client_resolves_env_references(
+        self, shop: Shop, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("SLAYER_TEST_SHOP_DB", shop.db)
+        ds = DatasourceConfig(name="envshop", type="sqlite", database="${SLAYER_TEST_SHOP_DB}")
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            rows = (await client.execute("SELECT COUNT(*) AS n FROM orders")).rows
+            listing = await client.list_objects(None)
+        finally:
+            client.close()
+            engine_factory.invalidate_engine(ds.resolve_env_vars())
+        assert rows == [{"n": 4}]
+        assert "orders" in listing.tables

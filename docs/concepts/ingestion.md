@@ -159,11 +159,14 @@ slayer ingest --datasource my_postgres --all-schemas
 ```python
 import asyncio
 from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.engine.query_engine import SlayerQueryEngine
 
 async def main():
+    engine = SlayerQueryEngine(storage=storage)
     result = await ingest_datasource_idempotent(
         datasource=ds,
         storage=storage,
+        client=engine.client_for(ds),  # the database is read through the engine's client
         schema="public",
         include_tables=["orders", "customers"],  # Optional filter
         exclude_tables=["migrations"],            # Optional exclusion

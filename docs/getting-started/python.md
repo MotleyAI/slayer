@@ -27,8 +27,9 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-# Set up storage
+# Set up storage and an engine over it
 storage = YAMLStorage(base_dir="./slayer_data")
+engine = SlayerQueryEngine(storage=storage)
 
 # Connect a database
 ds = DatasourceConfig(
@@ -41,8 +42,8 @@ ds = DatasourceConfig(
 )
 run_sync(storage.save_datasource(ds))
 
-# Auto-generate models from schema
-models = ingest_datasource(datasource=ds, schema="public")
+# Auto-generate models from schema, reading the database through the engine's client
+models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds), schema="public"))
 for model in models:
     run_sync(storage.save_model(model))
     print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")

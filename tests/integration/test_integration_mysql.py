@@ -19,6 +19,7 @@ import statistics
 from datetime import date, timedelta
 import tempfile
 import uuid
+from typing import Any
 
 import pytest
 
@@ -48,6 +49,7 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -152,6 +154,15 @@ def _drop_module_db(mysql_container, db_name: str) -> None:
             cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
     finally:
         conn.close()
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(mysql_container, db_name: str) -> DatasourceConfig:
@@ -725,7 +736,7 @@ def mysql_ingest_env(mysql_container):
             f"rollup tests cannot validate. Inspector output: {fks_on_orders!r}"
         )
 
-        models = ingest_datasource(datasource=ds, schema=None)
+        models = run_sync(_ingest(ds, schema=None))
         yield models, ds, None
     finally:
         _drop_module_db(mysql_container, db_name)

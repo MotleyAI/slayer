@@ -614,9 +614,10 @@ class TestScopeResolution:
     ) -> None:
         """--all-schemas raises rather than returning a silent empty scope."""
         async with _client(_ds(basic_db)) as client:
+            unlistable = _UnlistableSchemas(inner=client)
             with pytest.raises(SchemaEnumerationError):
                 await resolve_ingest_scope(
-                    client=_UnlistableSchemas(inner=client), requested=None,
+                    client=unlistable, requested=None,
                     all_schemas=True, datasource_schema=None,
                 )
 

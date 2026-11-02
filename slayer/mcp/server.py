@@ -514,7 +514,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     if ingest_on_startup:
         engine.run_sync(
             engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, client_for=engine._client_for, stream=sys.stderr,
+                storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
@@ -1328,7 +1328,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         verb = "replaced" if existed else "created"
         # Re-read: storage resolves ${ENV_VAR} credentials.
         ds = await storage.get_datasource(name) or ds
-        client = engine._client_for(ds)
+        client = engine.client_for(ds)
 
         ok, msg = await _test_connection(client)
         if not ok:
@@ -1444,7 +1444,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds.connection_string:
             lines.append("Connection string: (set)")
 
-        client = engine._client_for(ds)
+        client = engine.client_for(ds)
         ok, msg = await _test_connection(client)
         lines.append(f"\nConnection: {'OK' if ok else 'FAILED'}")
         if not ok:
@@ -1648,7 +1648,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except ValueError as e:
             return f"Invalid scope: {e}"
 
-        client = engine._client_for(ds)
+        client = engine.client_for(ds)
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
             result = await engine_ingestion.ingest_datasource_idempotent(

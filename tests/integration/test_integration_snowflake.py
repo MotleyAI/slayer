@@ -17,9 +17,11 @@ import os
 import pathlib
 import tomllib
 import uuid
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -214,6 +216,15 @@ def sf_datasource(sf_transient_schema: str) -> DatasourceConfig:
         connection_name=_CONNECTION_NAME,
         schema_name=sf_transient_schema,
     )
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 @pytest.fixture
@@ -626,7 +637,7 @@ def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
             cur.close()
 
     sa_engine = engine_factory.get_engine(ds)
-    sa.event.listen(sa_engine, "checkout", _record)
+    event.listen(sa_engine, "checkout", _record)
     sql_client = client.SlayerSQLClient(datasource=ds)
     locations = [TableLocation(name=n) for n in ("orders", "customers", "products", "regions")]
 
@@ -667,7 +678,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
       - source/target column names on each join
     """
     schema_to_introspect = sf_transient_schema
-    models = ingest_datasource(datasource=sf_datasource, schema=schema_to_introspect)
+    models = run_sync(_ingest(sf_datasource, schema=schema_to_introspect))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name.get("orders")
     customers = by_name.get("customers")
@@ -704,7 +715,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
 
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
     """Snowflake table/column comments must land on model/column descriptions."""
-    models = ingest_datasource(datasource=sf_datasource, schema=sf_transient_schema)
+    models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name["orders"]
     assert orders.description == "All orders"

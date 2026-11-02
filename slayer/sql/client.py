@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 import warnings as _warnings_module
@@ -33,6 +34,7 @@ from slayer.core import timing
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+_ENV_REF = re.compile(r"\$\{\w+\}")
 
 
 class SqlClientError(Exception):
@@ -640,17 +642,25 @@ class SlayerSQLClient:
                 self.datasource.name, exc,
             )
 
+    def _connection_datasource(self) -> DatasourceConfig:
+        """``datasource`` with its ``${ENV_VAR}`` references resolved (itself when it has none)."""
+        ds = self.datasource
+        if any(isinstance(v, str) and _ENV_REF.search(v) for v in ds.model_dump().values()):
+            return ds.resolve_env_vars()
+        return ds
+
     def _get_async_engine(self):
         """Get or create the async engine for this client (cached per instance)."""
         if self._async_engine is None:
-            conn_str = self.datasource.get_connection_string()
-            dialect = dialect_for_ds_type(self.datasource.type)
-            with plugin_errors(self.datasource, conn_str, dialect=dialect):
+            ds = self._connection_datasource()
+            conn_str = ds.get_connection_string()
+            dialect = dialect_for_ds_type(ds.type)
+            with plugin_errors(ds, conn_str, dialect=dialect):
                 async_conn_str = _async_connection_string(
-                    connection_string=conn_str, db_type=self.datasource.type,
+                    connection_string=conn_str, db_type=ds.type,
                 )
             if async_conn_str:
-                load_driver(self.datasource, async_conn_str, dialect=dialect, is_async=True)
+                load_driver(ds, async_conn_str, dialect=dialect, is_async=True)
                 self._async_engine = _get_async_engine(async_conn_str)
         return self._async_engine
 
@@ -663,7 +673,8 @@ class SlayerSQLClient:
         """
         if self._sync_engine is not None:
             return self._sync_engine
-        conn_str = self.datasource.get_connection_string()
+        ds = self._connection_datasource()
+        conn_str = ds.get_connection_string()
         if engine_factory._is_in_memory_sqlite(conn_str):
             engine = engine_factory.build_in_memory_sqlite_engine(conn_str)
             self._sync_engine = engine
@@ -672,7 +683,7 @@ class SlayerSQLClient:
                 self, _dispose_engine_quietly, engine,
             )
             return engine
-        self._sync_engine = engine_factory.get_engine(self.datasource)
+        self._sync_engine = engine_factory.get_engine(ds)
         return self._sync_engine
 
     def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
@@ -687,7 +698,7 @@ class SlayerSQLClient:
         if not self._dispose_private_sync_engine():
             self._sync_engine = None
             try:
-                engine_factory.invalidate_engine(self.datasource)
+                engine_factory.invalidate_engine(self._connection_datasource())
             except Exception:
                 logger.warning(
                     "Failed to invalidate engine for datasource %r after an "
