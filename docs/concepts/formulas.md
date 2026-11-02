@@ -49,6 +49,7 @@ every functional-aggregation position — measures, post-aggregation filters
 expressions — and composes with `rename`.
 Comparisons, `and` / `or` / `not` and `in` aggregate as booleans, so `sum(amount > 15)` counts the rows whose `amount` exceeds 15.
 Wherever a number is needed — an arithmetic operand, a math function's argument, a comparison with a number — a boolean reads as 1 / 0 (`flag * amount`, `flag = 1`).
+A numeric aggregation reads a boolean parameter the same way (`weighted_avg(amount, weight=status = 'paid')`, `corr(amount, other=flag)`), while a custom aggregation's `{value}` and placeholders receive the raw boolean.
 
 **Naming.** The result key derives from the expression via the same sanitizer
 used for computed dimensions: `sum(amount - cost)` on `orders` →
@@ -86,6 +87,8 @@ reject a confidently non-numeric expression (`sum(lower(name))`).
 
 Any aggregation takes a SQL `FILTER (WHERE c)` clause with a row-level condition `c` and aggregates only the rows passing it, every row-level input included (`count(*) FILTER (WHERE status = 'paid')`, `last(amount) FILTER (WHERE amount > 0)` picks the newest passing row).
 An aggregate, transform or measure inside `c` is rejected, the clause composes with `partition_by=` and `window=` (`sum(amount, window='3m') FILTER (WHERE status = 'paid')`), and an unnamed filtered aggregation's result key derives from the whole expression, condition included, so it never collides with the unfiltered one.
+
+An unnamed filtered aggregation's result key is its formula text (`count(*) FILTER (WHERE status = 'paid')` → `count_filter_where_status_paid`), the same with or without a `{variable}` in the condition.
 
 ### Windowed aggregations
 
@@ -555,9 +558,11 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
   SQL operators, function calls, aggregates (`THEN sum(amount) * 2`) — and a string
   literal like `'a AND b'` is never rewritten.
 - The result **type is the join of the branches** (Postgres semantics):
-  identical types pass through, a numeric mix widens to `DOUBLE`, a `NULL`
-  branch is absorbed by the other, and any other mix is a plan-time error
-  naming both types. The Python conditional `x if c else y` is not supported —
+  identical types pass through, a numeric mix widens to `DOUBLE`, a `BOOLEAN`
+  beside a number reads as its integer, `DATE` beside `TIMESTAMP` widens to
+  `TIMESTAMP`, a `NULL` branch or a value whose type cannot be determined (an untyped or `UNKNOWN` column, an unrecognised expression) is
+  absorbed by the other, and any other mix is a plan-time error naming both types; `coalesce`, `ifnull`, `greatest` and `least` follow the
+  same rule on every dialect. The Python conditional `x if c else y` is not supported —
   use `CASE` / `iif`.
 
 ---

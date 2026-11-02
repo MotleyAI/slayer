@@ -475,16 +475,14 @@ def _windowed_or_ranked_identity(agg: ValueKey):
     """A hashable, partition-free identity for a windowed / ranked aggregate (own producer each); ``None`` for a plain aggregate."""
     if not is_kernel_requiring(agg):
         return None
-    return (
-        "windowed" if window_kwarg_of(agg) is not None else "ranked",
-        agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs),
-    )
+    return ("windowed" if window_kwarg_of(agg) is not None else "ranked", _partition_free_identity(agg))
 
 
-def _partition_free_identity(agg: ValueKey):  # NOSONAR(S8495) — distinct-shape identity tuples are intentional dict keys: a plain aggregate's 4-field identity and an "other" 2-tuple never collide (different lengths compare unequal)
+def _partition_free_identity(agg: ValueKey) -> ValueKey:
+    """``agg`` without its ``partition_by=`` grain."""
     if not isinstance(agg, AggregateKey):
-        return ("other", agg)
-    return (agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs))
+        return agg
+    return agg.model_copy(update={"partition_keys": None})
 
 
 def _cross_model_input_paths(
@@ -3310,7 +3308,7 @@ def _local_regroup_groups(
         ident = _windowed_or_ranked_identity(agg)
         # A crossing-input root needs its OWN producer, else another aggregate's crossed joins fan its rows.
         if ident is None and isinstance(agg, AggregateKey) and crossing(agg):
-            ident = ("crossing", agg.source, agg.agg, tuple(agg.args), tuple(agg.kwargs))
+            ident = ("crossing", _partition_free_identity(agg))
         gkey = (grain, ident)
         groups.setdefault(gkey, []).append(agg)
         meta[gkey] = (grain, windowed)

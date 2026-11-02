@@ -45,6 +45,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
 
@@ -180,26 +181,37 @@ def _values(rows: list[tuple]) -> str:
 _LAST_YEAR_ROWS = [(13, 2, "paid", "2024-01-05", 8), (14, 3, "open", "2024-06-30", 12)]
 
 
-def _idiom_seed(*, with_namesake: bool, with_last_year: bool) -> Callable[[str], None]:
+def idiom_seed_statements(*, with_namesake: bool = False, with_last_year: bool = False) -> list[str]:
+    """CREATE + INSERT statements for the three tables (portable across SQLite, DuckDB and Postgres)."""
     customers = _CUSTOMER_ROWS + ([(6, "Alice", 1, 0)] if with_namesake else [])
     orders = (
         _ORDER_ROWS
         + ([(12, 6, "paid", "2025-07-01", 40)] if with_namesake else [])
         + (_LAST_YEAR_ROWS if with_last_year else [])
     )
+    return [
+        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR)",
+        f"INSERT INTO regions VALUES {_values(_REGION_ROWS)}",
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, credit INTEGER)",
+        f"INSERT INTO customers VALUES {_values(customers)}",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status VARCHAR, "
+        "order_date DATE, amount INTEGER)",
+        f"INSERT INTO orders VALUES {_values(orders)}",
+    ]
+
+
+def _idiom_seed(*, dialect: str, with_namesake: bool, with_last_year: bool) -> Callable[[str], None]:
+    statements = idiom_seed_statements(with_namesake=with_namesake, with_last_year=with_last_year)
 
     def seed(db_path: str) -> None:
+        if dialect == "sqlite":
+            with transaction(db_path) as con:
+                for stmt in statements:
+                    con.execute(stmt)
+            return
         duckdb = pytest.importorskip("duckdb")
         con = duckdb.connect(db_path)
-        for stmt in (
-            "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR)",
-            f"INSERT INTO regions VALUES {_values(_REGION_ROWS)}",
-            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER, credit INTEGER)",
-            f"INSERT INTO customers VALUES {_values(customers)}",
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status VARCHAR, "
-            "order_date DATE, amount INTEGER)",
-            f"INSERT INTO orders VALUES {_values(orders)}",
-        ):
+        for stmt in statements:
             con.execute(stmt)
         con.close()
 
@@ -207,12 +219,16 @@ def _idiom_seed(*, with_namesake: bool, with_last_year: bool) -> Callable[[str],
 
 
 async def make_idiom_engine(
-    *, with_namesake: bool = False, with_last_year: bool = False,
+    *, dialect: str = "duckdb", with_namesake: bool = False, with_last_year: bool = False,
+    models: list[SlayerModel] | None = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    pytest.importorskip("duckdb")
+    """The idiom dataset on ``sqlite`` or ``duckdb``; ``models`` replaces :func:`idiom_models`."""
+    if dialect == "duckdb":
+        pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect="duckdb", seed=_idiom_seed(with_namesake=with_namesake, with_last_year=with_last_year),
-        models=idiom_models(),
+        dialect=dialect,
+        seed=_idiom_seed(dialect=dialect, with_namesake=with_namesake, with_last_year=with_last_year),
+        models=idiom_models() if models is None else models,
     ) as (engine, _):
         yield engine
 

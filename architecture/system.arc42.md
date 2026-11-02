@@ -171,6 +171,8 @@ All code, old and new, MUST obey these.
     SLayer reads it with the source's meaning, up to SLayer's documented NULL
     conventions; anything else is dropped with a report.
     [enforced: test:tests/test_dev2171_importers_preserve_meaning.py]
+22. **One typing**: a value's type is derived from its key in one place; every
+    check, coercion and metadata lift reads that derivation. [target: DEV-2180]
 
 ## 4. Enforcement
 

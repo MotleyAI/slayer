@@ -1292,6 +1292,18 @@ def join_conditional_branch_types(
         return b
     if b is None:
         return a
+    joined = _joined_known_types(a, b)
+    if joined is None:
+        raise ValueError(
+            f"CASE/iif branches have incompatible types {a.value} and {b.value}: "
+            f"branches must share a type (numeric types widen to DOUBLE). Cast one "
+            f"branch so both match."
+        )
+    return joined
+
+
+def _joined_known_types(a: DataType, b: DataType) -> Optional[DataType]:
+    """The shared type of two known branch types, ``None`` when they cannot share one."""
     if a == b:
         return a
     if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
@@ -1301,11 +1313,7 @@ def join_conditional_branch_types(
         return b if a is DataType.BOOLEAN else a
     if a in TEMPORAL_TYPES and b in TEMPORAL_TYPES:
         return DataType.TIMESTAMP
-    raise ValueError(
-        f"CASE/iif branches have incompatible types {a.value} and {b.value}: "
-        f"branches must share a type (numeric types widen to DOUBLE). Cast one "
-        f"branch so both match."
-    )
+    return None
 
 
 TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
@@ -1588,15 +1596,14 @@ def _boolean_int_expression(key: object, *, column_type: ColumnTypeFn) -> bool:
 
 def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
     """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, INT when built from booleans and
-    integer literals, a column's declared type, else ``None``."""
+    integer literals, a column's, cast's or conditional's type, else ``None``."""
     if boolean_valued(source, column_type=column_type):
         return DataType.BOOLEAN
     if _boolean_int_expression(source, column_type=column_type):
         return DataType.INT
-    if isinstance(source, (ColumnKey, ColumnSqlKey)):
-        return column_type(source)
-    if isinstance(source, CastKey) and source.data_type is not DataType.UNKNOWN:
-        return source.data_type
+    if isinstance(source, (ColumnKey, ColumnSqlKey, CastKey)) or (
+            isinstance(source, ScalarCallKey) and source.name in CONDITIONAL_SCALARS):
+        return value_type(source, column_type=column_type)
     return None
 
 
@@ -1612,6 +1619,38 @@ def _returned_args(key: ScalarCallKey) -> List[object]:
     if key.name == "nullif":
         returned = returned[:1]
     return [a for a in returned if not _is_null_arg(a)]
+
+
+# Value-returning conditionals: every argument they may return shares one type.
+CONDITIONAL_SCALARS = frozenset({"iif", "coalesce", "ifnull", "greatest", "least"})
+
+
+def _fold_branch_types(
+    key: ScalarCallKey, *, column_type: ColumnTypeFn,
+) -> Tuple[Optional[DataType], Optional[Tuple[DataType, DataType]]]:
+    """``(joined type, None)`` over a conditional's returned arguments, else ``(None, the first pair that cannot
+    join)``; an untyped or UNKNOWN argument is absorbed."""
+    joined: Optional[DataType] = None
+    for arg in _returned_args(key):
+        t = value_type(arg, column_type=column_type)
+        if t is None or t is DataType.UNKNOWN:
+            continue
+        if joined is not None:
+            shared = _joined_known_types(joined, t)
+            if shared is None:
+                return None, (joined, t)
+            t = shared
+        joined = t
+    return joined, None
+
+
+def conditional_branch_conflict(
+    key: ScalarCallKey, *, column_type: ColumnTypeFn,
+) -> Optional[Tuple[DataType, DataType]]:
+    """The first two branch types of a value-returning conditional that cannot share a type, else ``None``."""
+    if key.name not in CONDITIONAL_SCALARS:
+        return None
+    return _fold_branch_types(key, column_type=column_type)[1]
 
 
 def list_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
@@ -1678,6 +1717,8 @@ def value_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
         return DataType.ARRAY
     if isinstance(key, CastKey):
         return None if key.data_type is DataType.UNKNOWN else key.data_type
+    if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
+        return _fold_branch_types(key, column_type=column_type)[0]
     if boolean_valued(key, column_type=column_type):
         return DataType.BOOLEAN
     temporal = temporal_type(key, column_type=column_type)
