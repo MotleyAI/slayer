@@ -31,17 +31,17 @@ Defines casts in Mode-B expressions: `CAST` / `::` as the database's own cast of
 
 ### Requirement: A cast's result type is inferred
 
-A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; any other type as UNKNOWN. The inferred type SHALL drive checking and response types exactly as a column's declared type does.
+A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; any other type as UNKNOWN. The inferred type SHALL drive checking and the query plan's types exactly as a column's declared type does.
 
 #### Scenario: Cast to DATE is a date operand
 
 - **WHEN** a dimension is `date_diff('day', CAST(created_txt AS DATE), DATE '2025-01-01')` over a TEXT column `created_txt`
-- **THEN** it binds without a date-operand type error and the response reports INT
+- **THEN** it binds without a date-operand type error and the query plan reports INT
 
 #### Scenario: Unknown target type
 
 - **WHEN** a dimension is `CAST(payload AS JSON)` on Postgres
-- **THEN** it renders and its response type is UNKNOWN
+- **THEN** it renders and its planned type is UNKNOWN
 
 ### Requirement: TRY_CAST turns invalid input into NULL on every dialect
 
