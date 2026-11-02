@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import (
-    Awaitable,
+    Coroutine,
     Mapping,
     Mapping as ABCMapping,
     Sequence,
@@ -98,7 +98,7 @@ class SlayerClient:
         elif client_factory is not None:
             raise ValueError("client_factory= is only supported in local-engine mode (pass storage=...).")
 
-    def _run_sync(self, workflow: Awaitable[_T]) -> _T:
+    def _run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
         """One synchronous call's whole workflow, bridged through the local engine when there is one."""
         if self._engine is not None:
             return self._engine.run_sync(workflow)

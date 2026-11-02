@@ -11,6 +11,7 @@ import duckdb
 import pytest
 import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
@@ -127,7 +128,7 @@ class TestTypedFailures:
 
     @pytest.mark.parametrize("error", [
         ObjectNotFound("customers vanished"),
-        sa.exc.ProgrammingError("SELECT", {}, Exception("permission denied for table customers")),
+        ProgrammingError("SELECT", {}, Exception("permission denied for table customers")),
         NotImplementedError("reflection unsupported"),
     ], ids=["not_found", "permission", "unsupported"])
     async def test_a_listed_but_unreadable_table_yields_no_verdict(self, shop: Shop, error: Exception) -> None:
@@ -170,7 +171,7 @@ class TestTypedFailures:
     async def test_rejected_credentials_are_reported_and_connections_discarded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        rejected = sa.exc.OperationalError("SELECT 1", {}, Exception('password authentication failed for user "u"'))
+        rejected = OperationalError("SELECT 1", {}, Exception('password authentication failed for user "u"'))
         fake = MagicMock(spec=sa.Engine)
         fake.connect.side_effect = rejected
         invalidated: list[str] = []

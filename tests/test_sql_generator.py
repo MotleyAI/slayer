@@ -13,9 +13,10 @@ from pydantic import ValidationError as PydanticValidationError
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.generator import (
     SQLGenerator,
     _wrap_cast_for_type,
@@ -8239,6 +8240,7 @@ class TestGetColumnTypesSql:
             mock_ds = MagicMock()
             mock_ds.get_connection_string.return_value = "sqlite://"
             mock_ds.type = "sqlite"
+            mock_ds.name = "test"
             # Real attribute, not an auto-Mock: it feeds the cache key's credential digest, which hashes it.
             mock_ds.credentials_json = None
             with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
@@ -8250,7 +8252,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
+                engine._sql_clients[client_cache_key(mock_ds)] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -8290,8 +8292,9 @@ class TestGetColumnTypesSql:
         mock_ds = MagicMock()
         mock_ds.get_connection_string.return_value = "sqlite://"
         mock_ds.type = "sqlite"
+        mock_ds.name = "test"
 
-        # Real attribute, not an auto-Mock: it feeds the cache key's credential digest (DEV-1755), which hashes it.
+        # Real attribute, not an auto-Mock: it feeds the cache key's credential digest, which hashes it.
         mock_ds.credentials_json = None
         with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
             async def capture_types(sql):
@@ -8299,7 +8302,7 @@ class TestGetColumnTypesSql:
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients[_sql_client_cache_key(mock_ds)] = mock_client
+            engine._sql_clients[client_cache_key(mock_ds)] = mock_client
 
             result = await engine.get_column_types("orders")
 

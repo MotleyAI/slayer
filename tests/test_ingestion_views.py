@@ -1,15 +1,17 @@
 """Ingestion, drift, and MCP listing must all see views."""
 from __future__ import annotations
 
-from slayer.storage.sqlite_conn import transaction
 import inspect as _inspect
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any, TypeVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
 
+from slayer.async_utils import run_sync
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
 from slayer.engine.ingestion import (
@@ -25,6 +27,19 @@ from slayer.engine.schema_drift import (
 )
 from slayer.engine.ingestion import _print_ingest_addition
 from slayer.mcp.server import _fetch_tables
+from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import transaction
+
+_T = TypeVar("_T")
+
+
+async def _with_client(fn: Callable[..., Awaitable[_T]], /, *, datasource: DatasourceConfig, **kwargs: Any) -> _T:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await fn(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -63,6 +78,7 @@ def _mock_inspector(
 ) -> MagicMock:
     """An Inspector stub whose view accessors can raise, for dialects lacking them."""
     insp = MagicMock(spec=sa.engine.Inspector)
+    insp.get_schema_names.return_value = ["main", "analytics"]
     insp.get_table_names.return_value = list(tables)
 
     def _maybe(value):
@@ -76,6 +92,21 @@ def _mock_inspector(
     insp.get_view_names.side_effect = _maybe(views)
     insp.get_materialized_view_names.side_effect = _maybe(matviews)
     return insp
+
+
+async def _list_objects_async(insp: MagicMock, **kwargs: Any) -> list[IngestableObject]:
+    client = SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
+    try:
+        with patch("sqlalchemy.inspect", return_value=insp):
+            return await list_ingestable_objects(client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
+def _list_objects(insp: MagicMock, **kwargs: Any) -> list[IngestableObject]:
+    """``list_ingestable_objects`` through a real client whose Inspector is ``insp``."""
+    return run_sync(_list_objects_async(insp, **kwargs))
 
 
 def _names(objects: list[IngestableObject]) -> list[str]:
@@ -98,7 +129,7 @@ class TestViewIngestion:
     def test_view_is_ingested_by_default(self, workspace: Path) -> None:
         """Headline regression: before the fix this returned only ``orders``."""
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds)
+        models = run_sync(_with_client(ingest_datasource, datasource=ds))
         by_name = {m.name: m for m in models}
         assert "orders" in by_name
         assert "stg_orders" in by_name, "view was not ingested"
@@ -107,7 +138,7 @@ class TestViewIngestion:
     def test_include_views_false_suppresses_views(self, workspace: Path) -> None:
         """the ``--no-views`` escape hatch."""
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds, include_views=False)
+        models = run_sync(_with_client(ingest_datasource, datasource=ds, include_views=False))
         names = {m.name for m in models}
         assert "orders" in names
         assert "stg_orders" not in names
@@ -115,14 +146,14 @@ class TestViewIngestion:
     def test_view_model_has_columns(self, workspace: Path) -> None:
         """A view-backed model is a real model, not an empty shell."""
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds)
+        models = run_sync(_with_client(ingest_datasource, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
         assert {c.name for c in view_model.columns} == {"id", "amount", "status"}
 
     def test_view_model_has_no_joins(self, workspace: Path) -> None:
         """Views carry no FK metadata, so no joins can be derived."""
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds)
+        models = run_sync(_with_client(ingest_datasource, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
         assert view_model.joins == []
 
@@ -136,7 +167,7 @@ class TestDialectTolerance:
     def test_get_view_names_not_implemented_is_survivable(self) -> None:
         """Base Inspector raises NotImplementedError; tables must still list."""
         insp = _mock_inspector(tables=["orders"], views=NotImplementedError())
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["orders"]
 
     def test_get_materialized_view_names_not_implemented_is_survivable(self) -> None:
@@ -144,7 +175,7 @@ class TestDialectTolerance:
         insp = _mock_inspector(
             tables=["orders"], views=["v_orders"], matviews=NotImplementedError()
         )
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["orders", "v_orders"]
 
     def test_arbitrary_accessor_failure_is_survivable(self) -> None:
@@ -152,35 +183,35 @@ class TestDialectTolerance:
         insp = _mock_inspector(
             tables=["orders"], views=RuntimeError("no view privilege")
         )
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["orders"]
 
     def test_name_returned_as_both_table_and_view_appears_once(self) -> None:
         """A name from both table and view accessors: the view listing is authoritative."""
         insp = _mock_inspector(tables=["orders", "v_dup"], views=["v_dup"])
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["orders", "v_dup"]
         assert _kind_of(objects, "v_dup") == "view"
 
     def test_matview_also_listed_as_view_appears_once(self) -> None:
         """Most-specific wins: a view+matview dup is a materialized view."""
         insp = _mock_inspector(tables=[], views=["mv"], matviews=["mv"])
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["mv"]
         assert _kind_of(objects, "mv") == "materialized_view"
 
     def test_name_in_all_three_listings_is_a_materialized_view(self) -> None:
         """Some dialects list a matview from every accessor; kind must not degrade."""
         insp = _mock_inspector(tables=["mv"], views=["mv"], matviews=["mv"])
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["mv"]
         assert _kind_of(objects, "mv") == "materialized_view"
 
     def test_include_views_false_keeps_table_kind_for_dup(self) -> None:
         """Without view discovery there is nothing to reclassify against."""
         insp = _mock_inspector(tables=["v_dup"], views=["v_dup"])
-        objects = list_ingestable_objects(
-            inspector=insp, schema=None, include_views=False
+        objects = _list_objects(
+            insp, schema=None, include_views=False
         )
         assert _kind_of(objects, "v_dup") == "table"
 
@@ -189,7 +220,7 @@ class TestDialectTolerance:
         insp = _mock_inspector(
             tables=["t1", "t2"], views=["v1"], matviews=["m1"]
         )
-        objects = list_ingestable_objects(inspector=insp, schema=None)
+        objects = _list_objects(insp, schema=None)
         assert _names(objects) == ["t1", "t2", "v1", "m1"]
         assert [o.kind for o in objects] == [
             "table", "table", "view", "materialized_view",
@@ -197,8 +228,8 @@ class TestDialectTolerance:
 
     def test_include_views_false_skips_accessors_entirely(self) -> None:
         insp = _mock_inspector(tables=["orders"], views=["v_orders"])
-        objects = list_ingestable_objects(
-            inspector=insp, schema=None, include_views=False
+        objects = _list_objects(
+            insp, schema=None, include_views=False
         )
         assert _names(objects) == ["orders"]
         insp.get_view_names.assert_not_called()
@@ -208,7 +239,7 @@ class TestDialectTolerance:
         """Schema-qualified scans must not silently fall back to the default
         schema for views."""
         insp = _mock_inspector(tables=["orders"], views=["v"], matviews=["m"])
-        list_ingestable_objects(inspector=insp, schema="analytics")
+        _list_objects(insp, schema="analytics")
         insp.get_table_names.assert_called_once_with(schema="analytics")
         insp.get_view_names.assert_called_once_with(schema="analytics")
         insp.get_materialized_view_names.assert_called_once_with(schema="analytics")
@@ -222,12 +253,12 @@ class TestDialectTolerance:
 class TestFilters:
     def test_include_tables_filters_views_too(self, workspace: Path) -> None:
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds, include_tables=["stg_orders"])
+        models = run_sync(_with_client(ingest_datasource, datasource=ds, include_tables=["stg_orders"]))
         assert {m.name for m in models} == {"stg_orders"}
 
     def test_exclude_tables_filters_views_too(self, workspace: Path) -> None:
         _, ds = _db_with_view(workspace)
-        models = ingest_datasource(datasource=ds, exclude_tables=["stg_orders"])
+        models = run_sync(_with_client(ingest_datasource, datasource=ds, exclude_tables=["stg_orders"]))
         assert {m.name for m in models} == {"orders"}
 
 
@@ -252,7 +283,7 @@ class TestDriftSeesViews:
                 Column(name="status", sql="status", type=DataType.TEXT),
             ],
         )
-        entries = await validate_datasource(datasource=ds, models=[model])
+        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
         whole = [e for e in entries if isinstance(e, WholeModelDelete)]
         assert whole == [], f"view-backed model marked for deletion: {whole}"
 
@@ -267,7 +298,7 @@ class TestDriftSeesViews:
             data_source="ds",
             columns=[Column(name="id", sql="id", type=DataType.INT)],
         )
-        entries = await validate_datasource(datasource=ds, models=[model])
+        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
         assert any(isinstance(e, WholeModelDelete) for e in entries)
 
     def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
@@ -278,7 +309,7 @@ class TestDriftSeesViews:
         )
 
         _, ds = _db_with_view(workspace)
-        live = _live_schema_for_datasource(datasource=ds)
+        live = run_sync(_with_client(_live_schema_for_datasource, datasource=ds))
         assert "stg_orders" in live
 
 
@@ -288,10 +319,15 @@ class TestDriftSeesViews:
 
 
 class TestMcpListing:
-    def test_fetch_tables_includes_views(self, workspace: Path) -> None:
+    async def test_fetch_tables_includes_views(self, workspace: Path) -> None:
         """describe_datasource hid views; the empty-ingest probe shares this helper."""
         _, ds = _db_with_view(workspace)
-        objects, err = _fetch_tables(ds=ds)
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            objects, err = await _fetch_tables(client)
+        finally:
+            await client.aclose()
+            client.close()
         assert err is None
         assert objects is not None
         by_name = {o.name: o.kind for o in objects}

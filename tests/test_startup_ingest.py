@@ -92,6 +92,11 @@ def _stub_storage(
     return storage
 
 
+def _stub_client_for(datasource: DatasourceConfig) -> MagicMock:
+    """``client_for`` for a stubbed ingester, which never touches the client."""
+    return MagicMock(name=f"client:{datasource.name}")
+
+
 def _ok_result() -> IdempotentIngestResult:
     return IdempotentIngestResult(additions=[], to_delete=[], errors=[])
 
@@ -148,7 +153,7 @@ def _patch_ingester(monkeypatch, behaviour):
     """
     call_log: list[str] = []
 
-    async def fake(*, datasource, storage, schema, include_tables, exclude_tables):  # NOSONAR(S7503) — must be `async def` to replace the real async ingest_datasource_idempotent
+    async def fake(*, datasource, storage, client, schema, include_tables, exclude_tables):  # NOSONAR(S7503) — must be `async def` to replace the real async ingest_datasource_idempotent
         call_log.append(datasource.name)
         out = behaviour(datasource.name, datasource)
         if isinstance(out, BaseException):
@@ -239,7 +244,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert isinstance(summary, StartupIngestSummary)
@@ -262,7 +267,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert summary.succeeded == ["a", "b", "c"]
@@ -285,7 +290,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert summary.succeeded == ["a", "c"]
@@ -300,7 +305,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert summary.succeeded == []
@@ -334,7 +339,7 @@ class TestOrchestrator:
             pass
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert len(summary.drift_pending) == 2
@@ -355,7 +360,7 @@ class TestOrchestrator:
 
         with pytest.raises(RuntimeError, match="storage offline"):
             await ingest_all_datasources_idempotent(
-                storage=storage, stream=stream
+                storage=storage, client_for=_stub_client_for, stream=stream
             )
 
     async def test_get_datasource_returns_none_mid_iteration(self, monkeypatch):
@@ -366,7 +371,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         # `a` and `c` go through, `b` becomes a failure.
@@ -395,7 +400,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert called == ["a", "c"]
@@ -411,7 +416,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         # Stream got the output; stdout/stderr are clean.
@@ -427,7 +432,7 @@ class TestOrchestrator:
         )
 
         # No `stream=` kwarg → defaults to sys.stderr.
-        await ingest_all_datasources_idempotent(storage=storage)
+        await ingest_all_datasources_idempotent(storage=storage, client_for=_stub_client_for)
 
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -442,7 +447,7 @@ class TestOrchestrator:
         stream = io.StringIO()
 
         summary = await ingest_all_datasources_idempotent(
-            storage=storage, stream=stream
+            storage=storage, client_for=_stub_client_for, stream=stream
         )
 
         assert summary.succeeded == ["a"]
@@ -670,7 +675,7 @@ class TestProgrammaticKwarg:
     def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -686,14 +691,14 @@ class TestProgrammaticKwarg:
         assert app is not None
         assert len(calls) == 1
         captured_storage, captured_stream = calls[0]
-        assert captured_storage is storage
+        assert captured_storage.inner is storage
         # Default stream from create_app is sys.stderr.
         assert captured_stream is sys.stderr
 
     def test_create_app_without_kwarg_does_not_trigger(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -712,7 +717,7 @@ class TestProgrammaticKwarg:
     def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -728,13 +733,13 @@ class TestProgrammaticKwarg:
         assert server is not None
         assert len(calls) == 1
         captured_storage, captured_stream = calls[0]
-        assert captured_storage is storage
+        assert captured_storage.inner is storage
         assert captured_stream is sys.stderr
 
     def test_create_mcp_server_without_kwarg_does_not_trigger(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -872,9 +877,14 @@ class TestMemoryEmbeddingsOnStartup:
             )
 
             stream = io.StringIO()
-            summary = await ingest_all_datasources_idempotent(
-                storage=storage, stream=stream,
-            )
+            engine = SlayerQueryEngine(storage=storage)
+            try:
+                summary = await ingest_all_datasources_idempotent(
+                    storage=storage, client_for=engine._client_for, stream=stream,
+                )
+            finally:
+                await engine.aclose()
+                engine.close()
             assert summary.succeeded == ["ds"]
             assert summary.failures == []
 

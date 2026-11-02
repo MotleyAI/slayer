@@ -252,8 +252,13 @@ class TestTypedLoadError:
         if datasource not in (None, "live"):
             store.datasource = datasource
         storage = await store.seed(models=[make_doc()], register_datasource=datasource is not None)
-        with pytest.raises(StoredDocumentLoadError) as ei:
-            await storage.get_model(BAD, data_source=DS)
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            with pytest.raises(StoredDocumentLoadError) as ei:
+                await engine.storage.get_model(BAD, data_source=DS)
+        finally:
+            await engine.aclose()
+            engine.close()
         assert isinstance(ei.value, ValueError)
         assert f"{DS}.{BAD}" in str(ei.value)
         assert ei.value.__cause__ is not None
@@ -274,7 +279,14 @@ class TestEnumerationSkipsAndWarns:
     async def test_reingest_succeeds_and_reports_the_bad_model_once(
         self, store: Store, bad_store: StorageBackend, recorded: list,
     ) -> None:
-        result = await ingest_datasource_idempotent(datasource=store.datasource, storage=bad_store)
+        engine = SlayerQueryEngine(storage=bad_store)
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=store.datasource, storage=bad_store, client=engine._client_for(store.datasource),
+            )
+        finally:
+            await engine.aclose()
+            engine.close()
         bad_errors = [e for e in result.errors if e.model_name == BAD]
         assert len(bad_errors) == 1
         assert CAUSE in bad_errors[0].error

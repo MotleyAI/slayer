@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from slayer.storage.sqlite_conn import transaction
-from tests._engine_helpers import disposable_engine
 import tempfile
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
@@ -19,8 +16,22 @@ from slayer.engine.ingestion import (
     _is_cross_schema_fk,
     ingest_datasource_idempotent,
 )
-from slayer.sql.dialects import SqliteDialect, TableKeys
+from slayer.engine.schema_drift import IdempotentIngestResult
+from slayer.sql.client import SlayerSQLClient, SqlClient
+from slayer.sql.dialects import PostgresDialect, SqliteDialect, TableKeys
+from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import disposable_engine
+
+
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 class _KeysInspector:
@@ -117,7 +128,7 @@ async def _setup(workspace: Path) -> tuple:
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
 
 
@@ -148,8 +159,8 @@ class TestCompositeFk:
     async def test_generate_joins_groups_composite_fk(self, workspace: Path) -> None:
         db_path = str(workspace / "live.db")
         _create_schema(db_path)
-        with disposable_engine(f"sqlite:///{db_path}") as eng:
-            insp = sa.inspect(eng)
+        client = SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path))
+        try:
             table_set = {
                 "customers",
                 "orders",
@@ -157,8 +168,8 @@ class TestCompositeFk:
                 "org_units",
                 "memberships",
             }
-            joins = _generate_joins(
-                inspector=insp,
+            joins = await _generate_joins(
+                client=client,
                 source_table="memberships",
                 schema=None,
                 table_set=table_set,
@@ -169,6 +180,9 @@ class TestCompositeFk:
                 ("org_id", "org_id"),
                 ("code", "code"),
             }
+        finally:
+            await client.aclose()
+            client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +289,31 @@ class TestColumnUnique:
         assert keys.unique_key_sets == [["slug"], ["ref"]]
 
 
-class _CaseFoldingDialect:
+class _CaseFoldingDialect(SqliteDialect):
     """Snowflake-like: reports unquoted identifiers normalised to lowercase."""
 
-    requires_name_normalize = True
-
-    def normalize_name(self, name: str) -> str:
+    def normalize_reflected_name(self, name: str) -> str:
         return name.lower() if name.upper() == name else name
+
+
+class _CrossSchemaFkClient:
+    """Client double: every table has an ``id`` PK and an FK into the ``archive`` schema."""
+
+    datasource = DatasourceConfig(name="ds", type="postgres")
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return TableKeys(
+            primary_key=["id"],
+            foreign_keys=[ReflectedForeignKey(
+                columns=["customer_id"],
+                referred_schema="archive",  # NOT the ingested schema
+                referred_table="customers",
+                referred_columns=["id"],
+            )],
+        )
+
+    async def default_schema(self) -> str | None:
+        return None
 
 
 class TestCrossSchemaFk:
@@ -297,7 +329,7 @@ class TestCrossSchemaFk:
 
     def test_case_sensitive_dialect_compares_verbatim(self) -> None:
         fk = {"referred_table": "customers", "referred_schema": "myschema"}
-        assert _is_cross_schema_fk(fk, "MYSCHEMA", dialect=postgresql.dialect()) is True
+        assert _is_cross_schema_fk(fk, "MYSCHEMA", dialect=PostgresDialect()) is True
 
     def test_cross_schema_fk_is_skipped(self) -> None:
         fk = {
@@ -354,31 +386,10 @@ class TestCrossSchemaFk:
         fk = {"referred_table": "customers", "referred_schema": "archive"}
         assert _is_cross_schema_fk(fk, "archive", "public") is False
 
-    def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
+    async def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
         """End-to-end: the wrong same-named table is not joined to."""
-
-        class _FakeInspector:
-            def get_foreign_keys(self, table_name, schema=None):
-                return [
-                    {
-                        "referred_table": "customers",
-                        "referred_schema": "archive",  # NOT the ingested schema
-                        "constrained_columns": ["customer_id"],
-                        "referred_columns": ["id"],
-                    },
-                ]
-
-            def get_pk_constraint(self, table_name, schema=None):
-                return {"constrained_columns": ["id"]}
-
-            def get_unique_constraints(self, table_name, schema=None):
-                return []
-
-            def get_indexes(self, table_name, schema=None):
-                return []
-
-        joins = _generate_joins(
-            inspector=cast(sa.engine.Inspector, _FakeInspector()), source_table="orders", schema="public",
+        joins = await _generate_joins(
+            client=cast(SqlClient, _CrossSchemaFkClient()), source_table="orders", schema="public",
             table_set={"orders", "customers"},
         )
         assert joins == []

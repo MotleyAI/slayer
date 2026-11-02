@@ -1,25 +1,16 @@
-"""DEV-1538: SQLite affinity-probe helper.
+"""SQLite integer-affinity probe, run through a client's ``execute``.
 
-SQLite's declared column types are affinity hints, not constraints. A column
-declared ``INTEGER`` can store mixed storage classes (INTEGER, REAL, TEXT,
-BLOB) at the row level, and the affinity rule only converts REAL→INTEGER
-when it would be lossless and reversible. Trusting the declared type at
-ingest time silently truncates the actual REAL data once it flows through
-downstream ``CAST(... AS INTEGER)`` sites — see DEV-1538 for the autopsy.
+SQLite's declared column types are affinity hints: a column declared ``INTEGER``
+can store REAL, TEXT or BLOB values row by row. The probe samples the stored
+storage classes and returns:
 
-This module exposes a single probe that inspects the actual storage classes
-of stored values and returns the appropriate :class:`DataType`:
-
-* :class:`DataType.INT` when every sampled value is integer-shaped (and the
-  sample is not saturated).
-* :class:`DataType.DOUBLE` when REAL values are present, or non-integral
-  integers are present (caught via ``ROUND(col) <> col``), or every TEXT
-  value coerces to a finite ``float``.
-* :class:`DataType.TEXT` when BLOB values are present, any TEXT value is
-  non-coercible (or non-finite), or distinct-text saturates the coerce cap.
-* ``None`` when the probe itself errors, OR when the row sample saturates
-  AND the verdict would otherwise be INT (we can't certify INT past the cap).
-  Callers treat ``None`` as "keep the SA-derived type".
+* ``DataType.INT`` when every sampled value is integer-shaped (sample not saturated);
+* ``DataType.DOUBLE`` when REAL or non-integral values appear, or every TEXT value
+  coerces to a finite float;
+* ``DataType.TEXT`` when BLOBs appear, a TEXT value does not coerce (or is not
+  finite), or the distinct-text sample saturates;
+* ``None`` when a probe statement fails, or the row sample saturates on an INT
+  verdict; callers keep the type they had. An unreachable database raises.
 """
 
 from __future__ import annotations
@@ -31,7 +22,7 @@ from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.sql.client import SqlClient
+from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 
 
 logger = logging.getLogger(__name__)
@@ -92,6 +83,8 @@ async def _run_main_probe(
     )
     try:
         rows = (await client.execute(sql)).rows
+    except (DatabaseUnavailable, AuthenticationRefused):
+        raise
     except Exception as exc:
         logger.warning("probe failed for %s.%s: %s", table, column, exc)
         return None
@@ -130,6 +123,8 @@ async def _classify_text_branch(
     )
     try:
         distinct_rows = [row["v"] for row in (await client.execute(coerce_sql)).rows]
+    except (DatabaseUnavailable, AuthenticationRefused):
+        raise
     except Exception as exc:
         logger.warning("coerce probe failed for %s.%s: %s", table, column, exc)
         return None

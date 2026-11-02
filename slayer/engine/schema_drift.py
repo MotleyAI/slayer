@@ -2112,6 +2112,8 @@ async def _probe_validate_models_column(
             column=col.sql or col.name,
             schema=schema_name,
         )
+    except UNREACHABLE:
+        raise
     except Exception as exc:
         logger.warning(
             "validate_models probe raised for %s.%s; ignoring: %s",

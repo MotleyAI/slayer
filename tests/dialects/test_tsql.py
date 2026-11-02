@@ -14,10 +14,11 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.dialects.base import StatAgg1Name
 from slayer.sql.dialects.tsql import TsqlDialect
-from slayer.sql.client import ExecutionResult
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import (
@@ -391,13 +392,14 @@ def test_tsql_round_trip_preserves_legitimate_underscores(original: str) -> None
 # issue, so the dialect-level decode round-trip is not enough.
 
 
-class _FakeTsqlClient:
+class _FakeTsqlClient(DelegatingSqlClient):
     """Stub SQL client that returns T-SQL-mangled row keys (``a___b`` form)."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
         return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 
@@ -422,7 +424,7 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -485,7 +487,7 @@ async def _build_labeled_tsql_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeTsqlClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeTsqlClient(rows, datasource=ds)
     return engine, tmp, ds
 
 

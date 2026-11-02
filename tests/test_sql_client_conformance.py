@@ -6,7 +6,7 @@ import ast
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import duckdb
 import psycopg
@@ -51,7 +51,7 @@ def postgres_datasource(postgresql_proc: Any) -> Any:
         admin.execute(pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(db_name)))
     with psycopg.connect(host=info.host, port=info.port, user=info.user, dbname=db_name) as conn:
         for statement in fixture_statements(dialect="postgres"):
-            conn.execute(statement)
+            conn.execute(cast(LiteralString, statement))
         conn.commit()
     ds = DatasourceConfig(
         name="conf_pg", type="postgres", host=info.host, port=info.port,

@@ -29,6 +29,7 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys
 from slayer.engine.schema_scope import (
     SchemaRef,
+    UNREACHABLE,
     SkippedSchema,
     default_schema_ref,
     resolve_ingest_scope,
@@ -328,6 +329,8 @@ async def _sqlite_probe_integer_columns(
                 column=col.name,
                 schema=schema,
             )
+        except UNREACHABLE:
+            raise
         except Exception as exc:
             logger.warning(
                 "probe call raised for %s.%s; keeping declared INT: %s",

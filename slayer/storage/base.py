@@ -72,6 +72,8 @@ _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
+# The loading query engine's client source, set by its storage view around each call it delegates.
+CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -677,9 +679,9 @@ class StorageBackend(ABC):
         return identity
 
     async def _apply_refinement_or_raise(
-        self, *, name: str, data: dict, data_source: str, client_source: ClientSource | None,
+        self, *, name: str, data: dict, data_source: str,
     ) -> None:
-        """Refine ``data`` against its live table through the loading engine's ``client_source``.
+        """Refine ``data`` against its live table through the loading engine's client (``CLIENT_SOURCE``).
 
         DOUBLE base columns require it: a missing datasource, or no loading engine, raises
         ``ValueError``. SQLite-INT widening is best-effort (warn and skip). No-op when neither applies.
@@ -689,6 +691,7 @@ class StorageBackend(ABC):
         if not (needs_double or needs_sqlite_int):
             return
         ds = await self.get_datasource(data_source)
+        client_source = CLIENT_SOURCE.get()
         if ds is not None and client_source is None and needs_double:
             raise ValueError(
                 f"Cannot migrate model {name!r}: its DOUBLE columns are refined against datasource "
@@ -734,9 +737,8 @@ class StorageBackend(ABC):
         name: str,
         data: Any,
         data_source: str,
-        client_source: ClientSource | None = None,
     ) -> SlayerModel:
-        """Migrate a below-version on-disk model dict forward, refine it (below v8) against its live table through ``client_source``, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit."""
+        """Migrate a below-version on-disk model dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit."""
         if not isinstance(data, dict):
             # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
             # remediation, not a bare Pydantic model_type error.
@@ -767,7 +769,7 @@ class StorageBackend(ABC):
             write_back = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
-                    name=name, data=data, data_source=data_source, client_source=client_source,
+                    name=name, data=data, data_source=data_source,
                 )
         model = SlayerModel.model_validate(data)
         if write_back:

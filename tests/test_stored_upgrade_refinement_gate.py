@@ -206,15 +206,15 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert all(m is not None for m in loaded.values())
-    samples_model = loaded["samples"]
-    assert samples_model is not None
+    models = {name: m for name, m in loaded.items() if m is not None}
+    samples_model = models["samples"]
     types = {c.name: c.type for c in samples_model.columns}
     assert types == {
         "id": DataType.INT, "ints": DataType.INT, "reals": DataType.DOUBLE, "mixed_real": DataType.DOUBLE,
         "blobs": DataType.TEXT, "coercible": DataType.DOUBLE, "noncoercible": DataType.TEXT,
         "nonfinite": DataType.TEXT,
     }
-    assert column_of(loaded["big"], "v").type is DataType.DOUBLE
-    assert column_of(loaded["events"], "group").type is DataType.INT
-    assert column_of(loaded["odd"], "v").type is DataType.INT
+    assert column_of(models["big"], "v").type is DataType.DOUBLE
+    assert column_of(models["events"], "group").type is DataType.INT
+    assert column_of(models["odd"], "v").type is DataType.INT
     assert clients and clients[0].statements()

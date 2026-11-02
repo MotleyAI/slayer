@@ -18,7 +18,7 @@ import logging
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
 from slayer.engine.introspect_utils import table_location
-from slayer.engine.schema_scope import schema_ref_from_token, split_sql_table
+from slayer.engine.schema_scope import UNREACHABLE, schema_ref_from_token, split_sql_table
 from slayer.sql import sqlite_introspect
 from slayer.sql.client import ObjectNotFound, SqlClient
 
@@ -112,11 +112,13 @@ async def _safe_probe(
     *, client: SqlClient, table: str, column: str, schema: str | None,
     sql_table: str, persisted_type: str,
 ) -> DataType | None:
-    """Run the probe; an unexpected exception keeps the persisted type."""
+    """Run the probe; an unexpected failure keeps the persisted type, an unreachable database raises."""
     try:
         return await sqlite_introspect.probe_sqlite_integer_column(
             client=client, table=table, column=column, schema=schema,
         )
+    except UNREACHABLE:
+        raise
     except Exception as exc:
         logger.warning(
             "probe call raised for %s.%s; keeping persisted type %s: %s",

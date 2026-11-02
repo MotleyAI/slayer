@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from types import FrameType
-from typing import Any, ClassVar, Literal, NoReturn
+from typing import Any, ClassVar, Literal, NoReturn, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import yaml
@@ -92,7 +92,12 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
 
 
-def _server_flags(args) -> dict[str, bool]:
+class _ServerFlags(TypedDict):
+    ingest_on_startup: bool
+    always_load_query: bool
+
+
+def _server_flags(args) -> _ServerFlags:
     """``ingest_on_startup`` / ``always_load_query`` from the CLI flag or its env var."""
     return {
         "ingest_on_startup": getattr(args, "ingest_on_startup", False) or _env_flag("SLAYER_INGEST_ON_STARTUP"),
@@ -1351,9 +1356,8 @@ def _run_inspect(*, args, storage) -> None:
     # Ensure the help.* memories exist so `inspect memory:help.intro`
     # works on a fresh store (idempotent / warm no-op).
     run_sync(seed_help_memories(storage=storage))
-    service = InspectService(
-        storage=storage, engine=SlayerQueryEngine(storage=storage),
-    )
+    engine = SlayerQueryEngine(storage=storage)
+    service = InspectService(storage=engine.storage, engine=engine)
     # argparse ``nargs="*"`` always yields a list; map zero positionals to
     # ``None`` (the collection sentinel) and a single positional back
     # to a bare str so single-id output stays byte-for-byte. A direct
@@ -1364,7 +1368,7 @@ def _run_inspect(*, args, storage) -> None:
             reference = None
         elif len(reference) == 1:
             reference = reference[0]
-    out = run_sync(service.inspect(
+    out = engine.run_sync(service.inspect(
         reference=reference,
         entity_type=args.entity_type,
         compact=args.compact,
@@ -1387,11 +1391,11 @@ def _search_question(args) -> str | None:
     return positional if positional is not None else flag
 
 
-async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
+async def _refresh_samples_async(*, args, engine) -> "RefreshSamplesResult":
     """Async core of ``slayer datasources refresh-samples`` — loop datasources
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
-    engine = SlayerQueryEngine(storage=storage)
+    storage = engine.storage
     errors: list[str] = []
     unresolved_models: list[str] = []
     data_source = args.data_source
@@ -1423,7 +1427,8 @@ async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
 def _datasources_refresh_samples(storage, args) -> None:
     """``slayer datasources refresh-samples`` — re-profile + persist ``Column.sampled``
     for every table-backed model in scope; unresolved ``--model`` names exit 1."""
-    result = run_sync(_refresh_samples_async(args=args, storage=storage))
+    engine = SlayerQueryEngine(storage=storage)
+    result = engine.run_sync(_refresh_samples_async(args=args, engine=engine))
     if args.format == "json":
         print(result.model_dump_json(indent=2))
         if result.unresolved_models:
@@ -1538,7 +1543,7 @@ async def _migrate_types_workflow(args, *, engine, inner, dry_run: bool) -> int:
         if data_source_filter and ds_name != data_source_filter:
             continue
         if await _refine_one_model_for_cli(
-            inner=inner, client_for=engine._client_for, ds_name=ds_name, model_name=model_name, dry_run=dry_run,
+            inner=inner, engine=engine, ds_name=ds_name, model_name=model_name, dry_run=dry_run,
         ):
             refined_total += 1
     return refined_total
@@ -1588,7 +1593,7 @@ def _print_refinement_diff(
 
 
 async def _refine_one_model_for_cli(
-    *, inner, client_for, ds_name: str, model_name: str, dry_run: bool,
+    *, inner, engine, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1627,7 +1632,7 @@ async def _refine_one_model_for_cli(
     )
     if ds is None:
         return False
-    if not await refine_dict_with_live_schema(upgraded, ds, client_for(ds)):
+    if not await refine_dict_with_live_schema(upgraded, ds, engine._client_for(ds)):
         return False
     _print_refinement_diff(
         ds_name=ds_name, model_name=model_name,
@@ -1635,8 +1640,8 @@ async def _refine_one_model_for_cli(
     )
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
-        # Save through inner so we don't re-trigger load-time refinement.
-        await inner.save_model(model)
+        # Save-time validation loads peers, which may still need refining through the engine.
+        await engine.storage.save_model(model)
     return True
 
 
@@ -2387,7 +2392,7 @@ def _models_create(storage, args) -> None:
     # Route through engine.save_model so query-backed models get cache
     # populated (and user-supplied cache fields are rejected).
     engine = SlayerQueryEngine(storage=storage)
-    run_sync(engine.save_model(model))
+    engine.run_sync(engine.save_model(model))
     print(f"Created model '{model.name}'.")
 
 

@@ -12,6 +12,7 @@ from slayer.sql.dialects.reflection import (
 )
 from slayer.engine.key_metadata import measure_key_preserves_native_type
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -89,9 +90,13 @@ class TestSqliteKeepsInferredCast:
             conn.execute("INSERT INTO orders VALUES (1, 1.00), (2, 2.00)")
 
         datasource = DatasourceConfig(name="test", type="sqlite", database=db_path)
-        model = next(
-            m for m in ingest_datasource(datasource=datasource) if m.name == "orders"
-        )
+        client = SlayerSQLClient(datasource=datasource)
+        try:
+            models = await ingest_datasource(datasource, client=client)
+        finally:
+            await client.aclose()
+            client.close()
+        model = next(m for m in models if m.name == "orders")
         amount = model.get_column("amount")
         assert amount is not None
         assert amount.db_type is not None

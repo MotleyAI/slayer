@@ -2245,14 +2245,15 @@ class TestEditModelDatasourceMoveSafety:
         ))
 
         # Force the save under the new datasource to fail; the source row must survive.
-        original_save = storage.save_model
+        # The engine's storage view writes through the store's ``_save_model_impl``.
+        original_save = storage._save_model_impl
 
         async def _failing_save(model):
             if model.data_source == "db_b":
                 raise RuntimeError("simulated storage failure on new key")
             return await original_save(model)
 
-        monkeypatch.setattr(storage, "save_model", _failing_save)
+        monkeypatch.setattr(storage, "_save_model_impl", _failing_save)
 
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2766,8 +2767,8 @@ class TestDatasources:
 
         real = ingestion_mod.ingest_datasource_report
 
-        def _fake(*args, **kwargs):
-            out = real(*args, **kwargs)
+        async def _fake(*args, **kwargs):
+            out = await real(*args, **kwargs)
             return out.model_copy(update={"schema_description": "From the dataset"})
 
         monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)

@@ -139,7 +139,14 @@ class TestOnline:
     async def test_datasource_reingests(self, online_store, data_source):
         datasource = await online_store.get_datasource(data_source)
         assert datasource is not None
-        result = await ingest_datasource_idempotent(datasource=datasource, storage=online_store)
+        engine = SlayerQueryEngine(storage=online_store)
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=datasource, storage=online_store, client=engine._client_for(datasource),
+            )
+        finally:
+            await engine.aclose()
+            engine.close()
         assert result.errors == []
         await _load_all(online_store)
 

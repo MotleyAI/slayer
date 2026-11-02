@@ -9,7 +9,9 @@ re-raises untouched.
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,9 +35,20 @@ from slayer.engine.schema_drift import (
     _collect_sql_table_diffs,
     _live_schema_for_datasource,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
+
+
+@contextlib.asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -399,14 +412,15 @@ class TestIntrospectionUnavailable:
                 c.commit()
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
-    def test_live_schema_raises_when_every_table_fails(self) -> None:
+    async def test_live_schema_raises_when_every_table_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             ds = self._ds_with_one_table(tmpdir)
-            with patch(
-                "slayer.engine.schema_drift._introspect_one_table",
-                side_effect=PermissionError("403 Access Denied"),
-            ), pytest.raises(IntrospectionUnavailable):
-                _live_schema_for_datasource(datasource=ds)
+            async with _client(ds) as client:
+                with patch(
+                    "slayer.engine.schema_drift._introspect_one_table",
+                    side_effect=PermissionError("403 Access Denied"),
+                ), pytest.raises(IntrospectionUnavailable):
+                    await _live_schema_for_datasource(client=client, datasource=ds)
 
     async def test_drift_verdict_skipped_when_introspection_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -415,13 +429,15 @@ class TestIntrospectionUnavailable:
                 name="t", sql_table="t", data_source="live",
                 columns=[Column(name="id", sql="id", type=DataType.INT)],
             )
-            with patch(
-                "slayer.engine.schema_drift._introspect_one_table",
-                side_effect=PermissionError("403 Access Denied"),
-            ):
-                diffs = await _collect_sql_table_diffs(
-                    datasource=ds,
-                    sql_table_models=[model],
-                    available_in_ds={"t"},
-                )
+            async with _client(ds) as client:
+                with patch(
+                    "slayer.engine.schema_drift._introspect_one_table",
+                    side_effect=PermissionError("403 Access Denied"),
+                ):
+                    diffs = await _collect_sql_table_diffs(
+                        datasource=ds,
+                        client=client,
+                        sql_table_models=[model],
+                        available_in_ds={"t"},
+                    )
             assert diffs == {}, f"must not recommend deletes: {diffs}"

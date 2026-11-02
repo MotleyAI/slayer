@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.cli import _run_datasources_create, _run_ingest, main
+from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
     SkippedTable,
     _empty_ingest_message,
@@ -21,6 +22,7 @@ from slayer.engine.schema_drift import (
     IngestionError,
     ModelAddition,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import open_connection
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -60,7 +62,7 @@ def _patch_ingest(monkeypatch, result: IdempotentIngestResult) -> None:
         "slayer.cli._resolve_storage",
         lambda _args: SimpleNamespace(
             get_datasource=_async_return(
-                SimpleNamespace(name="ds", type="sqlite", database=":memory:")
+                DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
         ),
     )
@@ -226,10 +228,15 @@ class TestRenderers:
         errors_at = out.lower().index("error")
         assert skipped_at != errors_at
 
-    def test_empty_message_wording_covers_views(self) -> None:
+    async def test_empty_message_wording_covers_views(self) -> None:
         """The empty-scan message must mention views, not just tables."""
-        ds = SimpleNamespace(name="ds", type="sqlite", database=":memory:")
-        msg = _empty_ingest_message(schema_name="analytics", ds=ds)
+        ds = DatasourceConfig(name="ds", type="sqlite", database=":memory:")
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            msg = await _empty_ingest_message(schema_name="analytics", client=client)
+        finally:
+            await client.aclose()
+            client.close()
         assert "views" in msg.lower()
         assert "analytics" in msg
 

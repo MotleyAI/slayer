@@ -9,7 +9,7 @@ import decimal
 import logging
 import warnings as _warnings_module
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar
 
 from sqlglot import exp
 from pydantic import (
@@ -878,7 +878,7 @@ class SlayerQueryEngine:
         for client in list(self._sql_clients.values()):
             await client.aclose()
 
-    def run_sync(self, workflow: Awaitable[_T]) -> _T:
+    def run_sync(self, workflow: Coroutine[Any, Any, _T]) -> _T:
         """Run one whole synchronous workflow in one bridged loop, releasing the clients' loop-bound
         resources at its end — also when it raises or is cancelled."""
 

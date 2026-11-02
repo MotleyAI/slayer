@@ -57,7 +57,12 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine._client_for(ds))
+    finally:
+        await engine.aclose()
+        engine.close()
     loaded = await storage.get_model("orders", data_source="ds")
     # Columns are ingested but NOT profiled — samples stay unpopulated.
     assert loaded.get_column("amount").sampled is None

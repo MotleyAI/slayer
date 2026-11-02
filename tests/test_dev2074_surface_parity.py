@@ -32,6 +32,7 @@ from slayer.osi.models import (
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
+from tests._osi_helpers import run_converter
 
 DS = "ds"
 M2O = JoinCardinality.MANY_TO_ONE
@@ -222,7 +223,10 @@ class TestOsiConversion:
             metrics=[OSIMetric(name="cross",
                                expression=_expr("SUM(orders.amount) + SUM(customers.region_id)"))],
         )
-        result = OsiToSlayerConverter(documents=[doc], data_source=DS, sa_engine=osi_engine).convert()
+        result = run_converter(
+            OsiToSlayerConverter(documents=[doc], data_source=DS),
+            datasource=DatasourceConfig(name=DS, type="sqlite", database=osi_engine.url.database),
+        )
         report = [w for w in result.unconverted_metrics if w.category == "no_join_path"]
         assert report, result.unconverted_metrics
         assert any(_names_pair(f"{w.message} {w.suggestion or ''}", a="orders", b="customers") for w in report)

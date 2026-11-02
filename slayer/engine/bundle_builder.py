@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from slayer.core.errors import QueryBackedCycleError
+from slayer.core.errors import ModelNotFoundError, QueryBackedCycleError
 from slayer.core.join_walker import incident_model_names
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec
@@ -455,12 +455,12 @@ async def _resolve_source_spec(
     if isinstance(spec, ModelExtension):
         base = await storage.get_model(spec.source_name, data_source=data_source)
         if base is None:
-            raise ValueError(f"Model '{spec.source_name}' not found")
+            raise ModelNotFoundError(spec.source_name)
         return apply_extension_overlay(base, spec)
     if isinstance(spec, str):
         model = await storage.get_model(spec, data_source=data_source)
         if model is None:
-            raise ValueError(f"Model '{spec}' not found")
+            raise ModelNotFoundError(spec)
         return model
     raise ValueError(f"Invalid source_model type: {type(spec)!r}")
 

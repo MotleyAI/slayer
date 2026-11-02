@@ -192,7 +192,7 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
 
 
 def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
-    """The one in-memory SQLite engine builder (DEV-1943 D2).
+    """The one in-memory SQLite engine builder.
 
     ``StaticPool`` + ``check_same_thread=False`` pin one connection shared across
     threads, so the in-memory DB survives across ``asyncio`` worker threads and

@@ -257,15 +257,15 @@ class OsiToSlayerConverter:
         except Exception:  # noqa: BLE001 — conversion reports an unparseable source itself
             return
         try:
-            if parsed.is_query:
+            if parsed.query is not None:
                 self._query_types[parsed.query] = await client.get_column_types(parsed.query)
-            else:
+            elif parsed.table is not None:
                 self._tables[ds.name] = await introspect_table_to_model(
                     client=client, table_name=parsed.table, schema=parsed.schema_name,
                     data_source=self.data_source, model_name=ds.name,
                 )
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation
-            if parsed.is_query:
+            if parsed.query is not None:
                 self._query_types[parsed.query] = str(exc)
             else:
                 self._tables[ds.name] = str(exc)

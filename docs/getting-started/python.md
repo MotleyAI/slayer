@@ -70,6 +70,8 @@ for row in result.data:
 
 Call `engine.close()` when you are done with an engine over an in-memory SQLite datasource (`":memory:"`) to dispose its private connection.
 
+Pass `client_factory=` to `SlayerQueryEngine` (or the local-mode client) to run every database access through your own client, such as a credential-holding gateway — see [SQL Clients](../configuration/sql-clients.md).
+
 The response object:
 
 ```python

@@ -1,4 +1,4 @@
-"""Per-connection Postgres-protocol state machine (DEV-1486).
+"""Per-connection Postgres-protocol state machine.
 
 One :class:`PgConnection` per accepted TCP connection. ``run()`` drives the
 session: startup (SSLRequest / CancelRequest / protocol v3), cleartext-password
@@ -230,7 +230,7 @@ def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
 # sqlglot-based simple-query splitter — which rejects those forms — can still
 # parse the statement list. Anchored to statement start (^ or after ``;``) so a
 # ``begin`` column reference elsewhere is never touched. The stripped statement
-# stays a plain transaction-open, handled as a no-op downstream (DEV-1594).
+# stays a plain transaction-open, handled as a no-op downstream.
 _TX_OPEN_STRIP_RE = re.compile(
     r"(?P<lead>^|;)(?P<ws>\s*)"
     r"(?P<verb>BEGIN(?:\s+WORK|\s+TRANSACTION)?|START\s+TRANSACTION)\b[^;]*",
@@ -259,7 +259,7 @@ EngineFactory = Callable[[object], object]
 def _default_engine_factory(storage: object, *, client_factory: "ClientFactory | None" = None) -> object:
     return SlayerQueryEngine(storage=cast(StorageBackend, storage), client_factory=client_factory)
 
-# DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
+# GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
 # drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
 # lowercase key maps to the canonical Postgres wire-case name — real
@@ -280,7 +280,7 @@ _GUC_REPORT_NAMES: dict[str, str] = {
     "timezone": "TimeZone",
 }
 
-# DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
+# Type aliases — populated by ``_build_column_type_index`` below and
 # cached per-connection. Declared here so the ``__init__`` annotation can
 # reference them without a forward-ref dance.
 ColumnTypeKey = tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
@@ -367,19 +367,19 @@ class PgConnection:
         self._statements: dict[str, _PreparedStatement] = {}
         self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
-        # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
+        # Empty-string-vs-non-text Bind rewrite. Built once per
         # connection on first need; ``None`` until then so connections that
         # never bind candidates pay zero cost.
         self._column_type_index: ColumnTypeIndex | None = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
-        # DEV-1569: per-connection session-settings mailbox. Captures SET /
+        # Per-connection session-settings mailbox. Captures SET /
         # set_config writes; consulted by SHOW / current_setting reads. Seeded
         # from the module-level SESSION_SETTING_SEED via dict(...) so each
         # connection owns its own copy (never aliasing the seed).
         self._session_settings: dict[str, str] = dict(SESSION_SETTING_SEED)
-        # DEV-1569: when True, ``_describe_sql`` is in flight — translator
+        # When True, ``_describe_sql`` is in flight — translator
         # calls must remain pure. Suppresses application of any session-
         # setting mutation hints surfaced by the probe matcher during a
         # Describe.
@@ -847,7 +847,7 @@ class PgConnection:
     def _empty_string_null_params_for_bind(
         self, *, sql: str, raw_values, oids: list[int],
     ) -> set[int]:
-        # DEV-1570: pre-classify $N indices whose bound value is an empty
+        # Pre-classify $N indices whose bound value is an empty
         # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
         # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
         # doesn't trip a ``Could not convert string '' to INT64`` at Execute.
@@ -908,7 +908,7 @@ class PgConnection:
         self, sql: str, *, result_formats: list[int] | None,
         param_oids: list[int] | None = None,
     ) -> None:
-        # DEV-1558 fix: the catalog executor's Describe path runs the SQL
+        # The catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
         # prepared-statement form still has ``$N`` placeholders (asyncpg
         # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
@@ -919,7 +919,7 @@ class PgConnection:
         # real value substitution still happens in ``_handle_bind`` for
         # Execute (Codex round 13 review).
         describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
-        # DEV-1569: ``_in_describe`` suppresses application of any
+        # ``_in_describe`` suppresses application of any
         # session-setting mutations surfaced by the translator during a
         # Describe pass. The Execute path applies them.
         self._in_describe = True
@@ -1020,7 +1020,7 @@ class PgConnection:
     def _probe_matcher(self, parsed: exp.Expression):
         """Wraps the PG-facade and shared probe matchers.
 
-        DEV-1569: ``SHOW`` / ``current_setting`` consult the per-connection
+        ``SHOW`` / ``current_setting`` consult the per-connection
         ``self._session_settings``. For ``set_config`` matches, the returned
         ``ProbeMatcherOutcome`` carries a mutation hint that
         ``_run_statement`` applies on Execute (Describe leaves it pending).
@@ -1054,7 +1054,7 @@ class PgConnection:
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
             usage_reporting.record(surface="pg", token="probe")
             self._emit_row_batch(result.batch, result_formats, send_row_description)
-            # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
+            # set_config(...) mutation hint surfaces on ProbeResult.
             # Apply ONLY in the Execute path (not Describe). Pushes
             # ParameterStatus for reportable settings after CommandComplete.
             if isinstance(result, ProbeResult) and result.settings_mutation is not None:
@@ -1063,7 +1063,7 @@ class PgConnection:
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
             self._writer.write(proto.encode_command_complete(_command_tag(result.command_tag)))
-            # DEV-1569: apply SET / RESET captures AFTER CommandComplete so
+            # Apply SET / RESET captures AFTER CommandComplete so
             # the post-SET ParameterStatus push lands between CC and
             # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
             # during Describe per _describe_sql / _in_describe.
@@ -1190,7 +1190,7 @@ class PgConnection:
         if self._tx_state == proto.TX_IN_TRANSACTION:
             self._tx_state = proto.TX_FAILED
 
-    # ----- DEV-1569: per-connection session-settings application -----------
+    # ----- Per-connection session-settings application -----------
 
     def _apply_set_setting(self, op: SetSettingOp) -> None:
         """Mutate the per-connection session-settings map and (for reportable
@@ -1210,7 +1210,7 @@ class PgConnection:
         intent. Pushes ``ParameterStatus`` for each reportable name whose
         value changed back to seed.
 
-        DEV-1569 / Codex F2: multi-word names (``RESET TIME ZONE``,
+        Multi-word names (``RESET TIME ZONE``,
         ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
         ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
         resolution the lookup against ``SESSION_SETTING_SEED`` would
@@ -1303,7 +1303,7 @@ def _substitute_typed_sentinels(sql: str, param_oids: list[int]) -> str:
     return _PARAM_PLACEHOLDER.sub(repl, sql)
 
 
-# DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------------
+# Empty-string-vs-non-text Bind rewrite -----------------------------
 #
 # Symmetric with the Describe-side typed-NULL substitution above. pgjdbc /
 # Metabase binds an empty string (``b""``) for "null" against text-OID
@@ -1340,7 +1340,7 @@ def _build_column_type_index(
     extra_relations=None,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
-    used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
+    used by the Bind-time empty-string-to-NULL rewrite.
 
     Covers pg_catalog.*, information_schema.* (via the ``_is_<name>``
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
@@ -1407,14 +1407,14 @@ def _record_column_type(
     index lower-cases column names — last-writer-wins on the previous
     implementation could rewrite an empty-string text comparison to NULL.
     Skip the second occurrence and warn once. Same-type collisions are
-    silently ignored (no behaviour change). DEV-1570 / Codex CX-2."""
+    silently ignored (no behaviour change)."""
     existing = out.get(key)
     if existing is None:
         out[key] = dt
         return
     if existing != dt:
         logger.warning(
-            "DEV-1570 column-type index: case-distinct collision on %s "
+            "Column-type index: case-distinct collision on %s "
             "(existing=%s, new=%s); keeping existing. Empty-string rewrite "
             "may behave incorrectly if the case-distinct column is queried.",
             key, existing, dt,
@@ -1463,7 +1463,7 @@ def _classify_empty_string_param_targets(
             column_type_index=column_type_index,
         )
     except Exception:  # NOSONAR(S110) — defensive: never raise out of bind path
-        logger.debug("DEV-1570 classifier defensive catch", exc_info=True)
+        logger.debug("Classifier defensive catch", exc_info=True)
         return set()
 
 
