@@ -122,12 +122,12 @@ The result of an aggregation over a boolean-valued input SHALL be typed and form
 declares a format, which wins; `min` / `max` → BOOLEAN; every other numeric aggregation → DOUBLE,
 as over an INT source; the count family → INT; `first` / `last` and custom aggregations → the
 source type. Every surface that reports an aggregate's
-type — query response metadata, stage schemas consumed by a later stage, and the SQL facade's
+type — the query plan, stage schemas consumed by a later stage, and the SQL facade's
 metric catalogue — SHALL report the same type for the same column and aggregation.
 
 #### Scenario: Sum is an integer measure
 - **WHEN** a query selects `sum(flag)`
-- **THEN** the measure's response type is INT and its format INTEGER, and no cast to BOOLEAN
+- **THEN** the measure's type is INT and its response format INTEGER, and no cast to BOOLEAN
   wraps the aggregate
 
 #### Scenario: Avg displays as a percentage

@@ -114,7 +114,7 @@ The types of every argument the conditional may return SHALL be joined:
 
 The check SHALL see each argument after the plan-time coercions, so TEXT that the rules above already read as a number counts as a number. An argument whose type cannot be determined (an untyped or `UNKNOWN` column, an unrecognised expression) SHALL be absorbed, never reported as a mismatch.
 
-The joined type SHALL be the conditional's result type. Every measure or dimension type that is inferred rather than declared SHALL be derived from the expression after the plan-time coercions, and SHALL be reported the same in the response metadata and in a later stage's schema.
+The joined type SHALL be the conditional's result type. Every measure or dimension type that is inferred rather than declared SHALL be derived from the expression after the plan-time coercions, and SHALL be reported the same by the query plan and by a later stage's schema.
 
 #### Scenario: A concatenation branch is TEXT
 - **WHEN** a dimension on `orders` is `CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END`, or the same with `concat('a', 'b')` or `status || 'b'` as the THEN value
@@ -142,7 +142,7 @@ The joined type SHALL be the conditional's result type. Every measure or dimensi
 
 #### Scenario: Coerced TEXT is a number
 - **WHEN** a dimension on `orders` is `greatest(status, amount)`
-- **THEN** it executes with the TEXT read as a number, typed DOUBLE in the response metadata
+- **THEN** it executes with the TEXT read as a number, typed DOUBLE by the query plan and by a later stage's schema
 
 #### Scenario: An untyped argument is not a mismatch
 - **WHEN** a model column has no declared type (or type `UNKNOWN`) and a dimension is `CASE WHEN amount > 1 THEN that_column ELSE amount END`

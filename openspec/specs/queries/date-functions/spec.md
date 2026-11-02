@@ -277,14 +277,14 @@ in the database session's time zone).
 - **WHEN** a filter `created_at >= date_add(current_date(), -30, 'day')` runs
 - **THEN** it keeps orders created within the last 30 days by the database's date
 
-### Requirement: Date results carry response types
-A value whose outermost operation is `date_part` or `date_diff` SHALL report type INT in response
-metadata; `date_add` SHALL report DATE or TIMESTAMP per its result type; `current_date()` DATE;
+### Requirement: Date results carry their types
+A value whose outermost operation is `date_part` or `date_diff` SHALL report type INT in the query
+plan; `date_add` SHALL report DATE or TIMESTAMP per its result type; `current_date()` DATE;
 `now()` TIMESTAMP — for measures and expression dimensions alike.
 
 #### Scenario: Dimension types
 - **WHEN** a query has expression dimensions `date_part('month', created_at)` and `date_add(order_date, 1, 'month')`
-- **THEN** response metadata reports INT for the first and DATE for the second
+- **THEN** the query plan reports INT for the first and DATE for the second
 
 ### Requirement: Date functions agree across dialects
 Every date function, part and unit SHALL produce the same result on every Tier-1 dialect
