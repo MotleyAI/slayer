@@ -4,14 +4,17 @@ Decodes incoming Flight SQL commands from ``descriptor.cmd``, ``action.body``
 and ticket bytes; dispatches to per-command logic; serialises responses.
 
 All public methods are synchronous because pyarrow's ``FlightServerBase``
-dispatches each RPC on its own gRPC thread. Storage calls bridge through
-:func:`slayer.async_utils.run_sync`, engine calls through ``engine.run_sync``.
+dispatches each RPC on its own gRPC thread. Storage and engine work bridges
+through ``engine.run_sync``, one workflow at a time.
 """
 
 from __future__ import annotations
 
 import decimal
 import logging
+import threading
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 import pyarrow as pa
 import slayer as _slayer
@@ -19,9 +22,9 @@ import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer import usage_reporting
-from slayer.async_utils import run_sync
 from slayer.core.models import SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.catalog import (
     CATALOG_NAME,
@@ -40,6 +43,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 # Type URL prefix that Flight SQL uses for its ``Any``-wrapped commands.
@@ -179,6 +183,8 @@ class FlightHandlers:
     ) -> None:
         self._engine = engine
         self._storage = storage
+        # Each RPC's workflow releases the shared clients on its own loop, so run one at a time.
+        self._engine_lock = threading.Lock()
 
     # ----- helpers ----------------------------------------------------------
 
@@ -195,7 +201,7 @@ class FlightHandlers:
                     out[ds] = models
             return out
 
-        return run_sync(fetch())
+        return self._run(fetch())
 
     # ----- catalog commands -------------------------------------------------
 
@@ -345,6 +351,13 @@ class FlightHandlers:
 
     # ----- private helpers --------------------------------------------------
 
+    def _run(self, workflow: Coroutine[Any, Any, _T]) -> _T:
+        with self._engine_lock:
+            return self._engine.run_sync(workflow)
+
+    def _execute(self, query: SlayerQuery) -> SlayerResponse:
+        return self._run(self._engine.execute(query=query))
+
     def _translate(self, sql: str):
         catalog = self._build_catalog()
         return translate(sql, catalog)
@@ -363,7 +376,7 @@ class FlightHandlers:
         # (caught here rather than at do_get for a clearer error path).
         zero_query = result.query.model_copy(update={"limit": 0})
 
-        self._engine.run_sync(self._engine.execute(query=zero_query))  # only the side-effect; ignore the empty rows.
+        self._execute(zero_query)  # only the side-effect; ignore the empty rows.
         return self._build_schema(result)
 
     def _execute_full(self, result: "QueryResult") -> pa.Table:
@@ -371,7 +384,7 @@ class FlightHandlers:
         catalog projection's column names."""
         usage_reporting.observe_query(result.query)
         with usage_reporting.counting(surface="flight", token="query"):
-            response = self._engine.run_sync(self._engine.execute(query=result.query))
+            response = self._execute(result.query)
         usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [

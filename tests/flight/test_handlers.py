@@ -14,7 +14,10 @@ Covers:
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
+import threading
+import time
 from pathlib import Path
 
 import pyarrow as pa
@@ -359,6 +362,45 @@ def test_do_get_for_dml_raises_translation_error_propagating() -> None:
     handlers = _make_handlers()
     with pytest.raises(TranslationError):
         handlers.do_get_for_sql("INSERT INTO orders VALUES (1)")
+
+
+class _OverlapEngine(_FakeEngine):
+    """Records the peak number of engine workflows running at once."""
+
+    def __init__(self, *, response: SlayerResponse) -> None:
+        super().__init__(response=response)
+        self._guard = threading.Lock()
+        self.active = 0
+        self.peak = 0
+        self.calls = 0
+
+    def run_sync(self, workflow):
+        with self._guard:
+            self.calls += 1
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.05)
+            return run_sync(workflow)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+
+def test_concurrent_queries_run_engine_workflows_one_at_a_time() -> None:
+    engine = _OverlapEngine(response=SlayerResponse(data=[], columns=["orders.revenue_sum"]))
+    handlers = FlightHandlers(engine=engine, storage=_FakeStorage({"jaffle": [_orders_model()]}))  # type: ignore[arg-type]
+    sql = "SELECT revenue_sum FROM jaffle.orders"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: handlers.do_get_for_sql(sql), range(4)))
+    assert engine.peak == 1
+
+
+def test_catalog_loading_runs_as_an_engine_workflow() -> None:
+    engine = _OverlapEngine(response=SlayerResponse(data=[], columns=[]))
+    handlers = FlightHandlers(engine=engine, storage=_FakeStorage({"jaffle": [_orders_model()]}))  # type: ignore[arg-type]
+    handlers._build_catalog()
+    assert engine.calls == 1
 
 
 def test_do_get_for_untokenizable_sql_raises_translation_error() -> None:

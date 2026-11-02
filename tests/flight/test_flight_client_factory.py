@@ -79,5 +79,5 @@ async def test_flight_query_execution_releases_the_engine_clients(tmp_path: Path
     assert isinstance(result, QueryResult), result
     handlers._derive_query_schema(result)
     assert [c.acloses for c in factory.clients] == [1]
-    handlers.do_get_for_sql(sql)
+    handlers._execute_full(result)
     assert [c.acloses for c in factory.clients] == [2]
