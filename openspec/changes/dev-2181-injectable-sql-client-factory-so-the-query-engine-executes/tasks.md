@@ -33,7 +33,7 @@
 
 ## 5. Storage refinement (S3)
 
-- [ ] 5.1 Storage load methods take the internal client source; refinement reads only the model's table through it; "entry present, no source" raises the typed error; verify the stored-upgrade scenarios
+- [x] 5.1 The engine's storage view supplies the client source to storage loads through a context variable; refinement reads only the model's table through it; "entry present, no source" raises the typed error; verify the stored-upgrade scenarios
 - [x] 5.2 Non-owning per-engine storage view exposed as `engine.storage`; verify two engines sharing one storage survive one engine closing
 - [x] 5.3 Route CLI/MCP/REST/service model loads through `engine.storage`; verify the 0.10.2 corpus scenario through raw and engine storage
 
