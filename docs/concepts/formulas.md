@@ -560,8 +560,8 @@ Any formula, filter, or field expression can branch with SQL `CASE`:
 - The result **type is the join of the branches** (Postgres semantics):
   identical types pass through, a numeric mix widens to `DOUBLE`, a `BOOLEAN`
   beside a number reads as its integer, `DATE` beside `TIMESTAMP` widens to
-  `TIMESTAMP`, a `NULL` branch is absorbed by the other, and any other mix is a plan-time error
-  naming both types; `coalesce`, `ifnull`, `greatest` and `least` follow the
+  `TIMESTAMP`, a `NULL` branch or a value whose type cannot be determined (an untyped or `UNKNOWN` column, an unrecognised expression) is
+  absorbed by the other, and any other mix is a plan-time error naming both types; `coalesce`, `ifnull`, `greatest` and `least` follow the
   same rule on every dialect. The Python conditional `x if c else y` is not supported —
   use `CASE` / `iif`.
 
