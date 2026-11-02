@@ -36,6 +36,7 @@ from slayer.sql.dialects.reflection import (
     best_effort,
     clean_comment,
     col,
+    column_from_sa_type,
     column_from_type_string,
     eq_literal,
     fetch,
@@ -321,6 +322,9 @@ class SqlDialect(BaseModel):
 
     # Declared-INT columns may store non-integers (SQLite affinity): ingestion probes them.
     probes_integer_affinity: bool = False
+
+    # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
+    cursor_reports_types: bool = True
 
     # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
     primary_key_inspector_only: bool = False
@@ -986,7 +990,7 @@ class SqlDialect(BaseModel):
         """Inspector columns; when it raises, ``columns_query`` plus ``column_comments_query``."""
         try:
             return [
-                ReflectedColumn(name=c["name"], type=c["type"], comment=clean_comment(c.get("comment")))
+                column_from_sa_type(name=c["name"], sa_type=c["type"], comment=c.get("comment"))
                 for c in inspector.get_columns(table, schema=schema_token(schema=schema, catalog=catalog))
             ]
         except Exception:  # noqa: BLE001 — catalog fallback below
@@ -1112,6 +1116,14 @@ class SqlDialect(BaseModel):
     ) -> str | None:
         """Hook: the schema's own description (``schema``, else the connection's, else ``configured_schema``)."""
         return None
+
+    def current_catalog_sql(self) -> str | None:
+        """Hook: the statement reading the connection's current catalog where schema tokens are catalog-qualified."""
+        return None
+
+    def normalize_reflected_name(self, name: str) -> str:
+        """Hook: a schema name as reflection reports it (case-folding dialects lower an all-upper name)."""
+        return name
 
 
 class DottedAliasManglingMixin:

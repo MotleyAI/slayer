@@ -33,7 +33,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -256,8 +256,8 @@ StorageProvider = Callable[[object], Awaitable[object]]
 EngineFactory = Callable[[object], object]
 
 
-def _default_engine_factory(storage: object) -> object:
-    return SlayerQueryEngine(storage=storage)
+def _default_engine_factory(storage: object, *, client_factory: "ClientFactory | None" = None) -> object:
+    return SlayerQueryEngine(storage=cast(StorageBackend, storage), client_factory=client_factory)
 
 # DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
@@ -315,6 +315,7 @@ class PgConnection:
         authenticator: Authenticator | None = None,
         storage_provider: "StorageProvider | None" = None,
         engine_factory: "EngineFactory | None" = None,
+        client_factory: "ClientFactory | None" = None,
         tls_ctx=None,
         catalog_extra_relations=None,
         catalog_ttl_seconds: float | None = None,
@@ -328,6 +329,7 @@ class PgConnection:
         # authenticated principal after auth — e.g. a tenant-scoped store.
         self._storage_provider = storage_provider
         self._engine_factory = engine_factory
+        self._client_factory = client_factory
         # Tracks whether ``_resolve_scope`` actually built per-connection
         # storage + engine objects (so teardown disposes only what this
         # connection owns; an auth failure before the swap mustn't touch
@@ -555,8 +557,10 @@ class PgConnection:
         self._database = database or DEFAULT_DATABASE
         if self._storage_provider is not None:
             self._storage = await self._storage_provider(self._principal)
-            factory = self._engine_factory or _default_engine_factory
-            self._engine = factory(self._storage)
+            if self._engine_factory is not None:
+                self._engine = self._engine_factory(self._storage)
+            else:
+                self._engine = _default_engine_factory(self._storage, client_factory=self._client_factory)
             # Mark only after BOTH constructions succeed — partial state
             # would leave teardown unsure which side to dispose.
             self._owns_scoped_resources = True

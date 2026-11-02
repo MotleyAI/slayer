@@ -15,7 +15,6 @@ from types import FrameType
 from typing import Any, ClassVar, Literal, NoReturn
 from urllib.parse import parse_qs, urlparse
 
-import sqlalchemy as sa
 import yaml
 from pydantic import BaseModel, Field
 
@@ -58,7 +57,6 @@ from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
 from slayer.pg_facade.cli import add_pg_serve_subparser
 from slayer.pg_facade.server import run_pg_serve
-from slayer.sql import engine_factory
 from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
@@ -1518,27 +1516,12 @@ def _run_storage_migrate_types(args) -> None:
     ``refine_dict_with_live_schema`` per model, optionally writes the
     refined v5 dict back. Hard-fails if a datasource is unreachable.
     """
-    storage = _resolve_storage(args)
-    # Read identities and raw dicts directly, not via get_model, so the
+    # Read identities and raw dicts from the raw store, not via get_model, so the
     # auto-refinement path can't rewrite files before a dry-run inspects them.
-    inner = storage
-    data_source_filter = getattr(args, "data_source", None)
+    inner = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=inner)
     dry_run = bool(getattr(args, "dry_run", False))
-
-    identities = run_sync(inner._list_all_model_identities())
-
-    refined_total = 0
-    for ds_name, model_name in identities:
-        if data_source_filter and ds_name != data_source_filter:
-            continue
-        if _refine_one_model_for_cli(
-            inner=inner,
-            ds_name=ds_name,
-            model_name=model_name,
-            dry_run=dry_run,
-        ):
-            refined_total += 1
-
+    refined_total = engine.run_sync(_migrate_types_workflow(args, engine=engine, inner=inner, dry_run=dry_run))
     if refined_total == 0:
         print("No models needed refinement.")
     elif dry_run:
@@ -1547,7 +1530,21 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
-def _resolve_datasource_for_cli_refinement(
+async def _migrate_types_workflow(args, *, engine, inner, dry_run: bool) -> int:
+    """Refine every in-scope model through the engine's clients; the number refined."""
+    data_source_filter = getattr(args, "data_source", None)
+    refined_total = 0
+    for ds_name, model_name in await inner._list_all_model_identities():
+        if data_source_filter and ds_name != data_source_filter:
+            continue
+        if await _refine_one_model_for_cli(
+            inner=inner, client_for=engine._client_for, ds_name=ds_name, model_name=model_name, dry_run=dry_run,
+        ):
+            refined_total += 1
+    return refined_total
+
+
+async def _resolve_datasource_for_cli_refinement(
     *, inner, ds_name: str, model_name: str, needs_double: bool,
 ) -> Any | None:
     """Resolve the datasource for ``slayer storage migrate-types``.
@@ -1557,7 +1554,7 @@ def _resolve_datasource_for_cli_refinement(
     skip notice). Raises ``ValueError`` when the model has DOUBLE base
     columns and the DS is missing (hard-fail contract).
     """
-    ds = run_sync(inner.get_datasource(ds_name))
+    ds = await inner.get_datasource(ds_name)
     if ds is not None:
         return ds
     if needs_double:
@@ -1590,8 +1587,8 @@ def _print_refinement_diff(
             print(f"  - {name}: {before or '?'} → {after}")
 
 
-def _refine_one_model_for_cli(
-    *, inner, ds_name: str, model_name: str, dry_run: bool,
+async def _refine_one_model_for_cli(
+    *, inner, client_for, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1608,7 +1605,7 @@ def _refine_one_model_for_cli(
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
     """
-    raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
+    raw = await _load_raw_model_dict(inner, ds_name, model_name)
     if raw is None:
         return False
     upgraded = _mig.migrate("SlayerModel", _mig.stamp_stored(copy.deepcopy(raw)))
@@ -1624,13 +1621,13 @@ def _refine_one_model_for_cli(
     needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
     if not (needs_double or needs_sqlite_int):
         return False
-    ds = _resolve_datasource_for_cli_refinement(
+    ds = await _resolve_datasource_for_cli_refinement(
         inner=inner, ds_name=ds_name, model_name=model_name,
         needs_double=needs_double,
     )
     if ds is None:
         return False
-    if not refine_dict_with_live_schema(upgraded, ds):
+    if not await refine_dict_with_live_schema(upgraded, ds, client_for(ds)):
         return False
     _print_refinement_diff(
         ds_name=ds_name, model_name=model_name,
@@ -1639,7 +1636,7 @@ def _refine_one_model_for_cli(
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
         # Save through inner so we don't re-trigger load-time refinement.
-        run_sync(inner.save_model(model))
+        await inner.save_model(model)
     return True
 
 
@@ -1831,23 +1828,28 @@ def _parse_csv_arg(value):
 
 
 def _run_ingest(args):
-    storage = _resolve_storage(args)
-    ds = run_sync(storage.get_datasource(args.datasource))
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_ingest_workflow(args, engine))
+
+
+async def _ingest_workflow(args, engine) -> None:
+    storage = engine.storage
+    ds = await storage.get_datasource(args.datasource)
     if ds is None:
         storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
         _fail(f"Datasource '{args.datasource}' not found in {storage_path}")
 
-    result = run_sync(
-        engine_ingestion.ingest_datasource_idempotent(
-            datasource=ds,
-            storage=storage,
-            schemas=_parse_csv_arg(args.schema),
-            all_schemas=getattr(args, "all_schemas", False),
-            include_tables=_parse_csv_arg(args.include),
-            exclude_tables=_parse_csv_arg(args.exclude),
-            include_views=getattr(args, "include_views", True),
-            surface_internals=getattr(args, "surface_internals", False),
-        )
+    client = engine._client_for(ds)
+    result = await engine_ingestion.ingest_datasource_idempotent(
+        datasource=ds,
+        storage=storage,
+        client=client,
+        schemas=_parse_csv_arg(args.schema),
+        all_schemas=getattr(args, "all_schemas", False),
+        include_tables=_parse_csv_arg(args.include),
+        exclude_tables=_parse_csv_arg(args.exclude),
+        include_views=getattr(args, "include_views", True),
+        surface_internals=getattr(args, "surface_internals", False),
     )
 
     # Gate on ``objects``, not ``additions``: a schema whose objects are all
@@ -1861,9 +1863,9 @@ def _run_ingest(args):
         or result.objects
     ):
         print(
-            _empty_ingest_message(
+            await _empty_ingest_message(
                 schema_name=args.schema or "",
-                ds=ds,
+                client=client,
                 retry_hint=(
                     "Try re-running with --schema set to one of these."
                 ),
@@ -1983,7 +1985,7 @@ async def _validate_each_datasource(engine, ds_names: list[str]) -> list[tuple]:
     return list(zip(ds_names, results))
 
 
-def _collect_drift(args, engine, storage) -> tuple[list, list]:
+async def _collect_drift(args, engine, storage) -> tuple[list, list]:
     """``(entries, failures)`` for the requested scope, filtered by ``--model``.
 
     Datasources are validated concurrently but attributed one by one:
@@ -1994,11 +1996,11 @@ def _collect_drift(args, engine, storage) -> tuple[list, list]:
     if args.datasource:
         ds_names = [args.datasource]
     else:
-        ds_names = run_sync(storage.list_datasources())
+        ds_names = await storage.list_datasources()
 
     entries: list = []
     failures: list[tuple[str, BaseException]] = []
-    for ds_name, result in run_sync(_validate_each_datasource(engine, ds_names)):
+    for ds_name, result in await _validate_each_datasource(engine, ds_names):
         # gather() reports a cancelled child as a CancelledError value; that is
         # cancellation, not a datasource that failed validation.
         if isinstance(result, asyncio.CancelledError):
@@ -2016,32 +2018,32 @@ def _filter_entries_by_model(entries: list, model: str | None) -> list:
     return [e for e in entries if e.model_name == model]
 
 
-def _collect_cardinality_report(args, engine):
+async def _collect_cardinality_report(args, engine):
     """Profile join arity, or ``None`` when neither cardinality flag is set."""
     persist = bool(getattr(args, "persist_cardinality", False))
     if not (persist or getattr(args, "cardinality", False)):
         return None
     try:
-        return run_sync(engine.detect_join_cardinality(
+        return await engine.detect_join_cardinality(
             data_source=args.datasource,
             model=getattr(args, "model", None),
             persist=persist,
-        ))
+        )
     except Exception as exc:
         _fail(f"validate-models: cardinality profiling failed: {exc}")
 
 
-def _collect_all_models(args, storage) -> list:
+async def _collect_all_models(args, storage) -> list:
     """Every model in the requested datasource scope (for join-safety audit)."""
-    ds_names = [args.datasource] if args.datasource else run_sync(storage.list_datasources())
+    ds_names = [args.datasource] if args.datasource else await storage.list_datasources()
     failures = DocumentLoadFailures()
-    return [m for ds in ds_names for m in failures.skip(run_sync(storage.load_models(data_source=ds)))]
+    return [m for ds in ds_names for m in failures.skip(await storage.load_models(data_source=ds))]
 
 
-def _collect_join_safety_findings(args, storage) -> list:
+async def _collect_join_safety_findings(args, storage) -> list:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
-    findings = audit_join_safety(models=_collect_all_models(args=args, storage=storage))
+    findings = audit_join_safety(models=await _collect_all_models(args=args, storage=storage))
     if getattr(args, "model", None):
         findings = [f for f in findings if f.model == args.model]
     return findings
@@ -2089,7 +2091,7 @@ def _print_cardinality_section(report) -> None:
     print(_format_cardinality_report_text(report, indent="  "))
 
 
-def _apply_force_clean(args, engine, entries) -> None:
+async def _apply_force_clean(args, engine, entries) -> None:
     """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",
@@ -2098,7 +2100,7 @@ def _apply_force_clean(args, engine, entries) -> None:
         print("Aborted; storage unchanged.")
         return
 
-    result = run_sync(engine.apply_drift_deletes(entries))
+    result = await engine.apply_drift_deletes(entries)
     print(f"\nApplied {len(result.applied)} entry/entries.")
     if result.errors:
         print(f"Errors ({len(result.errors)}):")
@@ -2122,8 +2124,13 @@ def _run_validate_models(args):
     storage = _resolve_storage(args)
     _resolve_validate_scope(args, storage)
     engine = SlayerQueryEngine(storage=storage)
+    engine.run_sync(_validate_models_workflow(args, engine))
 
-    entries, failures = _collect_drift(args, engine, storage)
+
+async def _validate_models_workflow(args, engine) -> None:
+    """Drift, join safety, the optional clean and cardinality profiling, all in one event loop."""
+    storage = engine.storage
+    entries, failures = await _collect_drift(args, engine, storage)
     as_json = getattr(args, "format", "text") == "json"
     wants_cardinality = bool(
         getattr(args, "cardinality", False)
@@ -2142,9 +2149,9 @@ def _run_validate_models(args):
             print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    join_safety = _collect_join_safety_findings(args, storage)
+    join_safety = await _collect_join_safety_findings(args, storage)
     if as_json:
-        report = _collect_cardinality_report(args, engine)
+        report = await _collect_cardinality_report(args, engine)
         _print_validate_json(entries=entries, report=report, join_safety=join_safety)
         _exit_on_scan_failures(report)
         return
@@ -2154,8 +2161,8 @@ def _run_validate_models(args):
     # Clean first: profiling a model we are about to repair is wasted work.
     deletes = [e for e in entries if not isinstance(e, NarrowedAccessFinding)]
     if bool(getattr(args, "force_clean", False)) and deletes:
-        _apply_force_clean(args, engine, deletes)
-    report = _collect_cardinality_report(args, engine)
+        await _apply_force_clean(args, engine, deletes)
+    report = await _collect_cardinality_report(args, engine)
     if report is not None:
         _print_cardinality_section(report)
     _exit_on_scan_failures(report)
@@ -2175,8 +2182,12 @@ def _run_recommend_root_model(args):
 
 
 def _run_import_dbt(args):
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_dbt_workflow(args, engine))
 
-    storage = _resolve_storage(args)
+
+async def _import_dbt_workflow(args, engine) -> None:
+    storage = engine.storage
     include_hidden = bool(args.include_hidden_models)
     project = parse_dbt_project(
         args.dbt_project_path,
@@ -2186,16 +2197,13 @@ def _run_import_dbt(args):
     if not project.semantic_models and not (include_hidden and project.regular_models):
         _fail(f"No semantic models found in {args.dbt_project_path}")
 
-    sa_engine = None
-    ds = run_sync(storage.get_datasource(args.datasource))
-    if include_hidden:
-        if ds is None:
-            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-            _fail(
-                f"Datasource '{args.datasource}' not found in {storage_path}; "
-                "required for --include-hidden-models."
-            )
-        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
+    ds = await storage.get_datasource(args.datasource)
+    if include_hidden and ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        _fail(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "required for --include-hidden-models."
+        )
 
     # Pass the datasource dialect (best-effort) so the converter can
     # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
@@ -2204,16 +2212,16 @@ def _run_import_dbt(args):
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
-        sa_engine=sa_engine,
         include_hidden_models=include_hidden,
         target_dialect=target_dialect,
     )
+    if include_hidden and ds is not None:
+        await converter.collect_metadata(client=engine._client_for(ds))
     result = converter.convert()
-    # Cached engine — engine_factory owns its lifecycle; don't dispose.
 
     hidden_count = 0
     for model in result.models:
-        run_sync(storage.save_model(model))
+        await storage.save_model(model)
         suffix = " [hidden]" if model.hidden else ""
         if model.hidden:
             hidden_count += 1
@@ -2294,7 +2302,12 @@ def _write_cube_report(result, args) -> str:
 
 
 def _run_import_osi(args):
-    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    engine.run_sync(_import_osi_workflow(args, engine))
+
+
+async def _import_osi_workflow(args, engine) -> None:
+    storage = engine.storage
     try:
         documents = parse_osi_path(args.osi_path)
     except FileNotFoundError as exc:
@@ -2302,7 +2315,7 @@ def _run_import_osi(args):
     if not documents:
         _fail(f"No OSI documents found in {args.osi_path}")
 
-    ds = run_sync(storage.get_datasource(args.datasource))
+    ds = await storage.get_datasource(args.datasource)
     if ds is None:
         storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
         print(
@@ -2311,21 +2324,20 @@ def _run_import_osi(args):
         )
         sys.exit(1)
 
-    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
     converter = OsiToSlayerConverter(
         documents=documents,
         data_source=args.datasource,
-        sa_engine=sa_engine,
         dialect=args.dialect,
         target_dialect=ds.type,
     )
     try:
+        await converter.collect_metadata(client=engine._client_for(ds))
         result = converter.convert()
     except OsiConversionError as exc:
         _fail(str(exc))
 
     for model in result.models:
-        run_sync(storage.save_model(model))
+        await storage.save_model(model)
         print(
             f"Imported model: {model.name} "
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
@@ -2435,11 +2447,9 @@ def _datasources_delete(storage, args) -> None:
 
 def _datasources_test(storage, args) -> None:
     ds = _datasource_or_exit(storage, args.name)
+    engine = SlayerQueryEngine(storage=storage)
     try:
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        with engine.connect() as conn:
-            conn.execute(sa.text("SELECT 1"))
-        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        engine.run_sync(engine._client_for(ds).ping())
         print(f"OK — connected to '{args.name}' ({ds.type}).")
     except Exception as e:
         print(f"FAILED — {e}", file=sys.stderr)
@@ -2620,18 +2630,22 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
+    engine = SlayerQueryEngine(storage=storage)
+    # Re-read: storage resolves ${ENV_VAR} credentials.
+    live_ds = run_sync(storage.get_datasource(ds.name)) or ds
     try:
         # Report form, not models-only ``ingest_datasource``: otherwise this
         # path hides recognised internals and skips with no output at all.
-        report = engine_ingestion.ingest_datasource_report(
-            datasource=ds,
+        report = engine.run_sync(engine_ingestion.ingest_datasource_report(
+            datasource=live_ds,
+            client=engine._client_for(live_ds),
             schemas=schema_list,
             all_schemas=all_schemas,
             include_tables=include,
             exclude_tables=exclude,
             include_views=getattr(args, "include_views", True),
             surface_internals=getattr(args, "surface_internals", False),
-        )
+        ))
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
 

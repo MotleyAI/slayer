@@ -1,26 +1,13 @@
-"""DEV-1361 / DEV-1538: storage-driven type refinement on load.
+"""Storage-driven type refinement of a legacy model dict against its own live table.
 
-DEV-1361 narrowed legacy ``DOUBLE`` to ``INT`` for base columns whose live
-SQLAlchemy type is integer. That rule is correct for strict-typed databases
-(Postgres, DuckDB, ClickHouse, ...) but actively wrong on SQLite, where the
-declared column type is only an affinity hint — a column declared
-``INTEGER`` can store mixed REAL / TEXT / BLOB storage classes per row.
+Non-SQLite: a DOUBLE base column whose live type is integer narrows to INT.
+SQLite (declared types are only affinity hints): the integer-affinity probe
+widens a persisted INT that stores non-integers to DOUBLE / TEXT, and narrows
+a persisted DOUBLE to INT only when the probe certifies integer storage; the
+auto-default integer ``format`` follows the new type, a custom one is kept.
 
-DEV-1538 splits this module's behavior by datasource type:
-
-* **SQLite**: skip the declared-type-driven narrowing entirely. Instead,
-  run :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column`
-  for persisted INT / DOUBLE base columns. Widen persisted INT to
-  DOUBLE / TEXT when the probe disagrees, and narrow persisted DOUBLE to
-  INT only when the probe positively certifies integer storage. The
-  auto-default integer ``format`` is flipped on widening (FLOAT for
-  DOUBLE, cleared for TEXT); user-set custom formats are preserved
-  verbatim and an INFO log line is emitted as a hint.
-* **Non-SQLite**: existing DEV-1361 narrowing unchanged.
-
-Hard-fails when the datasource is unreachable: the SQLAlchemy connect
-error propagates so storage callers (and thus query callers) see the same
-behaviour as a normal query against a down DS would.
+Every read goes through the loading engine's client; an unreachable datasource
+raises, so storage callers see what a query against a down datasource would.
 """
 
 from __future__ import annotations
@@ -30,9 +17,10 @@ import logging
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
-from slayer.engine.schema_scope import split_sql_table
-from slayer.sql import engine_factory
+from slayer.engine.introspect_utils import table_location
+from slayer.engine.schema_scope import schema_ref_from_token, split_sql_table
 from slayer.sql import sqlite_introspect
+from slayer.sql.client import ObjectNotFound, SqlClient
 
 
 logger = logging.getLogger(__name__)
@@ -56,12 +44,7 @@ def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:
 
 
 def _is_auto_default_integer_format_dict(fmt: dict | None) -> bool:
-    """Dict-shape mirror of
-    :func:`slayer.engine.ingestion._is_auto_default_integer_format` —
-    detects the auto-ingested ``NumberFormat(type=INTEGER)`` default so
-    DEV-1538 widening can flip the format without trampling custom
-    user-set formats.
-    """
+    """Dict-shape mirror of :func:`slayer.engine.ingestion._is_auto_default_integer_format`."""
     if not isinstance(fmt, dict):
         return False
     if fmt.get("type") != "integer":
@@ -79,18 +62,7 @@ def _format_for_widened_type_dict(verdict: DataType) -> dict | None:
 
 
 def has_refineable_columns(d: dict) -> bool:
-    """Return True iff ``d`` is a table-backed model dict with at least one
-    DOUBLE-typed base column — the DEV-1361 narrowing target. These
-    columns cannot be refined without live introspection, so callers
-    treat a missing datasource as a hard failure.
-
-    Used by storage callers to decide whether the live datasource is
-    *required* before raising on a missing ``DatasourceConfig``. The
-    DEV-1538 SQLite-INT widening case is handled by
-    :func:`has_sqlite_widenable_columns` and is best-effort (missing DS
-    → log warning + skip refinement, since the persisted INT is a safe
-    default).
-    """
+    """Whether ``d`` is a table-backed model dict with a DOUBLE base column (refinement needs the datasource)."""
     if not isinstance(d, dict):
         return False
     sql_table = d.get("sql_table")
@@ -108,16 +80,7 @@ def has_refineable_columns(d: dict) -> bool:
 
 
 def has_sqlite_widenable_columns(d: dict) -> bool:
-    """Return True iff ``d`` is a table-backed model dict with at least one
-    INT-typed base column — the DEV-1538 SQLite-affinity widening target.
-
-    Unlike :func:`has_refineable_columns`, this predicate is *advisory* —
-    callers run the probe to attempt widening when possible, but a missing
-    datasource is NOT a hard fail because the persisted INT is a safe
-    default (re-ingest will heal it once the DS is back). Only matters for
-    SQLite datasources; non-SQLite consumers no-op silently inside
-    :func:`refine_dict_with_live_schema`.
-    """
+    """Whether ``d`` is a table-backed model dict with an INT base column (SQLite widening; best-effort)."""
     if not isinstance(d, dict):
         return False
     sql_table = d.get("sql_table")
@@ -137,14 +100,7 @@ def has_sqlite_widenable_columns(d: dict) -> bool:
 def _parse_sql_table_with_default_schema(
     sql_table: str, datasource: DatasourceConfig,
 ) -> tuple[str | None, str]:
-    """Split ``sql_table`` into ``(schema_token, table)``, falling back to
-    ``datasource.schema_name`` when the name is unqualified. This honours
-    attached SQLite schemas instead of silently using ``main``.
-
-    Splits on the FINAL dot (DEV-1758), so a 3-part ``catalog.schema.table``
-    keeps its catalog with the schema token rather than probing a nonexistent
-    ``catalog`` schema.
-    """
+    """Split ``sql_table`` on its final dot into ``(schema_token, table)``; unqualified → ``datasource.schema_name``."""
     default_schema = getattr(datasource, "schema_name", None) or None
     schema_token, table_name = split_sql_table(sql_table)
     if schema_token is None:
@@ -152,15 +108,14 @@ def _parse_sql_table_with_default_schema(
     return schema_token, table_name
 
 
-def _safe_probe(
-    *, conn, table: str, column: str, schema: str | None,
+async def _safe_probe(
+    *, client: SqlClient, table: str, column: str, schema: str | None,
     sql_table: str, persisted_type: str,
 ) -> DataType | None:
-    """Run the probe with a defence-in-depth try/except so the refinement
-    loop never aborts on an unexpected exception."""
+    """Run the probe; an unexpected exception keeps the persisted type."""
     try:
-        return sqlite_introspect.probe_sqlite_integer_column(
-            conn=conn, table=table, column=column, schema=schema,
+        return await sqlite_introspect.probe_sqlite_integer_column(
+            client=client, table=table, column=column, schema=schema,
         )
     except Exception as exc:
         logger.warning(
@@ -209,8 +164,8 @@ def _apply_format_flip(
         )
 
 
-def _refine_one_column(
-    *, conn, col: dict, d: dict, table_name: str, schema_name: str | None,
+async def _refine_one_column(
+    *, client: SqlClient, col: dict, d: dict, table_name: str, schema_name: str | None,
     sql_table: str,
 ) -> bool:
     """Run the probe for one column and apply the verdict. Returns True if
@@ -219,8 +174,8 @@ def _refine_one_column(
     if col_name is None:
         return False
     persisted_type = col.get("type")
-    verdict = _safe_probe(
-        conn=conn, table=table_name, column=col_name, schema=schema_name,
+    verdict = await _safe_probe(
+        client=client, table=table_name, column=col_name, schema=schema_name,
         sql_table=sql_table, persisted_type=str(persisted_type),
     )
     if verdict is None:
@@ -237,24 +192,9 @@ def _refine_one_column(
     return True
 
 
-def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
-    """DEV-1538: SQLite-aware refinement.
-
-    Replaces the DEV-1361 declared-type narrowing on SQLite with
-    probe-verified type refinement that works in both directions:
-
-    * **Widen** (DEV-1538): persisted ``INT`` → ``DOUBLE`` / ``TEXT`` when
-      the probe shows mixed REAL / non-coercible-TEXT / BLOB storage.
-    * **Narrow** (DEV-1361 spirit, probe-verified): persisted ``DOUBLE`` →
-      ``INT`` when the probe shows every sampled value is integer-shaped.
-      The narrowing only fires when the probe positively certifies INT —
-      saturated samples (``None`` verdict) or any evidence of REAL / TEXT
-      / BLOB leaves the persisted ``DOUBLE`` alone.
-
-    Returns ``True`` if any column changed. Mutates ``d`` in place. Hard-
-    fails with the SQLAlchemy connect error when the datasource is
-    unreachable.
-    """
+async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, client: SqlClient) -> bool:
+    """Probe-verified SQLite refinement of ``d`` in place: widen INT on non-integer storage, narrow DOUBLE
+    only on certified integer storage; ``True`` when a column changed."""
     sql_table = d["sql_table"]
     columns = d["columns"]
     refineable: list[dict] = [
@@ -267,50 +207,29 @@ def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
         return False
 
     schema_name, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
-    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     changed = False
-    with sa_engine.connect() as conn:
-        for col in refineable:
-            if _refine_one_column(
-                conn=conn, col=col, d=d, table_name=table_name,
-                schema_name=schema_name, sql_table=sql_table,
-            ):
-                changed = True
-    # Cached engine — don't dispose; engine_factory owns lifecycle.
+    for col in refineable:
+        if await _refine_one_column(
+            client=client, col=col, d=d, table_name=table_name,
+            schema_name=schema_name, sql_table=sql_table,
+        ):
+            changed = True
     return changed
 
 
-def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
-    """Mutate ``d`` in place: refine column types against the live schema.
+async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, client: SqlClient) -> bool:
+    """Refine ``d``'s column types in place against its own live table through ``client``.
 
-    SQLite (DEV-1538):
-        Run the per-column affinity probe for every persisted INT and
-        DOUBLE base column. Widen persisted INT to DOUBLE / TEXT when the
-        probe disagrees, and narrow persisted DOUBLE to INT only when the
-        probe positively certifies integer storage. The declared-type-
-        driven narrowing path is bypassed entirely on SQLite — the
-        affinity signal it relies on is broken on this backend.
-
-    Non-SQLite (DEV-1361):
-        Walk the live schema and narrow DOUBLE-typed base columns to INT
-        whenever the live SQL type is integer.
-
-    Returns ``True`` if any refinement was applied, ``False`` otherwise.
-
-    Hard-fails with the SQLAlchemy connect error when the datasource is
-    unreachable. Idempotent: a second call on a refined dict is a no-op.
+    Returns whether a column changed; idempotent. An unreachable datasource raises.
     """
     if _is_sqlite_datasource(datasource):
-        # SQLite admits both INT and DOUBLE base columns to the probe-driven
-        # refinement (widen INT or probe-verified narrow DOUBLE).
         if not (has_refineable_columns(d) or has_sqlite_widenable_columns(d)):
             return False
-        return _refine_dict_sqlite_probe(d, datasource)
+        return await _refine_dict_sqlite_probe(d, datasource, client)
 
     if not has_refineable_columns(d):
         return False
 
-    # DEV-1361 narrowing path — unchanged from pre-1538 behaviour.
     sql_table = d["sql_table"]
     columns = d["columns"]
     refinable: list[dict] = [
@@ -322,20 +241,13 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     if not refinable:
         return False
 
-    from slayer.engine.schema_drift import (  # ALLOW(import-not-top): circular storage↔engine.schema_drift
-        IntrospectionUnavailable,
-        _live_schema_for_datasource,
-    )
-
+    schema_token, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
+    ref = schema_ref_from_token(schema_token, dialect_name=datasource.type) if schema_token else None
     try:
-        live = _live_schema_for_datasource(datasource=datasource)
-    except IntrospectionUnavailable:
-        # Persisted types are the safe fallback when the live schema is unknown.
-        return False
-    table = live.get(sql_table)
-    if table is None:
-        return False
-    live_columns = table.columns
+        live = await client.reflect_columns(table_location(table_name, ref))
+    except ObjectNotFound:
+        return False  # persisted types are the safe fallback for a table the database lacks
+    live_columns = {c.name: c.type for c in live}
 
     changed = False
     for col in refinable:

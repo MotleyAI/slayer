@@ -24,7 +24,8 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import QueryRefinement, SlayerQuery, SourceSpec
 from slayer.async_utils import run_sync
 from slayer.engine import ingestion as engine_ingestion
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
+from slayer.sql.client import SqlClientError
 from slayer.engine.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
@@ -281,19 +282,22 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
+    client_factory: ClientFactory | None = None,
 ) -> FastAPI:
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
-    engine = SlayerQueryEngine(storage=storage)
+    engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
+    # Every route reads models, and the live database, through the server's engine.
+    storage = engine.storage
     # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
     # twice (mirrors the ingest_on_startup single-orchestration rule).
     run_sync(seed_help_memories(storage=storage))
 
     if ingest_on_startup:
-        run_sync(
+        engine.run_sync(
             # Via the module so tests can monkeypatch the seam.
             engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, stream=sys.stderr,
+                storage=storage, client_for=engine._client_for, stream=sys.stderr,
             )
         )
     app = FastAPI(title="SLayer", version=_slayer_version())
@@ -303,7 +307,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage, always_load_query=always_load_query, _seed_help=False)
+    mcp = create_mcp_server(
+        storage=storage, always_load_query=always_load_query, client_factory=client_factory, _seed_help=False,
+    )
     mcp_app = mcp.sse_app()
     app.mount(_MCP_MOUNT, mcp_app)
 
@@ -643,7 +649,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 )
         try:
             entries = await engine.validate_models(data_source=request.data_source)
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, SqlClientError) as exc:
             safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
             logger.exception("validate_models failed for datasource %r", safe_ds)
             raise HTTPException(
@@ -664,7 +670,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
-        engine = SlayerQueryEngine(storage=storage)
+        engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
         try:
             rec = await engine.recommend_root_model(
                 request.items, data_source=request.data_source,
@@ -716,6 +722,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
+                client=engine._client_for(ds),
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
@@ -723,7 +730,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 all_schemas=request.all_schemas,
                 surface_internals=request.surface_internals,
             )
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, SqlClientError) as exc:
             # OperationalError / DatabaseError both derive from SQLAlchemyError
             # (Sonar S5713 — catching them separately is redundant).
             logger.exception("Ingest failed for datasource %r", safe_ds_name)

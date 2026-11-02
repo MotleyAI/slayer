@@ -93,10 +93,18 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
 
 
 def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
-    """Cache key for ``SlayerQueryEngine._sql_clients`` — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
+    """A datasource's connection identity — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
     return _cache_key(
         datasource=datasource, connection_string=datasource.get_connection_string(),
     )
+
+
+ClientCacheKey = tuple[str, EngineCacheKey]
+
+
+def client_cache_key(datasource: DatasourceConfig) -> ClientCacheKey:
+    """A query engine's client-cache key: datasource name plus connection identity."""
+    return (datasource.name, _sql_client_cache_key(datasource))
 
 
 def _runtime_fingerprint(datasource: DatasourceConfig) -> str:

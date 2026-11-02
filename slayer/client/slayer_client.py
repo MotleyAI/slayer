@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import (
+    Awaitable,
     Mapping,
     Mapping as ABCMapping,
     Sequence,
@@ -10,6 +11,7 @@ from collections.abc import (
 from typing import (
     TYPE_CHECKING,
     Any,
+    TypeVar,
 )
 from urllib.parse import quote
 
@@ -18,6 +20,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.core.recommend import RootModelRecommendation
 from slayer.engine.query_engine import (
+    ClientFactory,
     FieldMetadata,
     ResponseAttributes,
     SavedQueryRun,
@@ -45,6 +48,8 @@ if TYPE_CHECKING:
     from slayer.core.policy import SessionPolicy
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 # Input union for every public query entry point (mirrors ``engine.execute``):
@@ -74,12 +79,14 @@ class SlayerClient:
         storage: Any | None = None,
         *,
         policy: "SessionPolicy | None" = None,
+        client_factory: ClientFactory | None = None,
     ):
         self.url = url.rstrip("/")
         self._storage = storage
         self._engine = None
         if storage is not None:
-            self._engine = SlayerQueryEngine(storage=storage, policy=policy)
+            self._engine = SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
+            self._storage = self._engine.storage
         elif policy is not None:
             # Forced-filter policy is local-engine only; fail fast rather than
             # silently disable a security control over HTTP.
@@ -88,6 +95,14 @@ class SlayerClient:
                 "storage=...); server-side policy over HTTP is not yet "
                 "available."
             )
+        elif client_factory is not None:
+            raise ValueError("client_factory= is only supported in local-engine mode (pass storage=...).")
+
+    def _run_sync(self, workflow: Awaitable[_T]) -> _T:
+        """One synchronous call's whole workflow, bridged through the local engine when there is one."""
+        if self._engine is not None:
+            return self._engine.run_sync(workflow)
+        return run_sync(workflow)
 
     async def _request(
         self,
@@ -554,7 +569,7 @@ class SlayerClient:
     ) -> str:
         """Synchronous variant of :meth:`inspect`."""
         if self._storage is not None:
-            return run_sync(self.inspect(
+            return self._run_sync(self.inspect(
                 reference=reference,
                 entity_type=entity_type,
                 compact=compact,
@@ -603,7 +618,7 @@ class SlayerClient:
         root_hint: str | None = None,
     ) -> "RootModelRecommendation":
         """Synchronous variant of :meth:`recommend_root_model`."""
-        return run_sync(self.recommend_root_model(
+        return self._run_sync(self.recommend_root_model(
             items, data_source=data_source, root_hint=root_hint
         ))
 
