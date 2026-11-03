@@ -6,13 +6,18 @@ from typing import Any
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import RefinementConflictError
+from slayer.core.models import Column
 from slayer.core.query import SlayerQuery
+from slayer.engine.population import spine_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 
+from tests._dev1866_fixtures import DS_FAN, make_inference_storage
 from tests._dev2137_fixtures import list_engine, measure
-from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, inline_model, orders_engine
+from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, inline_model, orders_engine, orders_model
 from tests._saved_query_refinement_fixtures import MONTHLY, REVENUE, by_month, refine_engine
+from tests._unrelated_datasets_fixtures import m, main_engine, query
 
 
 @pytest.fixture(params=BACKENDS)
@@ -220,6 +225,47 @@ async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
         assert canonical_rows(own) == [("open", "1"), ("paid", "3")]
         joined = await eng.execute(_orders(dimensions=["orders.orders.name"], measures=["count(*)"]))
         assert canonical_rows(joined) == [("ann", "2"), ("bob", "2")]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(backend: str) -> None:
+    async with orders_engine(backend, edge_name="orders") as eng:
+        model = orders_model(edge_name="orders")
+        extra = Column(name="cust_name", type=DataType.TEXT, sql="orders.orders.name")
+        await eng.storage.save_model(model.model_copy(update={"columns": [*model.columns, extra]}), _validate=False)
+        resp = await eng.execute(_orders(dimensions=["cust_name"], measures=["count(*)"]))
+        assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
+
+
+# --------------------------------------------------------------------------- #
+# Every reader of a query's references is root-relative
+# --------------------------------------------------------------------------- #
+async def test_a_root_qualified_spine_filter(engine: SlayerQueryEngine) -> None:
+    body = {"dimensions": ["status"], "measures": ["count(*)"]}
+    await assert_same(
+        engine,
+        _orders(**body, filters=["orders.time_spine.timestamp >= date '2025-02-01'"]),
+        _orders(**body, filters=["time_spine.timestamp >= date '2025-02-01'"]),
+    )
+
+
+@pytest.mark.parametrize("body", [
+    {"measures": ["count(basket.id)"]},
+    {"measures": ["count(time_spine.basket.id)"]},
+    {"dimensions": ["time_spine.basket.id"]},
+    {"filters": ["time_spine.basket.id > 1"]},
+], ids=["bare", "measure", "dimension", "filter"])
+async def test_a_spine_rooted_reference_anchors_its_datasource(body: dict[str, Any]) -> None:
+    storage = await make_inference_storage()
+    spine_rooted = SlayerQuery.model_validate({"source_model": "time_spine", **body})
+    assert await spine_datasource(queries=[spine_rooted], storage=storage, data_source=None) == DS_FAN
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_root_qualified_hop_into_an_unrelated_dataset(backend: str) -> None:
+    async with main_engine(backend) as eng:
+        await assert_same(eng, query(measures=[m("count(customers.events.id)", "n")]),
+                          query(measures=[m("count(events.id)", "n")]))
 
 
 async def test_a_root_qualified_filter_matches_a_selected_dotted_measure(engine: SlayerQueryEngine) -> None:

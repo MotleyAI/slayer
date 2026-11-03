@@ -1977,12 +1977,14 @@ def referenced_paths(parsed: Any) -> Iterator[Tuple[str, ...]]:
             yield node.parts
 
 
-def text_paths(text: str) -> List[Tuple[str, ...]]:
-    """``referenced_paths`` of Mode-B ``text``; none when it does not parse (binding reports it)."""
+def text_paths(text: str, *, root: Optional[str]) -> List[Tuple[str, ...]]:
+    """``referenced_paths`` of Mode-B template ``text`` relative to ``root``; none when it does not parse
+    (binding reports it)."""
     try:
-        return list(referenced_paths(parse_expr(text)))
+        parsed = parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text reads nothing
         return []
+    return [drop_root_qualifier(path, root) for path in referenced_paths(parsed)]
 
 
 class CallSource(BaseModel):

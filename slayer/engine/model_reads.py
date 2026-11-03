@@ -94,7 +94,7 @@ def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:
     """The dotted parts of every reference ``query_field_texts`` yields, aggregation arguments included."""
     out: list[tuple[str, ...]] = []
     for kind, text in query_field_texts(query):
-        out.extend([tuple(text.split("."))] if kind == "ref" else text_paths(text))
+        out.extend([tuple(text.split("."))] if kind == "ref" else text_paths(text, root=None))
     return out
 
 
@@ -164,7 +164,7 @@ class _Reads:
         measure = host.get_measure(name)
         if measure is None or not measure.formula or not self._first_visit(host, f"measure:{name}"):
             return
-        for parts in text_paths(measure.formula):
+        for parts in text_paths(measure.formula, root=None):
             self.ref(parts, host=host)
 
     def _first_visit(self, host: SlayerModel, key: str) -> bool:

@@ -18,7 +18,7 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine, is_spine_query, reads_spine
+from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine, is_spine_query
 from slayer.core.join_walker import follow, resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
     AggregateKey,
@@ -123,6 +123,7 @@ from slayer.core.syntax import (
     drop_root_qualifier,
     parse_expr,
     root_relative,
+    text_paths,
     walk_parsed,
 )
 from slayer.ir.bound import (
@@ -438,10 +439,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 )
                 if matching_td is None:
                     check_spine_plain_use(
-                        offender=o.raw_formula if reads_spine(_col) or (
-                            isinstance(scope, ModelScope) and scope.source_model is not None
-                            and is_spine(scope.source_model) and "." not in _col
-                        ) else None,
+                        offender=o.raw_formula if _text_reads_spine(_col, scope=scope) else None,
                         position="order key",
                     )
                     raise GranularityCallError(
@@ -1531,9 +1529,21 @@ def _time_dimension_aliases(bound_tds: List[Tuple[TimeDimension, BoundExpr, str]
     return {name: key for name, key in named if counts[name] == 1}
 
 
+def _host_is_spine(scope: ModelScope | StageSchema) -> bool:
+    return isinstance(scope, ModelScope) and scope.source_model is not None and is_spine(scope.source_model)
+
+
+def _text_reads_spine(text: str, *, scope: ModelScope | StageSchema) -> bool:
+    """Whether Mode-B ``text`` reads the spine: by a dotted path, or bare from a spine root."""
+    return any(
+        path[0] == TIME_SPINE_MODEL if len(path) > 1 else _host_is_spine(scope)
+        for path in text_paths(text, root=root_spelling(scope))
+    )
+
+
 def _reads_spine(source: ValueKey, *, scope: ModelScope | StageSchema) -> bool:
     """Whether ``source`` reads ``time_spine.timestamp``."""
-    host_is_spine = isinstance(scope, ModelScope) and scope.source_model is not None and is_spine(scope.source_model)
+    host_is_spine = _host_is_spine(scope)
     return any(
         isinstance(k, ColumnKey) and k.leaf == TIME_SPINE_COLUMN
         and (k.path[-1:] == (TIME_SPINE_MODEL,) or (not k.path and host_is_spine))

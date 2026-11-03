@@ -379,7 +379,8 @@ class _StagePlanner:
             *(m.formula for m in query.measures or []), *(query.filters or []),
             *(getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []),
         ]
-        heads = {path[0] for t in texts for path in text_paths(t) if len(path) > 1}
+        root = query.source_model_name
+        heads = {path[0] for t in texts for path in text_paths(t, root=root) if len(path) > 1}
         return [n for n in self.bundle.query_backed if n in heads]
 
     def ensure(self, name: str, *, chain: Tuple[str, ...], explicit: bool) -> bool:

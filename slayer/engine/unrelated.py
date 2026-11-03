@@ -20,35 +20,38 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, ComputedDimension, SlayerQuery
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.core.syntax import text_paths
+from slayer.core.syntax import drop_root_qualifier, text_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
 
 
-def _parsed_heads(text: str) -> Iterator[str]:
-    """The first hop of every dotted reference ``text`` makes."""
-    return (path[0] for path in text_paths(text) if len(path) > 1)
+def _parsed_heads(text: str, *, root: Optional[str]) -> Iterator[str]:
+    """The first hop of every dotted reference ``text`` makes from ``root``."""
+    return (path[0] for path in text_paths(text, root=root) if len(path) > 1)
 
 
-def _path_head(ref: ColumnRef) -> Iterator[str]:
-    if len(ref.parts) > 1:
-        yield ref.parts[0]
+def _path_head(ref: ColumnRef, *, root: Optional[str]) -> Iterator[str]:
+    parts = drop_root_qualifier(ref.parts, root)
+    if len(parts) > 1:
+        yield parts[0]
 
 
 def first_hop_names(query: SlayerQuery) -> set[str]:
     """The first hop of every dotted reference in ``query``'s own fields."""
+    root = query.source_model_name
     out: set[str] = set()
     for m in query.measures or []:
-        out.update(_parsed_heads(m.formula))
+        out.update(_parsed_heads(m.formula, root=root))
     for d in query.dimensions or []:
-        out.update(_parsed_heads(d.expression) if isinstance(d, ComputedDimension) else _path_head(d))
+        out.update(_parsed_heads(d.expression, root=root) if isinstance(d, ComputedDimension)
+                   else _path_head(d, root=root))
     for td in query.time_dimensions or []:
-        out.update(_parsed_heads(td.dimension))
+        out.update(_parsed_heads(td.dimension, root=root))
     for f in query.filters or []:
-        out.update(_parsed_heads(f))
+        out.update(_parsed_heads(f, root=root))
     for o in query.order or []:
-        out.update(_parsed_heads(o.raw_formula) if o.raw_formula else _path_head(o.column))
+        out.update(_parsed_heads(o.raw_formula, root=root) if o.raw_formula else _path_head(o.column, root=root))
     return out
 
 

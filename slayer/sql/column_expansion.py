@@ -284,7 +284,8 @@ def _resolve_qualifiers(
     ``reference`` and the ``column`` being expanded) for a revisiting hop — all
     fail closed.
     """
-    path = drop_root_hop(drop_root_hop(qualifiers, owner_alias), source_model.spelling)
+    root = owner_alias if tuple(qualifiers[:1]) == (owner_alias,) else source_model.spelling
+    path = drop_root_hop(qualifiers, root)
     if not path:
         return ()
     # A definition is judged from its model as stored: it never sees a query frame's product hops.

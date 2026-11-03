@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.syntax import drop_root_qualifier, parse_expr, referenced_paths, root_relative, variable_names
+from slayer.core.syntax import (
+    drop_root_qualifier,
+    parse_expr,
+    referenced_paths,
+    root_relative,
+    text_paths,
+    variable_names,
+)
 
 
 @pytest.mark.parametrize(("parts", "expected"), [
@@ -43,6 +50,17 @@ def test_root_relative(text: str, expected: str) -> None:
 ])
 def test_referenced_paths_never_read_quoted_text(text: str, heads: set[str]) -> None:
     assert {tuple(path)[0] for path in referenced_paths(parse_expr(text))} == heads
+
+
+@pytest.mark.parametrize(("text", "paths"), [
+    ("orders.status = 'a'", [("status",)]),
+    ("orders.time_spine.timestamp > 1", [("time_spine", "timestamp")]),
+    ("sum(orders.events.amount)", [("events", "amount")]),
+    ("orders.orders.name = 'a'", [("orders", "name")]),
+    ("time_spine.timestamp >= date '2025-01-01' + interval '{n} days'", [("time_spine", "timestamp")]),
+])
+def test_text_paths_read_the_template_root_relative(text: str, paths: list[tuple[str, ...]]) -> None:
+    assert text_paths(text, root="orders") == paths
 
 
 @pytest.mark.parametrize(("text", "names"), [

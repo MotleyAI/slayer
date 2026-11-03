@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 import pytest
 
-from slayer.core.errors import SlayerError, VariableError
+from slayer.core.errors import SlayerError, TimeSpineError, VariableError
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
@@ -109,9 +109,9 @@ async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, q
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
     quoted = await engine.execute(_orders(time_dimensions=['month("created_at")'], measures=["count(*)"]))
-    expected = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
-    assert quoted.columns == expected.columns
-    assert canonical_rows(quoted) == canonical_rows(expected)
+    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    assert quoted.columns == bare.columns
+    assert canonical_rows(quoted) == canonical_rows(bare)
 
 
 MAIN_TIME = {"time_dimensions": ["month(created_at)", "month(shipped_at)"],
@@ -146,6 +146,20 @@ async def test_a_literal_naming_the_spine_is_not_a_spine_query(engine: SlayerQue
     resp = await engine.execute(_orders(time_dimensions=[_month()], measures=["count(*)"],
                                         filters=["note = 'time_spine.x'"]))
     assert [(str(r["orders.created_at"])[:10], str(r["orders._count"])) for r in resp.data] == [("2025-02-01", "1")]
+
+
+@pytest.mark.parametrize("rooted", [True, False], ids=["root", "inferred"])
+@pytest.mark.parametrize(("text", "variables"), [
+    ("time_spine.timestamp >= date '2025-01-01' + interval '31 days'", {}),
+    ("time_spine.timestamp >= date '2025-01-01' + interval '{n} days'", {"n": 31}),
+], ids=["literal", "placeholder"])
+async def test_a_spine_filter_reads_as_the_template_binding_parses(
+    engine: SlayerQueryEngine, rooted: bool, text: str, variables: dict[str, Any],
+) -> None:
+    body = {"dimensions": ["orders.status"], "measures": ["count(orders.id)"], "filters": [text]}
+    body = _orders(**body) if rooted else body
+    with pytest.raises(TimeSpineError, match="not a lower or upper bound"):
+        await engine.execute(body, variables=variables)
 
 
 @pytest.mark.parametrize("surface", sorted(SPINE_LITERAL))
@@ -186,10 +200,10 @@ async def test_a_literal_naming_a_query_backed_model_does_not_splice_it(
     engine: SlayerQueryEngine, spliced: list[str], surface: str,
 ) -> None:
     await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("zz")}, dry_run=True)
-    expected = list(spliced)
+    neutral = list(spliced)
     spliced.clear()
     await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("qb.x")}, dry_run=True)
-    assert spliced == expected
+    assert spliced == neutral
 
 
 async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
@@ -329,7 +343,8 @@ ORDER_LITERALS = [
 @pytest.mark.parametrize("entry", sorted(ORDER_PINS))
 def test_order_coercion_pin(entry: str) -> None:
     column = OrderItem.model_validate({"column": entry})
-    assert (column.column.model, column.column.name, column.raw_formula) == ORDER_PINS[entry]
+    coerced = (column.column.model, column.column.name, column.raw_formula)
+    assert coerced == ORDER_PINS[entry]
 
 
 @pytest.mark.parametrize("entry", ORDER_LITERALS)
@@ -403,9 +418,9 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
     quoted = await engine.execute(_orders(time_dimensions=["month(iif(note = 'a)b', created_at, created_at))"],
                                           measures=["count(*)"]))
-    expected = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
-        tuple(map(str, r.values())) for r in expected.data)
+        tuple(map(str, r.values())) for r in bare.data)
 
 
 # --------------------------------------------------------------------------- #
