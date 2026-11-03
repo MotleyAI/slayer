@@ -93,7 +93,8 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 
 
 def _constant(value: Expression) -> bool:
-    return any(node.meta.get(CONSTANT_INPUT) for node in value.walk())
+    """The outermost ``TRY_CAST`` input's own tag (``walk`` is breadth-first), so a nested cast's never counts."""
+    return next((bool(node.meta[CONSTANT_INPUT]) for node in value.walk() if CONSTANT_INPUT in node.meta), False)
 
 
 class PostgresDialect(SqlDialect):

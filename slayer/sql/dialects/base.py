@@ -305,7 +305,7 @@ FALSE_WORDS = ("false", "f", "no", "0")
 
 #: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
 ZONED_READ = "slayer_zoned_read"
-#: ``meta`` tag on a ``TRY_CAST`` input that reads no rows (a constant).
+#: ``meta`` tag on every ``TRY_CAST`` input: whether it reads no rows (a constant).
 CONSTANT_INPUT = "slayer_constant_input"
 
 

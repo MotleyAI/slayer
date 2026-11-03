@@ -291,8 +291,7 @@ def render_cast(
     value = part(source)
     if not key.try_:
         return dialect.build_cast(value, to)
-    if reads_no_rows(source):
-        value.meta[CONSTANT_INPUT] = True
+    value.meta[CONSTANT_INPUT] = reads_no_rows(source)
     if key.data_type is DataType.INT:
         return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
     return dialect.build_try_cast(value, to)

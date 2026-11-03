@@ -57,6 +57,7 @@ async def test_try_cast_fractional_double_column(pg) -> None:
 @pytest.mark.parametrize(("expr", "expected"), [
     ("TRY_CAST(left('x', 1) AS INT)", None), ("TRY_CAST(left('7', 1) AS INT)", 7), ("TRY_CAST(lpad('1', 3, '0') AS INT)", 1),
     ("TRY_CAST(json_value('{{\"v\": \"x\"}}', '$.v') AS INT)", None), ("TRY_CAST(json_value('{{\"v\": \"7\"}}', '$.v') AS INT)", 7),
+    ("json_value('{{\"v\": \"x\"}}', '$.v' RETURNING INT)", None),
 ])
 async def test_try_cast_of_a_constant_never_fails_at_plan_time(pg, expr: str, expected) -> None:
     engine, version_num = pg
@@ -70,8 +71,12 @@ async def test_try_cast_of_an_aggregate_reads_the_group(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    resp = await engine.execute(q(dimensions=["region"], measures=[{"formula": "TRY_CAST(count(*) AS INT)", "name": "n"}]))
+    resp = await engine.execute(q(dimensions=["region"], measures=[
+        {"formula": "TRY_CAST(count(*) AS INT)", "name": "n"},
+        {"formula": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)", "name": "m"},
+    ]))
     assert by_key(resp, "region", "n") == {"EU": 2, "US": 2, None: 1}, resp.sql
+    assert by_key(resp, "region", "m") == {"EU": 3, "US": 3, None: 2}, resp.sql
 
 
 async def test_array_cast_is_a_list(pg) -> None:
