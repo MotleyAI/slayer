@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 import pytest
 import sqlglot
+from sqlglot import exp
 from pytest_postgresql import factories
 
 from slayer.core.errors import ForcedFilterError
@@ -317,3 +318,24 @@ async def test_profiling_reads_only_the_tenants_rows(policy: str) -> None:
     (finding,) = [f for f in report.findings if f.target_model == "orders"]
     assert finding.source_side is not None and finding.target_side is not None
     assert (finding.source_side.row_count, finding.target_side.row_count) == (2, 3)
+
+
+# --------------------------------------------------------------------------- #
+# A qualified table is never a CTE
+# --------------------------------------------------------------------------- #
+_QUALIFIED_BESIDE_CTE = "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte JOIN public.cte ON TRUE"
+
+
+def test_a_qualified_table_sharing_a_cte_name_is_scoped() -> None:
+    scoped = reference_scoped_sql(sql=_QUALIFIED_BESIDE_CTE, dialect="postgres",
+                                  policy=POLICIES["column_block"], has_column=lambda _t, _c: True)
+    tree = sqlglot.parse_one(scoped, read="postgres")
+    (wrapped,) = [t for t in tree.find_all(exp.Table) if t.db == "public"]
+    assert wrapped.find_ancestor(exp.Select).sql(dialect="postgres") == "SELECT * FROM public.cte WHERE org = 'a'"
+
+
+def test_a_qualified_table_sharing_a_cte_name_fails_closed_when_uncovered() -> None:
+    with pytest.raises(ForcedFilterError) as exc:
+        reference_scoped_sql(sql=_QUALIFIED_BESIDE_CTE, dialect="postgres",
+                             policy=REFUSALS["uncovered_table"][0], has_column=lambda _t, _c: None)
+    assert exc.value.table == "cte"

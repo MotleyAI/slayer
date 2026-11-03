@@ -81,11 +81,14 @@ wrappers have none), T-SQL value-position predicates (RLS predicates sit in WHER
 
 **D5 — One physical-table walk (default, structural; codex).** A single
 `physical_tables(statement)` in `slayer/sql` with RLS's rule (scope-resolved CTE/derived
-sources and number-series table functions skipped) serves the policy and the cache, which
+sources and number-series table functions skipped; a schema- or catalog-qualified reference
+is never a CTE) serves the policy and the cache, which
 today implement the same concept twice. The cache takes the normalized tables of the
 post-policy tree (RLS hop tables still count, as today); `applicable_keys(tables=…,
 dialect=…)`. The only delta — number-series table functions no longer appear as
-empty-named tables — never matched a configured refresh key; before/after applicability
+empty-named tables — never matched a configured refresh key; the policy now also scopes a
+qualified table sharing a CTE's name in one SELECT (today it escapes the filter);
+before/after applicability
 tests pin it (codex): Snowflake `TABLE(GENERATOR(...))`, ClickHouse `numbers(...)`,
 qualified physical tables, a CTE-name collision.
 
