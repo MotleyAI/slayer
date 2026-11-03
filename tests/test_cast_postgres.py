@@ -58,6 +58,7 @@ async def test_try_cast_fractional_double_column(pg) -> None:
     ("TRY_CAST(left('x', 1) AS INT)", None), ("TRY_CAST(left('7', 1) AS INT)", 7), ("TRY_CAST(lpad('1', 3, '0') AS INT)", 1),
     ("TRY_CAST(json_value('{{\"v\": \"x\"}}', '$.v') AS INT)", None), ("TRY_CAST(json_value('{{\"v\": \"7\"}}', '$.v') AS INT)", 7),
     ("json_value('{{\"v\": \"x\"}}', '$.v' RETURNING INT)", None),
+    ("TRY_CAST(CAST(pi() AS TEXT) AS INT)", None), ("TRY_CAST(pi() AS INT)", None),
 ])
 async def test_try_cast_of_a_constant_never_fails_at_plan_time(pg, expr: str, expected) -> None:
     engine, version_num = pg

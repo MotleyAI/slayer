@@ -1540,9 +1540,10 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
 
 
 def reads_no_rows(key: ValueKey) -> bool:
-    """A constant: every leaf a literal, no aggregate or transform."""
+    """A constant: every leaf a literal or a call on literals only (``pi()``), no aggregate or transform."""
     return all(
-        not isinstance(k, (AggregateKey, TransformKey)) and (bool(k.children()) or isinstance(k, LiteralKey))
+        not isinstance(k, (AggregateKey, TransformKey))
+        and (bool(k.children()) or isinstance(k, (LiteralKey, ScalarCallKey)))
         for k in walk_value_keys(key)
     )
 
