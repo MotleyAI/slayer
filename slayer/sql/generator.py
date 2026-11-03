@@ -41,7 +41,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -3195,8 +3195,8 @@ class SQLGenerator:
         is_star = isinstance(agg_slot.key.source, StarKey)
         if agg_slot.key.filter is not None:
             raise RuntimeError(
-                f"{key_display(agg_slot.key)}: a key-carried FILTER reached an association producer; binding "
-                f"carries one only on a local star count or a ranked pick.",
+                f"{key_display(agg_slot.key)}: a key-carried FILTER reached an association producer; it renders "
+                f"only on a local star count or a ranked pick, and restricts a non-built-in's producer rows.",
             )
         picked_alias = "_v"
         # Parameters the grain determines are picked once per cell as
@@ -5793,7 +5793,11 @@ class SQLGenerator:
         scope: Optional[ScopeFrame] = None,
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so"""
-
+        if restricts_own_rows(key):
+            raise RuntimeError(
+                f"{key_display(key)}: a FILTER on a non-built-in aggregation restricts its producer's rows; "
+                f"it never renders inline.",
+            )
         # slot may be None for a HAVING term whose aggregate isn't a projection slot; the result type is then unknown
         # (no outer CAST).
         slot_type = slot.type if slot is not None else None

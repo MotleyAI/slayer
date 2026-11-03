@@ -71,7 +71,10 @@ def orders_model(*, data_source: str = "test") -> SlayerModel:
         aggregations=[
             Aggregation(name="wsum", formula="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="quantity")]),
+            Aggregation(name="rows", formula="COUNT(*)"),
+            Aggregation(name="per_order", formula="SUM({value}) / COUNT(DISTINCT id)"),
         ],
+        measures=[ModelMeasure(name="paid_rows", formula="rows(amount) FILTER (WHERE status = 'paid')")],
     )
 
 
@@ -84,6 +87,7 @@ def customers_model(*, data_source: str = "test") -> SlayerModel:
             Column(name="Region", type=DataType.TEXT),
             Column(name="tier", type=DataType.TEXT),
         ],
+        aggregations=[Aggregation(name="rows", formula="COUNT(*)")],
     )
 
 
@@ -427,3 +431,23 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
         "measures": [{"formula": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
     }))
     assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
+
+
+#: Custom aggregations FILTERed to the paid rows: (formula, by region, ungrouped).
+CUSTOM_PAID: list[tuple[str, dict[Any, float | None], float]] = [
+    ("rows(amount)", {"EU": 2, "US": 1, None: None}, 3),
+    ("per_order(amount)", {"EU": 15, "US": 40, None: None}, 70 / 3),
+]
+
+
+async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
+    """A FILTERed custom aggregation restricts every row its formula reads, inline and as a saved measure."""
+    for formula, by_region, total in CUSTOM_PAID:
+        measure = m(f"{formula} FILTER (WHERE status = 'paid')")
+        resp = await engine.execute(q(dimensions=["region"], measures=[measure]))
+        got = {k: num(v) for k, v in by_key(resp, "region").items()}
+        assert got == pytest.approx(by_region), (formula, resp.sql)
+        assert num(single(await engine.execute(q(measures=[measure])))) == pytest.approx(total), formula
+    resp = await engine.execute(q(dimensions=["region"], measures=["paid_rows"]))
+    assert {k: num(v) for k, v in by_key(resp, "region", "paid_rows").items()} == {"EU": 2, "US": 1, None: None}
+    assert num(single(await engine.execute(q(measures=["paid_rows"])), "paid_rows")) == 3
