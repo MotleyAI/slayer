@@ -146,7 +146,7 @@ A dimension entry whose callee is a built-in granularity but whose shape is not 
 
 ### Requirement: Result keys disambiguate same-column time dimensions
 
-When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (same dimension text, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension text and granularity but differing in date range, name or label SHALL be rejected at construction. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time text check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
+When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (the same dimension, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension and granularity but differing in date range, name or label SHALL be rejected at construction. At construction two dimensions are the same when their parsed expressions are equal once a leading root qualifier is dropped (`created_at` ≡ `orders.created_at` from root `orders`), never on their text, so text inside a string literal or quoted identifier is compared exactly and never read as a qualifier. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
 
 #### Scenario: two granularities of one column
 
@@ -168,9 +168,19 @@ When two or more projected unnamed time dimensions share the same bound source �
 - WHEN a query lists `month(created_at)` twice (in either form)
 - THEN the query behaves as if it were listed once
 
+#### Scenario: a root-qualified duplicate dedupes
+
+- WHEN a query rooted at `orders` lists `month(created_at)` and `month(orders.created_at)`
+- THEN the query behaves as if `month(created_at)` were listed once
+
+#### Scenario: literals are never conflated
+
+- WHEN a query lists the month time dimensions `iif(note = 'orders.a', created_at, shipped_at)` and `iif(note = 'a', created_at, shipped_at)` with different date ranges
+- THEN construction accepts both as distinct time dimensions
+
 #### Scenario: same column and granularity with differing metadata rejected
 
-- WHEN a query lists two time dimensions on the same dimension text and granularity that differ in date range or label
+- WHEN a query lists two time dimensions on the same dimension and granularity that differ in date range or label
 - THEN construction fails with an error naming the collision
 
 #### Scenario: equivalent spellings with differing metadata rejected at binding
