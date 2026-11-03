@@ -109,9 +109,9 @@ async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, q
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
     quoted = await engine.execute(_orders(time_dimensions=['month("created_at")'], measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
-    assert quoted.columns == bare.columns
-    assert canonical_rows(quoted) == canonical_rows(bare)
+    expected = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    assert quoted.columns == expected.columns
+    assert canonical_rows(quoted) == canonical_rows(expected)
 
 
 MAIN_TIME = {"time_dimensions": ["month(created_at)", "month(shipped_at)"],
@@ -186,10 +186,10 @@ async def test_a_literal_naming_a_query_backed_model_does_not_splice_it(
     engine: SlayerQueryEngine, spliced: list[str], surface: str,
 ) -> None:
     await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("zz")}, dry_run=True)
-    neutral = list(spliced)
+    expected = list(spliced)
     spliced.clear()
     await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("qb.x")}, dry_run=True)
-    assert spliced == neutral
+    assert spliced == expected
 
 
 async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
@@ -403,9 +403,9 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
     quoted = await engine.execute(_orders(time_dimensions=["month(iif(note = 'a)b', created_at, created_at))"],
                                           measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
+    expected = await engine.execute(_orders(time_dimensions=["month(created_at)"], measures=["count(*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
-        tuple(map(str, r.values())) for r in bare.data)
+        tuple(map(str, r.values())) for r in expected.data)
 
 
 # --------------------------------------------------------------------------- #

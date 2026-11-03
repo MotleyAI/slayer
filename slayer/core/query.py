@@ -1533,6 +1533,15 @@ def _restated_name(formula: str, root: str | None) -> str | None:
     return node.name if isinstance(node, Ref) else None
 
 
+def _check_restatement(entry: ModelMeasure, prior: ModelMeasure) -> None:
+    for field in _RESTATABLE_FIELDS:
+        if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
+            raise RefinementConflictError(
+                field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
+                suggestion=_ENTRY_CONFLICT_SUGGESTION,
+            )
+
+
 def _drop_restatements(
     saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None, root: str | None,
 ) -> list[ModelMeasure] | None:
@@ -1544,13 +1553,8 @@ def _drop_restatements(
         prior = by_name.get(name) if name is not None else None
         if prior is None or entry.name not in (None, prior.name):
             kept.append(entry)
-            continue
-        for field in _RESTATABLE_FIELDS:
-            if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
-                raise RefinementConflictError(
-                    field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
-                    suggestion=_ENTRY_CONFLICT_SUGGESTION,
-                )
+        else:
+            _check_restatement(entry, prior)
     return kept if refined else refined
 
 

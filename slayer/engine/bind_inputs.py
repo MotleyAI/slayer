@@ -1587,7 +1587,11 @@ def _reference_parts(text: str) -> Tuple[str, ...]:
         node = parse_expr(text)
     except ValueError:
         return (text,)
-    return node.parts if isinstance(node, DottedRef) else (node.name,) if isinstance(node, Ref) else (text,)
+    if isinstance(node, DottedRef):
+        return node.parts
+    if isinstance(node, Ref):
+        return (node.name,)
+    return (text,)
 
 
 def _named_td_matches(
