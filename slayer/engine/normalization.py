@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.core.scope import StaleSpelling
+from slayer.core.syntax import Ref, parse_expr, root_relative
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
 
 
@@ -64,6 +65,15 @@ class NormalizationResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Rule: MISPLACED_MEASURE
 # ---------------------------------------------------------------------------
+
+
+def _bare_name(formula: str, *, root: str) -> Optional[str]:
+    """The column-or-measure name ``formula`` is when it is a lone reference, else ``None``."""
+    try:
+        node = root_relative(parse_expr(formula), root)
+    except ValueError:
+        return None
+    return node.name if isinstance(node, Ref) else None
 
 
 def _apply_misplaced_measure(
@@ -95,13 +105,9 @@ def _apply_misplaced_measure(
         if not isinstance(formula, str):
             kept.append(m)
             continue
-        if ":" in formula or "(" in formula:
-            kept.append(m)
-            continue
-        # Bare token. If it names a known ModelMeasure formula, keep it as
-        # a measure. If it names a column on the model, move to dimensions.
-        bare = formula.strip()
-        if bare in measure_formula_names:
+        bare = _bare_name(formula, root=model.spelling)
+        # A bare name of a saved measure stays a measure; of a column, it moves to dimensions.
+        if bare is None or bare in measure_formula_names:
             kept.append(m)
             continue
         if bare in column_names:

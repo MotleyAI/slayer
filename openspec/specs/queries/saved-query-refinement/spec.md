@@ -63,28 +63,39 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 
 ### Requirement: Merge rules per field
 Dimensions and measures SHALL be the saved entries followed by the refinement entries not already
-present. A dimension column reference SHALL be identified by its reference with the source-model
-prefix stripped (`region` ≡ `orders.region`), a computed dimension by its name, a measure by its name
-and formula (an unnamed measure by its formula). Two entries with the same identity SHALL collapse
-into one when they are equal in every field. A refinement measure whose formula is a bare name equal
-to a saved measure entry's name — named with that same name, unnamed, or the string shorthand — SHALL
-restate that saved entry: it collapses into the saved entry when every field it explicitly sets
-(`label`, `type`, `description`, `meta`; an explicit `null` included) equals the saved entry's value,
-and conflicts otherwise. Time dimensions SHALL be keyed by (column,
-granularity): a new key is appended; for an existing key each of `date_range` and `label` takes the
-side that sets it, keeps equal values, and conflicts when both sides set different values,
-`date_range` being compared after input normalization. Filters SHALL be the saved filters followed
-by the refinement's, exact duplicate strings dropped. `order`, `limit`, `offset`,
-`main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` SHALL
-replace the saved value when the refinement supplies them, an explicit empty `order` or `null`
-clearing the saved value, and SHALL leave it unchanged otherwise.
+present. A dimension column reference SHALL be identified by its reference with a leading root
+qualifier dropped (`region` ≡ `orders.region`), a computed dimension by its name, a measure by its name
+(an unnamed measure by its formula), a formula being compared by its parsed meaning with
+any leading root qualifier dropped (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
+inside a string literal or quoted identifier is compared exactly. Two entries with the same identity
+SHALL collapse into one when they are equal in every field. A refinement measure whose formula is a
+bare name, or that name qualified by the root, equal to a saved measure entry's name — named with that
+same name, unnamed, or the string shorthand — SHALL restate that saved entry: it collapses into the
+saved entry when every field it explicitly sets (`label`, `type`, `description`, `meta`; an explicit
+`null` included) equals the saved entry's value, and conflicts otherwise. Time dimensions SHALL be
+keyed by (dimension, granularity), the dimension compared as a formula is: a new key is appended; for
+an existing key each of `date_range` and `label` takes the side that sets it, keeps equal values, and
+conflicts when both sides set different values, `date_range` being compared after input
+normalization. Filters SHALL be the saved filters followed by the refinement's, exact duplicate
+strings dropped. `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
+`distinct_dimension_values` and `to_many_handling` SHALL replace the saved value when the refinement
+supplies them, an explicit empty `order` or `null` clearing the saved value, and SHALL leave it
+unchanged otherwise.
 
 #### Scenario: Identical duplicates collapse
 - **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "measures": [{"formula": "sum(amount)", "name": "revenue"}]}`
 - **THEN** the result equals the extra-dimension scenario's, with no name-collision error
 
+#### Scenario: A root-qualified formula is the saved formula
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "sum(orders.amount)", "name": "revenue"}]`, or with a refinement time dimension `month(orders.ordered_at)`
+- **THEN** each collapses into the saved entry, and the result equals the plain run by name
+
+#### Scenario: Literals are never conflated
+- **WHEN** a saved query's unnamed measure is `sum(iif(status = 'paid', amount, 0))` and a refinement adds the unnamed measure `sum(iif(status = 'orders.paid', amount, 0))`
+- **THEN** the refinement measure is appended as a distinct entry
+
 #### Scenario: Restating a saved measure by name
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "revenue", "name": "revenue"}, "count(*)"]`, `[{"formula": "revenue"}, "count(*)"]` or `["revenue", "count(*)"]`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"formula": "revenue", "name": "revenue"}, "count(*)"]`, `[{"formula": "revenue"}, "count(*)"]`, `["revenue", "count(*)"]` or `["orders.revenue", "count(*)"]`
 - **THEN** each result equals that of refinement measures `["count(*)"]`
 
 #### Scenario: Restatement with differing metadata conflicts
