@@ -28,6 +28,7 @@ from slayer.sql.client import (
     DelegatingSqlClient,
     ObjectListing,
     ObjectNotFound,
+    ResultColumnType,
     SlayerSQLClient,
     SqlClientError,
 )
@@ -84,7 +85,7 @@ class _Unavailable(DelegatingSqlClient):
     async def _down(self, *_args: Any, **_kwargs: Any) -> Any:
         raise DatabaseUnavailable("database is down")
 
-    execute = get_column_types = server_profile = _down
+    execute = get_result_column_types = server_profile = _down
     ping = list_schemas = default_schema = current_catalog = list_objects = _down
     reflect_columns = reflect_table_keys = table_comment = schema_description = _down
 
@@ -297,9 +298,9 @@ class TestDelegatingClient:
                 overridden.append(sql)
                 return await self.inner.execute(sql, *args, **kwargs)
 
-            async def get_column_types(self, sql: str) -> dict[str, str]:
+            async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
                 overridden.append(sql)
-                return await self.inner.get_column_types(sql)
+                return await self.inner.get_result_column_types(sql)
 
         def factory(ds: DatasourceConfig) -> StatementsGateway:
             inners.append(RecordingClient(inner=SlayerSQLClient(datasource=backend), datasource=ds))
@@ -352,7 +353,7 @@ class TestDelegatingClient:
         location = TableLocation(name="orders")
         try:
             await client.execute("SELECT 1 AS one")
-            await client.get_column_types("SELECT 1 AS one")
+            await client.get_result_column_types("SELECT 1 AS one")
             await client.server_profile()
             await client.ping()
             await client.list_schemas()
@@ -366,7 +367,7 @@ class TestDelegatingClient:
         finally:
             client.close()
         assert inner.ops() == [
-            "execute", "get_column_types", "server_profile", "ping", "list_schemas", "default_schema",
+            "execute", "get_result_column_types", "server_profile", "ping", "list_schemas", "default_schema",
             "current_catalog", "list_objects", "reflect_columns", "reflect_table_keys", "table_comment",
             "schema_description",
         ]

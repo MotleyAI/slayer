@@ -1,10 +1,14 @@
 """Unit tests for exact-numeric detection and native-type preservation."""
 
+from decimal import Decimal
+
 import pytest
+from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
 from slayer.sql.dialects.reflection import (
     is_exact_numeric_db_type,
@@ -16,6 +20,10 @@ from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._engine_helpers import _engine_generate
+from tests._pg_helpers import pg_database
+
+postgresql_proc = factories.postgresql_proc(port=None)
 
 
 class TestIsExactNumericDbType:
@@ -111,7 +119,7 @@ class TestSqliteKeepsInferredCast:
         result = await engine.execute(query=query)
         sql = (await engine.execute(query=query, dry_run=True)).sql
 
-        assert "CAST(SUM(orders.amount) AS REAL)" in sql, sql
+        assert sql is not None and "CAST(SUM(orders.amount) AS REAL)" in sql, sql
         assert isinstance(result.data[0]["orders.amount_sum"], float)
         assert result.data[0]["orders.amount_sum"] == 3.0
 
@@ -144,3 +152,37 @@ class TestMeasureKeyPreservesNativeType:
     def test_other_db_types_do_not_preserve(self, db_type):
         model = _model_with_amount(db_type)
         assert measure_key_preserves_native_type(model=model, key=_SUM_AMOUNT) is False
+
+
+def _wide_model(data_source: str = "ds") -> SlayerModel:
+    return SlayerModel(name="t", sql_table="t", data_source=data_source, columns=[
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="amount", type=DataType.INT, db_type="NUMERIC(38,0)"),
+        Column(name="wide", sql="amount * 10", type=DataType.INT, db_type="NUMERIC(38,0)"),
+    ])
+
+
+_WIDE_QUERY = SlayerQuery.model_validate({"source_model": "t", "dimensions": ["wide"]})
+
+
+class TestDerivedColumnPreservesNativeType:
+    async def test_wide_exact_integer_keeps_its_value(self, tmp_path, postgresql_proc):
+        with pg_database(postgresql_proc, statements=[
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, amount NUMERIC(38,0))",
+            "INSERT INTO t VALUES (1, 10000000000000000000)",
+        ], name="wide_pg") as datasource:
+            storage = YAMLStorage(base_dir=str(tmp_path / "models"))
+            await storage.save_datasource(datasource)
+            await storage.save_model(_wide_model(data_source=datasource.name))
+            engine = SlayerQueryEngine(storage=storage)
+            try:
+                sql = (await engine.execute(query=_WIDE_QUERY, dry_run=True)).sql
+                result = await engine.execute(query=_WIDE_QUERY)
+            finally:
+                engine.close()
+        assert sql is not None and "CAST(" not in sql, sql
+        assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
+
+    async def test_sqlite_keeps_the_inferred_cast(self):
+        sql = await _engine_generate(query=_WIDE_QUERY, model=_wide_model(), dialect="sqlite")
+        assert "CAST(t.amount * 10 AS INTEGER)" in sql, sql

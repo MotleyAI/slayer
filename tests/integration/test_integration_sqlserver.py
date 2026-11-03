@@ -1615,3 +1615,26 @@ def test_every_sqlserver_alias_failure_is_quoted(sqlserver_container) -> None:
             ) == []
     finally:
         _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+def test_typed_probe_reports_declared_type_names(sqlserver_container) -> None:
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine, engine.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE typed (i int, m decimal(10,2), t datetime2, s nvarchar(50))"))
+            conn.commit()
+        client = SlayerSQLClient(datasource=_ds_config(sqlserver_container, db_name))
+        try:
+            types = run_sync(client.get_result_column_types("SELECT i, m, t, s FROM typed"))
+        finally:
+            run_sync(client.aclose())
+            client.close()
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+    assert {name: (column.type, column.db_type) for name, column in types.items()} == {
+        "i": (DataType.INT, "int"),
+        "m": (DataType.DOUBLE, "decimal(10,2)"),
+        "t": (DataType.TIMESTAMP, "datetime2(7)"),
+        "s": (DataType.TEXT, "nvarchar(50)"),
+    }

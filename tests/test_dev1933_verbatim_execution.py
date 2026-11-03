@@ -20,7 +20,7 @@ from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
@@ -32,7 +32,7 @@ _DOOR_SQL = (
     "strftime('%Y-%m', '2020-03-15') AS ym"
 )
 _DOOR_ROW = {"pat": _REGEX_LITERAL, "ym": "2020-03"}
-_DOOR_TYPES = {"pat": "string", "ym": "string"}
+_DOOR_TYPES = {"pat": ResultColumnType(type=DataType.TEXT), "ym": ResultColumnType(type=DataType.TEXT)}
 
 # The two verbatim helpers the fix introduces; every driver-level execute lives
 # here and nowhere else.
@@ -134,8 +134,8 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
         rows = _in_memory_client().execute_sync(_DOOR_SQL).rows
         assert rows == [_DOOR_ROW]
 
-    async def test_get_column_types(self) -> None:
-        types = await _in_memory_client().get_column_types(_DOOR_SQL)
+    async def test_get_result_column_types(self) -> None:
+        types = await _in_memory_client().get_result_column_types(_DOOR_SQL)
         assert types == _DOOR_TYPES
 
     def test_execute_sql_sync_direct(self) -> None:
@@ -148,10 +148,10 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
             engine.dispose()
         assert rows == [_DOOR_ROW]
 
-    def test_get_column_types_sync_direct(self) -> None:
+    def test_get_result_column_types_sync_direct(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
         try:
-            types = sql_client._get_column_types_sync(
+            types = sql_client.get_result_column_types_sync(
                 sql=_DOOR_SQL, db_type="sqlite", engine=engine,
             )
         finally:
@@ -211,9 +211,9 @@ class TestAsyncPathsUseVerbatimDoor:
         assert _DOOR_SQL in statements
         assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
 
-    async def test_get_column_types_async(self) -> None:
+    async def test_get_result_column_types_async(self) -> None:
         conn = _fake_async_conn()
-        types = await sql_client._get_column_types_async(
+        types = await sql_client._get_result_column_types_async(
             sql=_DOOR_SQL, engine=_fake_async_engine(conn), db_type="postgres",
         )
         assert types == _DOOR_TYPES
@@ -263,9 +263,9 @@ class TestSyncPathsUseVerbatimDoor:
         assert _DOOR_SQL in statements
         assert any(stmt.startswith("SET LOCAL statement_timeout") for stmt in statements)
 
-    def test_get_column_types_sync(self) -> None:
+    def test_get_result_column_types_sync(self) -> None:
         conn = _fake_sync_conn()
-        types = sql_client._get_column_types_sync(
+        types = sql_client.get_result_column_types_sync(
             sql=_DOOR_SQL, db_type="postgres",
             engine=_fake_sync_engine(conn),
         )

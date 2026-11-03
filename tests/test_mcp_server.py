@@ -2939,7 +2939,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2959,7 +2959,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2982,7 +2982,7 @@ class TestDataProfileRetryScope:
             def __init__(self) -> None:
                 self.dimensioned_seen = False
 
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):

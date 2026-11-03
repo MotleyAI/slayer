@@ -11,8 +11,9 @@ import duckdb
 import psycopg
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ResultColumnType, SlayerSQLClient
 from tests._gateway_harness import (
     DirectAccessAttempted,
     RecordingClient,
@@ -65,9 +66,9 @@ async def test_the_backend_client_runs_under_the_guard(tmp_path: Path) -> None:
     client = RecordingClient(inner=SlayerSQLClient(datasource=backend_of(ds)), datasource=ds)
     with no_direct_access(backends=[backend_of(ds)]) as guard:
         rows = (await client.execute("SELECT COUNT(*) AS n FROM orders")).rows
-        types = await client.get_column_types("SELECT id FROM orders")
+        types = await client.get_result_column_types("SELECT id FROM orders")
     client.close()
     assert guard.attempts == []
     assert rows == [{"n": 4}]
-    assert types == {"id": "number"}
+    assert types == {"id": ResultColumnType(type=DataType.INT)}
     assert client.statements() == ["SELECT COUNT(*) AS n FROM orders", "SELECT id FROM orders"]

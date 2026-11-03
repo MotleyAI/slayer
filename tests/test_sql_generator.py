@@ -16,6 +16,7 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.sql.client import ResultColumnType
 from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.generator import (
     SQLGenerator,
@@ -8216,8 +8217,8 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
 
-class TestGetColumnTypesSql:
-    """get_column_types must build valid SQL for expression measures."""
+class TestGetResultColumnTypesSql:
+    """get_result_column_types must build valid SQL for expression measures."""
 
     async def test_expression_measure_sql_not_corrupted(self) -> None:
         """Expression measures like COALESCE(amount, 0) must not get model.name prepended."""
@@ -8251,17 +8252,17 @@ class TestGetColumnTypesSql:
                     return {}
 
                 mock_client = MagicMock()
-                mock_client.get_column_types = capture_sql
+                mock_client.get_result_column_types = capture_sql
                 engine._sql_clients[client_cache_key(mock_ds)] = mock_client
 
-                await engine.get_column_types("orders")
+                await engine.get_result_column_types("orders")
 
-        assert captured_sql, "get_column_types did not call client"
+        assert captured_sql, "get_result_column_types did not call client"
         sql = captured_sql[0]
         # Expression measure must NOT be corrupted: "orders.COALESCE(amount, 0)" is invalid
         assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
         assert "orders.amount" in sql
-        # Bare ``amount`` inside the expression now qualifies to the model's alias (``orders.amount``) — derived-ref expansion (DEV-1333) makes every base-column reference unambiguous.
+        # Bare ``amount`` inside the expression qualifies to the model's alias (``orders.amount``).
         assert "COALESCE(orders.amount, 0)" in sql
 
     async def test_cross_model_measures_probed_via_engine(self) -> None:
@@ -8298,17 +8299,22 @@ class TestGetColumnTypesSql:
         mock_ds.credentials_json = None
         with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
             async def capture_types(sql):
-                return {"orders.revenue_max": "number", "orders.customer_score_max": "number"}
+                return {
+                    "orders.revenue_max": ResultColumnType(type=DataType.DOUBLE),
+                    "orders.customer_score_max": ResultColumnType(type=DataType.DOUBLE),
+                }
 
             mock_client = MagicMock()
-            mock_client.get_column_types = capture_types
+            mock_client.get_result_column_types = capture_types
             engine._sql_clients[client_cache_key(mock_ds)] = mock_client
 
-            result = await engine.get_column_types("orders")
+            result = await engine.get_result_column_types("orders")
 
         # Both measures should have types (cross-model-derived column included)
-        assert result.get("revenue") == "number", f"Missing revenue type: {result}"
-        assert result.get("customer_score") == "number", f"Missing customer_score type: {result}"
+        assert result.get("revenue") == ResultColumnType(type=DataType.DOUBLE), f"Missing revenue type: {result}"
+        assert result.get("customer_score") == ResultColumnType(type=DataType.DOUBLE), (
+            f"Missing customer_score type: {result}"
+        )
 
     def test_explicit_empty_allowed_aggregations_skips_probe(self) -> None:
         """An explicit empty allowed_aggregations must NOT fall back to type defaults."""

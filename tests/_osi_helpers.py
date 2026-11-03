@@ -17,7 +17,7 @@ from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, SqlClient
+from slayer.sql.client import DelegatingSqlClient, ResultColumnType, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
@@ -66,7 +66,7 @@ _PROBE: dict[str, bool] = {"disabled": False}
 class _NoTypeProbeClient(DelegatingSqlClient):
     """A client whose column-type probes all fail."""
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         raise RuntimeError("probe unavailable")
 
 
