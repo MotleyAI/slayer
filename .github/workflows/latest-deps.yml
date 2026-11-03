@@ -3,12 +3,15 @@ name: Latest deps
 permissions:
   contents: read
 
-# Daily too, so an upstream release that breaks us is caught without a push.
+# Upstream breakage is caught daily; PRs run it only when they change dependencies.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: ['**']
+    paths:
+      - pyproject.toml
+      - poetry.lock
+      - .github/workflows/latest-deps.yml
+      - .github/actions/poetry-env/**
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
