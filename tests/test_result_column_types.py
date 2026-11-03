@@ -204,10 +204,9 @@ class TestTheCategoryProbesKeepWorkingAndWarn:
     """The 1.5.0 entry points return categories derived from the typed probe."""
 
     def test_sync_entry_point(self, sqlite_ds: DatasourceConfig) -> None:
+        engine = engine_factory.get_engine(sqlite_ds)
         with pytest.warns(DeprecationWarning, match="get_result_column_types"):
-            types = get_column_types_sync(
-                "SELECT id, name FROM t", engine=engine_factory.get_engine(sqlite_ds), db_type="sqlite",
-            )
+            types = get_column_types_sync("SELECT id, name FROM t", engine=engine, db_type="sqlite")
         assert types == {"id": "number", "name": "string"}
 
     async def test_client_probe(self, duckdb_ds: DatasourceConfig) -> None:

@@ -98,7 +98,7 @@ class MysqlDialect(SqlDialect):
         if code == _BIT:
             return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.TEXT, db_type=f"BIT({length})")
         if code in _DECIMALS:
-            # The reported length counts the sign and, at a positive scale, the decimal point.
+            # Length counts the sign (assumed: the row has no UNSIGNED flag) and, at a positive scale, the point.
             precision = max(1, (length or 0) - 1 - (1 if scale else 0))
             return result_column_type_of_name(f"DECIMAL({precision},{scale or 0})")
         name = _FIELD_TYPE_NAMES.get(code)
