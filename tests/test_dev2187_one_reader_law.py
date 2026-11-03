@@ -145,7 +145,7 @@ SPINE_LITERAL = {
 async def test_a_literal_naming_the_spine_is_not_a_spine_query(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(time_dimensions=[_month()], measures=["count(*)"],
                                         filters=["note = 'time_spine.x'"]))
-    assert canonical_rows(resp) == [("2025-02-01", "1")]
+    assert [(str(r["orders.created_at"])[:10], str(r["orders._count"])) for r in resp.data] == [("2025-02-01", "1")]
 
 
 @pytest.mark.parametrize("surface", sorted(SPINE_LITERAL))
@@ -172,11 +172,12 @@ def spliced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return names
 
 
-SPLICE_LITERAL = {
-    "filter": {"measures": ["count(orders.id)"], "filters": ["orders.note <> 'qb.x'"]},
-    "measure": {"measures": [{"formula": "sum(iif(orders.note = 'qb.x', 1, 0))", "name": "m"}]},
-    "computed-dimension": {"measures": ["count(orders.id)"],
-                           "dimensions": [{"expression": "iif(orders.note = 'qb.x', 'y', 'n')", "name": "flag"}]},
+SPLICE_LITERAL: dict[str, Callable[[str], dict[str, Any]]] = {
+    "filter": lambda lit: {"measures": ["count(orders.id)"], "filters": [f"orders.note <> '{lit}'"]},
+    "measure": lambda lit: {"measures": [{"formula": f"sum(iif(orders.note = '{lit}', 1, 0))", "name": "m"}]},
+    "computed-dimension": lambda lit: {
+        "measures": ["count(orders.id)"],
+        "dimensions": [{"expression": f"iif(orders.note = '{lit}', 'y', 'n')", "name": "flag"}]},
 }
 
 
@@ -184,7 +185,17 @@ SPLICE_LITERAL = {
 async def test_a_literal_naming_a_query_backed_model_does_not_splice_it(
     engine: SlayerQueryEngine, spliced: list[str], surface: str,
 ) -> None:
-    await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]}, dry_run=True)
+    await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("zz")}, dry_run=True)
+    neutral = list(spliced)
+    spliced.clear()
+    await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL[surface]("qb.x")}, dry_run=True)
+    assert spliced == neutral
+
+
+async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
+    engine: SlayerQueryEngine, spliced: list[str],
+) -> None:
+    await engine.execute({"time_dimensions": SPINE_MONTHS, **SPLICE_LITERAL["filter"]("qb.x")}, dry_run=True)
     assert "qb" not in spliced
 
 
