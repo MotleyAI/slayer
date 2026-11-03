@@ -39,6 +39,11 @@
 - **WHEN** a dimension is `CAST(amount AS DECIMAL(10,2) UNSIGNED)` on MySQL and the same dimension on Postgres
 - **THEN** MySQL casts to `DECIMAL(10, 2) UNSIGNED`, and Postgres rejects it at plan time with the typed cast error
 
+#### Scenario: Wide integer type only where the database has one
+
+- **WHEN** a dimension is `CAST(amount AS HUGEINT)` on DuckDB and the same dimension on Postgres
+- **THEN** DuckDB casts to its 128-bit integer, and Postgres rejects it at plan time with the typed cast error
+
 #### Scenario: Malformed type
 
 - **WHEN** a dimension is `CAST(amount AS DECIMAL(10,))`
@@ -61,7 +66,7 @@
 
 ### Requirement: A cast's result type is inferred
 
-A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; any other type as UNKNOWN. A cast to `T[]` SHALL type as a list whose elements have `T`'s type (UNKNOWN elements when `T` maps to UNKNOWN), usable wherever a list column is. The inferred type SHALL drive checking and the query plan's types exactly as a column's declared type does.
+A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; any other type as UNKNOWN. The target SHALL be read as Postgres spells it, and as the target dialect spells it only when Postgres does not know the type (`UBIGINT`, `UInt32`), so a type word means the same on every dialect. A cast to `T[]` SHALL type as a list whose elements have `T`'s type (UNKNOWN elements when `T` maps to UNKNOWN), usable wherever a list column is. The inferred type SHALL drive checking and the query plan's types exactly as a column's declared type does.
 
 #### Scenario: Cast to DATE is a date operand
 
@@ -83,9 +88,19 @@ A cast SHALL type as SLayer's data type for its target: the integer family as IN
 - **WHEN** a dimension on MySQL is `CAST(amount AS INT UNSIGNED)`
 - **THEN** its planned type is INT
 
+#### Scenario: Vendor type name
+
+- **WHEN** a dimension is `CAST(amount AS UBIGINT)` on DuckDB and `CAST(amount AS UInt32)` on ClickHouse
+- **THEN** each one's planned type is INT
+
+#### Scenario: A type word means the same on every dialect
+
+- **WHEN** a dimension on SQL Server is `TRY_CAST(created_txt AS TIMESTAMP)`
+- **THEN** its planned type is TIMESTAMP and it converts to SQL Server's timestamp type, not its `ROWVERSION` synonym
+
 ### Requirement: TRY_CAST turns invalid input into NULL on every dialect
 
-`TRY_CAST(x AS <type>)` SHALL render the author's type like `CAST` and SHALL yield NULL, never an error or a substitute value, for an input the cast cannot convert, on every Tier-1 dialect. For an integer-family target, on every Tier-1 dialect, a text input SHALL be valid exactly when it is an optionally signed run of decimal digits, surrounding spaces ignored, a numeric input exactly when it is integral, and either only when the integer is within the target's range. Where the database cannot itself tell a valid input from an invalid one (SQLite, MySQL numeric targets): any other number target SHALL accept an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored; a boolean SHALL be one of `true`, `false`, `t`, `f`, `yes`, `no`, `1`, `0` in any case; a date or timestamp SHALL be an ISO time-point shape naming a real calendar value. `TRY_CAST` to an array type SHALL be rejected with a typed query error on every dialect. On Postgres, a server older than 16 — or one whose version cannot be determined, including a dry run without a connection — SHALL get a plain `CAST`, so an invalid input fails the query there; this is documented.
+`TRY_CAST(x AS <type>)` SHALL render the author's type like `CAST` and SHALL yield NULL, never an error or a substitute value, for an input the cast cannot convert, on every Tier-1 dialect. For an integer-family target, on every Tier-1 dialect, a text input SHALL be valid exactly when it is an optionally signed run of decimal digits, surrounding spaces ignored, a numeric input exactly when it is integral, and either only when the integer is within the target's range. A boolean input to a number target SHALL read as 1 or 0. Where the database cannot itself tell a valid input from an invalid one (SQLite, MySQL numeric targets): any other number target SHALL accept an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored; a boolean SHALL be one of `true`, `false`, `t`, `f`, `yes`, `no`, `1`, `0` in any case; a date or timestamp SHALL be an ISO time-point shape naming a real calendar value. `TRY_CAST` to an array type SHALL be rejected with a typed query error on every dialect. On Postgres, a server older than 16 — or one whose version cannot be determined, including a dry run without a connection — SHALL get a plain `CAST`, so an invalid input fails the query there; this is documented.
 
 #### Scenario: Invalid text becomes NULL
 
@@ -111,6 +126,26 @@ A cast SHALL type as SLayer's data type for its target: the integer family as IN
 
 - **WHEN** a dimension is `TRY_CAST(code AS SMALLINT)` over a row holding `'99999'`
 - **THEN** it yields NULL on every Tier-1 dialect
+
+#### Scenario: A boolean reads as 1 or 0
+
+- **WHEN** dimensions are `TRY_CAST(amount > 15 AS INT)` and `TRY_CAST(amount > 15 AS DOUBLE)` over rows whose amount is 10, 20 and NULL
+- **THEN** they yield 0, 1 and NULL on every Tier-1 dialect
+
+#### Scenario: Integer at the ends of its range
+
+- **WHEN** a dimension is `TRY_CAST(big AS BIGINT)` over a BIGINT column holding 9223372036854775807 and -9223372036854775808
+- **THEN** each yields itself on every Tier-1 dialect
+
+#### Scenario: Out-of-range number is NULL, not an error
+
+- **WHEN** a dimension is `TRY_CAST(CAST(1e19 AS DOUBLE) AS BIGINT)`
+- **THEN** it yields NULL on every Tier-1 dialect, including a database that evaluates constant casts at plan time
+
+#### Scenario: Integer type wider than 64 bits
+
+- **WHEN** a dimension on DuckDB is `TRY_CAST(ratio AS UBIGINT)` over a DOUBLE column holding 1e19 and 2e19
+- **THEN** they yield 10000000000000000000 and NULL
 
 #### Scenario: Fractional text stays valid for a decimal target
 
