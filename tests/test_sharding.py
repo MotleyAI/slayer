@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tests._sharding import assign_shards, parse_shard
+from tests._sharding import assign_shards, main, merge_durations, parse_shard
 
 _MODULES = {
     "test_a.py": 1, "test_b.py": 2, "test_c.py": 3, "test_d.py": 4,
@@ -114,3 +114,22 @@ def test_stored_durations_cover_every_run_module(pytester: pytest.Pytester) -> N
     durations = json.loads(out.read_text())
     assert sorted(durations) == sorted(_MODULES)
     assert all(seconds >= 0 for seconds in durations.values())
+
+
+class TestMergeDurations:
+    def test_module_in_several_runs_gets_the_mean(self) -> None:
+        merged = merge_durations([{"a.py": 1.0, "b.py": 4.0}, {"a.py": 3.0}])
+        assert merged == {"a.py": 2.0, "b.py": 4.0}
+
+    def test_shards_of_one_run_union(self) -> None:
+        assert merge_durations([{"a.py": 1.0}, {"b.py": 2.0}, {}]) == {"a.py": 1.0, "b.py": 2.0}
+
+    def test_cli_writes_the_merged_balance_file(self, tmp_path) -> None:
+        inputs = []
+        for i, run in enumerate(({"a.py": 1.0}, {"a.py": 2.0, "b.py": 5.0})):
+            path = tmp_path / f"in{i}.json"
+            path.write_text(json.dumps(run))
+            inputs.append(str(path))
+        out = tmp_path / "out.json"
+        main([str(out), *inputs])
+        assert json.loads(out.read_text()) == {"a.py": 1.5, "b.py": 5.0}

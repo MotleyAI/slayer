@@ -2,12 +2,16 @@
 
 ``--shard K/N`` collects only the K-th of N groups of test modules; every shard
 derives the same grouping from the same checkout, so the N shards partition the
-suite. ``--store-shard-durations PATH`` writes per-module seconds from an
-unsharded run, the input that balances the groups.
+suite. ``--store-shard-durations PATH`` writes per-module seconds, the input that
+balances the groups. CI uploads each shard's file; to rebalance from a run::
+
+    gh run download <run-id> -p 'shard-durations-*' -D <dir>
+    poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/shard-durations.json
 """
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import statistics
@@ -47,6 +51,19 @@ def assign_shards(*, files: list[str], durations: dict[str, float], count: int) 
     return plan
 
 
+def merge_durations(runs: list[dict[str, float]]) -> dict[str, float]:
+    """Per-module mean over the runs that recorded the module."""
+    seen: defaultdict[str, list[float]] = defaultdict(list)
+    for run in runs:
+        for module, seconds in run.items():
+            seen[module].append(seconds)
+    return {module: round(statistics.fmean(s), 2) for module, s in sorted(seen.items())}
+
+
+def _write_durations(path: Path, durations: dict[str, float]) -> None:
+    path.write_text(json.dumps(durations, indent=1) + "\n")
+
+
 def _is_test_module(path: Path, config: pytest.Config) -> bool:
     return path.suffix == ".py" and any(
         fnmatch.fnmatch(path.name, pattern) for pattern in config.getini("python_files")
@@ -82,8 +99,7 @@ class _DurationRecorder:
         self.seconds[report.nodeid.split("::")[0]] += report.duration
 
     def pytest_sessionfinish(self) -> None:
-        rounded = {module: round(s, 2) for module, s in sorted(self.seconds.items())}
-        self.path.write_text(json.dumps(rounded, indent=1) + "\n")
+        _write_durations(self.path, merge_durations([self.seconds]))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -120,3 +136,15 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     key = _key(collection_path, config)
     shard = plan[key] if key in plan else zlib.crc32(key.encode()) % count
     return True if shard != index else None  # None, not False: --ignore etc. still apply
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Merge shard-duration files into one balance file.")
+    parser.add_argument("out", type=Path)
+    parser.add_argument("inputs", type=Path, nargs="+")
+    args = parser.parse_args(argv)
+    _write_durations(args.out, merge_durations([_load_durations(p) for p in args.inputs]))
+
+
+if __name__ == "__main__":
+    main()
