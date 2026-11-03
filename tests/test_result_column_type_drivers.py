@@ -74,7 +74,8 @@ class TestPostgresDescriptions:
     @pytest.mark.parametrize("oid", [1083, 1186])
     def test_time_of_day_and_interval_as_reflection_maps_them(self, oid: int) -> None:
         described = _describe("postgres", _row("c", oid))
-        assert described is not None and described.db_type is not None
+        assert described is not None
+        assert described.db_type is not None
         assert described.type == info_schema_type(described.db_type)[0]
 
 
@@ -125,7 +126,8 @@ class TestMysqlDescriptions:
 
     def test_decimal_name_carries_its_scale(self) -> None:
         described = _describe("mysql", _mysql_row(246, 12, 2))
-        assert described is not None and described.db_type is not None
+        assert described is not None
+        assert described.db_type is not None
         assert described.db_type.upper().startswith("DECIMAL(")
         assert described.db_type.replace(" ", "").endswith(",2)")
 
@@ -154,7 +156,8 @@ class TestSnowflakeDescriptions:
     @pytest.mark.parametrize("code", [5, 9, 10, 11, 12])
     def test_time_semi_structured_and_binary_as_reflection_maps_them(self, code: int) -> None:
         described = _describe("snowflake", _row("c", code))
-        assert described is not None and described.db_type is not None
+        assert described is not None
+        assert described.db_type is not None
         assert described.type == info_schema_type(described.db_type)[0]
 
 

@@ -127,7 +127,10 @@ class TestSchemaDriftReusesSharedBuilder:
             async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:  # noqa: ARG002
                 return {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
 
-        live = await _live_columns_for_sql_model(model=_sql_model("SELECT id FROM orders"), client=_IntClient())
+        live = await _live_columns_for_sql_model(
+            model=_sql_model("SELECT id FROM orders"),
+            client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
+        )
         assert live == {"id": DataType.INT}
 
 

@@ -527,7 +527,7 @@ Unresolved placeholders raise a clear error at execute time, naming the model an
 
 ### What gets cached
 
-For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
+For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_result_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
 
 You **cannot** supply `columns` yourself when creating a query-backed model — they are engine-managed, and any user-supplied value is rejected with a clear error.
 

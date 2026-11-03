@@ -152,6 +152,7 @@ from slayer.memories.resolver import (
 )
 from slayer.sql.client import (
     ExecutionResult,
+    ResultColumnType,
     SlayerSQLClient,
     SqlClient,
     _is_auth_failure,
@@ -159,6 +160,8 @@ from slayer.sql.client import (
     _is_unreachable_db_error,
     build_sql_model_trial_query,
     classify_model_sql,
+    type_categories,
+    warn_category_probe,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import ServerProfile
@@ -1846,12 +1849,17 @@ class SlayerQueryEngine:
             measures.append(ModelMeasure(formula=f"{agg}({c.name})"))
         return SlayerQuery(source_model=model.name, measures=measures)
 
-    async def get_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
+    async def get_column_types(self, model_name: str, data_source: Optional[str] = None) -> Dict[str, str]:
+        """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
+        warn_category_probe(deprecated="SlayerQueryEngine.get_column_types", replacement="get_result_column_types")
+        return type_categories(await self.get_result_column_types(model_name, data_source=data_source))
+
+    async def get_result_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
         model_name: str,
         data_source: Optional[str] = None,
-    ) -> Dict[str, str]:
-        """Infer column types via a type-probe query → {column: "number"|"string"|"time"|"boolean"}."""
+    ) -> Dict[str, ResultColumnType]:
+        """The probed SLayer type and database type name of each non-identifier column of a model."""
         model = await self.storage.get_model(model_name, data_source=data_source)
         if model is None:
             return {}
@@ -1867,7 +1875,7 @@ class SlayerQueryEngine:
                 raise
             except Exception:
                 logger.warning(
-                    "get_column_types: failed to resolve query-backed model '%s'",
+                    "get_result_column_types: failed to resolve query-backed model '%s'",
                     model_name,
                 )
                 return {}
@@ -1920,16 +1928,16 @@ class SlayerQueryEngine:
             sql = await self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning(
-                "get_column_types plan/generate failed for model '%s'",
+                "get_result_column_types plan/generate failed for model '%s'",
                 model_name,
             )
             return {}
 
         try:
-            raw_types = await client.get_column_types(sql=sql)
+            raw_types = await client.get_result_column_types(sql)
         except Exception:
             logger.warning(
-                "get_column_types probe failed for model '%s'", model_name,
+                "get_result_column_types probe failed for model '%s'", model_name,
             )
             return {}
 
@@ -1940,7 +1948,7 @@ class SlayerQueryEngine:
         )[0]
 
         # Map qualified aliases back to bare measure names.
-        result: Dict[str, str] = {}
+        result: Dict[str, ResultColumnType] = {}
         source_relation = root.source_relation
         for slot in root.aggregate_slots:
             if slot.hidden:
@@ -2713,7 +2721,7 @@ class SlayerQueryEngine:
             model=model, runtime_kwarg=runtime_kwarg or {},
         )
         # No datasource hint, so inner resolution uses the priority list — letting
-        # ``get_column_types`` recover from a stale persisted ``data_source``.
+        # ``get_result_column_types`` recover from a stale persisted ``data_source``.
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
             prefer_data_source=None, splice_chain=(model.name,), as_statement=True,
@@ -2906,7 +2914,7 @@ class SlayerQueryEngine:
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert model.sql is not None
         try:
-            await self.client_for(ds).get_column_types(
+            await self.client_for(ds).get_result_column_types(
                 build_sql_model_trial_query(model.sql)
             )
         except Exception as exc:

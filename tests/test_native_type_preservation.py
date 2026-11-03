@@ -119,7 +119,8 @@ class TestSqliteKeepsInferredCast:
         result = await engine.execute(query=query)
         sql = (await engine.execute(query=query, dry_run=True)).sql
 
-        assert sql is not None and "CAST(SUM(orders.amount) AS REAL)" in sql, sql
+        assert sql is not None
+        assert "CAST(SUM(orders.amount) AS REAL)" in sql, sql
         assert isinstance(result.data[0]["orders.amount_sum"], float)
         assert result.data[0]["orders.amount_sum"] == 3.0
 
@@ -180,7 +181,8 @@ class TestDerivedColumnPreservesNativeType:
                 result = await engine.execute(query=_WIDE_QUERY)
             finally:
                 engine.close()
-        assert sql is not None and "CAST(" not in sql, sql
+        assert sql is not None
+        assert "CAST(" not in sql, sql
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 
     async def test_sqlite_keeps_the_inferred_cast(self):

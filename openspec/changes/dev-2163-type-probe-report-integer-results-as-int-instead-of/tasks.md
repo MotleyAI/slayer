@@ -10,38 +10,38 @@
 
 ## 2. Types and the shared name mapper
 
-- [ ] 2.1 Add `ResultColumnType` to `slayer/sql/dialects/reflection.py` and re-export it from `slayer.sql.client`; verify imports resolve and `la-arch-check` stays green
+- [x] 2.1 Add `ResultColumnType` to `slayer/sql/dialects/reflection.py` and re-export it from `slayer.sql.client`; verify imports resolve and `la-arch-check` stays green
 - [ ] 2.2 Merge `_INFO_SCHEMA_TYPE_MAP` and `_SA_TYPE_MAP` into one name table behind the catalog-string mapper, with wrapper peeling, dialect/class overrides, container shapes, the opaque allow-list and exact numerics by scale; `_sa_type_to_data_type` reads the same table; verify the parity tests (1.6) and the existing reflection tests pass
 
 ## 3. Dialect-owned cursor descriptions
 
-- [ ] 3.1 Replace `map_cursor_type_code` with `describe_cursor_column(description_row)` on `SqlDialect` (base: string code → name mapper) and move the Postgres OID table (with names and typmod scale) into `dialects/postgres.py`, shared by Redshift; verify the Postgres hook tests pass
-- [ ] 3.2 Move the MySQL / MariaDB field-code table into `dialects/mysql.py` with the length rules for `TINY` / `BIT` and `DECIMAL` scale; verify the MySQL hook tests pass
-- [ ] 3.3 Rework `dialects/snowflake.py`'s hook to `FieldType` + precision/scale with `NUMBER(p,s)` names; verify the Snowflake tests pass
-- [ ] 3.4 Add the tsql describe hook (`EXEC sp_describe_first_result_set` AST from an `exp.National` literal), the 11500–11541 fallback classifier and the pyodbc Python-type fallback; delete `_ODBC_SQL_TYPE_MAP`; verify the tsql unit tests pass
-- [ ] 3.5 Move the SQLite `typeof`-count statement and verdict into `dialects/sqlite.py` as AST, used by both the result probe and `sqlite_introspect.probe_sqlite_integer_column` (rebuilt as AST); verify the SQLite probe tests and the existing affinity-probe tests pass
+- [x] 3.1 Replace `map_cursor_type_code` with `describe_cursor_column(description_row)` on `SqlDialect` (base: string code → name mapper) and move the Postgres OID table (with names and typmod scale) into `dialects/postgres.py`, shared by Redshift; verify the Postgres hook tests pass
+- [x] 3.2 Move the MySQL / MariaDB field-code table into `dialects/mysql.py` with the length rules for `TINY` / `BIT` and `DECIMAL` scale; verify the MySQL hook tests pass
+- [x] 3.3 Rework `dialects/snowflake.py`'s hook to `FieldType` + precision/scale with `NUMBER(p,s)` names; verify the Snowflake tests pass
+- [x] 3.4 Add the tsql describe hook (`EXEC sp_describe_first_result_set` AST from an `exp.National` literal), the 11500–11541 fallback classifier and the pyodbc Python-type fallback; delete `_ODBC_SQL_TYPE_MAP`; verify the tsql unit tests pass
+- [x] 3.5 Move the SQLite `typeof`-count statement and verdict into `dialects/sqlite.py` as AST, used by both the result probe and `sqlite_introspect.probe_sqlite_integer_column` (rebuilt as AST); verify the SQLite probe tests and the existing affinity-probe tests pass
 
 ## 4. Client and engine plumbing
 
-- [ ] 4.1 Rewrite `_extract_types_from_cursor` into the per-column typed reader (hook → base mapper → TEXT; generic first-row fallback), add `get_result_column_types` on the `SqlClient` protocol, `SlayerSQLClient`, `DelegatingSqlClient`, and `get_result_column_types_sync`; the `type_probe_uses_sync_driver` flag routes Postgres/Redshift probes through the sync engine; verify the client-contract tests pass
-- [ ] 4.2 Build the synchronous engine for an async-only driver URL on the type's default sync driver in `engine_factory`; verify the `sql/execution` tests pass
-- [ ] 4.3 Add `SlayerQueryEngine.get_result_column_types(model_name, data_source=None)`; keep `get_column_types_sync`, `SlayerSQLClient.get_column_types` and `SlayerQueryEngine.get_column_types` as deprecated category wrappers over one `DataType`→category function, tagged for 2.0 removal; verify the wrapper tests pass
-- [ ] 4.4 Update the conformance suite's column-type check to the typed probe; verify `tests/test_sql_client_conformance.py` passes on SQLite, DuckDB and Postgres
+- [x] 4.1 Rewrite `_extract_types_from_cursor` into the per-column typed reader (hook → base mapper → TEXT; generic first-row fallback), add `get_result_column_types` on the `SqlClient` protocol, `SlayerSQLClient`, `DelegatingSqlClient`, and `get_result_column_types_sync`; the `type_probe_uses_sync_driver` flag routes Postgres/Redshift probes through the sync engine; verify the client-contract tests pass
+- [x] 4.2 Build the synchronous engine for an async-only driver URL on the type's default sync driver in `engine_factory`; verify the `sql/execution` tests pass
+- [x] 4.3 Add `SlayerQueryEngine.get_result_column_types(model_name, data_source=None)`; keep `get_column_types_sync`, `SlayerSQLClient.get_column_types` and `SlayerQueryEngine.get_column_types` as deprecated category wrappers over one `DataType`→category function, tagged for 2.0 removal; verify the wrapper tests pass
+- [x] 4.4 Update the conformance suite's column-type check to the typed probe; verify `tests/test_sql_client_conformance.py` passes on SQLite, DuckDB and Postgres
 
 ## 5. Rendering
 
-- [ ] 5.1 Centralise the logical INT → `BIGINT` cast target in `slayer/sql/render/value_expr.py` for insertion and idempotence; verify the statement-assembly tests pass
-- [ ] 5.2 Set native-type preservation for row-level derived columns with an exact-numeric `db_type` (non-explicit type; SQLite keeps its cast); verify the preservation tests pass
+- [x] 5.1 Centralise the logical INT → `BIGINT` cast target in `slayer/sql/render/value_expr.py` for insertion and idempotence; verify the statement-assembly tests pass
+- [x] 5.2 Set native-type preservation for row-level derived columns with an exact-numeric `db_type` (non-explicit type; SQLite keeps its cast); verify the preservation tests pass
 - [ ] 5.3 Re-bless the golden SQL baselines, reviewing that every diff is only `AS INT` → `AS BIGINT` or a dropped inferred cast around an exact-numeric derived column
 
 ## 6. Consumers
 
-- [ ] 6.1 `schema_drift`: delete `_CURSOR_CATEGORY_TO_DATATYPE`, read `.type` from the typed probe; verify the drift tests pass
-- [ ] 6.2 OSI importer: SQL-mode columns, derived fields and hidden helpers take `.type` and store `db_type` when exact-numeric or opaque; verify the OSI tests pass
-- [ ] 6.3 `model_render._choose_sample_agg` reads the typed probe; verify the inspect tests pass
+- [x] 6.1 `schema_drift`: delete `_CURSOR_CATEGORY_TO_DATATYPE`, read `.type` from the typed probe; verify the drift tests pass
+- [x] 6.2 OSI importer: SQL-mode columns, derived fields and hidden helpers take `.type` and store `db_type` when exact-numeric or opaque; verify the OSI tests pass
+- [x] 6.3 `model_render._choose_sample_agg` reads the typed probe; verify the inspect tests pass
 
 ## 7. Docs and gates
 
-- [ ] 7.1 Update `docs/configuration/sql-clients.md` (contract row, delegating example) and add one sentence to the schema-drift docs on type-mismatch entries for old OSI imports; verify the docs nav check and doc-example tests pass
+- [x] 7.1 Update `docs/configuration/sql-clients.md` (contract row, delegating example) and add one sentence to the schema-drift docs on type-mismatch entries for old OSI imports; verify the docs nav check and doc-example tests pass
 - [ ] 7.2 Run the full unit suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs the baseline) and `la-arch-check`; all green
 - [ ] 7.3 Run the integration suite with the CI invocation; all green on the locally runnable backends

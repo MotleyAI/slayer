@@ -57,7 +57,8 @@ async def test_metadata_and_probes_work_over_an_asyncpg_url(asyncpg_ds: Datasour
         types = await client.get_result_column_types("SELECT id, amount FROM t")
         rows = (await client.execute("SELECT amount FROM t")).rows
         async_engine = client._get_async_engine()
-        assert async_engine is not None and async_engine.url.drivername == "postgresql+asyncpg"
+        assert async_engine is not None
+        assert async_engine.url.drivername == "postgresql+asyncpg"
     finally:
         await client.aclose()
         client.close()

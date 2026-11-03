@@ -17,6 +17,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.client import ResultColumnType
+from slayer.sql.dialects import get_dialect
 from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.generator import (
     SQLGenerator,
@@ -3001,7 +3002,7 @@ class TestMeasureSourceSqlJoinInference:
             f"same SQL, different type must not dedupe onto one _val:\n{sql}"
         )
         assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
-        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS BIGINT\) AS _val_\d+", norm), sql
         # The raw crossing ref must never surface in the combined outer SELECT (after the last CTE closes) — only the CTE output columns.
         outer = sql[sql.rfind("\n)") + 2:]
         assert "customers__regions.payment_amount" not in outer, sql
@@ -3755,7 +3756,7 @@ class TestDev1709WidenedIsolationShapes:
             f"\n{sql}"
         )
         assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
-        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS BIGINT\) AS _val_\d+", norm), sql
         for val_alias in _re.findall(r"AS (_val_\d+)", norm):
             assert f"THEN {val_alias}" in norm, sql
 
@@ -8726,11 +8727,11 @@ class TestCastEmissionOpaqueType:
 
     def test_unknown_returns_expression_unchanged(self) -> None:
         expr = sqlglot.parse_one("json_extract(blob, '$.x')")
-        assert _wrap_cast_for_type(expr, DataType.UNKNOWN) is expr
+        assert _wrap_cast_for_type(expr, DataType.UNKNOWN, dialect=get_dialect("postgres")) is expr
 
     def test_operable_type_still_casts(self) -> None:
         expr = sqlglot.parse_one("json_extract(blob, '$.x')")
-        wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE)
+        wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE, dialect=get_dialect("postgres"))
         assert isinstance(wrapped, sqlglot.exp.Cast)
 
     async def test_opaque_column_rejected_as_dimension(self) -> None:

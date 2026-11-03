@@ -6,8 +6,11 @@ against the FROM scope, not the SELECT list.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
-from typing import ClassVar, Literal
+from collections.abc import Sequence
+from decimal import Decimal
+from typing import Any, ClassVar, Literal
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
@@ -20,6 +23,7 @@ from slayer.sql.dialects.base import (
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
 
 # sqlglot's tsql transpiler emits names (VAR_SAMP, VARIANCE_POP) T-SQL lacks.
@@ -29,6 +33,24 @@ _TSQL_STAT_NAMES: dict[str, str] = {
     "var_samp": "VAR",
     "var_pop": "VARP",
 }
+
+
+# ``timestamp`` is rowversion here, not a temporal type.
+_TYPE_NAME_OVERRIDES = {"TIMESTAMP": DataType.TEXT}
+
+# ``sp_describe_first_result_set``'s "metadata could not be determined" errors.
+_UNDESCRIBABLE_ERRORS = range(11500, 11542)
+_NATIVE_ERROR_RE = re.compile(r"\((\d+)\)\s*\(SQL\w*\)")
+
+# pyodbc ``type_code`` Python types → SLayer types; ``Decimal`` is read by scale.
+_PYTHON_TYPES: tuple[tuple[type, DataType], ...] = (
+    (bool, DataType.BOOLEAN),
+    (int, DataType.INT),
+    (float, DataType.DOUBLE),
+    (dt.datetime, DataType.TIMESTAMP),
+    (dt.date, DataType.DATE),
+    (dt.time, info_schema_type("TIME")[0]),
+)
 
 
 # Caveat: a single-bracketed word-only path like ``[schema.tbl]`` false-positive mangles.
@@ -110,6 +132,33 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
+
+    def describe_result_statement(self, probe: exp.National) -> Expression:
+        """``EXEC sp_describe_first_result_set @tsql = N'…'`` (sqlglot's ``exp.Execute`` spells it ``EXECUTE``)."""
+        argument = exp.EQ(this=exp.Parameter(this=exp.var("tsql")), expression=probe)
+        return exp.Command(this="EXEC", expression=f"sp_describe_first_result_set {argument.sql(dialect=self.sqlglot_name)}")
+
+    def read_result_description(self, rows: list[dict[str, Any]]) -> dict[str, ResultColumnType]:
+        return {
+            row["name"]: result_column_type_of_name(row["system_type_name"], overrides=_TYPE_NAME_OVERRIDES)
+            for row in rows if not row.get("is_hidden")
+        }
+
+    def result_undescribable(self, exc: BaseException) -> bool:
+        codes = _NATIVE_ERROR_RE.findall(str(getattr(exc, "orig", None) or exc))
+        return any(int(code) in _UNDESCRIBABLE_ERRORS for code in codes)
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """pyodbc reports Python types (the fallback when the result cannot be described); no type name."""
+        code, scale = description_row[1], description_row[5]
+        if not isinstance(code, type):
+            return None
+        if issubclass(code, Decimal):
+            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE)
+        for python_type, data_type in _PYTHON_TYPES:
+            if issubclass(code, python_type):
+                return ResultColumnType(type=data_type)
+        return ResultColumnType(type=DataType.TEXT)
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

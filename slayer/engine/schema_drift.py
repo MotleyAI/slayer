@@ -1831,26 +1831,17 @@ async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: Sche
     return LiveTable(columns={c.name: c.type for c in cols})
 
 
-# Cursor type-category strings → DataType buckets.
-_CURSOR_CATEGORY_TO_DATATYPE = {
-    "number": DataType.DOUBLE,
-    "string": DataType.TEXT,
-    "boolean": DataType.BOOLEAN,
-    "time": DataType.TIMESTAMP,
-}
-
-
 async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
     client: SqlClient,
 ) -> dict[str, DataType] | None:
-    """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
+    """Trial-execute ``model.sql`` with a 0-row guard; return probed types, or None on failure."""
     if not model.sql:
         return None
     # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
+        types = await client.get_result_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
@@ -1858,10 +1849,7 @@ async def _live_columns_for_sql_model(
             exc,
         )
         return None
-    return {
-        name: _CURSOR_CATEGORY_TO_DATATYPE.get(cat, DataType.TEXT)
-        for name, cat in cats.items()
-    }
+    return {name: column.type for name, column in types.items()}
 
 
 def _has_star_projection(parsed: exp.Expression) -> bool:
@@ -2045,7 +2033,7 @@ async def _source_tables_resolve(
     for table, columns in refs.items():
         select_list = ", ".join(sorted(columns)) or "*"
         try:
-            await client.get_column_types(
+            await client.get_result_column_types(
                 f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
             )
         except Exception:

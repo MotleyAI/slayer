@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -544,7 +545,7 @@ class _EchoTypesClient(DelegatingSqlClient):
         return ExecutionResult(rows=[])
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
-        parsed = sqlglot.parse_one(sql, dialect="bigquery")
+        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery"))
         return {name: ResultColumnType(type=DataType.DOUBLE) for name in parsed.named_selects}
 
 
