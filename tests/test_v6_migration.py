@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -111,7 +112,12 @@ async def test_yaml_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
                 ],
             }, f, sort_keys=False)
 
-        loaded = await storage.get_model("orders", data_source="ds")
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            loaded = await engine.storage.get_model("orders", data_source="ds")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert {c.name: c.sampled for c in loaded.columns} == {
             "id": None, "amount": None,
@@ -146,7 +152,12 @@ async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
                 ("ds", "orders", json.dumps(v5_payload)),
             )
 
-        loaded = await storage.get_model("orders", data_source="ds")
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            loaded = await engine.storage.get_model("orders", data_source="ds")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert {c.name: c.sampled for c in loaded.columns} == {
             "id": None, "amount": None,

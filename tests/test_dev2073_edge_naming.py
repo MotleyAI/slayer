@@ -200,10 +200,11 @@ class TestGeneratedNamesAvoidCollisions:
             forward = await lv.edges()
 
         original = ingestion_mod.list_ingestable_objects
-        monkeypatch.setattr(
-            ingestion_mod, "list_ingestable_objects",
-            lambda **kw: list(reversed(original(**kw))),
-        )
+
+        async def reversed_objects(**kw):
+            return list(reversed(await original(**kw)))
+
+        monkeypatch.setattr(ingestion_mod, "list_ingestable_objects", reversed_objects)
         async with live(schema) as lv:
             await lv.ingest()
             assert await lv.edges() == forward

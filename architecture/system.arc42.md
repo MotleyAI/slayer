@@ -146,6 +146,9 @@ All code, old and new, MUST obey these.
     becomes SQL or meets the live schema, and is never the key two references
     are matched on.
     [enforced: test:tests/test_dev1902_join_key_spelling.py]
+17. **One database door**: every live database access — statement or metadata —
+    goes through a client owned by a query engine.
+    [enforced: test:tests/test_law_database_door.py]
 
 ## 4. Enforcement
 

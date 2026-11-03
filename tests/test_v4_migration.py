@@ -25,6 +25,7 @@ import pytest
 import yaml
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -116,9 +117,13 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
             "columns": [{"name": "id", "type": "number", "primary_key": True}],
         }, f)
 
-    storage = YAMLStorage(base_dir=base)
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
 
-    loaded = await storage.get_model("orders", data_source="warehouse")
+    try:
+        loaded = await engine.storage.get_model("orders", data_source="warehouse")
+    finally:
+        await engine.aclose()
+        engine.close()
     assert loaded is not None
     assert loaded.data_source == "warehouse"
 

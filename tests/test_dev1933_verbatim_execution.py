@@ -69,6 +69,15 @@ def _helper_spans(tree: ast.Module) -> list[tuple[int, int]]:
     return spans
 
 
+def _forwards_to_wrapped_client(func: ast.Attribute) -> bool:
+    """``self.inner.execute(...)``: a call on the wrapped client."""
+    receiver = func.value
+    return (
+        isinstance(receiver, ast.Attribute) and receiver.attr == "inner"
+        and isinstance(receiver.value, ast.Name) and receiver.value.id == "self"
+    )
+
+
 class TestClientModuleGuard:
     """python.sql.arc42.md §3.13: the client constructs no text clause and issues no
     driver-level execute outside the single verbatim helper pair."""
@@ -90,6 +99,8 @@ class TestClientModuleGuard:
                 continue
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr in {"execute", "exec_driver_sql"}:
+                if _forwards_to_wrapped_client(func):
+                    continue  # DelegatingSqlClient hands the statement to another client, not the driver
                 if not any(lo <= node.lineno <= hi for lo, hi in spans):
                     offenders.append((func.attr, node.lineno))
         assert not offenders, f".execute/.exec_driver_sql outside the helper pair at {offenders}"

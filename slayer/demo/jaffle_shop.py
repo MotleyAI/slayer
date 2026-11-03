@@ -39,6 +39,7 @@ from slayer.core.models import (
 )
 from slayer.core.errors import SlayerError
 from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.base import StorageBackend, storage_base_dir
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -865,10 +866,13 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     Creates missing models and additively merges existing ones (missing joins
     reconciled in), so every user edit survives.
     """
-    result = run_sync(ingest_datasource_idempotent(datasource=datasource, storage=storage))
+    engine = SlayerQueryEngine(storage=storage)
+    result = engine.run_sync(ingest_datasource_idempotent(
+        datasource=datasource, storage=engine.storage, client=engine.client_for(datasource),
+    ))
     stored = {
         m.name: m
-        for m in DocumentLoadFailures().skip(run_sync(storage.load_models(data_source=datasource.name)))
+        for m in DocumentLoadFailures().skip(engine.run_sync(engine.storage.load_models(data_source=datasource.name)))
     }
     missing = [t for t in TABLE_NAMES if t not in stored]
     if missing:

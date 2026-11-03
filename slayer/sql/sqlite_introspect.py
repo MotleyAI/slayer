@@ -1,25 +1,16 @@
-"""DEV-1538: SQLite affinity-probe helper.
+"""SQLite integer-affinity probe, run through a client's ``execute``.
 
-SQLite's declared column types are affinity hints, not constraints. A column
-declared ``INTEGER`` can store mixed storage classes (INTEGER, REAL, TEXT,
-BLOB) at the row level, and the affinity rule only converts REAL→INTEGER
-when it would be lossless and reversible. Trusting the declared type at
-ingest time silently truncates the actual REAL data once it flows through
-downstream ``CAST(... AS INTEGER)`` sites — see DEV-1538 for the autopsy.
+SQLite's declared column types are affinity hints: a column declared ``INTEGER``
+can store REAL, TEXT or BLOB values row by row. The probe samples the stored
+storage classes and returns:
 
-This module exposes a single probe that inspects the actual storage classes
-of stored values and returns the appropriate :class:`DataType`:
-
-* :class:`DataType.INT` when every sampled value is integer-shaped (and the
-  sample is not saturated).
-* :class:`DataType.DOUBLE` when REAL values are present, or non-integral
-  integers are present (caught via ``ROUND(col) <> col``), or every TEXT
-  value coerces to a finite ``float``.
-* :class:`DataType.TEXT` when BLOB values are present, any TEXT value is
-  non-coercible (or non-finite), or distinct-text saturates the coerce cap.
-* ``None`` when the probe itself errors, OR when the row sample saturates
-  AND the verdict would otherwise be INT (we can't certify INT past the cap).
-  Callers treat ``None`` as "keep the SA-derived type".
+* ``DataType.INT`` when every sampled value is integer-shaped (sample not saturated);
+* ``DataType.DOUBLE`` when REAL or non-integral values appear, or every TEXT value
+  coerces to a finite float;
+* ``DataType.TEXT`` when BLOBs appear, a TEXT value does not coerce (or is not
+  finite), or the distinct-text sample saturates;
+* ``None`` when a probe statement fails, or the row sample saturates on an INT
+  verdict; callers keep the type they had. An unreachable database raises.
 """
 
 from __future__ import annotations
@@ -27,11 +18,11 @@ from __future__ import annotations
 import logging
 import math
 
-import sqlalchemy as sa
 from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core.enums import DataType
+from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
 
 
 logger = logging.getLogger(__name__)
@@ -47,8 +38,9 @@ COERCE_DISTINCT_LIMIT: int = 1_000
 
 
 def _quote_sqlite_ident(name: str) -> str:
-    """Quote a single identifier for SQLite. Goes through ``sqlglot.exp``
-    so embedded double-quotes are escaped correctly."""
+    """Quote one identifier for SQLite (embedded quotes escaped); an already-quoted one is quoted once."""
+    if len(name) >= 2 and name[0] == '"' == name[-1]:
+        name = name[1:-1].replace('""', '"')
     return exp.to_identifier(name, quoted=True).sql(dialect="sqlite")
 
 
@@ -71,13 +63,13 @@ class _ProbeCounts(BaseModel):
     n_non_integral: int
 
 
-def _run_main_probe(
-    *, conn: sa.engine.Connection, qtable: str, qcol: str, table: str, column: str,
+async def _run_main_probe(
+    *, client: SqlClient, qtable: str, qcol: str, table: str, column: str,
 ) -> _ProbeCounts | None:
     """Run the main probe aggregate. Returns ``None`` on driver failure
     (after logging a WARNING)."""
     scan_cap_plus_one = PROBE_SCAN_CAP + 1
-    sql = sa.text(
+    sql = (
         f"SELECT "
         f"  COUNT(*) AS n_rows, "
         f"  SUM(CASE WHEN typeof({qcol}) <> 'null' THEN 1 ELSE 0 END) AS n_non_null, "
@@ -90,10 +82,13 @@ def _run_main_probe(
         f"FROM (SELECT {qcol} FROM {qtable} LIMIT {scan_cap_plus_one})"
     )
     try:
-        row = conn.execute(sql).fetchone()
+        rows = (await client.execute(sql)).rows
+    except (DatabaseUnavailable, AuthenticationRefused):
+        raise
     except Exception as exc:
         logger.warning("probe failed for %s.%s: %s", table, column, exc)
         return None
+    row = list(rows[0].values()) if rows else None
     if row is None:
         # Defensive: SELECT-with-aggregates always returns one row.
         return _ProbeCounts(n_rows=0, n_non_null=0, n_real=0, n_text=0, n_blob=0, n_non_integral=0)
@@ -107,8 +102,8 @@ def _run_main_probe(
     )
 
 
-def _classify_text_branch(
-    *, conn: sa.engine.Connection, qtable: str, qcol: str, table: str, column: str,
+async def _classify_text_branch(
+    *, client: SqlClient, qtable: str, qcol: str, table: str, column: str,
 ) -> DataType | None:
     """The ``n_text > 0`` decision branch — runs the bounded distinct-text
     coerce probe and classifies. Returns the verdict (DOUBLE / TEXT) or
@@ -119,15 +114,17 @@ def _classify_text_branch(
     # Bound the DISTINCT scan to the same row sample as the main probe —
     # otherwise a column with mixed-text storage in a billion-row table
     # would silently turn the LIMIT-100k probe into a full-table scan.
-    coerce_sql = sa.text(
-        f"SELECT DISTINCT {qcol} FROM ("
+    coerce_sql = (
+        f"SELECT DISTINCT {qcol} AS v FROM ("
         f"  SELECT {qcol} FROM {qtable} LIMIT {scan_cap_plus_one}"
         f") AS sample "
         f"WHERE typeof({qcol}) = 'text' "
         f"LIMIT {distinct_limit_plus_one}"
     )
     try:
-        distinct_rows = conn.execute(coerce_sql).fetchall()
+        distinct_rows = [row["v"] for row in (await client.execute(coerce_sql)).rows]
+    except (DatabaseUnavailable, AuthenticationRefused):
+        raise
     except Exception as exc:
         logger.warning("coerce probe failed for %s.%s: %s", table, column, exc)
         return None
@@ -137,8 +134,7 @@ def _classify_text_branch(
     if len(distinct_rows) > COERCE_DISTINCT_LIMIT:
         return DataType.TEXT
 
-    for r in distinct_rows:
-        raw = r[0]
+    for raw in distinct_rows:
         if raw is None:
             continue
         try:
@@ -173,9 +169,9 @@ def _classify_no_evidence(
     return DataType.INT
 
 
-def probe_sqlite_integer_column(
+async def probe_sqlite_integer_column(
     *,
-    conn: sa.engine.Connection,
+    client: SqlClient,
     table: str,
     column: str,
     schema: str | None = None,
@@ -211,16 +207,16 @@ def probe_sqlite_integer_column(
     """
     qtable = _qualified_table(table, schema)
     qcol = _quote_sqlite_ident(column)
-    counts = _run_main_probe(
-        conn=conn, qtable=qtable, qcol=qcol, table=table, column=column,
+    counts = await _run_main_probe(
+        client=client, qtable=qtable, qcol=qcol, table=table, column=column,
     )
     if counts is None:
         return None
     if counts.n_blob > 0:
         return DataType.TEXT
     if counts.n_text > 0:
-        return _classify_text_branch(
-            conn=conn, qtable=qtable, qcol=qcol, table=table, column=column,
+        return await _classify_text_branch(
+            client=client, qtable=qtable, qcol=qcol, table=table, column=column,
         )
     if counts.n_real > 0 or counts.n_non_integral > 0:
         return DataType.DOUBLE

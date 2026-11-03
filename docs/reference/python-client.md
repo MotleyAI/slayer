@@ -48,6 +48,8 @@ data = client.query(query)
 df = client.query_df(query)
 ```
 
+Pass `client_factory=` to run every database access through your own client — for example a gateway that holds the credentials; see [SQL Clients](../configuration/sql-clients.md).
+
 ### Accepted Input Shapes
 
 `client.query` / `query_sync` / `sql` / `sql_sync` / `explain` / `explain_sync` / `query_df` all accept the same input union (mirroring `engine.execute`):

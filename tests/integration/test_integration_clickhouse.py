@@ -25,6 +25,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
+from typing import Any
 import warnings
 from collections.abc import Generator
 from datetime import datetime, timezone
@@ -48,9 +49,10 @@ from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.engine.ingestion import ingest_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
+from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -154,6 +156,15 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
     with disposable_engine(_admin_url(clickhouse_container)) as engine:
         with engine.begin() as conn:
             conn.execute(sa.text(f"DROP DATABASE IF EXISTS {db_name}"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(clickhouse_container, db_name: str) -> DatasourceConfig:
@@ -1129,7 +1140,7 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
     column must produce ``DataType.TIMESTAMP``, not STRING. Int32 / Float64
     must map to INT / DOUBLE."""
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     by_name = {c.name: c for c in orders.columns}
 
@@ -1147,7 +1158,7 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
 @pytest.mark.integration
 def test_clickhouse_comments_imported(clickhouse_ingest_for_types_env) -> None:
     ds = clickhouse_ingest_for_types_env
-    models = ingest_datasource(datasource=ds, schema=None)
+    models = run_sync(_ingest(ds, schema=None))
     orders = next(m for m in models if m.name == "orders")
     assert orders.description == "All orders"
     by_name = {c.name: c for c in orders.columns}
@@ -1281,7 +1292,7 @@ def _clickhouse_decimal_storage(clickhouse_container, tmp_path_factory):
 
         datasource = _ds_config(clickhouse_container, db_name)
         model = next(
-            m for m in ingest_datasource(datasource=datasource)
+            m for m in run_sync(_ingest(datasource))
             if m.name == "decimal_orders"
         )
         amount = model.get_column("amount")
@@ -1581,12 +1592,31 @@ def _user_datasource(
                 conn.exec_driver_sql(f"DROP USER IF EXISTS {user}")
 
 
-def _rls_engine(datasource: DatasourceConfig, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
+def _rls_engine(
+    datasource: DatasourceConfig, *, policy: SessionPolicy | None = None, client_factory: ClientFactory | None = None,
+) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
     run_sync(storage.save_datasource(datasource))
     for model in _rls_models():
         run_sync(storage.save_model(model))
-    return SlayerQueryEngine(storage=storage, policy=policy)
+    return SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
+
+
+class _RecordingGateway(DelegatingSqlClient):
+    """A factory client over the default one, recording what reaches it."""
+
+    def __init__(self, inner: SqlClient) -> None:
+        super().__init__(inner)
+        self.profile_requests = 0
+        self.statements: list[str] = []
+
+    async def server_profile(self) -> ServerProfile:
+        self.profile_requests += 1
+        return await self.inner.server_profile()
+
+    async def execute(self, sql: str, *args: Any, **kwargs: Any) -> ExecutionResult:
+        self.statements.append(sql)
+        return await self.inner.execute(sql, *args, **kwargs)
 
 
 _TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
@@ -1770,6 +1800,26 @@ class TestVersionedReadonly:
         _, container, db_name = versioned_clickhouse
         with _user_datasource(container, db_name, settings="readonly = 2") as ds:
             await _assert_semi_join_runs_with_setting(_rls_engine(ds))
+
+    async def test_semi_join_and_profile_reach_the_factory_client(self, versioned_clickhouse) -> None:
+        """Scenario: Engine-internal statements reach the factory client (ClickHouse server profile)."""
+        _, container, db_name = versioned_clickhouse
+        built: list[_RecordingGateway] = []
+
+        def factory(datasource: DatasourceConfig) -> _RecordingGateway:
+            built.append(_RecordingGateway(SlayerSQLClient(datasource=datasource)))
+            return built[-1]
+
+        with _user_datasource(container, db_name, settings="readonly = 2") as ds:
+            engine = _rls_engine(ds, client_factory=factory)
+            try:
+                assert (await engine.execute(_SEMI_JOIN_QUERY)).data == _SEMI_JOIN_ROWS
+            finally:
+                await engine.aclose()
+                engine.close()
+        assert len(built) == 1
+        assert built[0].profile_requests >= 1
+        assert any("EXISTS" in sql.upper() for sql in built[0].statements), built[0].statements
 
     async def test_setting_enabled_in_profile_runs(self, versioned_clickhouse) -> None:
         _, container, db_name = versioned_clickhouse

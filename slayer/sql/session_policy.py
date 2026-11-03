@@ -25,6 +25,7 @@ from typing import Callable, Optional
 import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
@@ -289,6 +290,21 @@ def _apply_join_ruleset(
             "closed.",
             table=scoped.name,
         )
+
+
+def policy_column_checks(sql: str, *, dialect: str, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
+    """The ``(table, column)`` presence facts ``apply_session_policy`` will ask ``has_column`` for."""
+    ruleset = policy.ruleset
+    if not isinstance(ruleset, ColumnFilterRuleset):
+        return []
+    try:
+        ast = sqlglot.parse_one(sql, dialect=dialect)
+    except SqlglotError:
+        return []  # the rewrite reports the parse failure itself
+    if not isinstance(ast, _ALLOWED_ROOTS):
+        return []
+    checks = (_scoped_table(table) for table in _physical_tables(ast))
+    return list(dict.fromkeys((scoped, ruleset.column) for scoped in checks))
 
 
 def apply_session_policy(

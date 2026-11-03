@@ -112,6 +112,9 @@ class SnowflakeDialect(SqlDialect):
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
 
+    def normalize_reflected_name(self, name: str) -> str:
+        return name.lower() if name == name.upper() else name
+
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
             comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,

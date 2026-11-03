@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import Callable
 
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ examples:
 
 def run_flight_serve(
     args, *, resolve_storage, prepare_demo, serve_until_terminated: Callable[..., None],
+    client_factory: ClientFactory | None = None,
 ) -> None:
     """Construct the storage, engine, handlers, server; serve until terminated.
 
@@ -91,8 +92,8 @@ def run_flight_serve(
     if getattr(args, "demo", False):
         prepare_demo(args, storage)
 
-    engine = SlayerQueryEngine(storage=storage)
-    handlers = FlightHandlers(engine=engine, storage=storage)
+    engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
+    handlers = FlightHandlers(engine=engine)
 
     token: str | None = args.token or os.environ.get("SLAYER_FLIGHT_TOKEN")
 
@@ -111,7 +112,10 @@ def run_flight_serve(
         f"SLayer Flight SQL serving at {scheme}://{host}:{args.port}",
         flush=True,
     )
-    serve_until_terminated(run=server.wait, stop=server.shutdown)
+    try:
+        serve_until_terminated(run=server.wait, stop=server.shutdown)
+    finally:
+        engine.close()  # each RPC already released its loop-bound resources
 
 
 def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:

@@ -81,6 +81,9 @@ class DuckdbDialect(SqlDialect):
             alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
         ))
 
+    def current_catalog_sql(self) -> str | None:
+        return "SELECT current_database()"
+
     def reflect_columns(
         self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,

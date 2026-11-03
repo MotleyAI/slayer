@@ -3,6 +3,7 @@
 import math
 import statistics
 import tempfile
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 duckdb = pytest.importorskip("duckdb")
@@ -363,6 +365,15 @@ class TestDuckDBQueries:
         assert running == pytest.approx([300.0, 500.0, 875.0])
 
 
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 @pytest.fixture(scope="module")
 def duckdb_ingest_env(tmp_path_factory):
     """Set up tables with FK relationships and ingest via rollup.
@@ -414,7 +425,7 @@ def duckdb_ingest_env(tmp_path_factory):
         database=str(db_path),
     )
 
-    models = ingest_datasource(datasource=ds)
+    models = run_sync(_ingest(ds))
     return models, ds
 
 

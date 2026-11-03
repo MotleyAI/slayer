@@ -982,7 +982,7 @@ class TestEngineContract:
             engine, "_sql_clients", {k: _FakeClient() for k in ("x",)},
         )
         monkeypatch.setattr(
-            "slayer.engine.query_engine._sql_client_cache_key", lambda ds: "x",
+            "slayer.engine.query_engine.client_cache_key", lambda ds: "x",
         )
 
         types = await engine.get_column_types(model_name="TypeProbe")

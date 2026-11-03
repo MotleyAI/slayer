@@ -13,6 +13,7 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
+from slayer.core.models import DatasourceConfig
 from slayer.engine.syntax import AggCall, Ref, parse_expr
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
@@ -26,6 +27,7 @@ from slayer.osi.models import (
 )
 from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
+from tests._osi_helpers import run_converter
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
 
@@ -52,9 +54,10 @@ def shop_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 
 
 def _convert(engine: sa.Engine, doc: OSIDocument, **kw):
-    return OsiToSlayerConverter(
-        documents=[doc], data_source="testds", sa_engine=engine, **kw
-    ).convert()
+    return run_converter(
+        OsiToSlayerConverter(documents=[doc], data_source="testds", **kw),
+        datasource=DatasourceConfig(name="testds", type="sqlite", database=engine.url.database),
+    )
 
 
 def _shop_result(engine: sa.Engine):
@@ -134,8 +137,8 @@ def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch):
     """Introspected DB comments survive only where OSI has no curated text."""
     real = osi_converter_module.introspect_table_to_model
 
-    def _with_db_comments(**kwargs):
-        model = real(**kwargs)
+    async def _with_db_comments(**kwargs):
+        model = await real(**kwargs)
         model.description = "db table comment"
         for c in model.columns:
             if c.name in ("order_id", "customer_id"):
@@ -218,7 +221,7 @@ def test_duplicate_dataset_names_raise(shop_engine):
                                        fields=[OSIField(name="amount", expression=_expr("amount"))])], name=name)
         for name in ("a", "b")
     ]
-    converter = OsiToSlayerConverter(documents=docs, data_source="testds", sa_engine=shop_engine)
+    converter = OsiToSlayerConverter(documents=docs, data_source="testds")
     with pytest.raises(OsiConversionError):
         converter.convert()
 

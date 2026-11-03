@@ -78,6 +78,14 @@ class EntityResolutionError(SlayerError):
     """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
 
 
+class ModelNotFoundError(SlayerError):
+    """A query names a model that does not exist in storage."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"Model '{name}' not found")
+
+
 class MemoryNotFoundError(SlayerError):
     """A memory id does not exist in storage."""
 

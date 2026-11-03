@@ -8,7 +8,7 @@ SQLite file (`sqlite_storage.py`), with the embedding sidecar
 (`sidecar_embedding_store.py`) shared by both, the dict→dict migration registry
 (`migrations.py`, `v2_…v9_migration.py`, `legacy_alias_rewrite.py`) applied on
 load, crash-safe writes (`atomic_write.py`), and live-schema type refinement
-(`type_refinement.py`) through the `sql` engine factory.
+(`type_refinement.py`).
 
 ## 2. Building blocks
 

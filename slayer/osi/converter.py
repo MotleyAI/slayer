@@ -16,7 +16,6 @@ import logging
 from collections.abc import Callable
 from typing import Any, Optional
 
-import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -28,11 +27,11 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, joi
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.syntax import parse_expr
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
-from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import get_column_types_sync
+from slayer.sql.client import SqlClient
 from slayer.osi.dialects import Selection, read, render, select_expression
 from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
 from slayer.osi.models import (
@@ -48,6 +47,9 @@ from slayer.osi.models import (
 from slayer.osi.source import parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
+
+# Conversion passes ``collect_metadata`` runs to discover the type probes conversion asks for.
+_MAX_PROBE_PASSES = 8
 
 # Target dialects lacking a GROUP BY percentile/median aggregate.
 _NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql"})
@@ -167,26 +169,36 @@ def _build_meta(
     return meta or None
 
 
+class _MetadataUnavailable(Exception):
+    """A dataset's live metadata was not collected, or could not be read."""
+
+
 class OsiToSlayerConverter:
-    """Convert OSI documents into SLayer models."""
+    """Convert OSI documents into SLayer models: ``collect_metadata`` reads the database, ``convert`` is pure."""
 
     def __init__(
         self,
         documents: list[OSIDocument],
         data_source: str,
-        sa_engine: sa.Engine,
         *,
         dialect: str | None = None,
         target_dialect: str | None = None,
     ) -> None:
         self.documents = documents
         self.data_source = data_source
-        self.sa_engine = sa_engine
         self.dialect = dialect
         self.target_dialect = target_dialect
         # sqlglot name of the datasource dialect every stored raw SQL is rendered in.
-        self._target = (dialect_for_ds_type(target_dialect) if target_dialect
-                        else dialect_for_sa_backend(sa_engine.dialect.name)).sqlglot_name
+        self._target = dialect_for_ds_type(target_dialect).sqlglot_name
+        # Live metadata from ``collect_metadata``: per dataset its introspected model (or the
+        # failure), per source query its column types, per probe statement its types (None: failed).
+        self._tables: dict[str, SlayerModel | str] = {}
+        self._query_types: dict[str, dict[str, str] | str] = {}
+        self._probes: dict[str, dict[str, str] | None] = {}
+        self._probe_misses: set[str] = set()
+        self._reset()
+
+    def _reset(self) -> None:
         self._models: dict[str, SlayerModel] = {}
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
@@ -221,13 +233,50 @@ class OsiToSlayerConverter:
 
     # ---- top-level ----
 
+    async def collect_metadata(self, *, client: SqlClient) -> None:
+        """Read every dataset's source and every type probe conversion needs through ``client``."""
+        if self.target_dialect is None:
+            self._target = dialect_for_ds_type(client.datasource.type).sqlglot_name
+        for doc in self.documents:
+            for ds in doc.datasets:
+                await self._collect_source(client=client, ds=ds)
+        for _ in range(_MAX_PROBE_PASSES):
+            self.convert()
+            misses = self._probe_misses - self._probes.keys()
+            if not misses:
+                return
+            for probe in sorted(misses):
+                try:
+                    self._probes[probe] = await client.get_column_types(probe)
+                except Exception:  # noqa: BLE001 — probe is best-effort; conversion falls back
+                    self._probes[probe] = None
+
+    async def _collect_source(self, *, client: SqlClient, ds: OSIDataset) -> None:
+        try:
+            parsed = parse_source(ds.source)
+        except Exception:  # noqa: BLE001 — conversion reports an unparseable source itself
+            return
+        try:
+            if parsed.query is not None:
+                self._query_types[parsed.query] = await client.get_column_types(parsed.query)
+            elif parsed.table is not None:
+                self._tables[ds.name] = await introspect_table_to_model(
+                    client=client, table_name=parsed.table, schema=parsed.schema_name,
+                    data_source=self.data_source, model_name=ds.name,
+                )
+        except Exception as exc:  # noqa: BLE001 — per-dataset isolation
+            if parsed.query is not None:
+                self._query_types[parsed.query] = str(exc)
+            else:
+                self._tables[ds.name] = str(exc)
+
     def convert(self) -> ConversionResult:
-        inspector = sa.inspect(self.sa_engine)
+        self._reset()
         self._check_duplicate_dataset_names()
 
         for doc in self.documents:
             for ds in doc.datasets:
-                self._build_model(ds=ds, doc=doc, inspector=inspector)
+                self._build_model(ds=ds, doc=doc)
         for doc in self.documents:
             for rel in doc.relationships or []:
                 self._build_join(rel=rel, doc=doc)
@@ -273,8 +322,7 @@ class OsiToSlayerConverter:
 
     # ---- datasets -> models ----
 
-    def _build_model(self, ds: OSIDataset, doc: OSIDocument,
-                     inspector: sa.engine.Inspector) -> None:
+    def _build_model(self, ds: OSIDataset, doc: OSIDocument) -> None:
         if not _legal_model_name(ds.name):
             self._warn(
                 f"Dataset name {ds.name!r} is not a safe SLayer model name "
@@ -291,11 +339,7 @@ class OsiToSlayerConverter:
             if parsed.is_query:
                 base = self._build_sql_mode_model(ds, parsed.query)
             else:
-                base = introspect_table_to_model(
-                    sa_engine=self.sa_engine, inspector=inspector,
-                    table_name=parsed.table, schema=parsed.schema_name,
-                    data_source=self.data_source, model_name=ds.name,
-                )
+                base = self._introspected_table(ds)
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation
             self._warn(
                 f"Failed to introspect dataset {ds.name!r} (source {ds.source!r}): "
@@ -312,12 +356,17 @@ class OsiToSlayerConverter:
         self._apply_dataset_metadata(base, ds, doc)
         self._models[ds.name] = base
 
+    def _introspected_table(self, ds: OSIDataset) -> SlayerModel:
+        introspected = self._tables.get(ds.name, "no table metadata was collected (collect_metadata)")
+        if isinstance(introspected, str):
+            raise _MetadataUnavailable(introspected)
+        return introspected.model_copy(deep=True)
+
     def _build_sql_mode_model(self, ds: OSIDataset, query: str) -> SlayerModel:
-        # Introspect the query's output columns live, with the datasource's probe shape.
-        types = get_column_types_sync(
-            sql=query, engine=self.sa_engine, db_type=self.target_dialect,
-            datasource_name=self.data_source,
-        )
+        # The query's output columns, as the datasource's probe reported them.
+        types = self._query_types.get(query, "no query metadata was collected (collect_metadata)")
+        if isinstance(types, str):
+            raise _MetadataUnavailable(types)
         columns = [Column(name=name, type=category) for name, category in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
@@ -494,12 +543,11 @@ class OsiToSlayerConverter:
         else:
             return None
         probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
-        try:
-            types = get_column_types_sync(
-                sql=probe, engine=self.sa_engine, db_type=self.target_dialect,
-                datasource_name=self.data_source,
-            )
-        except Exception:  # noqa: BLE001 — probe is best-effort; fall back
+        if probe not in self._probes:
+            self._probe_misses.add(probe)
+            return None
+        types = self._probes[probe]
+        if types is None:
             return None
         category = next(iter(types.values()), None)
         if category is None:

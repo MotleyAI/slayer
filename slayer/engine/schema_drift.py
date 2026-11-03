@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import (
     Annotated,
@@ -15,7 +15,6 @@ from typing import (
     Set,
 )
 
-import sqlalchemy as sa
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -35,16 +34,16 @@ from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.introspect_utils import reflect_columns
 from slayer.engine.schema_scope import (
+    UNREACHABLE,
     SchemaEnumerationError,
     SchemaRef,
     default_schema_ref,
-    engine_qualifies_tokens,
     is_system_schema,
+    qualifies_tokens,
     resolve_ingest_scope,
     split_sql_table,
 )
 from slayer.engine import ingestion
-from slayer.engine.ingestion import _sa_type_to_data_type
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_search import reachable
@@ -61,10 +60,10 @@ from slayer.engine.syntax import (
     parse_filter_expr,
     walk_parsed_refs,
 )
-from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import SlayerSQLClient, build_sql_model_trial_query
+from slayer.sql import sqlite_introspect
+from slayer.sql.client import SqlClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
+from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
 from slayer.ir.source_bundle import added_joins
 
 logger = logging.getLogger(__name__)
@@ -432,9 +431,9 @@ def _sql_trial_failure_delete(
 
 
 def _diff_sql_model_columns(
-    *, model: SlayerModel, live_columns: dict[str, DataType]
+    *, model: SlayerModel, live_columns: dict[str, DataType], compare_types: bool = True,
 ) -> tuple[list[str], list[DeleteReason]]:
-    """Model columns missing from (or type-conflicting with) cursor metadata."""
+    """Model columns missing from (or, with ``compare_types``, type-conflicting with) cursor metadata."""
     dropped_cols: list[str] = []
     reasons: list[DeleteReason] = []
     for col in model.columns:
@@ -456,7 +455,7 @@ def _diff_sql_model_columns(
                     )
                 )
             continue
-        if _type_buckets_conflict(persisted=col.type, live=live_dt):
+        if compare_types and _type_buckets_conflict(persisted=col.type, live=live_dt):
             dropped_cols.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -475,12 +474,13 @@ def diff_sql_model(
     model: SlayerModel,
     live_columns: dict[str, DataType] | None,
     invalid_sql: bool = False,
+    compare_types: bool = True,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
-    """Diff a sql-mode model against cursor metadata; ``live_columns is None`` ⇒ WholeModelDelete, ``invalid_sql=True`` ⇒ the SQL itself is broken, not drift."""
+    """Diff a sql-mode model against cursor metadata; ``live_columns is None`` ⇒ WholeModelDelete, ``invalid_sql=True`` ⇒ the SQL itself is broken, not drift; ``compare_types=False`` checks names only."""
     if live_columns is None:
         return _sql_trial_failure_delete(model=model, invalid_sql=invalid_sql)
     dropped_cols, reasons = _diff_sql_model_columns(
-        model=model, live_columns=live_columns
+        model=model, live_columns=live_columns, compare_types=compare_types,
     )
     if not dropped_cols:
         return None, set()
@@ -1499,23 +1499,21 @@ class DatasourceUnreachable(Exception):
     """A snapshot's datasource recently failed to connect; no verdict until it expires."""
 
 
-def _live_schema_refs(
+async def _live_schema_refs(
     *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
+    client: SqlClient,
     datasource: DatasourceConfig,
     schema: str | None,
     fallback_schema_tokens: set[str] | None = None,
 ) -> list[SchemaRef]:
     """Schemas to introspect: explicit ``schema`` scopes to one, else every own-catalog schema (catalog attached via ``resolve_ingest_scope``); on enumeration failure ``fallback_schema_tokens`` is scoped, None stays fail-closed."""
     try:
-        refs = resolve_ingest_scope(
-            inspector=inspector,
-            sa_engine=sa_engine,
+        refs = (await resolve_ingest_scope(
+            client=client,
             requested=[schema] if schema is not None else None,
             all_schemas=schema is None,
             datasource_schema=datasource.schema_name,
-        ).schemas
+        )).schemas
     except SchemaEnumerationError as exc:
         if fallback_schema_tokens is None:
             raise IntrospectionUnavailable(
@@ -1530,18 +1528,17 @@ def _live_schema_refs(
     requested = set(fallback_schema_tokens)
     if datasource.schema_name:
         requested.add(datasource.schema_name)
-    resolved = resolve_ingest_scope(
-        inspector=inspector,
-        sa_engine=sa_engine,
+    resolved = (await resolve_ingest_scope(
+        client=client,
         requested=sorted(requested) or None,
         all_schemas=False,
         datasource_schema=datasource.schema_name,
-    ).schemas
+    )).schemas
     # Add the connection default (bare models), deduped by token, preferring the default-marked ref.
-    default_ref = default_schema_ref(inspector, sa_engine)
+    default_ref = await default_schema_ref(client)
     candidates = list(resolved)
     default_token = default_ref.token or default_ref.name or ""
-    if not is_system_schema(default_token, qualifies=engine_qualifies_tokens(sa_engine)):
+    if not is_system_schema(default_token, qualifies=qualifies_tokens(datasource)):
         candidates.append(default_ref)  # skip a default that is itself a system schema (C2)
     by_token: dict[str | None, SchemaRef] = {}
     for ref in candidates:
@@ -1552,22 +1549,19 @@ def _live_schema_refs(
 
 
 _Listings = list[tuple[SchemaRef, list[str]]]
-_Lookup = Callable[[SchemaRef, str], "LiveTable"]
+_Lookup = Callable[[SchemaRef, str], Awaitable["LiveTable"]]
 
 
-def _introspect_live_object(
+async def _introspect_live_object(
     *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
+    client: SqlClient,
     ref: SchemaRef,
     obj_name: str,
     datasource: DatasourceConfig,
 ) -> LiveTable:
-    """One object's ``LiveTable``; unreadable when its introspection failed (best-effort)."""
+    """One listed object's ``LiveTable``; unreadable (no verdict) when reading it failed, not-found included."""
     try:
-        return _introspect_one_table(
-            inspector=inspector, sa_engine=sa_engine, table_name=obj_name, ref=ref,
-        )
+        return await _introspect_one_table(client=client, table_name=obj_name, ref=ref)
     except Exception as exc:  # noqa: BLE001 — one object's introspection failed
         logger.warning(
             "validate_models: failed to introspect %r in datasource %r: %s",
@@ -1595,18 +1589,18 @@ def _key_live_object(
         out.setdefault(key, live)
 
 
-def _list_live_objects(
-    refs: list[SchemaRef], *, inspector: sa.engine.Inspector, datasource: DatasourceConfig,
+async def _list_live_objects(
+    refs: list[SchemaRef], *, client: SqlClient, datasource: DatasourceConfig,
 ) -> _Listings:
-    """Every table and view name per schema in ``refs``."""
+    """Every table and view name per schema in ``refs``; deletion verdicts rest on these listings alone."""
     listings: _Listings = []
     failed: list[str] = []
     for ref in refs:
         try:
             # Module-attr call keeps test patches on ``ingestion`` effective.
-            objs = ingestion.list_ingestable_objects(
-                inspector=inspector, ref=ref, include_views=True
-            )
+            objs = await ingestion.list_ingestable_objects(client=client, ref=ref, include_views=True)
+        except UNREACHABLE:
+            raise
         except Exception as exc:  # noqa: BLE001 — one schema's listing failed
             logger.warning(
                 "validate_models: failed to list schema %r in datasource "
@@ -1625,7 +1619,7 @@ def _list_live_objects(
     return listings
 
 
-def _collect_live_tables(
+async def _collect_live_tables(
     listings: _Listings,
     *,
     lookup: _Lookup,
@@ -1643,7 +1637,7 @@ def _collect_live_tables(
             ):
                 continue
             found += 1
-            _key_live_object(out, ref=ref, obj_name=name, single=single, live=lookup(ref, name))
+            _key_live_object(out, ref=ref, obj_name=name, single=single, live=await lookup(ref, name))
     # Only a whole-datasource pass can tell that every table failed.
     if wanted is None and found and not any(t.readable for t in out.values()):
         raise IntrospectionUnavailable(
@@ -1653,60 +1647,23 @@ def _collect_live_tables(
     return out
 
 
-class _LiveConnection:
-    """A datasource's engine + inspector, opened on first use and disposed on close."""
-
-    def __init__(self, datasource: DatasourceConfig) -> None:
-        self._datasource = datasource
-        self._opened: tuple[sa.Engine, sa.engine.Inspector] | None = None
-
-    def open(self) -> tuple[sa.Engine, sa.engine.Inspector]:
-        if self._opened is None:
-            sa_engine = engine_factory.get_engine(self._datasource.resolve_env_vars())
-            self._opened = (sa_engine, sa.inspect(sa_engine))
-        return self._opened
-
-    def introspect(self, ref: SchemaRef, obj_name: str) -> LiveTable:
-        sa_engine, inspector = self.open()
-        return _introspect_live_object(
-            inspector=inspector, sa_engine=sa_engine, ref=ref, obj_name=obj_name,
-            datasource=self._datasource,
-        )
-
-    def close(self) -> None:
-        # Frees idle connections (unblocks direct file access); quiet so it can't mask an in-flight error.
-        if self._opened is not None:
-            engine_factory.release_idle(self._opened[0])
-
-
-def _probe_connect(datasource: DatasourceConfig) -> None:
-    """Raise when ``datasource`` cannot be connected to."""
-    conn = _LiveConnection(datasource)
-    try:
-        conn.open()
-    finally:
-        conn.close()
-
-
-def _live_schema_for_datasource(
+async def _live_schema_for_datasource(
     *,
+    client: SqlClient,
     datasource: DatasourceConfig,
     schema: str | None = None,
     fallback_schema_tokens: set[str] | None = None,
 ) -> dict[str, LiveTable]:
     """``{object_name: LiveTable}`` for every live table AND view in the DS; views are included so a model over a view isn't falsely reported as a WholeModelDelete."""
-    conn = _LiveConnection(datasource)
-    try:
-        sa_engine, inspector = conn.open()
-        refs = _live_schema_refs(
-            inspector=inspector, sa_engine=sa_engine,
-            datasource=datasource, schema=schema,
-            fallback_schema_tokens=fallback_schema_tokens,
-        )
-        listings = _list_live_objects(refs, inspector=inspector, datasource=datasource)
-        return _collect_live_tables(listings, lookup=conn.introspect, datasource=datasource)
-    finally:
-        conn.close()
+    refs = await _live_schema_refs(
+        client=client, datasource=datasource, schema=schema, fallback_schema_tokens=fallback_schema_tokens,
+    )
+    listings = await _list_live_objects(refs, client=client, datasource=datasource)
+
+    async def lookup(ref: SchemaRef, obj_name: str) -> LiveTable:
+        return await _introspect_live_object(client=client, ref=ref, obj_name=obj_name, datasource=datasource)
+
+    return await _collect_live_tables(listings, lookup=lookup, datasource=datasource)
 
 
 _SNAPSHOT_TTL_S = 60.0
@@ -1748,39 +1705,39 @@ class DriftSnapshot(BaseModel):
         if self.unreachable is not None:
             raise DatasourceUnreachable(self.unreachable)
 
-    def live_tables(
-        self, *, datasource: DatasourceConfig, sql_tables: set[str], fallback_schema_tokens: set[str],
+    async def live_tables(
+        self, *, client: SqlClient, datasource: DatasourceConfig, sql_tables: set[str],
+        fallback_schema_tokens: set[str],
     ) -> dict[str, LiveTable]:
-        """Keyed ``LiveTable``s of the objects ``sql_tables`` name, gathering only what is missing (blocking)."""
+        """Keyed ``LiveTable``s of the objects ``sql_tables`` name, gathering only what is missing."""
         if self.unavailable:
             raise IntrospectionUnavailable(
                 f"live schema of datasource {datasource.name!r} recently unavailable"
             )
         wanted = {c for t in sql_tables for c in _sql_table_candidates(t)}
-        conn = _LiveConnection(datasource)
 
-        def collect(cat: _Catalog) -> dict[str, LiveTable]:
+        async def lookup(ref: SchemaRef, obj_name: str) -> LiveTable:
+            return await self._table(client=client, datasource=datasource, ref=ref, obj_name=obj_name)
+
+        async def collect(cat: _Catalog) -> dict[str, LiveTable]:
             assert cat.listings is not None
-            return _collect_live_tables(
-                cat.listings, datasource=datasource, wanted=wanted,
-                lookup=lambda ref, name: self._table(conn=conn, ref=ref, obj_name=name),
-            )
+            return await _collect_live_tables(cat.listings, datasource=datasource, wanted=wanted, lookup=lookup)
 
         try:
-            cat = self._catalog(
-                conn=conn, datasource=datasource, fallback_schema_tokens=fallback_schema_tokens,
+            cat = await self._catalog(
+                client=client, datasource=datasource, fallback_schema_tokens=fallback_schema_tokens,
             )
             listed = cat.listings is None
             if listed:
-                self._list(cat=cat, conn=conn, datasource=datasource)
-            live = collect(cat)
+                await self._list(cat=cat, client=client, datasource=datasource)
+            live = await collect(cat)
             unresolved = {
                 t for t in sql_tables if _resolve_live_table(sql_table=t, live_tables=live) is None
             }
             if not listed and not unresolved <= cat.listed_for:
-                self._list(cat=cat, conn=conn, datasource=datasource)
+                await self._list(cat=cat, client=client, datasource=datasource)
                 listed = True
-                live = collect(cat)
+                live = await collect(cat)
             if listed:
                 cat.listed_for |= sql_tables
             return live
@@ -1790,19 +1747,15 @@ class DriftSnapshot(BaseModel):
         except Exception as exc:
             self.unreachable = f"live schema of datasource {datasource.name!r} failed: {exc}"
             raise
-        finally:
-            conn.close()
 
-    def _catalog(
-        self, *, conn: _LiveConnection, datasource: DatasourceConfig, fallback_schema_tokens: set[str],
+    async def _catalog(
+        self, *, client: SqlClient, datasource: DatasourceConfig, fallback_schema_tokens: set[str],
     ) -> _Catalog:
         cat = self.catalog
         if cat is None or not fallback_schema_tokens <= cat.refs_for:
             tokens = fallback_schema_tokens | (cat.refs_for if cat is not None else frozenset())
-            sa_engine, inspector = conn.open()
-            refs = _live_schema_refs(
-                inspector=inspector, sa_engine=sa_engine, datasource=datasource,
-                schema=None, fallback_schema_tokens=set(tokens),
+            refs = await _live_schema_refs(
+                client=client, datasource=datasource, schema=None, fallback_schema_tokens=set(tokens),
             )
             if cat is None or refs != cat.refs:
                 cat = self.catalog = _Catalog(refs=refs, refs_for=frozenset(tokens))
@@ -1811,14 +1764,17 @@ class DriftSnapshot(BaseModel):
         return cat
 
     @staticmethod
-    def _list(*, cat: _Catalog, conn: _LiveConnection, datasource: DatasourceConfig) -> None:
-        _, inspector = conn.open()
-        cat.listings = _list_live_objects(cat.refs, inspector=inspector, datasource=datasource)
+    async def _list(*, cat: _Catalog, client: SqlClient, datasource: DatasourceConfig) -> None:
+        cat.listings = await _list_live_objects(cat.refs, client=client, datasource=datasource)
 
-    def _table(self, *, conn: _LiveConnection, ref: SchemaRef, obj_name: str) -> LiveTable:
+    async def _table(
+        self, *, client: SqlClient, datasource: DatasourceConfig, ref: SchemaRef, obj_name: str,
+    ) -> LiveTable:
         live = self.tables.get((ref, obj_name))
         if live is None:
-            live = self.tables[(ref, obj_name)] = conn.introspect(ref, obj_name)
+            live = self.tables[(ref, obj_name)] = await _introspect_live_object(
+                client=client, ref=ref, obj_name=obj_name, datasource=datasource,
+            )
         return live
 
 
@@ -1827,7 +1783,7 @@ class LiveSnapshotCache:
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._entries: OrderedDict[EngineCacheKey, DriftSnapshot] = OrderedDict()
+        self._entries: OrderedDict[ClientCacheKey, DriftSnapshot] = OrderedDict()
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -1838,7 +1794,7 @@ class LiveSnapshotCache:
     def _expired(self, snapshot: DriftSnapshot) -> bool:
         return self._clock() - snapshot.created_at >= _SNAPSHOT_TTL_S
 
-    def _entry(self, key: EngineCacheKey, *, stale: DriftSnapshot | None = None) -> DriftSnapshot:
+    def _entry(self, key: ClientCacheKey, *, stale: DriftSnapshot | None = None) -> DriftSnapshot:
         """``key``'s snapshot (a fresh one in place of ``stale``); held snapshots are never dropped, keeping single-flight."""
         idle = [k for k, s in self._entries.items() if k != key and not s.lock.locked()]
         for expired in [k for k in idle if self._expired(self._entries[k])]:
@@ -1858,7 +1814,7 @@ class LiveSnapshotCache:
     @asynccontextmanager
     async def acquire(self, datasource: DatasourceConfig) -> AsyncGenerator[DriftSnapshot, None]:
         """The datasource's snapshot, held exclusively for the block."""
-        key = _sql_client_cache_key(datasource)
+        key = client_cache_key(datasource)
         snapshot = self._entry(key)
         while True:
             async with snapshot.lock:
@@ -1869,18 +1825,10 @@ class LiveSnapshotCache:
             snapshot = self._entry(key, stale=snapshot)
 
 
-def _introspect_one_table(
-    *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
-    table_name: str,
-    ref: SchemaRef | None,
-) -> LiveTable:
+async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: SchemaRef | None) -> LiveTable:
     """One table's live columns via the reflection door; ``ref`` keeps the read catalog-scoped."""
-    cols = reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
-    return LiveTable(columns={
-        c.name: c.type if isinstance(c.type, DataType) else _sa_type_to_data_type(c.type) for c in cols
-    })
+    cols = await reflect_columns(client=client, table_name=table_name, ref=ref)
+    return LiveTable(columns={c.name: c.type for c in cols})
 
 
 # Cursor type-category strings → DataType buckets.
@@ -1895,7 +1843,7 @@ _CURSOR_CATEGORY_TO_DATATYPE = {
 async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
-    client: SlayerSQLClient,
+    client: SqlClient,
 ) -> dict[str, DataType] | None:
     """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
     if not model.sql:
@@ -2087,7 +2035,7 @@ def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | 
 
 
 async def _source_tables_resolve(
-    *, model: SlayerModel, client: SlayerSQLClient
+    *, model: SlayerModel, client: SqlClient
 ) -> bool:
     """Whether every table AND column in ``model.sql`` accepts a 0-row probe; True ⇒ the SQL itself is broken (not drift), any probe failure keeps the drift classification."""
     dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
@@ -2151,19 +2099,21 @@ def _is_validate_models_base_column(col: Column) -> bool:
     return all(c.isalnum() or c == "_" for c in s)
 
 
-def _probe_validate_models_column(
-    *, conn, model: SlayerModel, col: Column, table_name: str,
+async def _probe_validate_models_column(
+    *, client: SqlClient, model: SlayerModel, col: Column, table_name: str,
     schema_name: str | None,
 ) -> DataType | None:
     """Run the affinity probe for one column in a validate_models pass."""
     try:
         # Module-attr call keeps test patches on ``sqlite_introspect`` effective.
-        return sqlite_introspect.probe_sqlite_integer_column(
-            conn=conn,
+        return await sqlite_introspect.probe_sqlite_integer_column(
+            client=client,
             table=table_name,
             column=col.sql or col.name,
             schema=schema_name,
         )
+    except UNREACHABLE:
+        raise
     except Exception as exc:
         logger.warning(
             "validate_models probe raised for %s.%s; ignoring: %s",
@@ -2185,10 +2135,10 @@ def _drift_reason_for_probe(
     )
 
 
-def _sqlite_probe_int_drift_for_model(
+async def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
-    sa_engine,
+    client: SqlClient,
     default_schema: str | None = None,
 ) -> list[tuple[str, DataType, DeleteReason]]:
     """Probe-driven INT type-drift on SQLite: ``(column, verdict, DeleteReason)`` for each INT base column the probe widens to DOUBLE/TEXT; ``default_schema`` for unqualified tables, failures skip."""
@@ -2200,52 +2150,39 @@ def _sqlite_probe_int_drift_for_model(
         schema_name = default_schema or None
 
     drifts: list[tuple[str, DataType, DeleteReason]] = []
-    with sa_engine.connect() as conn:
-        for col in model.columns:
-            if not _is_validate_models_base_column(col):
-                continue
-            verdict = _probe_validate_models_column(
-                conn=conn, model=model, col=col,
-                table_name=table_name, schema_name=schema_name,
-            )
-            if verdict is None or verdict is DataType.INT:
-                continue
-            drifts.append(
-                (col.name, verdict, _drift_reason_for_probe(
-                    model=model, col=col, verdict=verdict,
-                ))
-            )
+    for col in model.columns:
+        if not _is_validate_models_base_column(col):
+            continue
+        verdict = await _probe_validate_models_column(
+            client=client, model=model, col=col,
+            table_name=table_name, schema_name=schema_name,
+        )
+        if verdict is None or verdict is DataType.INT:
+            continue
+        drifts.append(
+            (col.name, verdict, _drift_reason_for_probe(
+                model=model, col=col, verdict=verdict,
+            ))
+        )
     return drifts
 
 
 async def _sqlite_probe_drifts_for_models(
     *,
     datasource: DatasourceConfig,
+    client: SqlClient,
     sql_table_models: list[SlayerModel],
 ) -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
-    """Run the SQLite probe for every model in one worker (shared engine/connection)."""
+    """Run the SQLite probe for every model through the datasource's client."""
     if not sql_table_models:
         return {}
     if not dialect_for_ds_type(datasource.type).probes_integer_affinity:
         return {m.name: [] for m in sql_table_models}
-
-    def _run() -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
-        sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
-        try:
-            out: dict[str, list[tuple[str, DataType, DeleteReason]]] = {}
-            default_schema = datasource.schema_name or None
-            for m in sql_table_models:
-                out[m.name] = _sqlite_probe_int_drift_for_model(
-                    model=m,
-                    sa_engine=sa_engine,
-                    default_schema=default_schema,
-                )
-            return out
-        finally:
-            # Cached engine — do not dispose; engine_factory owns lifecycle.
-            pass
-
-    return await asyncio.to_thread(_run)
+    default_schema = datasource.schema_name or None
+    return {
+        m.name: await _sqlite_probe_int_drift_for_model(model=m, client=client, default_schema=default_schema)
+        for m in sql_table_models
+    }
 
 
 def _merge_probe_drifts_into_diff(
@@ -2316,11 +2253,12 @@ def _diff_one_sql_table_model(
 async def _collect_sql_table_diffs(
     *,
     datasource: DatasourceConfig,
+    client: SqlClient,
     sql_table_models: list[SlayerModel],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Introspect live (off the event loop) and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff."""
+    """Introspect live and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff."""
     if not sql_table_models:
         return {}
     # Cover every own-catalog schema (a model may be qualified to another own
@@ -2331,15 +2269,15 @@ async def _collect_sql_table_diffs(
     }
     try:
         if snapshot is None:
-            live_tables = await asyncio.to_thread(
-                _live_schema_for_datasource,
+            live_tables = await _live_schema_for_datasource(
+                client=client,
                 datasource=datasource,
                 schema=None,
                 fallback_schema_tokens=fallback_tokens,
             )
         else:
-            live_tables = await asyncio.to_thread(
-                snapshot.live_tables,
+            live_tables = await snapshot.live_tables(
+                client=client,
                 datasource=datasource,
                 sql_tables={m.sql_table for m in sql_table_models if m.sql_table},
                 fallback_schema_tokens=fallback_tokens,
@@ -2351,6 +2289,7 @@ async def _collect_sql_table_diffs(
         return {}
     probe_drifts_by_model = await _sqlite_probe_drifts_for_models(
         datasource=datasource,
+        client=client,
         sql_table_models=sql_table_models,
     )
     return {
@@ -2364,26 +2303,10 @@ async def _collect_sql_table_diffs(
     }
 
 
-def _sql_client_for(
-    datasource: DatasourceConfig, sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
-) -> SlayerSQLClient:
-    # Tuple-keyed like SlayerQueryEngine._sql_clients so Snowflake datasources
-    # differing in warehouse/role get distinct clients.
-    key = _sql_client_cache_key(datasource)
-    client = (sql_clients or {}).get(key)
-    if client is None:
-        client = SlayerSQLClient(datasource=datasource)
-        # Cache the client back so its asyncpg pool is reachable by
-        # SlayerQueryEngine.aclose(). None sql_clients (direct/test) is unchanged.
-        if sql_clients is not None:
-            sql_clients[key] = client
-    return client
-
-
 async def _sql_trials(
     *,
     datasource: DatasourceConfig,
-    client: SlayerSQLClient,
+    client: SqlClient,
     sql_models: list[SlayerModel],
     snapshot: DriftSnapshot | None,
 ) -> dict[str, _SqlTrial]:
@@ -2400,7 +2323,7 @@ async def _sql_trials(
     if any(cols is None for cols in live):
         # A failed trial is drift evidence only while the datasource is reachable.
         try:
-            await asyncio.to_thread(_probe_connect, datasource)
+            await client.ping()
         except Exception as exc:
             if snapshot is not None:
                 snapshot.unreachable = f"datasource {datasource.name!r} unreachable: {exc}"
@@ -2417,7 +2340,7 @@ async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
     sql_models: list[SlayerModel],
-    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None,
+    client: SqlClient,
     snapshot: DriftSnapshot | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
@@ -2425,13 +2348,15 @@ async def _collect_sql_diffs(
     if not sql_models:
         return out
     trials = await _sql_trials(
-        datasource=datasource, client=_sql_client_for(datasource, sql_clients),
-        sql_models=sql_models, snapshot=snapshot,
+        datasource=datasource, client=client, sql_models=sql_models, snapshot=snapshot,
     )
+    # A zero-row trial carries column types only where the cursor reports them.
+    compare_types = dialect_for_ds_type(datasource.type).cursor_reports_types
     for model in sql_models:
         trial = trials[model.sql or ""]
         out[model.name] = diff_sql_model(
-            model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql
+            model=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
+            compare_types=compare_types,
         )
     return out
 
@@ -2440,11 +2365,11 @@ async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: list[SlayerModel],
-    sql_clients: dict[EngineCacheKey, SlayerSQLClient] | None = None,
+    client: SqlClient,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
 ) -> list[ToDeleteEntry]:
-    """Validate ``models`` (all one DS) against the live schema. Read-only.
+    """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
     ``snapshot`` scopes introspection to ``models``' objects and reuses its facts.
@@ -2458,6 +2383,7 @@ async def validate_datasource(
         available_in_ds = {m.name for m in models}
     sql_table_diffs = await _collect_sql_table_diffs(
         datasource=datasource,
+        client=client,
         sql_table_models=[m for m in models if m.sql_table],
         available_in_ds=available_in_ds,
         snapshot=snapshot,
@@ -2465,7 +2391,7 @@ async def validate_datasource(
     sql_diffs = await _collect_sql_diffs(
         datasource=datasource,
         sql_models=[m for m in models if m.sql],
-        sql_clients=sql_clients,
+        client=client,
         snapshot=snapshot,
     )
     return compute_datasource_drops(

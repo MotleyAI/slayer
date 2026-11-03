@@ -11,6 +11,7 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
+from slayer.core.models import DatasourceConfig
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import (
     OSIAIContextObject,
@@ -25,8 +26,7 @@ from slayer.osi.models import (
     OSIRelationship,
 )
 from slayer.osi.parser import parse_osi_path
-from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import FIXTURES, SCHEMA_PATH, entries
+from tests._osi_helpers import FIXTURES, SCHEMA_PATH, entries, run_converter
 
 EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import"
 EXAMPLE = EXAMPLE_DIR / "shop.osi.yaml"
@@ -116,8 +116,9 @@ def _example_setup() -> ModuleType:
 def test_example_validates_and_imports_without_unconverted_entries(tmp_path: Path) -> None:
     _validator().validate(_load(EXAMPLE))
     db = _example_setup().build_shop_duckdb(tmp_path / "shop.duckdb")
-    with disposable_engine(f"duckdb:///{db}") as engine:
-        result = OsiToSlayerConverter(documents=parse_osi_path(EXAMPLE), data_source="shop_osi",
-                                      sa_engine=engine, target_dialect="duckdb").convert()
+    result = run_converter(
+        OsiToSlayerConverter(documents=parse_osi_path(EXAMPLE), data_source="shop_osi", target_dialect="duckdb"),
+        datasource=DatasourceConfig(name="shop_osi", type="duckdb", database=str(db)),
+    )
     assert result.models
     assert not [e for e in entries(result) if e.severity == "unconverted"]

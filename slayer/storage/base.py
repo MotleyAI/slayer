@@ -49,6 +49,7 @@ from slayer.storage.legacy_alias_rewrite import (
     extract_dunder_chains,
     mode_a_surface_texts,
 )
+from slayer.sql.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.storage.type_refinement import (
@@ -56,6 +57,9 @@ from slayer.storage.type_refinement import (
     has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
+
+#: Supplies the loading query engine's client for a datasource.
+ClientSource = Callable[[DatasourceConfig], SqlClient]
 
 
 
@@ -68,6 +72,8 @@ _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
+# The loading query engine's client source, set by its storage view around each call it delegates.
+CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -675,15 +681,26 @@ class StorageBackend(ABC):
     async def _apply_refinement_or_raise(
         self, *, name: str, data: dict, data_source: str,
     ) -> None:
-        """Refine ``data`` against the live datasource when it has refineable columns. Hard-fails (``ValueError``) when DOUBLE base columns need it but the datasource is missing; SQLite-INT widening under a missing/unreachable DS is best-effort (warn and skip). No-op when neither predicate fires."""
+        """Refine ``data`` against its live table through the loading engine's client (``CLIENT_SOURCE``).
+
+        DOUBLE base columns require it: a missing datasource, or no loading engine, raises
+        ``ValueError``. SQLite-INT widening is best-effort (warn and skip). No-op when neither applies.
+        """
         needs_double = has_refineable_columns(data)
         needs_sqlite_int = has_sqlite_widenable_columns(data)
         if not (needs_double or needs_sqlite_int):
             return
         ds = await self.get_datasource(data_source)
-        if ds is not None:
+        client_source = CLIENT_SOURCE.get()
+        if ds is not None and client_source is None and needs_double:
+            raise ValueError(
+                f"Cannot migrate model {name!r}: its DOUBLE columns are refined against datasource "
+                f"{data_source!r}, so the model must be loaded through a query engine "
+                f"(SlayerQueryEngine(storage=...).storage)."
+            )
+        if ds is not None and client_source is not None:
             try:
-                refine_dict_with_live_schema(data, ds)
+                await refine_dict_with_live_schema(data, ds, client_source(ds))
             except Exception:
                 # Unreachable DS: DOUBLE narrowing is required (propagate); INT
                 # widening is advisory (persisted INT is safe) — warn and skip.
@@ -691,7 +708,7 @@ class StorageBackend(ABC):
                     raise
                 self._warn_skipped_int_probe(name=name, data_source=data_source)
             return
-        if needs_double:
+        if ds is None and needs_double:
             raise ValueError(
                 f"Cannot migrate model {name!r}: datasource "
                 f"{data_source!r} is unavailable for type "
@@ -721,7 +738,7 @@ class StorageBackend(ABC):
         data: Any,
         data_source: str,
     ) -> SlayerModel:
-        """Migrate a below-version on-disk model dict forward, refine ``DOUBLE → INT`` base columns against the live datasource, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit. Hard-fails when refineable DOUBLE columns need a missing datasource; SQLite-INT widening under a missing DS is best-effort. No live datasource needed when nothing is refineable/widenable."""
+        """Migrate a below-version on-disk model dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit."""
         if not isinstance(data, dict):
             # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
             # remediation, not a bare Pydantic model_type error.

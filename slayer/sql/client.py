@@ -1,15 +1,16 @@
-"""SQL client for executing queries against databases."""
+"""SQL clients: the ``SqlClient`` contract, its default implementation, and a delegating base."""
 
 import asyncio
 import concurrent.futures
 import contextlib
 import functools
 import logging
+import re
 import threading
 import time
 import warnings as _warnings_module
 import weakref
-from typing import Any
+from typing import Any, Protocol, TypeVar, runtime_checkable
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import sqlalchemy as sa
@@ -26,10 +27,38 @@ from slayer.sql import engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
+from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation, clean_comment, schema_token
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+_ENV_REF = re.compile(r"\$\{\w+\}")
+
+
+class SqlClientError(Exception):
+    """Base of the typed client failures."""
+
+
+class DatabaseUnavailable(SqlClientError):
+    """The database could not be reached."""
+
+
+class AuthenticationRefused(SqlClientError):
+    """The database rejected the client's credentials."""
+
+
+class ObjectNotFound(SqlClientError):
+    """A metadata read named a schema or table that does not exist."""
+
+
+class ObjectListing(BaseModel):
+    """The relations of one schema as the database lists them by kind (a name may repeat across kinds)."""
+
+    tables: list[str] = Field(default_factory=list)
+    views: list[str] = Field(default_factory=list)
+    materialized_views: list[str] = Field(default_factory=list)
 
 
 def _dispose_engine_quietly(engine: sa.Engine) -> None:
@@ -222,8 +251,6 @@ def _extract_types_from_cursor(result, db_type: str | None = None) -> dict[str, 
     return types
 
 
-# Databases that return all-None cursor.description type codes need a real row
-_NEEDS_ROW_FOR_TYPES = {"sqlite"}
 # T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
 _TSQL_DB_TYPES = frozenset({"mssql", "sqlserver", "tsql"})
 
@@ -242,7 +269,7 @@ async def _run_sync_in_thread(func, *args, **kwargs):
 
 def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
     """Build a row-limiting probe query appropriate for the target dialect."""
-    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
+    limit = 0 if dialect_for_ds_type(db_type).cursor_reports_types else 1
     if db_type in _TSQL_DB_TYPES:
         return f"SELECT TOP {limit} * FROM ({sql}) AS _types"
     return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
@@ -507,6 +534,46 @@ class ExecutionResult(BaseModel):
     warnings: list[StatementTimeoutSkippedWarning] = Field(default_factory=list)
 
 
+@runtime_checkable
+class SqlClient(Protocol):
+    """Everything SLayer asks of one datasource's database: statements, live metadata, lifecycle.
+
+    The contract (semantics, typed failures, lifecycle) is ``docs/configuration/sql-clients.md``;
+    ``slayer.sql.conformance.run_conformance`` checks an implementation against it.
+    """
+
+    @property
+    def datasource(self) -> DatasourceConfig: ...
+
+    async def execute(self, sql: str) -> ExecutionResult: ...
+
+    async def get_column_types(self, sql: str) -> dict[str, str]: ...
+
+    async def server_profile(self) -> ServerProfile: ...
+
+    async def ping(self) -> None: ...
+
+    async def list_schemas(self) -> list[str]: ...
+
+    async def default_schema(self) -> str | None: ...
+
+    async def current_catalog(self) -> str | None: ...
+
+    async def list_objects(self, schema: str | None) -> ObjectListing: ...
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]: ...
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys: ...
+
+    async def table_comment(self, location: TableLocation) -> str | None: ...
+
+    async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None: ...
+
+    async def aclose(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy.
 
@@ -559,7 +626,9 @@ class SlayerSQLClient:
         return False
 
     async def aclose(self) -> None:
-        """Dispose the cached async engine inside the current event loop."""
+        """Release loop-bound resources (the async engine, idle pooled connections); the client stays usable."""
+        if self._sync_engine is not None and not self._owns_sync_engine:
+            engine_factory.release_idle(self._sync_engine)
         engine = self._async_engine
         if engine is None:
             return
@@ -573,17 +642,25 @@ class SlayerSQLClient:
                 self.datasource.name, exc,
             )
 
+    def _connection_datasource(self) -> DatasourceConfig:
+        """``datasource`` with its ``${ENV_VAR}`` references resolved (itself when it has none)."""
+        ds = self.datasource
+        if any(isinstance(v, str) and _ENV_REF.search(v) for v in ds.model_dump().values()):
+            return ds.resolve_env_vars()
+        return ds
+
     def _get_async_engine(self):
         """Get or create the async engine for this client (cached per instance)."""
         if self._async_engine is None:
-            conn_str = self.datasource.get_connection_string()
-            dialect = dialect_for_ds_type(self.datasource.type)
-            with plugin_errors(self.datasource, conn_str, dialect=dialect):
+            ds = self._connection_datasource()
+            conn_str = ds.get_connection_string()
+            dialect = dialect_for_ds_type(ds.type)
+            with plugin_errors(ds, conn_str, dialect=dialect):
                 async_conn_str = _async_connection_string(
-                    connection_string=conn_str, db_type=self.datasource.type,
+                    connection_string=conn_str, db_type=ds.type,
                 )
             if async_conn_str:
-                load_driver(self.datasource, async_conn_str, dialect=dialect, is_async=True)
+                load_driver(ds, async_conn_str, dialect=dialect, is_async=True)
                 self._async_engine = _get_async_engine(async_conn_str)
         return self._async_engine
 
@@ -596,7 +673,8 @@ class SlayerSQLClient:
         """
         if self._sync_engine is not None:
             return self._sync_engine
-        conn_str = self.datasource.get_connection_string()
+        ds = self._connection_datasource()
+        conn_str = ds.get_connection_string()
         if engine_factory._is_in_memory_sqlite(conn_str):
             engine = engine_factory.build_in_memory_sqlite_engine(conn_str)
             self._sync_engine = engine
@@ -605,7 +683,7 @@ class SlayerSQLClient:
                 self, _dispose_engine_quietly, engine,
             )
             return engine
-        self._sync_engine = engine_factory.get_engine(self.datasource)
+        self._sync_engine = engine_factory.get_engine(ds)
         return self._sync_engine
 
     def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
@@ -620,7 +698,7 @@ class SlayerSQLClient:
         if not self._dispose_private_sync_engine():
             self._sync_engine = None
             try:
-                engine_factory.invalidate_engine(self.datasource)
+                engine_factory.invalidate_engine(self._connection_datasource())
             except Exception:
                 logger.warning(
                     "Failed to invalidate engine for datasource %r after an "
@@ -637,6 +715,13 @@ class SlayerSQLClient:
             return
         await self.aclose()
 
+    async def _typed(self, exc: Exception) -> None:
+        """Discard engines on a credential rejection, then raise ``exc``'s typed failure, if any."""
+        await self._discard_engines_on_auth_failure(exc)
+        typed = _typed_failure(exc)
+        if typed is not None:
+            raise typed from exc
+
     async def execute(
         self,
         sql: str,
@@ -646,7 +731,7 @@ class SlayerSQLClient:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
         except Exception as exc:
-            await self._discard_engines_on_auth_failure(exc)
+            await self._typed(exc)
             raise
 
     async def _execute(
@@ -679,7 +764,7 @@ class SlayerSQLClient:
         try:
             return await self._get_column_types(sql=sql)
         except Exception as exc:
-            await self._discard_engines_on_auth_failure(exc)
+            await self._typed(exc)
             raise
 
     async def _get_column_types(self, *, sql: str) -> dict[str, str]:
@@ -711,8 +796,139 @@ class SlayerSQLClient:
                 _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
             )
         except Exception as exc:
-            await self._discard_engines_on_auth_failure(exc)
+            await self._typed(exc)
             raise
+
+    # Live metadata: synchronous reflection run in a worker thread over the sync engine.
+
+    async def _metadata(self, read: Callable[[sa.Engine], _T]) -> _T:
+        try:
+            engine = self._get_sync_engine_for_client()
+            return await _run_sync_in_thread(read, engine)
+        except Exception as exc:
+            await self._typed(exc)
+            raise
+
+    @property
+    def _dialect(self) -> SqlDialect:
+        return dialect_for_ds_type(self.datasource.type)
+
+    async def ping(self) -> None:
+        """Raise unless the database answers a trivial statement."""
+
+        def _ping(engine: sa.Engine) -> None:
+            with engine.connect() as conn:
+                _exec_verbatim(conn, "SELECT 1")
+
+        await self._metadata(_ping)
+
+    async def list_schemas(self) -> list[str]:
+        return await self._metadata(lambda engine: list(sa.inspect(engine).get_schema_names() or []))
+
+    async def default_schema(self) -> str | None:
+        return await self._metadata(self._default_schema_sync)
+
+    async def current_catalog(self) -> str | None:
+        return await self._metadata(self._current_catalog_sync)
+
+    async def list_objects(self, schema: str | None) -> ObjectListing:
+        return await self._metadata(functools.partial(self._list_objects_sync, schema=schema))
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
+        return await self._metadata(functools.partial(self._reflect_columns_sync, location=location))
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return await self._metadata(functools.partial(self._reflect_table_keys_sync, location=location))
+
+    async def table_comment(self, location: TableLocation) -> str | None:
+        return await self._metadata(functools.partial(self._table_comment_sync, location=location))
+
+    async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None:
+        return await self._metadata(lambda engine: self._dialect.reflect_schema_description(
+            sa_engine=engine, schema=schema, configured_schema=configured_schema,
+        ))
+
+    def _default_schema_sync(self, engine: sa.Engine) -> str | None:
+        return self._dialect.reflect_default_schema(sa_engine=engine, inspector=_LazyInspector(engine))
+
+    def _current_catalog_sync(self, engine: sa.Engine) -> str | None:
+        sql = self._dialect.current_catalog_sql()
+        if sql is None:
+            return None
+        try:
+            with engine.connect() as conn:
+                row = _exec_verbatim(conn, sql).fetchone()
+        except Exception as exc:  # noqa: BLE001 — an unknown catalog is None
+            if _typed_failure(exc) is not None:
+                raise
+            return None
+        value = row[0] if row else None
+        return value if isinstance(value, str) and value else None
+
+    def _default_token(self, engine: sa.Engine) -> str | None:
+        """The connection default as an Inspector token: catalog-qualified where tokens are."""
+        if not self._dialect.catalog_qualified_schema_tokens:
+            return None
+        return schema_token(schema=self._default_schema_sync(engine), catalog=self._current_catalog_sync(engine))
+
+    def _location_token(self, engine: sa.Engine, location: TableLocation) -> str | None:
+        """``location``'s Inspector token; unset parts are the connection's current ones where tokens qualify."""
+        if location.catalog is None and self._dialect.catalog_qualified_schema_tokens:
+            return schema_token(
+                schema=location.schema_name or self._default_schema_sync(engine),
+                catalog=self._current_catalog_sync(engine),
+            )
+        return schema_token(schema=location.schema_name, catalog=location.catalog)
+
+    def _list_objects_sync(self, engine: sa.Engine, *, schema: str | None) -> ObjectListing:
+        inspector = sa.inspect(engine)
+        if schema is not None and not _schema_listed(inspector, schema):
+            raise ObjectNotFound(f"schema {schema!r} not found")
+        token = schema if schema is not None else self._default_token(engine)
+        return ObjectListing(
+            tables=list(inspector.get_table_names(schema=token) or []),
+            views=_object_names(inspector, accessor="get_view_names", token=token),
+            materialized_views=_object_names(inspector, accessor="get_materialized_view_names", token=token),
+        )
+
+    def _reflect_columns_sync(self, engine: sa.Engine, *, location: TableLocation) -> list[ReflectedColumn]:
+        try:
+            columns = self._dialect.reflect_columns(
+                sa_engine=engine, inspector=_LazyInspector(engine), table=location.name,
+                schema=location.schema_name, catalog=location.catalog,
+            )
+        except Exception as exc:
+            if _typed_failure(exc) is None and self._absent(engine, location):
+                raise ObjectNotFound(f"table {location.name!r} not found") from exc
+            raise
+        if not columns:
+            raise ObjectNotFound(f"table {location.name!r} not found")
+        return columns
+
+    def _absent(self, engine: sa.Engine, location: TableLocation) -> bool:
+        """Whether the Inspector confirms ``location`` does not exist (unconfirmable → ``False``)."""
+        try:
+            return not sa.inspect(engine).has_table(location.name, schema=self._location_token(engine, location))
+        except Exception:  # noqa: BLE001 — unconfirmable
+            return False
+
+    def _reflect_table_keys_sync(self, engine: sa.Engine, *, location: TableLocation) -> TableKeys:
+        keys = self._dialect.reflect_table_keys(
+            sa_engine=engine, inspector=_LazyInspector(engine), table=location.name,
+            schema=location.schema_name, catalog=location.catalog,
+        )
+        if not (keys.primary_key or keys.foreign_keys or keys.unique_key_sets):
+            self._reflect_columns_sync(engine, location=location)  # a keyless table must exist
+        return keys
+
+    def _table_comment_sync(self, engine: sa.Engine, *, location: TableLocation) -> str | None:
+        try:
+            comment = sa.inspect(engine).get_table_comment(
+                location.name, schema=self._location_token(engine, location),
+            )
+        except NotImplementedError:
+            return None
+        return clean_comment(comment.get("text"))
 
     def execute_sync(
         self,
@@ -954,6 +1170,8 @@ async def _execute_sql_async(
             _t = timing.start()
             result = await _exec_verbatim_async(conn, sql)
             rows = _fetch_rows(result)
+            if not result.returns_rows:
+                await conn.commit()
             timing.record("query", _t)
     return ExecutionResult(rows=rows, warnings=skipped)
 
@@ -1030,10 +1248,119 @@ def _execute_sql_sync(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
     ) as skipped:
-        rows = _fetch_rows(_exec_verbatim(conn=conn, sql=sql))
+        result = _exec_verbatim(conn=conn, sql=sql)
+        rows = _fetch_rows(result)
+        if not result.returns_rows:
+            conn.commit()
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
 def _fetch_rows(result) -> list[dict[str, Any]]:
+    """A row-returning result's rows; a statement returning none (DDL) yields ``[]``."""
+    if not result.returns_rows:
+        return []
     columns = list(result.keys())
     return [dict(zip(columns, row)) for row in result.fetchall()]
+
+
+def _typed_failure(exc: BaseException) -> SqlClientError | None:
+    """The typed failure ``exc`` stands for: rejected credentials, an unreachable database, a missing table."""
+    if isinstance(exc, SqlClientError):
+        return None
+    if _is_auth_failure(exc):
+        return AuthenticationRefused(str(exc))
+    if _is_unreachable_db_error(exc):
+        return DatabaseUnavailable(str(exc))
+    if isinstance(exc, sqlalchemy.exc.NoSuchTableError):
+        return ObjectNotFound(str(exc))
+    return None
+
+
+class _LazyInspector:
+    """An Inspector built on first use, so a hook that never reads it never connects."""
+
+    def __init__(self, engine: sa.Engine) -> None:
+        self._engine = engine
+        self._inspector: Any = None
+
+    def __getattr__(self, name: str) -> Any:
+        if self._inspector is None:
+            self._inspector = sa.inspect(self._engine)
+        return getattr(self._inspector, name)
+
+
+def _schema_listed(inspector: Any, schema: str) -> bool:
+    """Whether ``schema`` (bare or catalog-qualified) is among the listed schemas; unlistable → ``True``."""
+    try:
+        names = [n.casefold() for n in inspector.get_schema_names() or []]
+    except Exception:  # noqa: BLE001 — unknown listing never claims absence
+        return True
+    wanted = schema.casefold()
+    return any(n == wanted or ("." not in wanted and n.rpartition(".")[2] == wanted) for n in names)
+
+
+def _object_names(inspector: Any, *, accessor: str, token: str | None) -> list[str]:
+    """An optional ``get_*_names`` accessor's names; ``[]`` when the dialect lacks the kind, raises when reading it fails."""
+    read = getattr(inspector, accessor, None)
+    if read is None:
+        return []
+    try:
+        return list(read(schema=token) or [])
+    except NotImplementedError:
+        return []
+
+
+class DelegatingSqlClient:
+    """Forwards every operation, closing included, to ``inner``; subclass it and override what a gateway serves.
+
+    No operation calls another, so the wrapped client's own work never routes through an override.
+    """
+
+    def __init__(self, inner: SqlClient) -> None:
+        self.inner = inner
+
+    @property
+    def datasource(self) -> DatasourceConfig:
+        return self.inner.datasource
+
+    async def execute(self, sql: str) -> ExecutionResult:
+        return await self.inner.execute(sql)
+
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        return await self.inner.get_column_types(sql)
+
+    async def server_profile(self) -> ServerProfile:
+        return await self.inner.server_profile()
+
+    async def ping(self) -> None:
+        await self.inner.ping()
+
+    async def list_schemas(self) -> list[str]:
+        return await self.inner.list_schemas()
+
+    async def default_schema(self) -> str | None:
+        return await self.inner.default_schema()
+
+    async def current_catalog(self) -> str | None:
+        return await self.inner.current_catalog()
+
+    async def list_objects(self, schema: str | None) -> ObjectListing:
+        return await self.inner.list_objects(schema)
+
+    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
+        return await self.inner.reflect_columns(location)
+
+    async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
+        return await self.inner.reflect_table_keys(location)
+
+    async def table_comment(self, location: TableLocation) -> str | None:
+        return await self.inner.table_comment(location)
+
+    async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None:
+        return await self.inner.schema_description(schema=schema, configured_schema=configured_schema)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+    def close(self) -> None:
+        self.inner.close()
