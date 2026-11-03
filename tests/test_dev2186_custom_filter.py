@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, ValueKey
+from slayer.core.models import Aggregation, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine import plan
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -30,8 +31,11 @@ from tests._dev2101_fixtures import (
     num,
     orders_model,
     q,
+    seed_duckdb,
+    seed_sqlite,
     single,
 )
+from tests._engine_helpers import seeded_exec_engine
 
 PAID = "status = 'paid'"
 ROWS_PAID = f"rows(amount) FILTER (WHERE {PAID})"
@@ -264,6 +268,41 @@ class TestCrossModelAndStage:
         final = SlayerQuery.model_validate({"source_model": "s", "measures": [{"formula": "sum(pr)", "name": "v"}]})
         resp = await engine.execute([stage, final])
         assert num(single(resp, model="s")) == 3
+
+
+def _override_models() -> list[SlayerModel]:
+    """``count`` redeclared with a formula (non-built-in); ``sum`` redeclared without one (built-in)."""
+    orders, *rest = dev2101_models()
+    extra = [Aggregation(name="count", formula="COUNT(*)"), Aggregation(name="sum")]
+    return [orders.model_copy(update={"aggregations": [*orders.aggregations, *extra]}), *rest]
+
+
+@pytest.fixture(params=EXEC_BACKENDS)
+async def override_engine(request):
+    if request.param == "duckdb":
+        pytest.importorskip("duckdb")
+    seed = seed_duckdb if request.param == "duckdb" else seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed, models=_override_models()) as (e, _):
+        yield e
+
+
+class TestBuiltinNamedOverride:
+    async def test_values(self, override_engine: SlayerQueryEngine) -> None:
+        resp = await override_engine.execute(q(dimensions=["region"], measures=[
+            m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
+        ]))
+        assert _by_region(resp, "c") == {"EU": 2, "US": 1, None: None}
+        assert _by_region(resp, "s") == {"EU": 30, "US": 40, None: None}
+
+    def test_only_the_formula_override_takes_a_producer(self) -> None:
+        orders, *rest = _override_models()
+        bundle = ResolvedSourceBundle(dialect="sqlite", source_model=orders, referenced_models=rest)
+        planned = plan.plan_query(query=q(dimensions=["region"], measures=[
+            m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
+        ]), bundle=bundle)
+        producers = [a.producer_plan for a in _attaches(planned)]
+        assert any(_aggregates(p, "count") for p in producers)
+        assert not any(_aggregates(p, "sum") for p in producers)
 
 
 class TestTyping:
