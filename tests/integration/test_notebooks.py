@@ -11,13 +11,14 @@ from pathlib import Path
 import pytest
 
 from slayer.async_utils import run_sync
-from slayer.demo.jaffle_shop import (
-    DEMO_NAME,
-    TABLE_NAMES,
-    build_jaffle_shop,
-    ensure_demo_datasource,
-)
+from slayer.demo.jaffle_shop import DEMO_NAME, TABLE_NAMES, ensure_demo_datasource
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests.integration._demo_build import (
+    NOTEBOOK_DEMO_DIR,
+    NOTEBOOK_DEMO_YEARS,
+    build_notebook_demo_db,
+)
 
 nbclient = pytest.importorskip("nbclient")
 nbformat = pytest.importorskip("nbformat")
@@ -25,8 +26,7 @@ nbformat = pytest.importorskip("nbformat")
 pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
-JAFFLE_DATA_DIR = EXAMPLES_DIR / "jaffle_data"
-JAFFLE_DB_PATH = JAFFLE_DATA_DIR / "demo" / "jaffle_shop.duckdb"
+JAFFLE_DATA_DIR = NOTEBOOK_DEMO_DIR
 JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_models"
 
 # Discover all .ipynb files, excluding checkpoints
@@ -39,20 +39,15 @@ _NOTEBOOKS = sorted(
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_jaffle_db():
     """Generate the Jaffle Shop DuckDB once for the entire test session."""
-    if JAFFLE_DB_PATH.exists():
-        return  # Reuse existing DB
-
-    JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        build_jaffle_shop(db_path=str(JAFFLE_DB_PATH), years=3)
+        build_notebook_demo_db()
     except (FileNotFoundError, RuntimeError) as e:
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
 # Notebooks whose POINT is to demonstrate initial ingestion — they must run on a
-# CLEAN models dir so they exercise the full auto-ingest path. DEV-1815 removed
-# the dedicated test_jaffle_shop_notebook.py, so this harness now carries that
-# cold-ingest coverage. Every other notebook gets the prebuilt base models
+# CLEAN models dir so they exercise the full auto-ingest path. This harness
+# carries that cold-ingest coverage. Every other notebook gets the prebuilt base models
 # restored (below) so it skips re-ingestion.
 _INGEST_DEMO_NOTEBOOKS = {
     "03_auto_ingest/auto_ingest_nb.ipynb",
@@ -63,14 +58,14 @@ _INGEST_DEMO_NOTEBOOKS = {
 def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
     """Ingest the base Jaffle models once, validate every demo table is present,
     and snapshot ``slayer_models/`` so consumers restore it instead of
-    re-ingesting (DEV-1815)."""
+    re-ingesting."""
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
     storage = YAMLStorage(base_dir=str(JAFFLE_MODELS_DIR))
     ensure_demo_datasource(
         storage,
         storage_path=str(JAFFLE_DATA_DIR),
-        years=3,
+        years=NOTEBOOK_DEMO_YEARS,
         ingest_models=True,
         assume_yes=True,
     )
@@ -96,7 +91,7 @@ def notebook_path(request, _jaffle_models_template):
     # Wipe models before each notebook so custom models from one notebook don't
     # leak into another (e.g., order_items_custom). For everything but the
     # ingest-demo notebooks, restore the prebuilt base models so the notebook's
-    # ensure_jaffle_shop() call reuses them instead of re-ingesting (DEV-1815).
+    # ensure_jaffle_shop() call reuses them instead of re-ingesting.
     if JAFFLE_MODELS_DIR.exists():
         shutil.rmtree(JAFFLE_MODELS_DIR)
     rel = str(request.param.relative_to(EXAMPLES_DIR))

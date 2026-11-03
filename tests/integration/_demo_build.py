@@ -11,9 +11,20 @@ from __future__ import annotations
 
 import argparse
 import shutil
+from pathlib import Path
 
 from slayer.cli import _prepare_demo, _resolve_storage
-from slayer.demo.jaffle_shop import resolve_demo_db_path
+from slayer.demo.jaffle_shop import build_jaffle_shop, resolve_demo_db_path
+
+NOTEBOOK_DEMO_DIR = Path(__file__).resolve().parents[2] / "docs" / "examples" / "jaffle_data"
+NOTEBOOK_DEMO_DB = NOTEBOOK_DEMO_DIR / "demo" / "jaffle_shop.duckdb"
+NOTEBOOK_DEMO_YEARS = 3
+
+
+def build_notebook_demo_db() -> None:
+    """Build the example notebooks' demo DuckDB, or reuse a current one with dates shifted to today."""
+    NOTEBOOK_DEMO_DB.parent.mkdir(parents=True, exist_ok=True)
+    build_jaffle_shop(db_path=str(NOTEBOOK_DEMO_DB), years=NOTEBOOK_DEMO_YEARS)
 
 
 def prepare_demo_storage(*, base_dir: str, prebuilt_duckdb: str | None = None):

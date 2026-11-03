@@ -12,6 +12,10 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
+env:
+  # jaffle-shop-generator is not on PyPI; the demo-DB cache key carries this pin too.
+  JAFGEN_SHA: 09557a1118b000071f8171aa97d54d5029bf0f0b
+
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -63,7 +67,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"
 
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 20
@@ -91,7 +95,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
@@ -124,6 +128,25 @@ jobs:
 
       - name: Put the DuckDB CLI on PATH
         run: echo "$HOME/.duckdb/cli/latest" >> "$GITHUB_PATH"
+
+      # The notebooks' demo DuckDB (~2 min of jafgen): built, or restored and date-shifted to today,
+      # before pytest so no worker rewrites it mid-run; saved before pytest so the cache stays pristine.
+      - name: Restore the notebook demo DuckDB
+        id: demo-db-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
+          key: notebook-demo-db-${{ runner.os }}-${{ env.JAFGEN_SHA }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
+
+      - name: Build or refresh the notebook demo DuckDB
+        run: poetry run python -c "from tests.integration._demo_build import build_notebook_demo_db; build_notebook_demo_db()"
+
+      - name: Save the notebook demo DuckDB
+        if: steps.demo-db-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
+          key: ${{ steps.demo-db-cache.outputs.cache-primary-key }}
 
       - name: Run integration tests
         timeout-minutes: 20
