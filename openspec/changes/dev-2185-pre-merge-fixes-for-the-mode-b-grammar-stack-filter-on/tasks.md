@@ -28,9 +28,9 @@
 
 ## 5. Stored upgrade
 
-- [ ] 5.1 Confirm the DEV-2101 version step is unreleased (not in 1.5.0 on main); extend `slayer/storage/sql_string_migration.py` to space adjacent `-` tokens (`end == start`); verify 1.6 passes and the 0.10.2 store scenario still returns its recorded rows
+- [x] 5.1 Confirm the DEV-2101 version step is unreleased (not in 1.5.0 on main); extend `slayer/storage/sql_string_migration.py` to space adjacent `-` tokens (`end == start`); verify 1.6 passes and the 0.10.2 store scenario still returns its recorded rows
 
 ## 6. Docs and gates
 
 - [x] 6.1 One sentence each in `docs/concepts/references.md` (type grammar + arrays; comments; TRY_CAST integer rule with the `round` remedy); verify `zensical.toml` nav unaffected
-- [ ] 6.2 Full unit suite `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`; all green
+- [x] 6.2 Full unit suite `poetry run pytest -m "not integration"`, the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`; all green

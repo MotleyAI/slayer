@@ -46,7 +46,7 @@
 
 #### Scenario: Array cast on a dialect with arrays
 
-- **WHEN** a dimension on Postgres is `CAST(codes AS INT[])` and on DuckDB `codes::INT[]`
+- **WHEN** a dimension on Postgres is `length(CAST(codes AS INT[]))` and on DuckDB `length(codes::INT[])`
 - **THEN** each renders the database's array cast
 
 #### Scenario: Array cast on a dialect without arrays
@@ -120,7 +120,7 @@ A cast SHALL type as SLayer's data type for its target: the integer family as IN
 #### Scenario: TRY_CAST to an array type
 
 - **WHEN** a dimension on Postgres is `TRY_CAST(codes AS INT[])`
-- **THEN** it is rejected with a typed query error, while `CAST(codes AS INT[])` is accepted
+- **THEN** it is rejected with a typed query error, while `length(CAST(codes AS INT[]))` is accepted
 
 #### Scenario: Postgres before 16
 

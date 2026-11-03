@@ -152,7 +152,7 @@ class TestArrayCasts:
         ("bigquery", "CAST(code AS INT[])"), ("trino", "CAST(code AS INT[])"),
     ])
     async def test_rendered_as_the_database_array_cast(self, dialect: str, text: str) -> None:
-        sql = await emit(_dim(text), dialect=dialect)
+        sql = await emit(_dim(f"length({text})"), dialect=dialect)
         assert any(c.to.is_type(exp.DataType.Type.ARRAY) for c in _casts(sql, dialect=dialect)), sql
 
     @pytest.mark.parametrize("dialect", ["sqlite", "mysql", "tsql"])
@@ -172,7 +172,7 @@ class TestArrayCasts:
             await emit(query, dialect=dialect)
 
     async def test_plain_cast_to_an_array_accepted_where_try_cast_is_not(self) -> None:
-        await emit(_dim("CAST(code AS INT[])"), dialect="postgres")
+        await emit(_dim("length(CAST(code AS INT[]))"), dialect="postgres")
         query = _dim("TRY_CAST(code AS INT[])")
         with pytest.raises(CastTypeError):
             await emit(query, dialect="postgres")

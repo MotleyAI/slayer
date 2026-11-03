@@ -29,7 +29,7 @@ CASES = [
     pytest.param("sum(a- -b)", "sum(a- -b)", id="already-spaced"),
     pytest.param("sum(a - - b)", "sum(a - - b)", id="already-spaced-wide"),
     pytest.param("sum(a---b)", "sum(a- - -b)", id="three"),
-    pytest.param("sum(a)\n--sum(b)", "sum(a)\n- -sum(b)", id="multi-line"),
+    pytest.param("sum(a) + (sum(b)\n--sum(c))", "sum(a) + (sum(b)\n- -sum(c))", id="multi-line"),
     pytest.param("sum(a) -\n-sum(b)", "sum(a) -\n-sum(b)", id="split-across-lines"),
     pytest.param('note == "a--b"', "note == 'a--b'", id="inside-string"),
     pytest.param("sum(a)  # x--y", "sum(a)  # x--y", id="inside-python-comment"),
