@@ -13,6 +13,7 @@ runs:
   using: composite
   steps:
     - name: Set up Python ${{ inputs.python-version }}
+      id: setup-python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
@@ -21,12 +22,12 @@ runs:
       shell: bash
       run: "pip install --only-binary :all: poetry==2.4.1"
 
-    # Keyed on the lock and the install args, so a cache hit makes `poetry install` a near-noop.
+    # Keyed on the exact interpreter (a patch bump breaks the venv), the lock and the install args.
     - name: Cache Poetry virtualenv
       uses: actions/cache@v4
       with:
         path: ~/.cache/pypoetry/virtualenvs
-        key: venv-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('poetry.lock') }}-${{ inputs.install-args }}
+        key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}-${{ inputs.install-args }}
 
     - name: Install dependencies
       shell: bash

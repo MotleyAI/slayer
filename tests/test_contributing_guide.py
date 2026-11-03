@@ -14,7 +14,7 @@ from packaging.version import InvalidVersion, Version
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GUIDE = _REPO_ROOT / "CONTRIBUTING.md"
 _CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
-_GATE_JOBS = ("lint-and-test", "type-check")
+_GATE_JOBS = ("lint", "unit-tests", "integration-tests", "type-check")
 _SETUP_TOOLS = frozenset({"pip"})
 _PATH_SUFFIXES = (".md", ".yaml", ".toml", ".c4", ".py", ".json")
 _SKIP_MARKERS = ("://", "<", "#", "@", "$")

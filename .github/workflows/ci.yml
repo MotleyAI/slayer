@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same inputs as the lint-and-test 3.11 leg, so the two share the venv cache.
+      # Same inputs as the other 3.11 jobs, so they share the venv cache.
       - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
@@ -27,16 +27,32 @@ jobs:
       - name: Type-check (no new errors vs .basedpyright/baseline.json)
         run: poetry run basedpyright
 
-  lint-and-test:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Lint with ruff
+        run: poetry run ruff check slayer/ tests/
+
+      - name: Check living-architecture cross-walk
+        run: poetry run la-arch-check
+
+  unit-tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.14"]
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17 (for Flight SQL JDBC integration tests)
+      - name: Set up JDK 17 (for the Flight SQL JDBC tests)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -46,7 +62,35 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install jafgen (for notebook tests, not on PyPI)
+      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
+        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
+
+      - name: Run unit tests (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 20
+        # One of three duration-balanced module groups (tests/_sharding.py); -n logical
+        # uses every vCPU (-n auto only the physical cores).
+        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25 --shard ${{ matrix.shard }}/3
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (for the Flight SQL JDBC tests)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
         run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
@@ -80,19 +124,6 @@ jobs:
 
       - name: Put the DuckDB CLI on PATH
         run: echo "$HOME/.duckdb/cli/latest" >> "$GITHUB_PATH"
-
-      - name: Lint with ruff
-        run: poetry run ruff check slayer/ tests/
-
-      - name: Check living-architecture cross-walk
-        run: poetry run la-arch-check
-
-      - name: Run unit tests
-        timeout-minutes: 20
-        # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests
-        # (plain -n auto picks only physical cores via psutil — half). Clears the
-        # 3.14 timeout; --durations logs the slowest tests per matrix leg.
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
 
       - name: Run integration tests
         timeout-minutes: 20
