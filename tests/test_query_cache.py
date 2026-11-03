@@ -287,10 +287,10 @@ class TestTableParsing:
 class TestStatementTables:
     """Applicable refresh keys from the statement tree's physical tables."""
 
-    _KEYS = CacheConfig(refresh_keys=[
+    _KEYS = CacheConfig(refresh_keys=(
         ("orders", "COUNT(*)"), ("numbers", "COUNT(*)"), ("generate_series", "COUNT(*)"),
         ("GENERATOR", "COUNT(*)"), ("_seq", "COUNT(*)"),
-    ])
+    ))
 
     @pytest.mark.parametrize("dialect", ["snowflake", "clickhouse", "tsql", "postgres", "duckdb", "bigquery"])
     def test_a_number_series_is_not_a_table(self, dialect):
@@ -301,9 +301,9 @@ class TestStatementTables:
         assert QueryCache(self._KEYS).applicable_keys(tables=tables, dialect=dialect) == [("orders", "COUNT(*)")]
 
     def test_qualified_tables_keep_their_qualifiers(self):
-        c = QueryCache(CacheConfig(refresh_keys=[
+        c = QueryCache(CacheConfig(refresh_keys=(
             ("orders", "COUNT(*)"), ("raw.orders", "MAX(id)"), ("other.orders", "MIN(id)"), ("public.customers", "COUNT(*)"),
-        ]))
+        )))
         sql = "SELECT * FROM raw.orders JOIN db.public.customers ON TRUE"
         assert _tables(sql, "postgres") == [(None, "raw", "orders"), ("db", "public", "customers")]
         assert _applicable(c, sql, "postgres") == [
@@ -311,7 +311,7 @@ class TestStatementTables:
         ]
 
     def test_a_cte_named_like_the_table_it_reads(self):
-        c = QueryCache(CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
+        c = QueryCache(CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
         sql = "WITH orders AS (SELECT * FROM orders WHERE id > 1) SELECT * FROM orders"
         assert _tables(sql, "postgres") == [(None, None, "orders")]
         assert _applicable(c, sql, "postgres") == [("orders", "COUNT(*)")]

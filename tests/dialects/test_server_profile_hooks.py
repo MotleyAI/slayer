@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.sql.dialects import SqlDialect, _ALL_DIALECTS, _DS_TYPE_ONLY_DIALECTS
 from slayer.sql.dialects.base import ServerProfile
@@ -23,7 +23,7 @@ _EXISTS_ALONE = f"SELECT p.id FROM p WHERE {_EXISTS}"
 _ARRAY_JOIN_ALONE = "SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE p.id > 1"
 
 
-def _tree(sql: str) -> Expression:
+def _tree(sql: str) -> Expr:
     return sqlglot.parse_one(sql, read="clickhouse")
 
 

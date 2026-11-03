@@ -42,8 +42,9 @@ def entry():
 
 class TestSelfCheck:
     def test_parse_of_a_rendered_statement_inside_an_execution_fails(self, entry) -> None:
+        run = entry(_render_and_parse)
         with pytest.raises(law.StatementReparsed):
-            entry(_render_and_parse)()
+            run()
         assert law.take_violations()
 
     def test_parse_three_calls_below_the_render_fails(self, entry) -> None:
@@ -56,16 +57,18 @@ class TestSelfCheck:
         def _top() -> None:
             _middle(_statement().sql())
 
+        run = entry(_top)
         with pytest.raises(law.StatementReparsed):
-            entry(_top)()
+            run()
         assert law.take_violations()
 
     def test_parse_into_is_guarded(self, entry) -> None:
         def _run() -> None:
             sqlglot.parse_one(_statement().sql(), into=exp.Select)
 
+        run = entry(_run)
         with pytest.raises(law.StatementReparsed):
-            entry(_run)()
+            run()
         assert law.take_violations()
 
     def test_a_finished_statement_is_recorded(self, entry) -> None:
@@ -74,8 +77,9 @@ class TestSelfCheck:
         def _run() -> None:
             sqlglot.parse_one(finish())
 
+        run = entry(_run)
         with pytest.raises(law.StatementReparsed):
-            entry(_run)()
+            run()
         assert law.take_violations()
 
     def test_a_swallowed_violation_is_still_kept(self, entry) -> None:
@@ -92,8 +96,9 @@ class TestSelfCheck:
         async def _run() -> None:
             _render_and_parse()
 
+        pending = entry(_run)()
         with pytest.raises(law.StatementReparsed):
-            asyncio.run(entry(_run)())
+            asyncio.run(pending)
         assert law.take_violations()
 
     def test_a_thread_offload_shares_the_record(self, entry) -> None:
@@ -101,8 +106,9 @@ class TestSelfCheck:
             text = _statement().sql()
             await asyncio.to_thread(sqlglot.parse_one, text)
 
+        pending = entry(_run)()
         with pytest.raises(law.StatementReparsed):
-            asyncio.run(entry(_run)())
+            asyncio.run(pending)
         assert law.take_violations()
 
     def test_a_sync_bridge_inside_a_running_loop_is_an_execution(self, entry) -> None:
@@ -112,8 +118,9 @@ class TestSelfCheck:
         async def _caller() -> None:
             run_sync(entry(_inner)())
 
+        pending = _caller()
         with pytest.raises(law.StatementReparsed):
-            asyncio.run(_caller())
+            asyncio.run(pending)
         assert law.take_violations()
 
     def test_nested_entries_share_the_record(self, entry) -> None:
@@ -121,8 +128,9 @@ class TestSelfCheck:
             text = _statement().sql()
             entry(lambda: sqlglot.parse_one(text))()
 
+        run = entry(_outer)
         with pytest.raises(law.StatementReparsed):
-            entry(_outer)()
+            run()
         assert law.take_violations()
 
     def test_a_containing_string_is_not_a_reparse(self, entry) -> None:
@@ -269,7 +277,7 @@ async def test_every_operation_keeps_the_law(policy: str | None) -> None:
     async with file_engine("sqlite") as (base, _):
         engine = SlayerQueryEngine(
             storage=base.storage, policy=POLICIES[policy] if policy else None,
-            cache_config=CacheConfig(refresh_keys=[("orders", "COUNT(*)"), ("customers", "COUNT(*)")]),
+            cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"), ("customers", "COUNT(*)"))),
         )
         try:
             await _every_operation(engine)

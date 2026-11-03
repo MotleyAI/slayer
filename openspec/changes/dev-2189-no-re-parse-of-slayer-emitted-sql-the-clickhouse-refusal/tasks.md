@@ -9,14 +9,14 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 Generator: `PlannedStatement` build step (settings attached) + `_finish_statement` as the single render with RLS-aware scope validation (D1, D4); `generate_planned_stages` = build + render. Verify: statement-assembly suites green
-- [ ] 2.2 One `physical_tables(statement)` walk in `slayer/sql` with RLS's rule (D5). Verify: 1.4 green
-- [ ] 2.3 `apply_session_policy` on trees, text entry deleted; fail-closed code unchanged (D3). Verify: `test_session_policy` + 1.2 + 1.3 green
-- [ ] 2.4 `correlated_subquery_refusal(profile, *, statement)` + tree predicate (D2). Verify: `TestCorrelatedSubqueryRefusal` green
-- [ ] 2.5 `build_response_metadata` from the tree; delete `expected_columns_from_sql` (D6). Verify: 1.5 green
-- [ ] 2.6 Cache: `applicable_keys(tables=…, dialect=…)` from `_Prepared.tables`; delete `parse_referenced_tables` (D5). Verify: `test_query_cache` + 1.4 green
-- [ ] 2.7 Engine pipeline: `_Rendered` always carries the statement (drop `sql` / `as_statement`), `_prepare_pipeline` order per D1, `_Prepared.tables`; refresh-key scan and side stats build trees and render once after the policy (D3). Verify: 1.1 law green on these paths
-- [ ] 2.8 Split `_expand_query_backed_model` (D7): AST-level expansion for `get_column_types` (probe spliced as stages), render kept for save-time validation. Verify: existing type-probe suites + the D7 law test green
-- [ ] 2.9 arc42 python.sql §3.1: add the approved tag line "[enforced: test:tests/test_law_no_emitted_reparse.py]" verbatim. Verify: `poetry run la-arch-check` green
-- [ ] 2.10 Docs: grep `docs/` for `apply_session_policy`, `expected_columns_from_sql`, `parse_referenced_tables`; no user-facing change expected. Verify: grep clean or one-sentence updates
+- [x] 2.1 Generator: `PlannedStatement` build step (settings attached) + `_finish_statement` as the single render with RLS-aware scope validation (D1, D4); `generate_planned_stages` = build + render. Verify: statement-assembly suites green
+- [x] 2.2 One `physical_tables(statement)` walk in `slayer/sql` with RLS's rule (D5). Verify: 1.4 green
+- [x] 2.3 `apply_session_policy` on trees, text entry deleted; fail-closed code unchanged (D3). Verify: `test_session_policy` + 1.2 + 1.3 green
+- [x] 2.4 `correlated_subquery_refusal(profile, *, statement)` + tree predicate (D2). Verify: `TestCorrelatedSubqueryRefusal` green
+- [x] 2.5 `build_response_metadata` from the tree; delete `expected_columns_from_sql` (D6). Verify: 1.5 green
+- [x] 2.6 Cache: `applicable_keys(tables=…, dialect=…)` from `_Prepared.tables`; delete `parse_referenced_tables` (D5). Verify: `test_query_cache` + 1.4 green
+- [x] 2.7 Engine pipeline: `_Rendered` always carries the statement (drop `sql` / `as_statement`), `_prepare_pipeline` order per D1, `_Prepared.tables`; refresh-key scan and side stats build trees and render once after the policy (D3). Verify: 1.1 law green on these paths
+- [x] 2.8 Split `_expand_query_backed_model` (D7): AST-level expansion for `get_column_types` (probe spliced as stages), render kept for save-time validation. Verify: existing type-probe suites + the D7 law test green
+- [x] 2.9 arc42 python.sql §3.1: add the approved tag line "[enforced: test:tests/test_law_no_emitted_reparse.py]" verbatim. Verify: `poetry run la-arch-check` green
+- [x] 2.10 Docs: grep `docs/` for `apply_session_policy`, `expected_columns_from_sql`, `parse_referenced_tables`; no user-facing change expected. Verify: grep clean or one-sentence updates
 - [ ] 2.11 Full gates: `poetry run pytest -m "not integration" -n 8`, the CI integration invocation (with `-n 8`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`. Verify: all green; ClickHouse integration runs unchanged in its CI workflow

@@ -33,6 +33,7 @@ from tests._dev2189_fixtures import (
     emission_engine,
     file_engine,
     normalized,
+    parsed_query,
     reference_scoped_sql,
     refusal,
     row_values,
@@ -160,9 +161,10 @@ async def test_dotted_result_names_survive_scoping(
             response = await scoped.execute(SHAPES["joined_dims"], dry_run=True)
         finally:
             scoped.close()
-    assert response.sql is not None and unscoped.sql is not None
-    emitted = sqlglot.parse_one(response.sql, read=dialect).named_selects
-    assert emitted == sqlglot.parse_one(unscoped.sql, read=dialect).named_selects
+    assert response.sql is not None
+    assert unscoped.sql is not None
+    emitted = parsed_query(response.sql, dialect=dialect).named_selects
+    assert emitted == parsed_query(unscoped.sql, dialect=dialect).named_selects
     assert not any("." in name for name in emitted)
     assert response.columns == unscoped.columns
     assert all("." in name for name in response.columns)
@@ -199,7 +201,7 @@ REFUSALS: dict[str, tuple[SessionPolicy, Any]] = {
 async def _scoped_engine(base: SlayerQueryEngine, kind: str, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine:
     policy, presence = REFUSALS[kind]
     engine = SlayerQueryEngine(storage=base.storage, policy=policy,
-                               cache_config=CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
+                               cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
     if presence is not None:
         monkeypatch.setattr(engine, "_column_present", presence)
     return engine
@@ -247,7 +249,7 @@ async def test_a_refresh_whose_scan_fails_closed_keeps_the_entry(monkeypatch: py
     with ClientSpy().installed(monkeypatch) as spy:
         async with file_engine("sqlite") as (base, _):
             engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES["column_pass"],
-                                       cache_config=CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
+                                       cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
             monkeypatch.setattr(engine, "_column_present", _presence)
             try:
                 await engine.execute(SHAPES["plain"], cache=True)
@@ -258,7 +260,8 @@ async def test_a_refresh_whose_scan_fails_closed_keeps_the_entry(monkeypatch: py
                 engine.close()
     assert [e.phase for e in result.errors] == ["refresh_key_scan"]
     assert "Forced filter" in result.errors[0].message
-    assert result.refreshed == [] and result.expired_refreshed == []
+    assert result.refreshed == []
+    assert result.expired_refreshed == []
     assert len(spy.executed) == sent
 
 
@@ -298,7 +301,7 @@ async def test_the_type_probe_fails_closed_to_no_types(kind: str, monkeypatch: p
 async def test_the_refresh_key_baseline_is_tenant_scoped(policy: str) -> None:
     async with file_engine("sqlite") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy],
-                                   cache_config=CacheConfig(refresh_keys=[("orders", "COUNT(*)")]))
+                                   cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
         try:
             await engine.execute(SHAPES["plain"], cache=True)
             (entry,) = (await engine._cache.snapshot()).values()
@@ -316,7 +319,8 @@ async def test_profiling_reads_only_the_tenants_rows(policy: str) -> None:
         finally:
             engine.close()
     (finding,) = [f for f in report.findings if f.target_model == "orders"]
-    assert finding.source_side is not None and finding.target_side is not None
+    assert finding.source_side is not None
+    assert finding.target_side is not None
     assert (finding.source_side.row_count, finding.target_side.row_count) == (2, 3)
 
 
@@ -331,7 +335,9 @@ def test_a_qualified_table_sharing_a_cte_name_is_scoped() -> None:
                                   policy=POLICIES["column_block"], has_column=lambda _t, _c: True)
     tree = sqlglot.parse_one(scoped, read="postgres")
     (wrapped,) = [t for t in tree.find_all(exp.Table) if t.db == "public"]
-    assert wrapped.find_ancestor(exp.Select).sql(dialect="postgres") == "SELECT * FROM public.cte WHERE org = 'a'"
+    select = wrapped.find_ancestor(exp.Select)
+    assert select is not None
+    assert select.sql(dialect="postgres") == "SELECT * FROM public.cte WHERE org = 'a'"
 
 
 def test_a_qualified_table_sharing_a_cte_name_fails_closed_when_uncovered() -> None:

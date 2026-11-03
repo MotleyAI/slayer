@@ -62,7 +62,7 @@ async def sqlite_engine():
 
 
 class _Capture:
-    """Spies on the engine's ``plan_stages`` / ``generate_planned_stages`` and the final ``WITH`` assembly."""
+    """Spies on the engine's ``plan_stages`` / ``build_planned_statement`` and the final ``WITH`` assembly."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.queries: List[SlayerQuery] = []
@@ -72,7 +72,7 @@ class _Capture:
         self.final_entries: List[CteEntry] = []
         self._assemble_calls: List[List[CteEntry]] = []
         real_plan = query_engine_module.plan_stages
-        real_gen = query_engine_module.generate_planned_stages
+        real_gen = query_engine_module.build_planned_statement
         real_assemble = generator_module.assemble_with_chain
 
         def plan_spy(*, queries, bundle):
@@ -87,12 +87,12 @@ class _Capture:
         def gen_spy(planned_queries, **kw):
             self._assemble_calls.clear()
             self.bundle, self.dialect = kw["bundle"], kw["dialect"]
-            sql = real_gen(planned_queries, **kw)
+            built = real_gen(planned_queries, **kw)
             self.final_entries = self._assemble_calls[-1] if self._assemble_calls else []
-            return sql
+            return built
 
         monkeypatch.setattr(query_engine_module, "plan_stages", plan_spy)
-        monkeypatch.setattr(query_engine_module, "generate_planned_stages", gen_spy)
+        monkeypatch.setattr(query_engine_module, "build_planned_statement", gen_spy)
         monkeypatch.setattr(generator_module, "assemble_with_chain", assemble_spy)
 
     def display(self, name: str) -> str:

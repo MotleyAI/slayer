@@ -30,7 +30,7 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.errors import (
     AggregationNotAllowedError,
@@ -6514,13 +6514,14 @@ def _finish_statement(
     dialect: "str | SqlDialect",
     aliases: Sequence[str] = (),
     exempt: frozenset[str] = frozenset(),
+    policy_scoped: bool = False,
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     sql = d.rewrite_emitted_sql(
         d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
     )
-    maybe_validate_scopes(sql, dialect=d.sqlglot_name)
+    maybe_validate_scopes(sql, dialect=d.sqlglot_name, allow_rls_correlation=policy_scoped)
     d.assert_no_overlimit_identifiers(sql, exempt=exempt)
     return sql
 
@@ -6603,6 +6604,52 @@ def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
     return dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
 
 
+class PlannedStatement(BaseModel):
+    """A composed statement before its single render, with what that render fits and exempts."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    statement: exp.Select
+    dialect: "str | SqlDialect"
+    aliases: List[str] = Field(default_factory=list)
+    exempt: FrozenSet[str] = frozenset()
+    kept_stages: Set[str] = Field(default_factory=set)
+
+    def render(self, *, policy_scoped: bool = False) -> str:
+        """The statement's one render (``policy_scoped``: a session policy rewrote it)."""
+        return _finish_statement(
+            self.statement, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt,
+            policy_scoped=policy_scoped,
+        )
+
+
+def build_planned_statement(
+    planned_queries,
+    *,
+    bundle,
+    dialect: "str | SqlDialect" = "postgres",
+    projection_aliases: "Sequence[str]" = (),
+) -> PlannedStatement:
+    """Compose a multi-stage DAG (``plan_stages`` output) as one statement, its settings attached;
+    spliced stages nothing reaches are pruned."""
+    kept: Set[str] = set()
+    statement = _build_planned_stages_ast(
+        planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
+    )
+    spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
+    if spine_sizes:
+        _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
+    # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
+    if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
+        _as_dialect(dialect).attach_correlated_setting(statement)
+    # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
+    # BigQuery can't parse a backticked dotted alias.
+    return PlannedStatement(
+        statement=statement, dialect=dialect, aliases=list(projection_aliases),
+        exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect), kept_stages=kept,
+    )
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6612,31 +6659,16 @@ def generate_planned_stages(
     kept_stages: "Optional[Set[str]]" = None,
     read_set: "Optional[Set[str]]" = None,
 ) -> str:
-    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
-    stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
-    the models the statement reads in ``read_set``."""
-    kept: Set[str] = set()
-    statement = _build_planned_stages_ast(
-        planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
+    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; the stage relations
+    emitted land in ``kept_stages``, the models the statement reads in ``read_set``."""
+    built = build_planned_statement(
+        planned_queries, bundle=bundle, dialect=dialect, projection_aliases=projection_aliases,
     )
     if kept_stages is not None:
-        kept_stages.update(kept)
+        kept_stages.update(built.kept_stages)
     if read_set is not None:
-        read_set.update(read_models(statement))
-    spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
-    if spine_sizes:
-        _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
-    # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
-    if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
-        _as_dialect(dialect).attach_correlated_setting(statement)
-    # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
-    # BigQuery can't parse a backticked dotted alias.
-    return _finish_statement(
-        statement,
-        dialect=dialect,
-        aliases=projection_aliases,
-        exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
-    )
+        read_set.update(read_models(built.statement))
+    return built.render()
 
 
 def _build_planned_stages_ast(

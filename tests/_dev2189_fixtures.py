@@ -11,7 +11,8 @@ from typing import Any, Optional
 
 import pytest
 import sqlglot
-from sqlglot.expressions.core import Expression
+from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
@@ -211,15 +212,15 @@ async def correlating_profile(_self: Any) -> ServerProfile:
 # --------------------------------------------------------------------------- #
 # Policies
 # --------------------------------------------------------------------------- #
-ORDERS_RULE = JoinFilterRule(target_table="orders", join_path=["orders.customer_id = customers.id"])
+ORDERS_RULE = JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",))
 ITEMS_RULE = JoinFilterRule(
-    target_table="items", join_path=["items.order_id = orders.id", "orders.customer_id = customers.id"],
+    target_table="items", join_path=("items.order_id = orders.id", "orders.customer_id = customers.id"),
 )
 
 
 def _join(*, joins: list[JoinFilterRule], whitelist: list[str]) -> SessionPolicy:
     return SessionPolicy(ruleset=JoinFilterRuleset(
-        table="customers", column=TENANT, value=TENANT_VALUE, joins=joins, whitelist=whitelist,
+        table="customers", column=TENANT, value=TENANT_VALUE, joins=tuple(joins), whitelist=tuple(whitelist),
     ))
 
 
@@ -232,9 +233,9 @@ POLICIES: dict[str, SessionPolicy] = {
 }
 
 
-def stub_has_column(scoped: ScopedTable, column: str) -> Optional[bool]:
+def stub_has_column(table: ScopedTable, column: str) -> Optional[bool]:
     """Column presence from the fixture schema (emission dialects have no database to probe)."""
-    return scoped.name.casefold() in TENANT_TABLES if column == TENANT else None
+    return table.name.casefold() in TENANT_TABLES if column == TENANT else None
 
 
 def stub_column_present(*, datasource: DatasourceConfig, scoped_table: ScopedTable, column: str) -> Optional[bool]:
@@ -285,9 +286,16 @@ def sqlglot_name(dialect: str) -> str:
 
 def reference_scoped_sql(*, sql: str, dialect: str, policy: SessionPolicy, has_column) -> str:
     """Parse the unscoped render, apply ``policy`` to that tree, render it."""
-    tree: Expression = sqlglot.parse_one(sql, read=dialect)
+    tree: Expr = sqlglot.parse_one(sql, read=dialect)
     scoped = apply_session_policy(tree, sql_dialect=get_dialect(dialect), policy=policy, has_column=has_column)
     return scoped.sql(dialect=dialect)
+
+
+def parsed_query(sql: str, *, dialect: str) -> exp.Query:
+    """``sql`` parsed; a rendered statement is always a query."""
+    tree = sqlglot.parse_one(sql, read=dialect)
+    assert isinstance(tree, exp.Query)
+    return tree
 
 
 def normalized(sql: str, *, dialect: str) -> str:

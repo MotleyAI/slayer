@@ -32,6 +32,7 @@ from tests._dev2189_fixtures import (
     correlating_profile,
     emission_engine,
     file_engine,
+    parsed_query,
     shape_supported,
 )
 
@@ -85,7 +86,7 @@ async def test_policy_hop_tables_count_for_refresh_keys() -> None:
     async with file_engine("sqlite") as (base, _):
         engine = SlayerQueryEngine(
             storage=base.storage, policy=POLICIES["join_one_hop"],
-            cache_config=CacheConfig(refresh_keys=[("customers", "COUNT(*)"), ("regions", "COUNT(*)")]),
+            cache_config=CacheConfig(refresh_keys=(("customers", "COUNT(*)"), ("regions", "COUNT(*)"))),
         )
         try:
             await engine.execute(SHAPES["plain"], cache=True)
@@ -112,7 +113,7 @@ async def test_mangled_result_names_come_back_canonical(dialect: str, policy: Op
         finally:
             engine.close()
     assert response.sql is not None
-    assert sqlglot.parse_one(response.sql, read=dialect).named_selects != JOINED_KEYS
+    assert parsed_query(response.sql, dialect=dialect).named_selects != JOINED_KEYS
     assert response.columns == JOINED_KEYS
 
 
@@ -143,7 +144,7 @@ async def test_length_fitted_result_names_come_back_canonical(policy: Optional[s
         finally:
             engine.close()
     assert response.sql is not None
-    emitted = sqlglot.parse_one(response.sql, read="postgres").named_selects
+    emitted = parsed_query(response.sql, dialect="postgres").named_selects
     assert all(len(name.encode()) <= 63 for name in emitted)
     assert response.columns == ["orders.status", f"orders.{LONG}"]
 
@@ -174,8 +175,9 @@ UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filters=["assignments.id = 
 
 async def test_unnest_beside_a_semi_join_is_refused_before_25_8(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _profile((25, 4)))
+    models = all_models()
     with pytest.raises(SlayerError, match="25.8") as exc:
-        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=all_models())
+        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=models)
     assert "ARRAY JOIN" in str(exc.value)
 
 
@@ -196,5 +198,6 @@ def test_unnest_and_semi_join_in_different_selects_run_from_25_4() -> None:
 
 @pytest.mark.parametrize("dialect", [SqlDialect(), ClickhouseDialect()], ids=["default", "clickhouse"])
 def test_the_refusal_hook_takes_the_statement_as_a_required_keyword(dialect: SqlDialect) -> None:
+    profile = ServerProfile()
     with pytest.raises(TypeError):
-        dialect.correlated_subquery_refusal(ServerProfile())  # type: ignore[call-arg]
+        dialect.correlated_subquery_refusal(profile)  # type: ignore[call-arg]

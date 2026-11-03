@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Ty
 
 import sqlalchemy as sa
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
+from sqlglot.optimizer.qualify_columns import quote_identifiers
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -81,7 +83,7 @@ from slayer.engine.population import (
 )
 from slayer.core.time_points import host_clock
 from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_query
-from slayer.core.scope import StageDisplay, collect_stale_spellings
+from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -109,6 +111,7 @@ from slayer.core.recommend import (
 from slayer.core.syntax import split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
+    NormalizedTable,
     QueryCache,
     RefreshError,
     RefreshKeyValue,
@@ -178,12 +181,13 @@ from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.sql.generator import (
-    _build_planned_stages_ast,
+    PlannedStatement,
     _finish_statement,
     _user_authored_exemptions,
-    generate_planned_stages,
+    build_planned_statement,
     read_models,
 )
+from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
@@ -665,6 +669,8 @@ class _Prepared(BaseModel):
     sql: str
     dialect: str
     datasource: DatasourceConfig
+    #: The physical tables the executed statement reads (cache invalidation).
+    tables: List[NormalizedTable] = PydanticField(default_factory=list)
     resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
@@ -681,12 +687,11 @@ class _Prepared(BaseModel):
 
 
 class _Rendered(BaseModel):
-    """One planned and rendered statement, before policy and response metadata."""
+    """One planned statement tree, before policy, response metadata and its render."""
 
     model_config = PydanticConfigDict(arbitrary_types_allowed=True)
 
-    sql: Optional[str] = None
-    statement: Optional[Any] = None
+    built: PlannedStatement
     dialect: str
     datasource: DatasourceConfig
     bundle: ResolvedSourceBundle
@@ -700,6 +705,35 @@ class _Rendered(BaseModel):
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
+
+    @property
+    def statement(self) -> exp.Select:
+        return self.built.statement
+
+
+class _QueryBackedExpansion(BaseModel):
+    """A query-backed model planned as one statement tree, read as a virtual model over its root stage."""
+
+    model_config = PydanticConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    rendered: _Rendered
+    stage_schema: StageSchema
+    #: Canonical column name → its length-fitted alias.
+    fit_map: Dict[str, str]
+
+    def virtual_model(self, *, sql: Optional[str] = None) -> SlayerModel:
+        """The virtual model over the root stage, reading ``sql`` (else the stage relation)."""
+        source = self.rendered.bundle.source_model
+        assert source is not None
+        return model_from_stage_schema(
+            name=self.name,
+            schema=self.stage_schema,
+            data_source=source.data_source,
+            sql=sql,
+            column_sql={c.name: self.fit_map.get(c.name, c.name) for c in self.stage_schema.columns},
+            default_time_dimension=source.effective_default_time_dimension,
+        )
 
 
 def _granularity_conflict_warnings(
@@ -788,14 +822,14 @@ class SlayerQueryEngine:
         self._cache.clear()
 
     def _apply_policy(
-        self, *, sql: str, dialect: str, datasource: DatasourceConfig
-    ) -> str:
-        """Rewrite ``sql`` to enforce the forced-filter policy; unchanged when no policy."""
+        self, *, statement: Expr, dialect: str, datasource: DatasourceConfig
+    ) -> Expr:
+        """``statement`` rewritten to enforce the forced-filter policy; unchanged when no policy."""
         if not self.policy:
-            return sql
+            return statement
         return apply_session_policy(
-            sql,
-            dialect=dialect,
+            statement,
+            sql_dialect=get_dialect(dialect),
             policy=self.policy,
             has_column=lambda scoped, column: self._column_present(
                 datasource=datasource, scoped_table=scoped, column=column
@@ -821,7 +855,7 @@ class SlayerQueryEngine:
         return sql_dialect.model_copy(update={"server_profile": profile})
 
     async def _require_correlated_subqueries(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, statement: Expr,
     ) -> None:
         """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
         sql_dialect = get_dialect(dialect)
@@ -834,9 +868,9 @@ class SlayerQueryEngine:
             profile = await self._client_for(datasource).server_profile()
         except Exception as exc:
             # An unreadable profile is refused like an empty one; the next query re-probes.
-            reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), sql=sql)
+            reason = sql_dialect.correlated_subquery_refusal(ServerProfile(), statement=statement)
             raise SlayerError(f"{lead} {reason}") from exc
-        reason = sql_dialect.correlated_subquery_refusal(profile, sql=sql)
+        reason = sql_dialect.correlated_subquery_refusal(profile, statement=statement)
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
@@ -1075,28 +1109,30 @@ class SlayerQueryEngine:
             prefer_data_source=prefer_data_source, override_datasource=override_datasource,
             splice_chain=splice_chain, result_order=True,
         )
-        sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
-        assert sql is not None
+        built, dialect, datasource = rendered.built, rendered.dialect, rendered.datasource
         planned_list = rendered.planned_list
         root_planned = planned_list[-1]
         if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
-                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list, sql=sql,
+                dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list,
+                statement=built.statement,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
-        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
-        logger.debug("Generated SQL:\n%s", sql)
-
+        statement = self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
         attributes, expected_columns = build_response_metadata(
             root_planned=root_planned, bundle=root_planned.stage_bundle or rendered.bundle,
-            sql=sql, dialect=dialect,
+            statement=statement,
         )
+        tables = [QueryCache._normalize_table_expr(t, dialect) for t in physical_tables(statement)]
+        sql = built.model_copy(update={"statement": statement}).render(policy_scoped=self.policy is not None)
+        logger.debug("Generated SQL:\n%s", sql)
 
         return _Prepared(
             sql=sql,
             dialect=dialect,
             datasource=datasource,
+            tables=tables,
             resolved_data_source=datasource.name,
             attributes=attributes,
             expected_columns=list(expected_columns),
@@ -1127,12 +1163,10 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str],
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
-        as_statement: bool = False,
         result_order: bool = False,
     ) -> _Rendered:
-        """Plan and render one statement, splicing the stored query-backed models it
-        reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
-        as its AST for the caller to wrap and render once; ``result_order`` marks a
+        """Plan one statement and compose its tree, splicing the stored query-backed models
+        it reads; warnings come from the stages the statement emits. ``result_order`` marks a
         request's result (default-ordered)."""
         # Stage names are query-local: mint identities before anything resolves a name.
         localized, stage_displays = localize_stages([*named_queries.values(), query])
@@ -1255,28 +1289,18 @@ class SlayerQueryEngine:
         if result_order:
             query = _with_default_order(query, bundle=bundle)
 
-        # Plan the DAG (root last) and render the whole chain to one SQL string.
+        # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
-        kept: Set[str] = set()
-        sql: Optional[str] = None
-        statement: Optional[Any] = None
-        reads: Set[str] = set(bundle.splice_chain)
         with collect_stale_spellings() as render_stale_spellings:
-            if as_statement:
-                statement = _build_planned_stages_ast(
-                    planned_list, bundle=bundle, dialect=render_dialect, kept_stages=kept,
-                )
-                reads |= read_models(statement)
-            else:
-                sql = generate_planned_stages(
-                    planned_queries=planned_list, bundle=bundle, dialect=render_dialect,
-                    # Plan-derived canonical projection keys drive the write-side length
-                    # fit; the read side decodes against the same set.
-                    projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
-                    kept_stages=kept,
-                    read_set=reads,
-                )
+            built = build_planned_statement(
+                planned_list, bundle=bundle, dialect=render_dialect,
+                # Plan-derived canonical projection keys drive the write-side length
+                # fit; the read side decodes against the same set.
+                projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
+            )
+        kept = built.kept_stages
+        reads: Set[str] = {*bundle.splice_chain, *read_models(built.statement)}
 
         # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
         plans = emitted_plans(planned_list, kept_stages=kept)
@@ -1302,7 +1326,7 @@ class SlayerQueryEngine:
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
         return _Rendered(
-            sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
+            built=built, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, emitted_list=plans, model=model, reads=reads, warnings=warnings,
             population=population, population_inferred=population_inferred,
         )
@@ -1523,9 +1547,9 @@ class SlayerQueryEngine:
         client: SlayerSQLClient,
     ) -> "dict[str, Any]":
         """One batched refresh-key scan → ``{expression: value}``; policy-rewritten like the data query."""
-        scan_sql = self._cache.build_refresh_key_sql(table, exprs, dialect)
-        scan_sql = self._apply_policy(sql=scan_sql, dialect=dialect, datasource=datasource)
-        rows = (await client.execute(sql=scan_sql)).rows
+        scan = self._cache.build_refresh_key_sql(table, exprs, dialect)
+        scan = self._apply_policy(statement=scan, dialect=dialect, datasource=datasource)
+        rows = (await client.execute(sql=scan.sql(dialect=dialect))).rows
         row0 = rows[0] if rows else {}
         return {e: row0.get(self._cache.rk_alias(i)) for i, e in enumerate(exprs)}
 
@@ -1533,7 +1557,7 @@ class SlayerQueryEngine:
         self, *, prepared: _Prepared, client: SlayerSQLClient, cache: QueryCache
     ) -> "tuple[list[tuple[str, str]], list[RefreshKeyValue]]":
         """Capture write-time refresh-key baselines ``(applicable, refresh_key_values)`` (same order; failures propagate)."""
-        applicable = cache.applicable_keys(prepared.sql, prepared.dialect)
+        applicable = cache.applicable_keys(tables=prepared.tables, dialect=prepared.dialect)
         if not applicable:
             return [], []
         by_table = self._group_expressions_by_table(applicable)
@@ -1888,23 +1912,61 @@ class SlayerQueryEngine:
             measures.append(ModelMeasure(formula=f"{agg}({c.name})"))
         return SlayerQuery(source_model=model.name, measures=measures)
 
+    async def _plan_type_probe(
+        self, *, stored: SlayerModel, model: SlayerModel, datasource: DatasourceConfig,
+    ) -> "tuple[PlannedStatement, str, PlannedQuery]":
+        """The type probe of ``model`` as a statement tree, its dialect and root plan. A query-backed
+        ``stored`` model is probed by one more stage over its own stages, as run-by-name splices them."""
+        probe_query = self._build_type_probe_query(model=model)
+        if stored.source_queries:
+            main_query, named_queries = self._stages_of_model(model=stored, runtime_kwarg={})
+            root_name = main_query.name or stored.name
+            rendered = await self._plan_and_render(
+                query=probe_query.model_copy(update={"source_model": root_name}),
+                named_queries={**named_queries, root_name: main_query.model_copy(update={"name": root_name})},
+                runtime_kwarg={}, prefer_data_source=None,
+            )
+            return rendered.built, rendered.dialect, rendered.planned_list[-1]
+        # Render a template model's Mode-A {var} surfaces from its own
+        # defaults before probe SQL; an undefaulted {var} degrades to {}.
+        model = _render_probe_model(model, dialect=dialect_for_ds_type(datasource.type))
+        probe_query = probe_query.model_copy(update={"source_model": model})
+        bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
+            query=probe_query,
+            storage=self.storage,
+            data_source=model.data_source or None,
+            runtime_variables={},
+            named_queries={},
+            now=self._clock(),
+        )
+        dialect = self._dialect_for_type(datasource.type)
+        bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
+        planned = plan_stages(queries=[probe_query], bundle=bundle)
+        root = planned[-1]
+        built = build_planned_statement(
+            planned, bundle=bundle, dialect=dialect,
+            projection_aliases=projection_result_keys(root_planned=root),
+        )
+        return built, dialect, root
+
     async def get_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
         model_name: str,
         data_source: Optional[str] = None,
     ) -> Dict[str, str]:
         """Infer column types via a type-probe query → {column: "number"|"string"|"time"|"boolean"}."""
-        model = await self.storage.get_model(model_name, data_source=data_source)
-        if model is None:
+        stored = await self.storage.get_model(model_name, data_source=data_source)
+        if stored is None:
             return {}
 
         # Expand query-backed models first so the resolved virtual model (fresh
         # data_source + inner columns) drives datasource + probeable-columns, not
         # a stale stored value.
-        if model.source_queries:
+        model = stored
+        if stored.source_queries:
             try:
                 # No caller variables here; an undefaulted {var} degrades to {} below.
-                model = await self._expand_query_backed_model(model=model)
+                model = (await self._query_backed_expansion(model=stored)).virtual_model()
             except QueryBackedCycleError:
                 raise
             except Exception:
@@ -1931,38 +1993,14 @@ class SlayerQueryEngine:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
 
-        probe_query = self._build_type_probe_query(model=model)
-        # An expanded (query-backed) model is virtual sql-mode — pass it inline
-        # so the bundle uses the expanded shape, not stale storage.
-        if not model.source_queries:
-            probe_query = probe_query.model_copy(update={"source_model": model})
         try:
-            # Render a template model's Mode-A {var} surfaces from its own
-            # defaults before probe SQL; an undefaulted {var} degrades to {}.
-            model = _render_probe_model(
-                model, dialect=dialect_for_ds_type(datasource.type)
-            )
-            if not model.source_queries:
-                probe_query = probe_query.model_copy(update={"source_model": model})
-            bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
-                query=probe_query,
-                storage=self.storage,
-                data_source=model.data_source or None,
-                runtime_variables={},
-                named_queries={},
-                now=self._clock(),
-            )
-            dialect = self._dialect_for_type(datasource.type)
-            bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
-            planned = plan_stages(queries=[probe_query], bundle=bundle)
-            root = planned[-1]
-            sql = generate_planned_stages(
-                planned, bundle=bundle, dialect=dialect,
-                projection_aliases=projection_result_keys(root_planned=root),
+            built, dialect, root = await self._plan_type_probe(
+                stored=stored, model=model, datasource=datasource,
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
+            statement = self._apply_policy(statement=built.statement, dialect=dialect, datasource=datasource)
+            sql = built.model_copy(update={"statement": statement}).render(policy_scoped=self.policy is not None)
         except Exception:
             logger.warning(
                 "get_column_types plan/generate failed for model '%s'",
@@ -2633,8 +2671,8 @@ class SlayerQueryEngine:
         ), detected
 
     @staticmethod
-    def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[str, str]:
-        """(row-count, distinct-count) profiling SQL; NULL key rows excluded from both."""
+    def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
+        """(row-count, distinct-count) profiling statements, every identifier quoted; NULL key rows excluded from both."""
         tbl = exp.to_table(sql_path=table, dialect=sqlglot_name)
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
@@ -2654,24 +2692,21 @@ class SlayerQueryEngine:
         )
         dist_q = exp.select(count_star.copy()).from_(inner.subquery("d"))
         return (
-            rows_q.sql(dialect=sqlglot_name, identify=True),
-            dist_q.sql(dialect=sqlglot_name, identify=True),
+            quote_identifiers(rows_q, dialect=sqlglot_name, identify=True),
+            quote_identifiers(dist_q, dialect=sqlglot_name, identify=True),
         )
 
     async def _side_stats(
         self, *, client, table, key_cols, sqlglot_name, datasource,
     ) -> SideStats:
         """Full-scan one side of a join: non-null key rows vs distinct key-tuples."""
-        rows_sql, dist_sql = self._side_stats_sql(
+        rows_q, dist_q = self._side_stats_sql(
             table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
         )
         # Profile the tenant-scoped rows, like every execution path (no-op without a policy).
-        rows_sql = self._apply_policy(
-            sql=rows_sql, dialect=sqlglot_name, datasource=datasource
-        )
-        dist_sql = self._apply_policy(
-            sql=dist_sql, dialect=sqlglot_name, datasource=datasource
-        )
+        rows_q = self._apply_policy(statement=rows_q, dialect=sqlglot_name, datasource=datasource)
+        dist_q = self._apply_policy(statement=dist_q, dialect=sqlglot_name, datasource=datasource)
+        rows_sql, dist_sql = rows_q.sql(dialect=sqlglot_name), dist_q.sql(dialect=sqlglot_name)
         row_rows = (await client.execute(sql=rows_sql)).rows
         dist_rows = (await client.execute(sql=dist_sql)).rows
         row_count = int(next(iter(row_rows[0].values())))
@@ -2767,15 +2802,14 @@ class SlayerQueryEngine:
             )
         )
 
-    async def _expand_query_backed_model(
+    async def _query_backed_expansion(
         self,
         *,
         model: SlayerModel,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
-    ) -> SlayerModel:
-        """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache,
-        column-type probing): its stages run as a run-by-name statement, wrapped in a
-        flat-rename SELECT. An undefaulted variable raises, exactly as execution does."""
+    ) -> "_QueryBackedExpansion":
+        """Plan a query-backed ``model``'s stages as a run-by-name statement tree, read as a
+        virtual model over its root stage. An undefaulted variable raises, exactly as execution does."""
         main_query, named_queries = self._stages_of_model(
             model=model, runtime_kwarg=runtime_kwarg or {},
         )
@@ -2783,46 +2817,47 @@ class SlayerQueryEngine:
         # ``get_column_types`` recover from a stale persisted ``data_source``.
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
-            prefer_data_source=None, splice_chain=(model.name,), as_statement=True,
+            prefer_data_source=None, splice_chain=(model.name,),
         )
+        schema = rendered.planned_list[-1].stage_schema
+        assert schema is not None
+        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
+        fit_map = get_dialect(rendered.dialect).alias_rewrite_map([c.name for c in schema.columns])
+        return _QueryBackedExpansion(name=model.name, rendered=rendered, stage_schema=schema, fit_map=fit_map)
+
+    async def _expand_query_backed_model(
+        self,
+        *,
+        model: SlayerModel,
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+    ) -> SlayerModel:
+        """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache): its
+        stages, wrapped in a flat-rename SELECT, rendered once through the statement validators."""
+        expansion = await self._query_backed_expansion(model=model, runtime_kwarg=runtime_kwarg)
+        rendered = expansion.rendered
         root_planned = rendered.planned_list[-1]
         dialect, bundle = rendered.dialect, rendered.bundle
-        assert rendered.statement is not None
         # Wrap the stage AST with a flat-renamed SELECT over the root stage's output columns, then render once.
-        schema = root_planned.stage_schema
-        assert schema is not None
-        expected = [c.name for c in schema.columns]
         wrapped_ast = build_flat_rename_wrapper(
             stage=model.name,
             source_relation=root_planned.source_relation,
             inner=rendered.statement,
-            expected_columns=expected,
+            expected_columns=[c.name for c in expansion.stage_schema.columns],
             dialect=dialect,
         )
-        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical. A flat name equals the
-        # user-authored column name, which the finishing pass exempts, so the output aliases are fitted here.
-        fit_map = get_dialect(dialect).alias_rewrite_map(expected)
+        # A flat name equals the user-authored column name, which the finishing pass exempts, so the output
+        # aliases are fitted here.
         for alias in wrapped_ast.expressions:
-            fitted = fit_map.get(alias.alias)
+            fitted = expansion.fit_map.get(alias.alias)
             if fitted is not None:
                 alias.set("alias", exp.to_identifier(fitted, quoted=True))
-        # The virtual model's SQL is rendered verbatim, so length-fit here too.
         wrapped_sql = _finish_statement(
             wrapped_ast,
             dialect=dialect,
             aliases=projection_result_keys(root_planned=root_planned),
             exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
         )
-        inner_source_model = bundle.source_model
-        assert inner_source_model is not None
-        return model_from_stage_schema(
-            name=model.name,
-            schema=schema,
-            data_source=inner_source_model.data_source,
-            sql=wrapped_sql,
-            column_sql={n: fit_map.get(n, n) for n in expected},
-            default_time_dimension=inner_source_model.effective_default_time_dimension,
-        )
+        return expansion.virtual_model(sql=wrapped_sql)
 
     async def create_model_from_query(
         self,

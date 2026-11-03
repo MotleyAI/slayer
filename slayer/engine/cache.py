@@ -1,4 +1,4 @@
-"""Per-engine, in-memory query result cache (DEV-1587).
+"""Per-engine, in-memory query result cache.
 
 A query-level result cache local to a single :class:`SlayerQueryEngine`
 instance, modelled on Cube's in-memory cache. Caching is opt-in per call
@@ -8,8 +8,8 @@ of Cube-style ``(physical_table, select_expression)`` refresh keys scanned
 by an explicit ``engine.refresh()``.
 
 This module holds the DB-free half of the feature: the cache dict, the
-cache key, TTL bookkeeping, sqlglot-based table detection (CTE-alias
-excluding), refresh-key applicability, refresh-key scan-SQL building, and
+cache key, TTL bookkeeping, refresh-key applicability over the executed
+statement's physical tables, refresh-key scan-statement building, and
 value comparison. All of it is unit-testable without a database. The
 engine (``slayer/engine/query_engine.py``) owns the DB awaits (data query,
 refresh-key scans, re-execution) and never holds the cache lock across
@@ -25,7 +25,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
-from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.sql.engine_factory import EngineCacheKey
 
@@ -236,38 +235,9 @@ class QueryCache:
 
     # ---- table detection ---------------------------------------------------
 
-    def parse_referenced_tables(
-        self, sql: str, dialect: str
-    ) -> list[NormalizedTable]:
-        """Normalized physical tables referenced by ``sql``.
-
-        Parses with sqlglot and uses **scope analysis** (``traverse_scope``,
-        the same mechanism the forced-filter policy uses) to keep only
-        genuinely physical tables: a table reference whose name resolves to a
-        CTE / derived table in its scope is skipped. This is name-collision
-        safe — a physical table that happens to share a name with a CTE alias
-        (SLayer wraps queries in CTEs) is still detected, because scope
-        resolution distinguishes them structurally rather than by bare name.
-        Each physical :class:`exp.Table` is normalized to ``(catalog, db,
-        name)`` with the dialect's identifier folding (quoted identifiers
-        preserved exactly, unquoted folded per dialect).
-        """
-        tree = parse_one(sql, dialect=dialect)
-        out: list[NormalizedTable] = []
-        for scope in traverse_scope(tree):
-            for table in scope.tables:
-                # A qualified reference (has a db/catalog part) can never be a
-                # CTE — CTE names are always unqualified — so it is always
-                # physical. Only an unqualified name can shadow a CTE / derived
-                # source in its scope; skip those (they aren't physical tables).
-                if not table.db and not table.catalog:
-                    if isinstance(scope.sources.get(table.alias_or_name), Scope):
-                        continue
-                out.append(self._normalize_table_expr(table, dialect))
-        return out
-
     @staticmethod
     def _normalize_table_expr(table: exp.Table, dialect: str) -> NormalizedTable:
+        """``(catalog, db, name)`` with the dialect's identifier folding (quoted parts kept exactly)."""
         norm = normalize_identifiers(table.copy(), dialect=dialect)
         return (norm.catalog or None, norm.db or None, norm.name)
 
@@ -292,21 +262,20 @@ class QueryCache:
             return False
         return True
 
-    def applicable_keys(self, sql: str, dialect: str) -> list[tuple[str, str]]:
-        """The configured ``(table, expression)`` refresh keys whose table is
-        referenced by ``sql``. The original config table string is preserved
-        (duplicate expressions per table are kept)."""
-        sql_tables = self.parse_referenced_tables(sql, dialect)
+    def applicable_keys(self, *, tables: list[NormalizedTable], dialect: str) -> list[tuple[str, str]]:
+        """The configured ``(table, expression)`` refresh keys whose table is among
+        ``tables``. The original config table string is preserved (duplicate
+        expressions per table are kept)."""
         out: list[tuple[str, str]] = []
         for table, expr in self.config.refresh_keys:
             config_norm = self._normalize_config_table(table, dialect)
-            if any(self._table_matches(config_norm, s) for s in sql_tables):
+            if any(self._table_matches(config_norm, s) for s in tables):
                 out.append((table, expr))
         return out
 
     def build_refresh_key_sql(
         self, table: str, expressions: list[str], dialect: str
-    ) -> str:
+    ) -> exp.Select:
         """``SELECT (<expr0>) AS "slayer_rk_0", ... FROM <table>``.
 
         Each user expression is parsed with the entry's dialect and
@@ -322,8 +291,7 @@ class QueryCache:
             )
             for i, e in enumerate(expressions)
         ]
-        select = exp.select(*projections).from_(exp.to_table(table, dialect=dialect))
-        return select.sql(dialect=dialect)
+        return exp.select(*projections).from_(exp.to_table(table, dialect=dialect))
 
     @staticmethod
     def rk_alias(index: int) -> str:
