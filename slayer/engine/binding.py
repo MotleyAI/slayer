@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import ColumnTypeFn, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, numeric_valued
+from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -1311,8 +1311,8 @@ def _bind_filtered_agg(
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey:
-    """``agg(…) FILTER (WHERE c)``: the aggregation over the rows where ``c`` holds. Every row-level
-    input is masked by ``c``; a star source and a ranked pick carry ``c`` on the key instead."""
+    """``agg(…) FILTER (WHERE c)``: the aggregation over the rows where ``c`` holds. A built-in masks
+    every row-level input by ``c``; a star source, a ranked pick and a non-built-in carry ``c`` on the key."""
     condition = _bind(parsed.filter, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
     if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(condition)):
         raise _filter_error("needs a row-level condition; it cannot read an aggregate, a transform or a measure.")
@@ -1324,17 +1324,13 @@ def _bind_filtered_agg(
         raise _filter_error("applies only to an aggregation over rows.")
     if is_ranked(key):
         return _carrying_filter(key, condition=condition)
-    value = LiteralKey(value=normalize_scalar(1)) if isinstance(key.source, StarKey) else key.source
-    masked = key.model_copy(update={
-        "source": _masked(value, condition=condition),
-        "kwargs": tuple((k, _masked(v, condition=condition) if isinstance(v, _ROW_INPUT_KINDS) else v)
-                        for k, v in key.kwargs),
-    })
+    masked = input_masked(key, condition=condition)
     if source_anchor_path(masked.source) == source_anchor_path(key.source):
-        return masked
+        return masked if key.builtin else key.model_copy(update={"filter": condition})
     if isinstance(key.source, StarKey) and not source_anchor_path(key.source):
         # The condition reads a joined model: the star keeps the count's home.
-        return _carrying_filter(key, condition=condition)
+        return _carrying_filter(key, condition=condition) if key.builtin else key.model_copy(
+            update={"filter": condition})
     raise _filter_error("must read the aggregated rows' own model or models joined to it one-to-one.")
 
 
@@ -1342,14 +1338,6 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     if window_kwarg_of(key) is not None:
         raise _filter_error("cannot combine with window= here; filter the query's rows instead.")
     return key.model_copy(update={"filter": condition})
-
-
-# Row-valued aggregation parameters a FILTER masks (literals and attached values are not rows).
-_ROW_INPUT_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
-
-
-def _masked(value: ValueKey, *, condition: ValueKey) -> ScalarCallKey:
-    return ScalarCallKey(name="iif", args=(condition, value, LiteralKey(value=None)))
 
 
 def _bind_granularity_call(

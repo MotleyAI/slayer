@@ -87,6 +87,7 @@ reject a confidently non-numeric expression (`sum(lower(name))`).
 
 Any aggregation takes a SQL `FILTER (WHERE c)` clause with a row-level condition `c` and aggregates only the rows passing it, every row-level input included (`count(*) FILTER (WHERE status = 'paid')`, `last(amount) FILTER (WHERE amount > 0)` picks the newest passing row).
 An aggregate, transform or measure inside `c` is rejected, the clause composes with `partition_by=` and `window=` (`sum(amount, window='3m') FILTER (WHERE status = 'paid')`), and an unnamed filtered aggregation's result key derives from the whole expression, condition included, so it never collides with the unfiltered one.
+On a custom aggregation the clause restricts the rows its formula reads (`COUNT(*)` included), and a grouped cell with no passing rows reads NULL.
 
 An unnamed filtered aggregation's result key is its formula text (`count(*) FILTER (WHERE status = 'paid')` → `count_filter_where_status_paid`), the same with or without a `{variable}` in the condition.
 
