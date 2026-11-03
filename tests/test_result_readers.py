@@ -129,6 +129,10 @@ def test_list_type_names_are_lists(type_code: str) -> None:
     assert _map_type_code(type_code) == "list"
 
 
+def test_an_untyped_array_name_is_a_list() -> None:
+    assert _map_type_code("ARRAY") == "list"
+
+
 @pytest.mark.parametrize(("oid", "pg_type"), [
     (1000, "bool[]"), (1005, "int2[]"), (1007, "int4[]"), (1009, "text[]"), (1015, "varchar[]"), (1016, "int8[]"),
     (1021, "float4[]"), (1022, "float8[]"), (1182, "date[]"), (1115, "timestamp[]"), (1231, "numeric[]"),

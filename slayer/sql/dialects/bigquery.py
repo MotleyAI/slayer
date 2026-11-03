@@ -137,8 +137,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             exp.EQ(this=exp.column(_ELEMENT), expression=operand_copy(value))))
 
     def list_overlaps(self, values: Expression, other: Expression) -> Expression:
-        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
-            exp.In(this=exp.column(_ELEMENT), unnest=exp.Unnest(expressions=[other.copy()]))))
+        # ``=``, not ``IN UNNEST``: only ``=`` coerces INT64 with FLOAT64.
+        return exp.Exists(this=_over_elements(values, _WANTED).where(
+            self.list_contains(other, exp.column(_WANTED))))
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:
         missing = _over_elements(other, _WANTED).where(exp.and_(

@@ -117,7 +117,7 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
         type_code = str(type_code)
     if isinstance(type_code, str):
         tc = type_code.upper()
-        if tc.endswith("[]") or tc.startswith(("LIST(", "ARRAY(", "ARRAY<")):
+        if tc == "ARRAY" or tc.endswith("[]") or tc.startswith(("LIST(", "ARRAY(", "ARRAY<")):
             return "list"
         # Check temporal names before numeric ones: INTERVAL contains "INT".
         if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):

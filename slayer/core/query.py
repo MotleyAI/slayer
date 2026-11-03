@@ -271,30 +271,41 @@ def _string_end(text: str, i: int) -> int:
     return j + 1
 
 
+def _is_whole_list_argument(text: str, *, match: re.Match, open_calls: list[list]) -> bool:
+    """Whether placeholder ``match`` is the whole second argument of the innermost open list function."""
+    if not open_calls or open_calls[-1][0] not in _LIST_ARG_FUNCTIONS or open_calls[-1][1] != 1:
+        return False
+    return text[:match.start()].rstrip().endswith(",") and text[match.end():].lstrip().startswith(")")
+
+
+def _track_bracket(text: str, *, i: int, open_calls: list[list]) -> None:
+    """Advance the open-call stack past ``text[i]``."""
+    char = text[i]
+    if char in "([":
+        name = _CALL_NAME_RE.search(text, 0, i) if char == "(" else None
+        open_calls.append([name.group(1).lower() if name else None, 0])
+    elif char in ")]" and open_calls:
+        open_calls.pop()
+    elif char == "," and open_calls:
+        open_calls[-1][1] += 1
+
+
 def _list_slot_starts(text: str) -> frozenset[int]:
     """Offsets of the ``{name}`` placeholders that are a list function's whole list argument."""
     starts: set[int] = set()
     open_calls: list[list] = []  # [function name, argument index] per open bracket
     i, n = 0, len(text)
     while i < n:
-        char = text[i]
-        if char in "'\"":
+        if text[i] in "'\"":
             i = _string_end(text, i)
             continue
         match = _VAR_PATTERN.match(text, i)
         if match is not None and match.group(1) is not None:
-            whole = text[:i].rstrip().endswith(",") and text[match.end():].lstrip().startswith(")")
-            if whole and open_calls and open_calls[-1][0] in _LIST_ARG_FUNCTIONS and open_calls[-1][1] == 1:
+            if _is_whole_list_argument(text, match=match, open_calls=open_calls):
                 starts.add(i)
             i = match.end()
             continue
-        if char in "([":
-            name = _CALL_NAME_RE.search(text, 0, i) if char == "(" else None
-            open_calls.append([name.group(1).lower() if name else None, 0])
-        elif char in ")]" and open_calls:
-            open_calls.pop()
-        elif char == "," and open_calls:
-            open_calls[-1][1] += 1
+        _track_bracket(text, i=i, open_calls=open_calls)
         i += 1
     return frozenset(starts)
 

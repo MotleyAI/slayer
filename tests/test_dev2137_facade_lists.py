@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import struct
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
@@ -93,6 +94,16 @@ class TestPgWireValues:
 
     def test_null_list_is_sql_null(self) -> None:
         assert value_to_text(None, proto.OID_TEXT) is None
+
+    def test_decimals_are_exact(self) -> None:
+        raw = value_to_text([Decimal("12345678901234567890.123"), Decimal("5.00")], proto.OID_TEXT)
+        assert raw is not None
+        assert raw.decode() == "[12345678901234567890.123, 5.00]"
+
+    def test_non_finite_numbers_are_null(self) -> None:
+        raw = value_to_text([float("nan"), float("inf"), Decimal("NaN"), 1.5], proto.OID_TEXT)
+        assert raw is not None
+        assert json.loads(raw.decode()) == [None, None, None, 1.5]
 
     def test_binary_format_carries_the_same_text(self) -> None:
         assert value_to_binary(["Oslo", "Rome"], proto.OID_TEXT) == value_to_text(["Oslo", "Rome"], proto.OID_TEXT)

@@ -279,6 +279,14 @@ class TestMixedNumerics:
         await emit(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}),
                    dialect=dialect, models=[mixed_model()])
 
+    @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
+    async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
+        # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
+        sql = await emit(SlayerQuery.model_validate(
+            {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}), dialect="bigquery",
+            models=[mixed_model()])
+        assert "IN UNNEST" not in sql.upper(), sql
+
 
 def _bind(text: str):
     model = contractors_model()

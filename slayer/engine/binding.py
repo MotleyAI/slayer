@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from decimal import Decimal
+from functools import partial
 from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
@@ -384,99 +385,98 @@ def _bind(
     # boundary — a measure is legal at value level but not inside an aggregation.
     # ``dim_alias_map`` rides every edge but resolves ONLY inside an
     # aggregation's ``partition_by``.
-    if isinstance(parsed, Literal):
-        return LiteralKey(value=normalize_scalar(parsed.value))
-
-    if isinstance(parsed, Ref):
-        return _resolve_ref(
-            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
-
-    if isinstance(parsed, DottedRef):
-        return _resolve_dotted(
-            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
-
-    if isinstance(parsed, StarSource):
-        return StarKey()
-
+    leaf = _bind_leaf(parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx)
+    if leaf is not None:
+        return leaf
+    sub = partial(
+        _bind, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+    )
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
     if isinstance(parsed, TransformCall):
         return _bind_transform(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
     if isinstance(parsed, ScalarCall):
         return _bind_scalar(
             parsed, scope=scope, bundle=bundle, in_filter=in_filter,
             alias_map=alias_map, measure_ctx=measure_ctx,
             dim_alias_map=dim_alias_map,
         )
-
-    if isinstance(parsed, Arith):
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            ),
-        )
-
-    if isinstance(parsed, UnaryOp):
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),),
-        )
-
     if isinstance(parsed, Cmp):
-        time_point = _time_point_comparison(parsed, units=bundle.granularities)
-        if time_point is not None:
-            operand, op, point, literal_on_left = time_point
-            return TimePointCmpKey(
-                op=op, point=point, literal_on_left=literal_on_left,
-                operand=_bind(operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            )
-        # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
-        # column + literal-tuple handle for the generator).
-        if parsed.op in _MEMBERSHIP_OP:
-            return _bind_in(
-                parsed,
-                scope=scope, bundle=bundle, in_filter=in_filter,
-                alias_map=alias_map, measure_ctx=measure_ctx,
-                dim_alias_map=dim_alias_map,
-            )
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            ),
+        return _bind_cmp(
+            parsed, sub=sub, scope=scope, bundle=bundle, in_filter=in_filter,
+            alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
+    if isinstance(parsed, Arith):
+        return ArithmeticKey(op=parsed.op, operands=(sub(parsed.left), sub(parsed.right)))
+    if isinstance(parsed, UnaryOp):
+        return ArithmeticKey(op=parsed.op, operands=(sub(parsed.operand),))
     if isinstance(parsed, BoolOp):
-        operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
-            for v in parsed.operands
-        )
-        return ArithmeticKey(op=parsed.op, operands=operands)
-
+        return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
     if isinstance(parsed, ArrayLit):
-        return _bind_array_literal(parsed, sub=lambda e: _bind(
-            e, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx,
-            dim_alias_map=dim_alias_map,
-        ))
-
+        return _bind_array_literal(parsed, sub=sub)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_leaf(
+    parsed: ParsedExpr,
+    *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    measure_ctx: Optional[MeasureResolutionCtx],
+) -> Optional[ValueKey]:
+    """A literal, reference or ``*`` leaf bound; ``None`` for a composite node."""
+    if isinstance(parsed, Literal):
+        return LiteralKey(value=normalize_scalar(parsed.value))
+    if isinstance(parsed, StarSource):
+        return StarKey()
+    if isinstance(parsed, Ref):
+        return _resolve_ref(
+            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
+    if isinstance(parsed, DottedRef):
+        return _resolve_dotted(
+            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
+    return None
+
+
+def _bind_cmp(
+    parsed: Cmp,
+    *,
+    sub: Callable[[ParsedExpr], ValueKey],
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    in_filter: bool,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    measure_ctx: Optional[MeasureResolutionCtx],
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> ValueKey:
+    time_point = _time_point_comparison(parsed, units=bundle.granularities)
+    if time_point is not None:
+        operand, op, point, literal_on_left = time_point
+        return TimePointCmpKey(op=op, point=point, literal_on_left=literal_on_left, operand=sub(operand))
+    # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
+    # column + literal-tuple handle for the generator).
+    if parsed.op in _MEMBERSHIP_OP:
+        return _bind_in(
+            parsed,
+            scope=scope, bundle=bundle, in_filter=in_filter,
+            alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    return ArithmeticKey(op=parsed.op, operands=(sub(parsed.left), sub(parsed.right)))
 
 
 def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
