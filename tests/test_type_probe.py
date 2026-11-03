@@ -182,7 +182,10 @@ def test_trial_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
 def test_parse_table_reads_the_dialect_identifier_rules(name: str, parts: tuple[str, str, str],
                                                         rendered: str) -> None:
     table = parse_table(name=name, dialect=PostgresDialect())
-    assert (table.catalog, table.db, table.name) == parts
+    catalog, db, name = parts
+    assert table.catalog == catalog
+    assert table.db == db
+    assert table.name == name
     assert table.sql(dialect="postgres") == rendered
 
 
