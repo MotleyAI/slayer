@@ -449,7 +449,7 @@ class TestInspectModelQueryBacked:
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
-        # engine.save_model warms the cache (columns + SQL); read paths don't (issue #74).
+        # engine.save_model warms the cache (columns + SQL); read paths don't.
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -2765,13 +2765,13 @@ class TestDatasources:
         with transaction(db_path) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
-        real = ingestion_mod.ingest_datasource_report
+        real = ingestion_mod.ingest_datasource_report_async
 
         async def _fake(*args, **kwargs):
             out = await real(*args, **kwargs)
             return out.model_copy(update={"schema_description": "From the dataset"})
 
-        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
+        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
         result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "ds", "type": "sqlite", "database": db_path,
         })

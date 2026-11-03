@@ -14,9 +14,9 @@ import sqlalchemy as sa
 from slayer.async_utils import run_sync
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     IngestableObject,
-    ingest_datasource,
     list_ingestable_objects,
 )
 from slayer.engine.schema_drift import (
@@ -129,7 +129,7 @@ class TestViewIngestion:
     def test_view_is_ingested_by_default(self, workspace: Path) -> None:
         """Headline regression: before the fix this returned only ``orders``."""
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         by_name = {m.name: m for m in models}
         assert "orders" in by_name
         assert "stg_orders" in by_name, "view was not ingested"
@@ -138,7 +138,7 @@ class TestViewIngestion:
     def test_include_views_false_suppresses_views(self, workspace: Path) -> None:
         """the ``--no-views`` escape hatch."""
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds, include_views=False))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds, include_views=False))
         names = {m.name for m in models}
         assert "orders" in names
         assert "stg_orders" not in names
@@ -146,14 +146,14 @@ class TestViewIngestion:
     def test_view_model_has_columns(self, workspace: Path) -> None:
         """A view-backed model is a real model, not an empty shell."""
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
         assert {c.name for c in view_model.columns} == {"id", "amount", "status"}
 
     def test_view_model_has_no_joins(self, workspace: Path) -> None:
         """Views carry no FK metadata, so no joins can be derived."""
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
         assert view_model.joins == []
 
@@ -251,12 +251,12 @@ class TestDialectTolerance:
 class TestFilters:
     def test_include_tables_filters_views_too(self, workspace: Path) -> None:
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds, include_tables=["stg_orders"]))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds, include_tables=["stg_orders"]))
         assert {m.name for m in models} == {"stg_orders"}
 
     def test_exclude_tables_filters_views_too(self, workspace: Path) -> None:
         _, ds = _db_with_view(workspace)
-        models = run_sync(_with_client(ingest_datasource, datasource=ds, exclude_tables=["stg_orders"]))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds, exclude_tables=["stg_orders"]))
         assert {m.name for m in models} == {"orders"}
 
 

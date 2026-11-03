@@ -33,7 +33,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
 from slayer.sql.dialects.reflection import TableLocation
@@ -221,7 +221,7 @@ def sf_datasource(sf_transient_schema: str) -> DatasourceConfig:
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     sql_client = client.SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=sql_client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
     finally:
         await sql_client.aclose()
         sql_client.close()

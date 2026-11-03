@@ -5,7 +5,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.sql.dialects.reflection import (
     is_exact_numeric_db_type,
     unwrap_clickhouse_wrapper_str,
@@ -92,7 +92,7 @@ class TestSqliteKeepsInferredCast:
         datasource = DatasourceConfig(name="test", type="sqlite", database=db_path)
         client = SlayerSQLClient(datasource=datasource)
         try:
-            models = await ingest_datasource(datasource, client=client)
+            models = await ingestion.ingest_datasource_async(datasource, client=client)
         finally:
             await client.aclose()
             client.close()

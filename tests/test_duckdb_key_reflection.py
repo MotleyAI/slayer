@@ -18,9 +18,9 @@ from sqlalchemy.engine.reflection import Inspector
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     IngestionScanReport,
-    ingest_datasource_report,
     introspect_table_to_model,
 )
 from slayer.sql import engine_factory
@@ -97,7 +97,7 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
     async with _client(ds) as client:
-        return await ingest_datasource_report(ds, client=client, **kwargs)
+        return await ingestion.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
 def _models(report: IngestionScanReport) -> dict[str, SlayerModel]:

@@ -255,7 +255,7 @@ async def test_reingest_with_the_url_dataset_heals_a_bare_model(bq_engine: sa.En
     fresh = _model("contractors", sql_table=f"{_URL_DATASET}.contractors", columns=_ID_NAME)
     layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
     with patch.object(
-        ingestion, "ingest_datasource_report", return_value=ingestion.IngestionScanReport(models=[fresh]),
+        ingestion, "ingest_datasource_report_async", return_value=ingestion.IngestionScanReport(models=[fresh]),
     ):
         result = await ingestion.ingest_datasource_idempotent(
             datasource=_DS, storage=storage, client=_live(bq_engine, layout, schemas=_TWO_DATASETS),
