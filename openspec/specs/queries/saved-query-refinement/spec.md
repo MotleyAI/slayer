@@ -65,7 +65,7 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 Dimensions and measures SHALL be the saved entries followed by the refinement entries not already
 present. A dimension column reference SHALL be identified by its reference with a leading root
 qualifier dropped (`region` ≡ `orders.region`), a computed dimension by its name, a measure by its name
-and formula (an unnamed measure by its formula), a formula being compared by its parsed meaning with
+(an unnamed measure by its formula), a formula being compared by its parsed meaning with
 any leading root qualifier dropped (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
 inside a string literal or quoted identifier is compared exactly. Two entries with the same identity
 SHALL collapse into one when they are equal in every field. A refinement measure whose formula is a

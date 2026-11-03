@@ -165,8 +165,9 @@ model, an inline model's name, a stage's name in its own query list, or a splice
 — SHALL resolve as the rest of the reference from that root (`orders.amount` ≡ `amount` from root
 `orders`), in every Mode-B position (dimensions, time dimensions, measures and aggregation arguments,
 filters, order, `main_time_dimension`, computed-dimension and expression time-dimension expressions) and
-with the same SQL, values and result keys as the unqualified spelling. The root qualifier SHALL be read
-before any join hop or query-level alias, so it wins over an edge spelled the same.
+with the same SQL, values and result keys as the unqualified spelling, except that an auto-named
+computed dimension or expression time dimension keeps the written qualifier in its name. The root
+qualifier SHALL be read before any join hop or query-level alias, so it wins over an edge spelled the same.
 
 #### Scenario: Existing full and self-prefixed paths are unchanged
 - **WHEN** a query uses a full explicit join path or a self-prefixed root column, spelled canonically
@@ -178,6 +179,10 @@ before any join hop or query-level alias, so it wins over an edge spelled the sa
   `orders.status`, and a second query spells all of them without the `orders.` qualifier
 - **THEN** both produce the same SQL, the same rows and the same result keys
   (`orders.status`, `orders.created_at`, `orders.amount_sum`)
+
+#### Scenario: An auto-name keeps the written qualifier
+- **WHEN** a query rooted at `orders` selects the unnamed computed dimension `orders.amount * 2`
+- **THEN** its result key is `orders.orders_amount_2`
 
 #### Scenario: A stage root's own name qualifies its columns
 - **WHEN** a query list's stage `s1` projects `status` and `sum(amount)` named `tot`, and the final query

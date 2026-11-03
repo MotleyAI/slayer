@@ -191,12 +191,12 @@ The following SHALL fail at parse time with an error naming the form and the rem
 - **THEN** the error names the position of the second `>`
 
 ### Requirement: Quoted text is never a reference
-Text inside a string literal or a double-quoted identifier SHALL never be read as a reference by any
-part of query processing, on every Mode-B surface (measures, filters, dimensions, time dimensions,
-order, `main_time_dimension`): a string literal's value SHALL reach the database exactly as written, a
-quoted identifier SHALL name exactly the identifier written, and neither SHALL change which models a
-query reads, whether it is a spine query, or which query-backed models it splices. Reference-shaped
-text written outside quotes keeps its meaning.
+Reference-shaped text inside a string literal, or inside one double-quoted identifier, SHALL never be
+read as a dotted reference by any part of query processing, on every Mode-B surface (measures, filters,
+dimensions, time dimensions, order, `main_time_dimension`): a string literal's value SHALL reach the
+database exactly as written, a quoted identifier SHALL name exactly the one identifier written, and
+such text SHALL never change which models a query reads, whether it is a spine query, or which
+query-backed models it splices. Reference-shaped text written outside quotes keeps its meaning.
 
 #### Scenario: A literal naming the root keeps its text
 - **WHEN** a query rooted at `orders` filters on `note = 'see orders.x'`
