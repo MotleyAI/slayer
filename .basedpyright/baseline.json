@@ -22,14 +22,6 @@
             {
                 "code": "reportOptionalSubscript",
                 "range": {
-                    "startColumn": 24,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalSubscript",
-                "range": {
                     "startColumn": 14,
                     "endColumn": 44,
                     "lineCount": 1
@@ -2282,58 +2274,10 @@
         ],
         "./slayer/sql/render/parse.py": [
             {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 77,
-                    "endColumn": 87,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 14,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 19,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 19,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 13,
                     "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 19,
                     "lineCount": 1
                 }
             }
@@ -2868,14 +2812,6 @@
                 "range": {
                     "startColumn": 63,
                     "endColumn": 71,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 50,
-                    "endColumn": 63,
                     "lineCount": 1
                 }
             },

@@ -45,7 +45,8 @@ def test_type_probe_bounds_the_query_by_the_dialect_row_count(dialect: SqlDialec
     assert dialect.type_probe_rows == rows
     assert probe.args["limit"].expression == exp.Literal.number(rows)
     (source,) = [probe.args["from_"].this]
-    assert isinstance(source, exp.Subquery) and source.alias == "_types"
+    assert isinstance(source, exp.Subquery)
+    assert source.alias == "_types"
     assert source.this == _inner()
     assert probe.expressions == [exp.Star()]
 
@@ -119,7 +120,8 @@ def _trial(sql: str) -> exp.Select:
 def test_trial_query_wraps_the_parsed_model_sql(sql: str) -> None:
     trial = _trial(sql)
     source = trial.args["from_"].this
-    assert isinstance(source, exp.Subquery) and source.alias == "_sd_validate"
+    assert isinstance(source, exp.Subquery)
+    assert source.alias == "_sd_validate"
     assert source.this.sql(dialect="postgres") == "SELECT a FROM t"
     assert trial.args["where"].this.sql() == "1 = 0"
 
@@ -157,8 +159,9 @@ def test_parse_query_returns_the_read_only_query() -> None:
 @pytest.mark.parametrize("sql", ["DELETE FROM t", "SELECT a INTO u FROM t", "SELECT a FROM t FOR UPDATE",
                                  "DROP TABLE t", "SELECT ((( not valid"])
 def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
+    postgres = PostgresDialect()
     with pytest.raises(Exception):  # noqa: B017 — parse or read-only refusal
-        parse_query(sql=sql, target_dialect=PostgresDialect(), parse_dialect=PostgresDialect())
+        parse_query(sql=sql, target_dialect=postgres, parse_dialect=postgres)
 
 
 # ── engine model typing ───────────────────────────────────────────────────

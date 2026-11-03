@@ -169,6 +169,19 @@ def text_try_cast(value: Expression, to: exp.DataType) -> Expression:
     return exp.TryCast(this=as_text(value), to=to)
 
 
+def setting(*, name: str, value: int) -> exp.SetItem:
+    """``name = value`` as a session-setting item."""
+    return exp.SetItem(this=exp.EQ(this=exp.column(name), expression=exp.Literal.number(value)))
+
+
+def set_statement(*, name: str, value: int, kind: str | None = None) -> exp.Set:
+    """``SET [kind] name = value``."""
+    item = setting(name=name, value=value)
+    if kind is not None:
+        item.set("kind", kind)
+    return exp.Set(expressions=[item])
+
+
 def anon(name: str, *args: Expression) -> exp.Anonymous:
     """``NAME(args)`` emitted as written on every dialect (no transpilation)."""
     return exp.Anonymous(this=name, expressions=[a.copy() for a in args])
@@ -952,6 +965,8 @@ class SqlDialect(BaseModel):
 
     #: Whether the database has native lists; elsewhere every list construct is refused at plan time.
     native_lists: ClassVar[bool] = False
+    # Rows a type probe reads; a driver that reports no cursor types needs one.
+    type_probe_rows: ClassVar[int] = 0
     #: The database's name in a refusal.
     database_name: ClassVar[str] = "this database"
 
@@ -1652,7 +1667,7 @@ class SqlDialect(BaseModel):
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
 
@@ -1668,9 +1683,14 @@ class SqlDialect(BaseModel):
         """Hook: probe whose one row ``parse_server_profile`` reads as ``base_row``, or ``None``."""
         return None
 
-    def correlated_setting_sql(self, profile: ServerProfile) -> str | None:  # NOSONAR(S1172) — no-op hook default
+    def correlated_setting_probe(self, profile: ServerProfile) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
         return None
+
+    def type_probe(self, query: Expr) -> exp.Select:
+        """Hook: ``query`` bounded to ``type_probe_rows`` rows, for typing its columns."""
+        source = exp.Subquery(this=query.copy(), alias=exp.TableAlias(this=exp.to_identifier("_types")))
+        return exp.select("*").from_(source).limit(self.type_probe_rows)
 
     def parse_server_profile(
         self,

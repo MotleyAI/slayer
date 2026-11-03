@@ -127,7 +127,7 @@ from slayer.sql.render.aggregates import (
     is_builtin_agg,
     resolve_agg_entry,
 )
-from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate, parse_table
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
 from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
@@ -1045,8 +1045,8 @@ class SQLGenerator:
         return ident
 
     def _to_table(self, name: str, alias: Optional[str] = None) -> Expression:
-        """Build a (possibly schema-qualified) table reference with mixed-case"""
-        table = exp.to_table(name).transform(self._quote_mixed_case_identifiers)
+        """A (possibly qualified) table reference read with this dialect's identifier rules."""
+        table = parse_table(name=name, dialect=self._dialect)
         if alias is not None:
             table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return table
@@ -6510,11 +6510,12 @@ def _finish_statement(
     dialect: "str | SqlDialect",
     aliases: Sequence[str] = (),
     exempt: frozenset[str] = frozenset(),
+    pretty: bool = True,
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     sql = d.rewrite_emitted_sql(
-        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
+        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt,
     )
     maybe_validate_scopes(sql, dialect=d.sqlglot_name)
     d.assert_no_overlimit_identifiers(sql, exempt=exempt)
@@ -6607,10 +6608,11 @@ def generate_planned_stages(
     projection_aliases: "Sequence[str]" = (),
     kept_stages: "Optional[Set[str]]" = None,
     read_set: "Optional[Set[str]]" = None,
+    type_probe: bool = False,
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
     stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
-    the models the statement reads in ``read_set``."""
+    the models the statement reads in ``read_set``. ``type_probe`` bounds it by the dialect's type probe."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
@@ -6619,6 +6621,8 @@ def generate_planned_stages(
         kept_stages.update(kept)
     if read_set is not None:
         read_set.update(read_models(statement))
+    if type_probe:
+        statement = _as_dialect(dialect).type_probe(statement)
     spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
     if spine_sizes:
         _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
@@ -6632,6 +6636,7 @@ def generate_planned_stages(
         dialect=dialect,
         aliases=projection_aliases,
         exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
+        pretty=not type_probe,
     )
 
 

@@ -568,6 +568,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         cleanup ``execute`` gets."""
         client = self._client()
         client._sync_engine = object()
+        probe = render_type_probe(exp.select("1"), dialect=SqliteDialect())
         with (
             patch.object(
                 sql_client.SlayerSQLClient, "_get_column_types",
@@ -576,7 +577,7 @@ class TestClientDiscardsEngineOnAuthFailure:
             patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
-                await client.get_column_types(render_type_probe(exp.select("1"), dialect=SqliteDialect()))
+                await client.get_column_types(probe)
         invalidate.assert_called_once_with(client.datasource)
         assert client._sync_engine is None
 

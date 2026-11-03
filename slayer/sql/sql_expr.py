@@ -61,9 +61,8 @@ def _parse_inner(text: str, *, dialect: Optional[str]) -> exp.Expression:
     ``SELECT 1 WHERE ...`` for predicate parsing; the ``SELECT (...) AS _``
     form handles both predicates and expressions uniformly.
     """
-    wrapper = f"SELECT ({text}) AS __slayer_inner__"
     try:
-        select = sqlglot.parse_one(wrapper, dialect=dialect)
+        select = sqlglot.parse_one(f"SELECT ({text}) AS __slayer_inner__", dialect=dialect)
     except Exception as e:
         raise ValueError(f"Invalid Mode-A SQL expression {text!r}: {e}")
     expressions = select.args.get("expressions") or []

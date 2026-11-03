@@ -65,7 +65,8 @@ class TestProbeStatements:
     @pytest.mark.parametrize("version", [(25, 4), (25, 8), (26, 1)])
     def test_correlated_statement_from_25_4(self, version: tuple[int, int]) -> None:
         probe = CH.correlated_setting_probe(_profile(version, 1, None))
-        assert probe is not None and probe.sql(dialect="clickhouse") == CORRELATED_SQL
+        assert probe is not None
+        assert probe.sql(dialect="clickhouse") == CORRELATED_SQL
 
 
 class TestParseServerProfile:

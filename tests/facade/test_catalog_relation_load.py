@@ -64,4 +64,5 @@ def test_values_are_bound_never_spelled(loaded: tuple[CatalogSqlExecutor, list[s
     _, seen = loaded
     (insert,) = [s for s in seen if s.lstrip().upper().startswith("INSERT") and "Tbl" in s]
     assert insert.count("?") == len(RELATION.columns)
-    assert "it''s" not in insert and "a ? b" not in insert
+    assert "it''s" not in insert
+    assert "a ? b" not in insert

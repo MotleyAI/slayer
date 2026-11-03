@@ -110,7 +110,7 @@ def test_error_type_subclasses_slayererror_and_valueerror() -> None:
 class _CapturingClient:
     """Duck-typed SlayerSQLClient: records the probe SQL handed to get_column_types."""
 
-    datasource = DatasourceConfig(name=_DS, type="sqlite")
+    datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
 
     def __init__(self, sink: list[str]) -> None:
         self._sink = sink

@@ -168,12 +168,15 @@ from slayer.sql.client import (
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
-    build_sql_model_trial_query,
+    TypeProbe,
     classify_model_sql,
+    render_type_probe,
+    sql_model_trial_query,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
+from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
@@ -1958,11 +1961,11 @@ class SlayerQueryEngine:
             root = planned[-1]
             sql = generate_planned_stages(
                 planned, bundle=bundle, dialect=dialect,
-                projection_aliases=projection_result_keys(root_planned=root),
+                projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
+            probe = TypeProbe(sql=self._apply_policy(sql=sql, dialect=dialect, datasource=datasource))
         except Exception:
             logger.warning(
                 "get_column_types plan/generate failed for model '%s'",
@@ -1971,7 +1974,7 @@ class SlayerQueryEngine:
             return {}
 
         try:
-            raw_types = await client.get_column_types(sql=sql)
+            raw_types = await client.get_column_types(probe)
         except Exception:
             logger.warning(
                 "get_column_types probe failed for model '%s'", model_name,
@@ -2635,7 +2638,7 @@ class SlayerQueryEngine:
     @staticmethod
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[str, str]:
         """(row-count, distinct-count) profiling SQL; NULL key rows excluded from both."""
-        tbl = exp.to_table(sql_path=table, dialect=sqlglot_name)
+        tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
         for col in cols:
@@ -2979,8 +2982,9 @@ class SlayerQueryEngine:
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert model.sql is not None
         try:
+            dialect = dialect_for_ds_type(ds.type)
             await self._client_for(ds).get_column_types(
-                build_sql_model_trial_query(model.sql)
+                render_type_probe(sql_model_trial_query(model.sql, dialect=dialect), dialect=dialect)
             )
         except Exception as exc:
             if (

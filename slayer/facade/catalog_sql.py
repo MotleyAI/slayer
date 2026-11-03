@@ -1,4 +1,4 @@
-"""DuckDB-backed catalog SQL executor (DEV-1558).
+"""DuckDB-backed catalog SQL executor.
 
 Replaces the canned-row ``match_pg_catalog`` and (for the Postgres facade)
 ``match_info_schema`` matching with arbitrary SQL execution against an
@@ -56,7 +56,10 @@ from slayer.facade.catalog import (
     local_dimensions,
     local_metrics,
 )
+from slayer.facade.datatypes import datatype_to_jdbc
 from slayer.facade.rows import FacadeColumn, RowBatch
+from slayer.pg_facade.identity import PG_SERVER_VERSION
+from slayer.pg_facade.protocol import OID_BOOL, OID_DATE, OID_FLOAT8, OID_INT8, OID_TEXT, OID_TIMESTAMP
 from slayer.pg_facade.types import datatype_to_oid
 
 logger = logging.getLogger(__name__)
@@ -99,14 +102,6 @@ PG_SLAYER_ROLE_NAME = "slayer"
 PG_ENCODING_UTF8 = 6
 
 # Per-OID metadata (typname, typlen, typcategory) for the six wire types.
-from slayer.pg_facade.protocol import (  # noqa: E402 — wire OIDs co-located here
-    OID_BOOL,
-    OID_DATE,
-    OID_FLOAT8,
-    OID_INT8,
-    OID_TEXT,
-    OID_TIMESTAMP,
-)
 
 _TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_BOOL: ("bool", 1, "B"),
@@ -246,7 +241,7 @@ def _column_specs(table: FacadeTable):
     """Yield ``(name, DataType)`` for every projectable column (dims +
     metrics).
 
-    DEV-1567: cross-model entries are excluded so ``pg_attribute`` /
+    cross-model entries are excluded so ``pg_attribute`` /
     ``pg_class.relnatts`` advertise only the same-model column list. BI
     tools that flatten the catalog into a column view (Metabase, dbt
     schema scan) discover only base columns and don't issue fingerprint
@@ -433,7 +428,6 @@ def _build_pg_proc() -> CatalogRelation:
 
 
 def _build_pg_settings() -> CatalogRelation:
-    from slayer.pg_facade.identity import PG_SERVER_VERSION
     columns = [
         FacadeColumn(name="name", type=DataType.TEXT),
         FacadeColumn(name="setting", type=DataType.TEXT),
@@ -478,7 +472,7 @@ def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
             rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
                          "objsubid": 0, "description": tbl.description})
         attnum = 1
-        # DEV-1567: stay within the (filtered) pg_attribute attnum space so
+        # stay within the (filtered) pg_attribute attnum space so
         # ``objsubid`` always matches a real pg_attribute row.
         for d in local_dimensions(tbl):
             if d.description:
@@ -914,7 +908,7 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
     rows: list[dict[str, Any]] = []
-    # DEV-1567: exclude cross-model entries — they leak as dotted "columns"
+    # exclude cross-model entries — they leak as dotted "columns"
     # that Metabase fingerprint scans then project (see local_metrics
     # docstring in slayer/facade/catalog.py).
     for ds, tbl in _all_tables(catalog):
@@ -1013,7 +1007,6 @@ def _build_is_metrics(
     """SLayer's INFORMATION_SCHEMA.METRICS extension — JDBC-style type
     names (``DOUBLE`` / ``BIGINT`` / ``TIMESTAMP``) to match the contract
     the canned ``match_info_schema._serve_metrics`` previously emitted."""
-    from slayer.facade.datatypes import datatype_to_jdbc
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
@@ -1045,7 +1038,6 @@ def _build_is_dimensions(
     """SLayer's INFORMATION_SCHEMA.DIMENSIONS extension — JDBC-style type
     names to match the contract the canned ``_serve_dimensions``
     previously emitted."""
-    from slayer.facade.datatypes import datatype_to_jdbc
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
@@ -2074,7 +2066,7 @@ class CatalogSqlExecutor:
     ) -> None:
         self._datasource = datasource
         self._conn = duckdb.connect(":memory:")
-        # DEV-1558 security hardening (Codex round 9): lock down the
+        # lock down the
         # DuckDB instance so a catalog-shaped query can't pivot through
         # built-ins like ``read_text('/etc/hostname')`` to exfiltrate
         # local files. ``enable_external_access=false`` is DuckDB's
@@ -2119,23 +2111,27 @@ class CatalogSqlExecutor:
         self._register_stubs()
 
     def _register_relation(self, relation: CatalogRelation) -> None:
-        cols_ddl = ", ".join(
-            f'"{c.name}" {_DATATYPE_TO_DUCKDB_CREATE[c.type]}'
+        table = exp.table_(relation.name, quoted=True)
+        column_defs = [
+            exp.ColumnDef(
+                this=exp.to_identifier(c.name, quoted=True),
+                kind=exp.DataType.build(_DATATYPE_TO_DUCKDB_CREATE[c.type], dialect="duckdb"),
+            )
             for c in relation.columns
-        )
-        self._conn.execute(f'CREATE TABLE "{relation.name}" ({cols_ddl})')
+        ]
+        create = exp.Create(this=exp.Schema(this=table, expressions=column_defs), kind="TABLE")
+        self._conn.execute(create.sql(dialect="duckdb"))
         self._registered_tables.add(relation.name.lower())
         if not relation.rows:
             return
-        # Bulk insert via a single statement with a row-list expansion.
         col_names = [c.name for c in relation.columns]
-        placeholders = "(" + ", ".join("?" for _ in col_names) + ")"
         params = [tuple(row.get(name) for name in col_names) for row in relation.rows]
-        sql = (
-            f'INSERT INTO "{relation.name}" '
-            f'({", ".join(f"{chr(34)}{n}{chr(34)}" for n in col_names)}) VALUES {placeholders}'
+        insert = exp.insert(
+            expression=exp.Values(expressions=[exp.Tuple(expressions=[exp.Placeholder() for _ in col_names])]),
+            into=table.copy(),
+            columns=[exp.to_identifier(n, quoted=True) for n in col_names],
         )
-        self._conn.executemany(sql, params)
+        self._conn.executemany(insert.sql(dialect="duckdb"), params)
 
     def _register_stubs(self) -> None:
         # Only the data-aware stubs need DuckDB macros — constant-return
@@ -2287,20 +2283,11 @@ class CatalogSqlExecutor:
         Every column types as VARCHAR — NULL literals coerce freely to any
         downstream type, and the ``WHERE FALSE`` guarantees zero rows so
         the type choice is only for column-shape validation.
-
-        Column names come from client-controlled SQL identifiers; escape
-        the ``"`` character (SQL identifier delimiter) before embedding
-        so a valid quoted-identifier column ref can't malform the SQL we
-        parse. Double the quote character per the SQL-standard escape.
         """
-        def _quote_ident(name: str) -> str:
-            return '"' + name.replace('"', '""') + '"'
-
-        select_cols = ", ".join(
-            f"NULL::VARCHAR AS {_quote_ident(c)}" for c in columns
-        )
-        sub_sql = f"SELECT {select_cols} WHERE FALSE"
-        parsed_sub = sqlglot.parse_one(sub_sql, read="duckdb")
+        varchar = exp.DataType.build("VARCHAR", dialect="duckdb")
+        parsed_sub = exp.select(
+            *(exp.alias_(exp.cast(exp.null(), to=varchar), c, quoted=True) for c in columns)
+        ).where(exp.false())
         return exp.Subquery(
             this=parsed_sub,
             alias=exp.TableAlias(this=exp.to_identifier(alias)),

@@ -80,10 +80,12 @@ class TestPostgresStatementTimeout:
         assert types == {"n": "number", "s": "string"}
 
     async def test_async_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            await pg_client.get_column_types(_probe("SELECT bump() AS n"))
+            await pg_client.get_column_types(probe)
 
     def test_sync_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
         engine = pg_client._get_sync_engine_for_client()
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            get_column_types_sync(_probe("SELECT bump() AS n"), engine=engine, db_type="postgres")
+            get_column_types_sync(probe, engine=engine, db_type="postgres")
