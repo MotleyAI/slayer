@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "1.5.0"
+version = "1.6.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -134,6 +134,7 @@ basedpyright = "^1.39.10"
 pytest-xdist = ">=3.6"
 living-architecture = "0.4.0"
 jsonschema = "^4.23"
+filelock = ">=3.12,<4"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

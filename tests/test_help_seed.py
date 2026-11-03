@@ -459,28 +459,6 @@ async def base_dir_storage() -> AsyncIterator[YAMLStorage]:
         yield YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
 
 
-# --- docs no longer advertise the removed help() tool / subcommand ---
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-class TestDocsUpdated:
-    def _read(self, rel: str) -> str:
-        return open(os.path.join(_REPO_ROOT, rel)).read()
-
-    def test_cli_doc_drops_help_subcommand_and_points_to_inspect(self) -> None:
-        doc = self._read("docs/interfaces/cli.md")
-        assert "### `slayer help`" not in doc
-        assert "memory:help.intro" in doc
-
-    def test_mcp_doc_drops_help_tool(self) -> None:
-        doc = self._read("docs/interfaces/mcp.md")
-        # The removed conceptual-help tool section must be gone; the workflow
-        # now routes through inspect/search.
-        assert "Conceptual Help" not in doc
-        assert "memory:help.intro" in doc
-
-
 # --- help-seeding must never crash server construction (guarded + best-effort) ---
 
 

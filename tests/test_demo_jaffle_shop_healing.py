@@ -40,6 +40,7 @@ EXPECTED_EDGES = {
     ("items", "products"),
     ("orders", "customers"),
     ("orders", "stores"),
+    ("stores", "regions"),
     ("supplies", "products"),
     ("tweets", "customers"),
 }
@@ -192,6 +193,7 @@ def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
 
 EXPECTED_KEYS = {
     "customers": {"id"},
+    "regions": {"id"},
     "stores": {"id"},
     "products": {"sku"},
     "orders": {"id"},

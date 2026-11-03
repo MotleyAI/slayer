@@ -23,7 +23,7 @@ slayer datasources create demo --ingest
 slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
 ```
 
-This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `regions`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
 
 ```bash
 slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
@@ -158,11 +158,11 @@ Persist a note with `slayer memory save` so the next session inherits it:
 
 ```bash
 slayer memory save \
-  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
-  --entities jaffle_shop.orders.is_returned \
-  --id kb.returns.null-handling
+  --learning "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue" \
+  --entities jaffle_shop.orders.status,jaffle_shop.orders.order_total \
+  --id kb.orders.refunds
 
-slayer memory forget kb.returns.null-handling   # cascade-strips memory:<id> refs
+slayer memory forget kb.orders.refunds   # cascade-strips memory:<id> refs
 ```
 
 See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [CLI Reference](../reference/cli.md#slayer-search) for the full signature.

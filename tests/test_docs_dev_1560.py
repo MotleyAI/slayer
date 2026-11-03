@@ -22,7 +22,6 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MCP_DOCS = [
-    _REPO_ROOT / "docs" / "interfaces" / "mcp.md",
     _REPO_ROOT / "docs" / "reference" / "mcp.md",
 ]
 _NOTEBOOK = _REPO_ROOT / "docs" / "examples" / "08_mcp_introspect" / "mcp_introspect_nb.ipynb"
