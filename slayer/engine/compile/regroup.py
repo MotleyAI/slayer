@@ -71,4 +71,4 @@ def substitute_in_bound_filter(
     new_vk = substitute(key=bf.value_key, mapping=mapping)
     refs = tuple(walk_value_keys(new_vk))
     phase = max((k.phase for k in refs), default=new_vk.phase)
-    return BoundFilter(value_key=new_vk, phase=phase, referenced_keys=refs)
+    return bf.model_copy(update={"value_key": new_vk, "phase": phase, "referenced_keys": refs})

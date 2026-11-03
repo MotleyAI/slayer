@@ -1462,9 +1462,9 @@ def _snap_whole_periods(
             bf.value_key, grans_by_column=grans_by_column, column_type=column_type,
             now=now, upper_seen=upper_seen,
         )
-        snapped.append(bf if vk is bf.value_key else BoundFilter(
-            value_key=vk, phase=bf.phase, referenced_keys=tuple(walk_value_keys(vk)),
-        ))
+        snapped.append(bf if vk is bf.value_key else bf.model_copy(update={
+            "value_key": vk, "referenced_keys": tuple(walk_value_keys(vk)),
+        }))
     added = []
     for column, grans in grans_by_column.items():
         if column in upper_seen:
