@@ -805,8 +805,9 @@ class SqlDialect(BaseModel):
         integral = exp.And(
             this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))), expression=in_range,
         )
-        whole = exp.Cast(this=operand_copy(value), to=to.copy() if wide else exp.DataType.build("BIGINT"))
-        return case((integral, self.build_integer_text_try_cast(as_text(whole), to)))
+        # The guard sits inside the cast: a database folding a constant cast never sees an out-of-range one.
+        whole = exp.Cast(this=case((integral, operand_copy(value))), to=to.copy() if wide else exp.DataType.build("BIGINT"))
+        return self.build_integer_text_try_cast(as_text(whole), to)
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """Integer text (surrounding spaces ignored) through the database's ``TRY_CAST``, else NULL."""

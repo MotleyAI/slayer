@@ -99,6 +99,7 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
     ("CAST(-32769 AS DOUBLE)", "SMALLINT", None),
     (f"'{_HUGE}'", "BIGINT", None),
     ("'9223372036854775807'", "BIGINT", 9223372036854775807),
+    ("CAST(1e19 AS DOUBLE)", "BIGINT", None),
     ("'1.5'", "DOUBLE", 1.5),
     ("'1e3'", "DOUBLE", 1000.0),
 ]
