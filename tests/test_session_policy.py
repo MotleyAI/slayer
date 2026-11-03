@@ -18,8 +18,16 @@ from slayer.core.policy import (
 )
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import ScopedTable, _build_in, apply_session_policy
-from slayer.sql.dialects import SqlDialect
+from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect, _attach_ch_correlated_setting
+
+
+def _apply(sql: str, *, dialect: str, policy: SessionPolicy, has_column) -> str:
+    """Scope ``sql`` (a literal) through the statement-tree entry and render it."""
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    return apply_session_policy(
+        tree, sql_dialect=get_dialect(dialect), policy=policy, has_column=has_column,
+    ).sql(dialect=dialect)
 
 
 def _norm(sql: str, dialect: str = "sqlite") -> str:
@@ -53,7 +61,7 @@ def _col_policy(**kw):
 
 
 def test_scalar_value_emits_equality():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_col_policy(column="org", value="7ef3"),
@@ -65,7 +73,7 @@ def test_scalar_value_emits_equality():
 
 
 def test_list_value_emits_in():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_col_policy(column="org", value=["a", "b"]),
@@ -77,7 +85,7 @@ def test_list_value_emits_in():
 
 
 def test_bool_value_emits_boolean_literal():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_col_policy(column="is_active", value=True),
@@ -89,7 +97,7 @@ def test_bool_value_emits_boolean_literal():
 
 
 def test_joined_table_wrapped_alias_preserved():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM customers c LEFT JOIN orders o ON c.id = o.customer_id",
         dialect="sqlite",
         policy=_col_policy(column="org", value="x"),
@@ -103,7 +111,7 @@ def test_joined_table_wrapped_alias_preserved():
 
 
 def test_self_join_each_occurrence_wrapped_once():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders a JOIN orders b ON a.id = b.id",
         dialect="sqlite",
         policy=_col_policy(column="org", value="x"),
@@ -119,7 +127,7 @@ def test_schema_passed_to_has_column():
         seen["scoped"] = scoped
         return True
 
-    apply_session_policy(
+    _apply(
         "SELECT * FROM public.orders",
         dialect="postgres",
         policy=_col_policy(column="org", value="x"),
@@ -130,7 +138,7 @@ def test_schema_passed_to_has_column():
 
 
 def test_cte_reference_skipped_physical_wrapped():
-    out = apply_session_policy(
+    out = _apply(
         "WITH _cm_x AS (SELECT * FROM customers) "
         "SELECT * FROM orders LEFT JOIN _cm_x ON orders.id = _cm_x.id",
         dialect="sqlite",
@@ -142,7 +150,7 @@ def test_cte_reference_skipped_physical_wrapped():
 
 
 def test_collision_physical_inside_cte_is_wrapped():
-    out = apply_session_policy(
+    out = _apply(
         "WITH orders AS (SELECT * FROM orders) SELECT * FROM orders",
         dialect="sqlite",
         policy=_col_policy(column="org", value="x"),
@@ -153,7 +161,7 @@ def test_collision_physical_inside_cte_is_wrapped():
 
 @pytest.mark.parametrize("setop", ["UNION ALL", "UNION", "INTERSECT", "EXCEPT"])
 def test_set_operation_both_branches_wrapped(setop):
-    out = apply_session_policy(
+    out = _apply(
         f"SELECT id FROM orders {setop} SELECT id FROM archived_orders",
         dialect="sqlite",
         policy=_col_policy(column="org", value="x"),
@@ -166,7 +174,7 @@ def test_block_raises_naming_table():
     policy = _col_policy(column="org", value="x")
     has_column = has_column_factory({"exchange_rates": {"rate", "day"}})
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM exchange_rates",
             dialect="sqlite",
             policy=policy,
@@ -180,7 +188,7 @@ def test_block_raises_naming_table():
 def test_pass_leaves_table_unfiltered():
     policy = _col_policy(column="org", value="x", on_unapplicable="pass")
     has_column = has_column_factory({"exchange_rates": {"rate", "day"}})
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM exchange_rates",
         dialect="sqlite",
         policy=policy,
@@ -194,7 +202,7 @@ def test_none_presence_fails_closed_even_with_pass():
     policy = _col_policy(column="org", value="x", on_unapplicable="pass")
     has_column = has_column_factory({"orders": None})
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=policy,
@@ -207,7 +215,7 @@ def test_unknown_table_fails_closed():
     policy = _col_policy(column="org", value="x")
     has_column = has_column_factory({})  # nothing known -> None
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=policy,
@@ -226,12 +234,12 @@ def test_unknown_table_fails_closed():
 def test_non_select_root_fails_closed(sql):
     policy = _col_policy(column="org", value="x")
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(sql, dialect="sqlite", policy=policy, has_column=ALWAYS)
+        _apply(sql, dialect="sqlite", policy=policy, has_column=ALWAYS)
 
 
 def test_value_literal_is_injection_safe():
     policy = _col_policy(column="org", value="x' OR '1'='1")
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
     )
     assert "WHERE org = 'x'' OR ''1''=''1'" in out
@@ -272,7 +280,7 @@ def _exists_nodes(sql, dialect="sqlite"):
 
 
 def test_anchor_table_wrapped_directly():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM customers",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -286,7 +294,7 @@ def test_anchor_table_wrapped_directly():
 
 
 def test_anchor_list_value_emits_in():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM customers",
         dialect="sqlite",
         policy=_jpolicy(value=["orgA", "orgB"]),
@@ -299,7 +307,7 @@ def test_anchor_list_value_emits_in():
 
 
 def test_target_emits_correlated_exists():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -334,10 +342,10 @@ def test_both_path_orientations_emit_identical_sql():
             )
         ]
     )
-    out_tf = apply_session_policy(
+    out_tf = _apply(
         "SELECT * FROM orders", dialect="sqlite", policy=target_first, has_column=_boom_probe
     )
-    out_mf = apply_session_policy(
+    out_mf = _apply(
         "SELECT * FROM orders", dialect="sqlite", policy=master_first, has_column=_boom_probe
     )
     assert out_tf == out_mf
@@ -351,7 +359,7 @@ def test_multihop_terminal_on_anchor():
             "orders.customer_id = customers.id",
         ],
     )
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM line_items",
         dialect="sqlite",
         policy=_jpolicy(joins=[rule]),
@@ -374,7 +382,7 @@ def test_multihop_terminal_on_anchor():
 
 
 def test_whitelisted_table_passed_through():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM exchange_rates",
         dialect="sqlite",
         policy=_jpolicy(whitelist=["exchange_rates"]),
@@ -387,7 +395,7 @@ def test_whitelisted_table_passed_through():
 
 def test_number_series_table_function_passed_through():
     sql = "SELECT i FROM RANGE(0, 5) AS _seq(i)"
-    out = apply_session_policy(sql, dialect="duckdb", policy=_jpolicy(), has_column=_boom_probe)
+    out = _apply(sql, dialect="duckdb", policy=_jpolicy(), has_column=_boom_probe)
     assert out == _norm(sql, dialect="duckdb")
 
 
@@ -398,7 +406,7 @@ def test_number_series_table_function_passed_through():
 def test_data_reading_table_function_fails_closed(sql):
     policy = _jpolicy()
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(sql, dialect="duckdb", policy=policy, has_column=_boom_probe)
+        _apply(sql, dialect="duckdb", policy=policy, has_column=_boom_probe)
 
 
 # -- unlisted table fails closed ---------------------------------------------
@@ -407,7 +415,7 @@ def test_data_reading_table_function_fails_closed(sql):
 def test_unlisted_table_fails_closed():
     policy = _jpolicy()
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM secret_table",
             dialect="sqlite",
             policy=policy,
@@ -417,7 +425,7 @@ def test_unlisted_table_fails_closed():
 
 
 def test_all_three_kinds_in_one_query():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders o "
         "LEFT JOIN customers c ON c.id = o.customer_id "
         "LEFT JOIN exchange_rates r ON r.day = o.day",
@@ -437,7 +445,7 @@ def test_all_three_kinds_in_one_query():
 
 
 def test_same_target_twice_each_gets_own_exists():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders a JOIN orders b ON a.id = b.id",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -463,7 +471,7 @@ def test_user_sql_containing_rls_alias_still_isolated():
     # user table, not confused with the internal wrapper alias).
     policy = _jpolicy()
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM _rls_src",
             dialect="sqlite",
             policy=policy,
@@ -486,7 +494,7 @@ def test_target_named_like_internal_alias_no_collision():
             )
         ],
     )
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM _rls_src",
         dialect="sqlite",
         policy=SessionPolicy(ruleset=ruleset),
@@ -507,7 +515,7 @@ def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
     corrupted_ruleset = good.ruleset.model_copy(update={"table": "different_anchor"})
     bad_policy = good.model_copy(update={"ruleset": corrupted_ruleset})
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=bad_policy,
@@ -529,7 +537,7 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
     bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError) as exc:
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=bad_policy,
@@ -557,7 +565,7 @@ def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
     bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(
+        _apply(
             "SELECT * FROM public.orders",
             dialect="postgres",
             policy=bad_policy,
@@ -582,7 +590,7 @@ def test_corrupted_anchor_as_intermediate_fails_closed():
     bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
     bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=bad_policy,
@@ -607,7 +615,7 @@ def test_anchor_only_ruleset_anchor_passes():
         whitelist=["exchange_rates"],
     )
     policy = SessionPolicy(ruleset=ruleset)
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM customers", dialect="sqlite", policy=policy, has_column=_boom_probe
     )
     assert "organization_uuid = 'orgA'" in out
@@ -619,7 +627,7 @@ def test_anchor_only_ruleset_whitelist_passes():
         table="customers", column="organization_uuid", value="orgA",
         whitelist=["exchange_rates"],
     )
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM exchange_rates",
         dialect="sqlite",
         policy=SessionPolicy(ruleset=ruleset),
@@ -634,7 +642,7 @@ def test_anchor_only_ruleset_unlisted_fails():
     )
     policy = SessionPolicy(ruleset=ruleset)
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(
+        _apply(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=policy,
@@ -646,14 +654,14 @@ def test_anchor_only_ruleset_unlisted_fails():
 
 
 def test_zero_physical_tables_passes():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT 1", dialect="sqlite", policy=_jpolicy(), has_column=_boom_probe
     )
     assert _norm(out) == _norm("SELECT 1")
 
 
 def test_cte_only_no_physical_table_passes():
-    out = apply_session_policy(
+    out = _apply(
         "WITH x AS (SELECT 1 AS n) SELECT * FROM x",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -664,7 +672,7 @@ def test_cte_only_no_physical_table_passes():
 
 def test_cte_reading_physical_target_is_classified():
     """A physical target inside a CTE body is still wrapped with EXISTS."""
-    out = apply_session_policy(
+    out = _apply(
         "WITH x AS (SELECT * FROM orders) SELECT * FROM x",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -677,7 +685,7 @@ def test_cte_reading_physical_target_is_classified():
 
 
 def test_target_match_is_case_insensitive():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM ORDERS",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -687,7 +695,7 @@ def test_target_match_is_case_insensitive():
 
 
 def test_bare_target_matches_any_schema():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM public.orders",
         dialect="postgres",
         policy=_jpolicy(),
@@ -700,7 +708,7 @@ def test_bare_target_matches_any_schema():
 
 
 def test_join_terminal_value_is_injection_safe():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_jpolicy(value="x' OR '1'='1"),
@@ -716,7 +724,7 @@ def test_join_terminal_value_is_injection_safe():
 
 
 def test_clickhouse_join_emits_guarded_in_without_settings():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="clickhouse",
         policy=_jpolicy(),
@@ -749,7 +757,7 @@ _LINE_ITEMS_RULE = JoinFilterRule(
 
 
 def _ch(sql: str, policy: SessionPolicy) -> str:
-    return apply_session_policy(
+    return _apply(
         sql, dialect="clickhouse", policy=policy, has_column=_boom_probe
     )
 
@@ -855,7 +863,7 @@ def test_other_dialects_keep_correlated_exists_byte_for_byte(dialect):
         ("SELECT * FROM orders", _EXISTS_SINGLE_HOP),
         ("SELECT * FROM line_items", _EXISTS_MULTI_HOP),
     ]:
-        out = apply_session_policy(sql, dialect=dialect, policy=policy, has_column=_boom_probe)
+        out = _apply(sql, dialect=dialect, policy=policy, has_column=_boom_probe)
         assert out == expected
 
 
@@ -871,7 +879,7 @@ def test_clickhouse_correlated_setting_forced_on_when_disabled():
 
 
 def test_non_clickhouse_join_no_settings():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
         policy=_jpolicy(),
@@ -881,7 +889,7 @@ def test_non_clickhouse_join_no_settings():
 
 
 def test_clickhouse_column_only_does_not_append_settings():
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM orders",
         dialect="clickhouse",
         policy=_col_policy(column="organization_uuid", value="orgA"),
@@ -892,7 +900,7 @@ def test_clickhouse_column_only_does_not_append_settings():
 
 def test_clickhouse_anchor_only_no_settings():
     """An anchor-only join ruleset (no EXISTS emitted) attaches no CH setting."""
-    out = apply_session_policy(
+    out = _apply(
         "SELECT * FROM customers",
         dialect="clickhouse",
         policy=_jpolicy(),

@@ -840,7 +840,7 @@ async def _render(engine: SlayerQueryEngine, payload: Any) -> tuple[Expression, 
     )
     rendered = await engine._plan_and_render(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,
-        splice_chain=chain, as_statement=True,
+        splice_chain=chain,
     )
     prepared = await engine._prepare_pipeline(
         query=main, named_queries=named, runtime_kwarg={}, prefer_data_source=ds,
