@@ -10,9 +10,8 @@ import pytest
 import sqlalchemy as sa
 import yaml
 
-import slayer.osi.converter as osi_converter_module
-
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
@@ -59,11 +58,8 @@ def seed_db(*, directory: Path, dialect: str = "duckdb", statements: Sequence[st
 
 
 def disable_type_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every derived-expression type probe fail, as on a database that cannot report one."""
-    def _fail(**_: Any) -> dict[str, str]:
-        raise RuntimeError("probe unavailable")
-
-    monkeypatch.setattr(osi_converter_module, "get_column_types_sync", _fail)
+    """Make every derived-expression type probe report nothing, as on a database that cannot report one."""
+    monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
 
 
 def db_url(*, path: Path, dialect: str) -> str:

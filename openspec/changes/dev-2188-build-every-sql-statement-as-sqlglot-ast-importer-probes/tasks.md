@@ -1,14 +1,14 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 `tests/test_law_sql_built_as_ast.py`: the law per design.md (forms, keyword list, shape exemptions incl. the one-interpolation parse exemption); planted cases — f-string / `+` / `%` / `.format` SELECT each fail, each exemption shape passes; verify it FAILS on the current tree, listing every site in design.md's site table and nothing else (calibrate the shape against the tree; no file allowlist)
-- [ ] 1.2 Spec scenarios of `specs/importers/meaning-preservation/spec.md` as importer tests (dbt, cube, OSI) on SQLite, DuckDB and Postgres (pytest-postgresql; unit, no integration marker): mixed-case schema-qualified, reserved-word `order`, catalog-qualified (DuckDB attached catalog), quoted name containing a dot (kept separate from a genuine three-part name), expression probe over each, unreadable / non-read-only source SQL, unreadable expression; verify each fails today
-- [ ] 1.3 Row-bound matrix: `SqlDialect.type_probe` renders SQLite `LIMIT 1`, Postgres/DuckDB/others `LIMIT 0`, T-SQL `TOP 0` with no trailing `LIMIT`; the door accepts only `TypeProbe` (a raw `str` is a basedpyright error and a runtime refusal); `_described` runs exactly one statement
-- [ ] 1.4 `LiveSource.probe` over `sql_table=` and `sql=` sources with a non-literal expression composes `FROM <source>`; parse failure → `None`
-- [ ] 1.5 Engine model typing (`QueryEngine.get_column_types`) emits today's wrapper shape (`SELECT * FROM (...) AS _types LIMIT n` / `TOP`) with policy applied; save-time trial and `sql_result_types` still type sql-mode models
-- [ ] 1.6 Drift probe over a mixed-case / reserved-word source table still classifies drift vs broken SQL as today
-- [ ] 1.7 Facade catalog: execution test with several rows, mixed-case and quoted column names, values containing `?` and `'`; placeholders render as DuckDB `?` and values never appear in the SQL text
-- [ ] 1.8 Session-setting hooks: each dialect's `statement_timeout` / ClickHouse `correlated_setting_probe` / Snowflake `USE` renders the same statement text as today (modulo quoting); `test_law_ast_dialect_hooks.py` covers the renamed hooks
-- [ ] 1.9 SQLite introspection probes, own-store `?` queries, pg wire command tag and demo loader keep behaviour (existing tests green; add one where none covers the path)
+- [x] 1.1 `tests/test_law_sql_built_as_ast.py`: the law per design.md (forms, keyword list, shape exemptions incl. the one-interpolation parse exemption); planted cases — f-string / `+` / `%` / `.format` SELECT each fail, each exemption shape passes; verify it FAILS on the current tree, listing every site in design.md's site table and nothing else (calibrate the shape against the tree; no file allowlist)
+- [x] 1.2 Spec scenarios of `specs/importers/meaning-preservation/spec.md` as importer tests (dbt, cube, OSI) on SQLite, DuckDB and Postgres (pytest-postgresql; unit, no integration marker): mixed-case schema-qualified, reserved-word `order`, catalog-qualified (DuckDB attached catalog), quoted name containing a dot (kept separate from a genuine three-part name), expression probe over each, unreadable / non-read-only source SQL; verify each fails today (reserved-word base columns and the DuckDB catalog name already pass: regression guards)
+- [x] 1.3 Row-bound matrix: `SqlDialect.type_probe` renders SQLite `LIMIT 1`, Postgres/DuckDB/others `LIMIT 0`, T-SQL `TOP 0` with no trailing `LIMIT`; the door accepts only `TypeProbe` (a raw `str` is a basedpyright error and a runtime refusal); `_described` runs exactly one statement
+- [x] 1.4 `LiveSource.probe` over `sql_table=` and `sql=` sources with a non-literal expression composes `FROM <source>`; parse failure → `None`
+- [x] 1.5 Engine model typing (`QueryEngine.get_column_types`) emits today's wrapper shape (`SELECT * FROM (...) AS _types LIMIT n` / `TOP`) with policy applied; save-time trial and `sql_result_types` still type sql-mode models
+- [x] 1.6 Drift probe over a mixed-case / reserved-word source table still classifies drift vs broken SQL as today
+- [x] 1.7 Facade catalog: execution test with several rows, mixed-case and quoted column names, values containing `?` and `'`; placeholders render as DuckDB `?` and values never appear in the SQL text
+- [x] 1.8 Session-setting hooks: each dialect's `statement_timeout` / ClickHouse `correlated_setting_probe` / Snowflake `USE` renders the same statement text as today (modulo quoting); `test_law_ast_dialect_hooks.py` covers the renamed hooks
+- [x] 1.9 SQLite introspection probes, own-store `?` queries, pg wire command tag and demo loader keep behaviour (existing tests green; add one where none covers the path)
 
 ## 2. Building blocks
 

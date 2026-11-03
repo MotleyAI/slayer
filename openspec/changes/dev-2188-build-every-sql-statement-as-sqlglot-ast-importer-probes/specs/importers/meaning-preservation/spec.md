@@ -38,12 +38,8 @@ When the import's datasource is configured and reachable, each imported column's
 
 #### Scenario: Expression probe over a quoted source
 - **WHEN** a dbt dimension's `expr` is `qty * 2` over a model whose source is a mixed-case or reserved-word table, or SQL selecting from one, and the datasource is reachable
-- **THEN** the dimension is typed from the probe as the integer type the database reports
+- **THEN** the dimension is typed from the probe — `INT` where the driver names the type, else the numeric type its type category gives — never from the offline fallback
 
 #### Scenario: Source SQL the importer cannot read
 - **WHEN** a dbt model's SQL, with refs inlined, is text the importer cannot read as a query, or is not a read-only query
 - **THEN** the import completes, its columns fall back per this requirement, and the report holds an informational entry saying types were not checked against the database, naming the reason
-
-#### Scenario: Expression the importer cannot read
-- **WHEN** a cube dimension's `sql` is text the importer cannot read as a SQL expression and declares `type: number`
-- **THEN** the import completes and the dimension is typed from its declared type

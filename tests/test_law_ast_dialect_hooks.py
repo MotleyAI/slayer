@@ -22,7 +22,17 @@ _LOCALNS = {"DatasourceConfig": DatasourceConfig, "sa": sa}
 
 
 def _returns_ast(hint: object) -> bool:
-    return isinstance(hint, type) and issubclass(hint, Expression)
+    if isinstance(hint, type):
+        return issubclass(hint, Expression)
+    if typing.get_origin(hint) is Union or isinstance(hint, types.UnionType):
+        return any(_returns_ast(a) for a in typing.get_args(hint))
+    return False
+
+
+def _ast_hooks(cls: type) -> set[str]:
+    return {name for name, fn in inspect.getmembers(cls, inspect.isfunction)
+            if fn.__module__.startswith("slayer.")
+            and _returns_ast(typing.get_type_hints(fn, localns=_LOCALNS).get("return"))}
 
 
 def _forbidden(hint: object) -> bool:
@@ -90,6 +100,19 @@ class _Good(SqlDialect):
 
     def describe(self, name: str) -> str:
         return name
+
+
+def test_session_and_probe_hooks_are_ast_hooks() -> None:
+    assert {"statement_timeout", "correlated_setting_probe", "type_probe"} <= _ast_hooks(SqlDialect)
+
+
+class _BadOptional(SqlDialect):
+    def build_maybe(self, col: str) -> Expression | None:
+        return exp.column(col)
+
+
+def test_law_flags_an_optional_ast_return() -> None:
+    assert [v for v in _violations(_BadOptional) if "build_maybe" in v]
 
 
 def test_law_flags_every_forbidden_shape() -> None:

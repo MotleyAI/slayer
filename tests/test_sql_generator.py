@@ -8245,8 +8245,8 @@ class TestGetColumnTypesSql:
             with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
                 captured_sql = []
 
-                async def capture_sql(sql):
-                    captured_sql.append(sql)
+                async def capture_sql(probe):
+                    captured_sql.append(probe.sql)
                     return {}
 
                 mock_client = MagicMock()
@@ -8295,7 +8295,7 @@ class TestGetColumnTypesSql:
         # Real attribute, not an auto-Mock: it feeds the cache key's credential digest, which hashes it.
         mock_ds.credentials_json = None
         with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            async def capture_types(sql):
+            async def capture_types(probe):
                 return {"orders.revenue_max": "number", "orders.customer_score_max": "number"}
 
             mock_client = MagicMock()

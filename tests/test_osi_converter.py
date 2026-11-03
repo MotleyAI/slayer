@@ -16,6 +16,7 @@ import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.syntax import AggCall, Ref, parse_expr
+from slayer.importers.column_types import LiveSource
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
     OSIDataset,
@@ -1301,7 +1302,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
 
 @SELF_NAMED
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
-    monkeypatch.setattr(OsiToSlayerConverter, "_probe_expression_type", lambda self, model, expr: None)
+    monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
     cols = _staff_columns(staff_engine, source="staff",
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
     assert cols["skills"] == (DataType.ARRAY, DataType.TEXT)
