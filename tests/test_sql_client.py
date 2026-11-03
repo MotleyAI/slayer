@@ -7,23 +7,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
+from sqlglot import exp
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql.client import (
-    _build_type_probe_sql,
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
-    _get_column_types_sync,
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
     _map_type_code,
     _read_only_transaction_sql,
-    build_sql_model_trial_query,
     classify_model_sql,
+    get_column_types_sync,
+    render_type_probe,
 )
+from slayer.sql.dialects import SqliteDialect
 
 from tests._engine_helpers import disposable_engine
 
@@ -469,41 +470,6 @@ class TestRetryRejectsNonPositiveAttempts:
         called.assert_not_called()
 
 
-class TestBuildTypeProbeSQL:
-    """_build_type_probe_sql must emit dialect-appropriate row-limiting syntax."""
-
-    BASE = "SELECT id, name FROM orders"
-
-    def test_standard_dialect_uses_limit_0(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type="postgres")
-        assert "LIMIT 0" in sql
-        assert "TOP" not in sql
-
-    def test_sqlite_uses_limit_1(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type="sqlite")
-        assert "LIMIT 1" in sql
-        assert "TOP" not in sql
-
-    def test_mssql_uses_top_0(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type="mssql")
-        assert "SELECT TOP 0" in sql
-        assert "LIMIT" not in sql
-
-    def test_sqlserver_alias_uses_top_0(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type="sqlserver")
-        assert "SELECT TOP 0" in sql
-        assert "LIMIT" not in sql
-
-    def test_tsql_alias_uses_top_0(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type="tsql")
-        assert "SELECT TOP 0" in sql
-        assert "LIMIT" not in sql
-
-    def test_none_db_type_uses_limit(self) -> None:
-        sql = _build_type_probe_sql(self.BASE, db_type=None)
-        assert "LIMIT 0" in sql
-
-
 class TestIsAuthFailure:
     """Credential rejection is classified apart from transient errors: retrying
     is pointless, so the engine gets thrown away instead."""
@@ -602,6 +568,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         cleanup ``execute`` gets."""
         client = self._client()
         client._sync_engine = object()
+        probe = render_type_probe(exp.select("1"), dialect=SqliteDialect())
         with (
             patch.object(
                 sql_client.SlayerSQLClient, "_get_column_types",
@@ -610,7 +577,7 @@ class TestClientDiscardsEngineOnAuthFailure:
             patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
-                await client.get_column_types("SELECT 1")
+                await client.get_column_types(probe)
         invalidate.assert_called_once_with(client.datasource)
         assert client._sync_engine is None
 
@@ -652,41 +619,6 @@ class TestClientDiscardsEngineOnAuthFailure:
         ):
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
-
-
-class TestBuildSqlModelTrialQuery:
-    """``build_sql_model_trial_query`` wraps model SQL in the zero-row probe
-    schema drift already ships, stripping a single trailing terminator."""
-
-    def test_wraps_plain_sql(self) -> None:
-        assert build_sql_model_trial_query("SELECT a FROM t") == (
-            "SELECT * FROM (\nSELECT a FROM t\n) AS _sd_validate WHERE 1=0"
-        )
-
-    def test_strips_trailing_semicolon(self) -> None:
-        assert build_sql_model_trial_query("SELECT 1;") == (
-            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
-        )
-
-    def test_strips_trailing_whitespace_and_semicolon(self) -> None:
-        assert build_sql_model_trial_query("SELECT 1 ;  \n") == (
-            "SELECT * FROM (\nSELECT 1\n) AS _sd_validate WHERE 1=0"
-        )
-
-    def test_strips_only_one_terminator(self) -> None:
-        # A second ';' is left inside the wrapper — only one is stripped.
-        assert build_sql_model_trial_query("SELECT 1;;") == (
-            "SELECT * FROM (\nSELECT 1;\n) AS _sd_validate WHERE 1=0"
-        )
-
-    def test_trailing_line_comment_does_not_absorb_wrapper(self) -> None:
-        # A terminal ``-- comment`` must not swallow the closing paren/guard;
-        # the newline before ``)`` keeps the probe valid.
-        wrapped = build_sql_model_trial_query("SELECT a FROM t -- note")
-        assert wrapped == (
-            "SELECT * FROM (\nSELECT a FROM t -- note\n) AS _sd_validate WHERE 1=0"
-        )
-        assert wrapped.rstrip().endswith("WHERE 1=0")
 
 
 def _typed_exc(type_name: str, message: str = "boom") -> Exception:
@@ -865,8 +797,9 @@ class TestProbeRollsBack:
                 return real_rollback(self)
 
             with patch.object(sa.Connection, "rollback", _spy_rollback):
-                types = _get_column_types_sync(
-                    "SELECT a, b FROM t", db_type="sqlite", engine=eng,
+                types = get_column_types_sync(
+                    render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect()),
+                    db_type="sqlite", engine=eng,
                 )
             assert types == {"a": "number", "b": "string"}
             assert "rollback" in seen

@@ -81,9 +81,13 @@ def test_data_row_frame_with_null() -> None:
 
 
 def test_command_complete_frame() -> None:
-    type_char, body = _single(p.encode_command_complete("SELECT 3"))
+    type_char, body = _single(p.encode_command_complete(command="SELECT", rows=3))
     assert type_char == "C"
     assert body == b"SELECT 3\x00"
+
+
+def test_command_complete_frame_without_a_row_count() -> None:
+    assert _single(p.encode_command_complete(command="SET")) == ("C", b"SET\x00")
 
 
 def test_empty_query_no_data_parse_bind_close_complete_frames() -> None:
@@ -237,7 +241,7 @@ def test_decode_execute() -> None:
 
 
 def test_split_messages_handles_back_to_back() -> None:
-    buf = p.encode_parse_complete() + p.encode_bind_complete() + p.encode_command_complete("SELECT 1")
+    buf = p.encode_parse_complete() + p.encode_bind_complete() + p.encode_command_complete(command="SELECT", rows=1)
     msgs = p.split_messages(buf)
     assert [m[0] for m in msgs] == ["1", "2", "C"]
 

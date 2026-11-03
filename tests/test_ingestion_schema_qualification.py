@@ -431,7 +431,7 @@ class TestAttachedCatalogs:
             try:
                 model = introspect_table_to_model(
                     sa_engine=engine, inspector=sa.inspect(engine),
-                    table_name="shared", schema=None, data_source="ds",
+                    table_name="shared", ref=None, data_source="ds",
                 )
             except ValueError:
                 return                 # refusing to guess is acceptable
@@ -456,7 +456,7 @@ class TestAttachedCatalogs:
             insp = sa.inspect(engine)
             model = introspect_table_to_model(
                 sa_engine=engine, inspector=insp, table_name="shared",
-                schema=None, data_source="ds",
+                ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
             assert model.sql_table == "shared"      # default stays bare
@@ -483,7 +483,7 @@ class TestAttachedCatalogs:
             monkeypatch.setattr(insp, "get_columns", _bare_returns_union)
             model = introspect_table_to_model(
                 sa_engine=engine, inspector=insp, table_name="shared",
-                schema=None, data_source="ds",
+                ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
 

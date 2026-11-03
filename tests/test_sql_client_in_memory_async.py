@@ -26,10 +26,12 @@ from collections.abc import Iterable
 import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
+import sqlglot
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, render_type_probe
+from slayer.sql.dialects import SqliteDialect
 
 
 def _in_memory_client(name: str = "test") -> SlayerSQLClient:
@@ -96,7 +98,8 @@ async def test_get_column_types_cross_call_sees_same_in_memory_db() -> None:
             "INSERT INTO u VALUES (1, 'x')",
         ],
     )
-    types = await client.get_column_types("SELECT a, b FROM u")
+    types = await client.get_column_types(
+        render_type_probe(sqlglot.parse_one("SELECT a, b FROM u"), dialect=SqliteDialect()))
     assert types == {"a": "number", "b": "string"}
 
 

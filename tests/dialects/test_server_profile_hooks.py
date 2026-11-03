@@ -53,18 +53,20 @@ class TestInSubqueryHooks:
 class TestProbeStatements:
     def test_default_probes_nothing(self) -> None:
         assert SqlDialect().server_profile_sql() is None
-        assert SqlDialect().correlated_setting_sql(_profile((25, 8), 1, None)) is None
+        assert SqlDialect().correlated_setting_probe(_profile((25, 8), 1, None)) is None
 
     def test_clickhouse_profile_statement(self) -> None:
         assert CH.server_profile_sql() == PROFILE_SQL
 
     @pytest.mark.parametrize("version", [None, (24, 8), (25, 3)])
     def test_no_correlated_statement_below_25_4(self, version: tuple[int, int] | None) -> None:
-        assert CH.correlated_setting_sql(_profile(version, 1, None)) is None
+        assert CH.correlated_setting_probe(_profile(version, 1, None)) is None
 
     @pytest.mark.parametrize("version", [(25, 4), (25, 8), (26, 1)])
     def test_correlated_statement_from_25_4(self, version: tuple[int, int]) -> None:
-        assert CH.correlated_setting_sql(_profile(version, 1, None)) == CORRELATED_SQL
+        probe = CH.correlated_setting_probe(_profile(version, 1, None))
+        assert probe is not None
+        assert probe.sql(dialect="clickhouse") == CORRELATED_SQL
 
 
 class TestParseServerProfile:

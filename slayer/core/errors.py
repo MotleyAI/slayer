@@ -599,6 +599,14 @@ class ModeASqlParseError(SlayerError, ValueError):
         ))
 
 
+class NotReadOnlyQueryError(SlayerError):
+    """SQL that must be a read-only query is not one."""
+
+    def __init__(self, *, sql: str) -> None:
+        self.sql = sql
+        super().__init__(f"Not a read-only query: {sql!r}.")
+
+
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope."""
 

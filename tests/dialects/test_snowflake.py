@@ -383,18 +383,22 @@ def test_apply_session_overrides_closes_cursor_on_failure() -> None:
     fake_cur.close.assert_called_once()
 
 
-# statement_timeout_sql
+# statement_timeout
 
 
-def test_statement_timeout_sql_exact_shape() -> None:
+def test_statement_timeout_exact_shape() -> None:
     d = SnowflakeDialect()
-    assert d.statement_timeout_sql(42) == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 42"
+    statement = d.statement_timeout(42)
+    assert statement is not None
+    assert statement.sql(dialect="snowflake") == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 42"
 
 
-def test_statement_timeout_sql_zero_seconds() -> None:
+def test_statement_timeout_zero_seconds() -> None:
     """``0`` is Snowflake's "no timeout" sentinel."""
     d = SnowflakeDialect()
-    assert d.statement_timeout_sql(0) == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 0"
+    statement = d.statement_timeout(0)
+    assert statement is not None
+    assert statement.sql(dialect="snowflake") == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 0"
 
 
 # map_cursor_type_code — snowflake-connector FieldType integer codes

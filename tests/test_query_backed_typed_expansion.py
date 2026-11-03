@@ -27,6 +27,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.sql.type_probe import TypeProbe
 
 
 # ---------------------------------------------------------------------------
@@ -659,9 +660,10 @@ class TestGetColumnTypesTypedPipeline:
             original_generate = query_engine_module.generate_planned_stages
 
             def _wrapper(*args, **kwargs):
-                sql = original_generate(*args, **kwargs)
-                planned_calls.append(sql)
-                return sql
+                probe = original_generate(*args, **kwargs)
+                assert isinstance(probe, TypeProbe)
+                planned_calls.append(probe.sql)
+                return probe
 
             with patch.object(
                 query_engine_module, "generate_planned_stages", _wrapper,

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
 from slayer.engine.ingestion import introspect_table_to_model
-from slayer.sql.client import CATEGORY_DATA_TYPES, get_column_type_names_sync, get_column_types_sync
+from slayer.engine.schema_scope import table_schema_ref
+from slayer.sql.client import CATEGORY_DATA_TYPES, probe_columns_sync, render_type_probe
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
+from slayer.sql.render.parse import parse_expression, parse_query, parse_table
 
 Typed = tuple[DataType, DataType | None]
 
@@ -102,26 +106,39 @@ class LiveSource:
                  sql_table: str | None = None, sql: str | None = None) -> None:
         self.engine = engine
         self.data_source = data_source
-        self.db_type = db_type
+        self.db_type = db_type or engine.dialect.name
         self.dialect = dialect
-        self._from = sql_table if sql_table else f"({(sql or '').strip().rstrip(';')}) AS _slayer_src"
-        self.columns: dict[str, Typed] = self._reflect(sql_table) if sql_table else self._described()
+        self._target = dialect_for_ds_type(db_type) if db_type else dialect_for_sa_backend(engine.dialect.name)
+        self._source: SqlDialect = get_dialect(dialect) if dialect in SQLGLOT_NAMES else self._target
+        if sql_table:
+            table = parse_table(name=sql_table, dialect=self._source)
+            self._relation: Expression = table
+            self.columns: dict[str, Typed] = self._reflect(table)
+        else:
+            query = parse_query(sql=sql or "", target_dialect=self._target, parse_dialect=self._source)
+            self._relation = query.subquery("_slayer_src")
+            self.columns = self._described()
 
-    def _reflect(self, sql_table: str) -> dict[str, Typed]:
-        schema, _, table = sql_table.rpartition(".")
-        model = introspect_table_to_model(sa_engine=self.engine, inspector=sa.inspect(self.engine), table_name=table,
-                                          schema=schema or None, data_source=self.data_source)
+    def _reflect(self, table: exp.Table) -> dict[str, Typed]:
+        ref = table_schema_ref(catalog=table.catalog, schema=table.db, sa_engine=self.engine)
+        model = introspect_table_to_model(sa_engine=self.engine, inspector=sa.inspect(self.engine),
+                                          table_name=table.name, ref=ref, data_source=self.data_source)
+        if not model.columns:
+            raise ValueError(f"table {table.sql(dialect=self._source.sqlglot_name)} was not found")
         return {c.name: (c.type, c.element_type) for c in model.columns}
 
-    def _described(self) -> dict[str, Typed]:
-        probe = f"SELECT * FROM {self._from}"
-        kwargs = {"engine": self.engine, "db_type": self.db_type, "datasource_name": self.data_source}
-        names = get_column_type_names_sync(probe, **kwargs)
+    def _probed(self, query: exp.Select) -> dict[str, Typed]:
+        """Each column of ``query``: the driver's type name where it gives one, else its type category."""
         out: dict[str, Typed] = {}
-        for col, category in get_column_types_sync(probe, **kwargs).items():
-            named = declared_type(name, dialect=self.dialect) if (name := names.get(col)) else None
-            out[col] = named or (CATEGORY_DATA_TYPES[category], DataType.UNKNOWN if category == "list" else None)
+        for col, found in probe_columns_sync(render_type_probe(query, dialect=self._target), engine=self.engine,
+                                             db_type=self.db_type, datasource_name=self.data_source).items():
+            named = declared_type(found.type_name, dialect=self.dialect) if found.type_name else None
+            out[col] = named or (CATEGORY_DATA_TYPES[found.category],
+                                 DataType.UNKNOWN if found.category == "list" else None)
         return out
+
+    def _described(self) -> dict[str, Typed]:
+        return self._probed(exp.select("*").from_(self._relation.copy()))
 
     def column(self, physical: str) -> Typed | None:
         """The live type of the physical column ``physical``."""
@@ -130,16 +147,14 @@ class LiveSource:
         return next((t for n, t in self.columns.items() if n.lower() == physical.lower()), None)
 
     def probe(self, expr: str) -> Typed | None:
-        """``expr``'s type from a zero-row probe; a list's elements are ``UNKNOWN``."""
+        """``expr``'s type from a zero-row probe over the source; a list's elements are ``UNKNOWN``."""
         try:
-            types = get_column_types_sync(f"SELECT ({expr}) AS _slayer_probe FROM {self._from}", engine=self.engine,
-                                          db_type=self.db_type, datasource_name=self.data_source)
+            value = parse_expression(sql=expr, target_dialect=self._target, parse_dialect=self._source)
+            types = self._probed(exp.select(exp.paren(value).as_("_slayer_probe")).from_(self._relation.copy()))
         except Exception:  # noqa: BLE001 — a probe is best-effort
             return None
-        category = next(iter(types.values()), None)
-        if category is None:
-            return None
-        return CATEGORY_DATA_TYPES[category], DataType.UNKNOWN if category == "list" else None
+        typed = next(iter(types.values()), None)
+        return (DataType.ARRAY, DataType.UNKNOWN) if typed is not None and typed[0] is DataType.ARRAY else typed
 
 
 class LiveDatasource:

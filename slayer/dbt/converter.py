@@ -51,6 +51,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
     LiveSource,
@@ -353,7 +354,7 @@ class DbtToSlayerConverter:
                 sa_engine=sa_engine,
                 inspector=inspector,
                 table_name=table_name,
-                schema=rm.schema_name,
+                ref=requested_schema_ref(rm.schema_name, sa_engine=sa_engine),
                 data_source=self.data_source,
                 model_name=rm.name,
             )
