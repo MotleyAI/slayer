@@ -58,7 +58,7 @@ Keeps Python code written for SLayer 1.5.0 working, with a deprecation warning u
 
 ### Requirement: New forms never warn
 
-The engine-supplied forms SHALL emit no `FutureWarning`: the sync ingestion functions given `client`, `ingest_datasource_async` and `ingest_datasource_report_async` (both requiring `client`), `ingest_datasource_idempotent` and `validate_datasource` given `client`, and converters used through `collect_metadata(client=...)` + `convert()`. A sync ingestion call given a client SHALL leave that client usable afterwards.
+The engine-supplied forms SHALL emit no `FutureWarning`: the sync ingestion functions given `client`, `ingest_datasource_async` and `ingest_datasource_report_async` (both requiring `client`), `ingest_datasource_idempotent` given `client`, `validate_datasource` given `client` and no `sql_clients`, and converters used through `collect_metadata(client=...)` + `convert()`. A sync ingestion call given a client SHALL leave that client usable afterwards.
 
 #### Scenario: Client-supplied calls are silent
 
