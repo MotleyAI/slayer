@@ -6,7 +6,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column
-from slayer.core.syntax import AggCall, Cmp, Literal, Ref, bind_variables, parse_expr
+from slayer.core.query import SlayerQuery, extract_placeholder_names
+from slayer.core.syntax import AggCall, Cmp, Literal, Ref, bind_variables, parse_expr, variable_names
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2101_fixtures import (
     EXEC_BACKENDS, customers_model, emit, ids, m, make_exec_engine, num, orders_model, q, single,
@@ -84,6 +85,18 @@ class TestPlaceholders:
     def test_placeholder_in_a_comment_is_neither_bound_nor_required(self, text: str) -> None:
         bound = bind_variables(text, {})
         same(bound, "status = 'paid'")
+
+    @pytest.mark.parametrize(("text", "names"), [
+        ("status = 'paid' -- region = {region}", []),
+        ("status = 'paid' /* {a} */ AND x = {b}", ["b"]),
+        ("x = {a} -- {b}\n AND y = '{c}'", ["a", "c"]),
+    ])
+    def test_placeholder_in_a_comment_is_not_discovered(self, text: str, names: list[str]) -> None:
+        assert variable_names(text) == names
+
+    def test_query_does_not_require_a_commented_placeholder(self) -> None:
+        query = SlayerQuery.model_validate({"source_model": "orders", "filters": ["status = 'paid' -- r = {region}"]})
+        assert extract_placeholder_names(query) == set()
 
     def test_placeholder_outside_the_comment_still_binds(self) -> None:
         same(bind_variables("amount > {n} -- {other}", {"n": 15}), "amount > 15")

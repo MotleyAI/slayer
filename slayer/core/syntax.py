@@ -1138,9 +1138,13 @@ def _lookups(text: str, regions: List[_Region]) -> Iterator[Tuple["re.Match[str]
                 yield m, in_string
 
 
+#: The regions whose ``{name}`` binds (a comment's and a quoted identifier's text is inert).
+_BINDING_KINDS = ("code", "string")
+
+
 def has_bindings(text: str) -> bool:
     """Whether ``bind_variables`` reads ``text``: a variable or a doubled-brace escape."""
-    return any(_ANY_BRACE_RE.search(text, r.start, r.end) for r in _regions(text) if r.kind != "ident")
+    return any(_ANY_BRACE_RE.search(text, r.start, r.end) for r in _regions(text) if r.kind in _BINDING_KINDS)
 
 
 def _bound_strings(text: str) -> str:
@@ -1160,7 +1164,7 @@ def parse_template(text: str) -> ParsedExpr:
 def variable_names(text: str) -> List[str]:
     """The variables binding ``text`` looks up, in text order."""
     names: Dict[str, None] = {}
-    for m, _ in _lookups(text, [r for r in _regions(text) if r.kind != "ident"]):
+    for m, _ in _lookups(text, [r for r in _regions(text) if r.kind in _BINDING_KINDS]):
         if re.fullmatch(_VAR_NAME, m.group(1)):
             names[m.group(1)] = None
     return list(names)
@@ -1173,7 +1177,7 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     if not _ANY_BRACE_RE.search(text):
         return text
     try:
-        regions = [r for r in _regions(text) if r.kind in ("code", "string")]
+        regions = [r for r in _regions(text) if r.kind in _BINDING_KINDS]
     except _Problem as problem:
         raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
     for region in regions:

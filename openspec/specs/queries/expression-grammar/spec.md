@@ -140,7 +140,7 @@ A string literal SHALL be single-quoted, with `''` standing for one `'`; a backs
 
 ### Requirement: Legacy spellings keep their meaning
 
-`==`, `!=`, `is None`, `is not None`, `True`, `False`, `None`, `[…]` lists after `in`, the method-call aggregation form (`customers.sum(revenue)`) and the colon aggregation form (`revenue:sum`) SHALL keep their meaning, result keys and SQL. Every expression that parsed before this change and contains none of the forms this change removes SHALL bind to the same value with byte-identical generated SQL.
+`==`, `!=`, `is None`, `is not None`, `True`, `False`, `None`, `[…]` lists after `in`, the method-call aggregation form (`customers.sum(revenue)`) and the colon aggregation form (`revenue:sum`) SHALL keep their meaning, result keys and SQL. Every expression that parsed before this change and contains none of the forms this change removes, and no `--` (which starts a SQL comment), SHALL bind to the same value with byte-identical generated SQL.
 
 #### Scenario: Python spellings
 
