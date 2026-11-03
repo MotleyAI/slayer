@@ -216,6 +216,8 @@ class MaskEntry(BaseModel):
     slot_id: SlotId
     typing: MaskTyping
     stratum: int
+    # Mirrors ``BoundFilter.row_restriction``.
+    row_restriction: bool = False
 
 
 class ModeAFilter(BaseModel):
