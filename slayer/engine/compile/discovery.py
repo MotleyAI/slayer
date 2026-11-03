@@ -18,6 +18,7 @@ from slayer.core.keys import (
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
+    restricts_own_rows,
     source_anchor_path,
     walk_consumer_positions,
 )
@@ -65,9 +66,10 @@ class RootDisposition(BaseModel):
     series: Optional[bool] = None
 
 
-def _is_bare_windowed_or_ranked(k: ValueKey) -> bool:
+def _is_bare_own_rows_local(k: ValueKey) -> bool:
+    """A bare local aggregate needing its own rows: windowed, ranked, or row-restricted by FILTER."""
     return (
-        is_kernel_requiring(k) and k.partition_keys is None
+        (is_kernel_requiring(k) or restricts_own_rows(k)) and k.partition_keys is None
         and not source_anchor_path(k.source)
     )
 
@@ -187,7 +189,7 @@ class _Walker:
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if _is_bare_windowed_or_ranked(k) or self.crossing(k):
+        if _is_bare_own_rows_local(k) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
         elif self.local_broadcasts(k):
             self.emit(k, "combined", "target_rooted", names=names)

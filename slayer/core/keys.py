@@ -492,7 +492,8 @@ class AggregateKey(_FrozenKey, frozen=True):
     locus: Literal["target", "host"] = "target"
     # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
     partition_keys: Optional["Grain"] = None
-    # A ranked (first / last) aggregate's ``FILTER (WHERE …)``; other families mask their inputs at binding.
+    # The ``FILTER (WHERE …)`` condition; a built-in lowers it as an input mask, any other aggregation as its
+    # producer's row restriction.
     filter: Optional["ValueKey"] = None
     # The built-in aggregation's semantics (its owner declares no formula for ``agg``); not part of identity.
     builtin: bool = Field(default=True, repr=False)
@@ -1805,6 +1806,27 @@ def is_kernel_requiring(key: ValueKey) -> TypeGuard[AggregateKey]:
 def is_ranked(key: AggregateKey) -> bool:
     """A ``first`` / ``last`` pick with the built-in ranked semantics."""
     return key.builtin and key.agg in RANKED_AGGREGATIONS
+
+
+def restricts_own_rows(key: ValueKey) -> TypeGuard[AggregateKey]:
+    """A FILTERed non-built-in aggregate: ``filter`` restricts its producer's rows, never its inputs."""
+    return isinstance(key, AggregateKey) and key.filter is not None and not key.builtin
+
+
+# Row-valued aggregation parameters a FILTER masks (literals and attached values are not rows).
+_ROW_INPUT_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
+
+
+def input_masked(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
+    """``key`` with its source (a star as ``1``) and every row-valued kwarg masked to NULL where ``condition`` fails."""
+    def _masked(value: ValueKey) -> ScalarCallKey:
+        return ScalarCallKey(name="iif", args=(condition, value, LiteralKey(value=None)))
+
+    value = LiteralKey(value=normalize_scalar(1)) if isinstance(key.source, StarKey) else key.source
+    return key.model_copy(update={
+        "source": _masked(value),
+        "kwargs": tuple((k, _masked(v) if isinstance(v, _ROW_INPUT_KINDS) else v) for k, v in key.kwargs),
+    })
 
 
 def is_local_partitioned_agg(k: ValueKey) -> bool:
