@@ -1589,6 +1589,20 @@ class TestEditModel:
         total = next(c for c in model.columns if c.name == "total")
         assert total.allowed_aggregations == ["sum", "avg"]
 
+    async def test_upsert_list_column_with_element_type(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "columns": [{"name": "tags", "sql": "tags", "type": "ARRAY", "element_type": "TEXT"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+        tags = next(c for c in (await storage.get_model("orders")).columns if c.name == "tags")
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+
     async def test_upsert_existing_column(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting an existing column updates it instead of erroring."""
         await storage.save_model(SlayerModel(

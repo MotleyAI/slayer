@@ -43,7 +43,10 @@ from tests._dev1737_fixtures import (
     server_seed_statements,
     sql_literal,
 )
+from tests._dev2120_fixtures import contractors_model, contractors_statements
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
@@ -1287,3 +1290,33 @@ def test_every_trino_alias_failure_is_quoted(trino_container) -> None:
                 dialect="trino", words=keyword_universe(), table="kw_probe", column="a",
                 fails=sa_statement_fails(engine), workers=8,
             ) == []
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_lists(trino_container, tmp_path_factory):
+    statements = [*contractors_statements(dialect="trino"), *assignments_statements(dialect="trino"),
+                  *mixed_numbers_statements(dialect="trino")]
+    with _seeded_schema(trino_container, statements) as schema:
+        ds = _ds_config(trino_container, schema)
+        yield _storage(str(tmp_path_factory.mktemp("trino_lists")), ds,
+                       [contractors_model(data_source=_DS), assignments_model(data_source=_DS),
+                        mixed_numbers_model(data_source=_DS)]), ds
+
+
+@pytest.mark.integration
+class TestTrinoLists:
+    async def test_lists(self, _trino_lists) -> None:
+        await check_lists(SlayerQueryEngine(storage=_trino_lists[0]), dialect="trino")
+
+    async def test_mixed_numeric_lists(self, _trino_lists) -> None:
+        await check_mixed_numbers(SlayerQueryEngine(storage=_trino_lists[0]))
+
+    def test_list_columns_ingested(self, _trino_lists) -> None:
+        model = _ingested(_trino_lists[1], "contractors")
+        typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
+        assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

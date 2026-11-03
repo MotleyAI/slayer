@@ -77,7 +77,10 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._dev2120_fixtures import contractors_model, contractors_statements
+from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 
 pytest.importorskip("testcontainers.clickhouse")
@@ -1914,3 +1917,69 @@ def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
             ) == []
     finally:
         _drop_module_db(clickhouse_container, db_name)
+
+
+# ---------------------------------------------------------------------------
+# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+_TAGGED = ("CREATE TABLE tagged (id Int32, tags Array(LowCardinality(Nullable(String)))) "
+           "ENGINE = MergeTree ORDER BY id")
+
+
+@contextlib.contextmanager
+def _seeded_lists(container, base_dir: str):
+    db_name = _create_module_db(container)
+    try:
+        with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*contractors_statements(dialect="clickhouse"),
+                             *assignments_statements(dialect="clickhouse"),
+                             *mixed_numbers_statements(dialect="clickhouse"), _TAGGED]:
+                    conn.execute(sa.text(stmt))
+        ds = _ds_config(container, db_name)
+        storage = YAMLStorage(base_dir=base_dir)
+        run_sync(storage.save_datasource(ds))
+        for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
+                      mixed_numbers_model(data_source=ds.name)):
+            run_sync(storage.save_model(model))
+        yield storage, ds
+    finally:
+        _drop_module_db(container, db_name)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_lists(clickhouse_container, tmp_path_factory):
+    with _seeded_lists(clickhouse_container, str(tmp_path_factory.mktemp("clickhouse_lists"))) as seeded:
+        yield seeded
+
+
+@pytest.fixture(scope="module")
+def _versioned_clickhouse_lists(versioned_clickhouse, tmp_path_factory):
+    _, container, _ = versioned_clickhouse
+    with _seeded_lists(container, str(tmp_path_factory.mktemp("clickhouse_lists_versioned"))) as seeded:
+        yield seeded
+
+
+@pytest.mark.integration
+class TestClickHouseLists:
+    async def test_lists(self, _clickhouse_lists) -> None:
+        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
+        await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
+                          refused={"through-to-one": "25.4", "elements-filtered-across-another-to-many": "25.4"})
+
+    async def test_lists_on_a_correlating_server(self, _versioned_clickhouse_lists, versioned_clickhouse) -> None:
+        # Before 25.8 a correlated EXISTS beside a list's ARRAY JOIN is refused.
+        refused = {"elements-filtered-across-another-to-many": "25.8"} if versioned_clickhouse[0] == "25.4" else None
+        await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse",
+                          refused=refused)
+
+    async def test_mixed_numeric_lists(self, _clickhouse_lists) -> None:
+        await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
+
+    async def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
+        (model,) = await _ingest(_clickhouse_lists[1], include_tables=["tagged"])
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)

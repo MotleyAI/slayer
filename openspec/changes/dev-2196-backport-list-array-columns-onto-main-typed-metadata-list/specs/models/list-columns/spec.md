@@ -6,7 +6,7 @@ Defines list (array) columns as model metadata: the `ARRAY` type and its element
 
 ### Requirement: The list type carries an element type
 
-A column whose values are lists of scalars SHALL have `type: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY`, SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only `length` and NULL tests.
+A column whose values are lists of scalars SHALL have `type: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY` (except on an `sql`-mode model, see below), SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only `length` and NULL tests.
 
 #### Scenario: Missing element type
 - **WHEN** a model is saved with a column `type: ARRAY` and no `element_type`
@@ -46,10 +46,10 @@ Ingestion SHALL map each dialect's native list type to `ARRAY` with the declared
 
 ### Requirement: An sql-mode list column's element type is declared
 
-A list-valued result column of an `sql`-mode model SHALL be typed `ARRAY` from the type the database reports for it, with `element_type: UNKNOWN` unless the model declares one. A declared `element_type` SHALL be kept by every re-ingest.
+An `sql`-mode model's list column SHALL be declared `type: ARRAY`; its `element_type` SHALL be `UNKNOWN` unless the model declares one, and nothing SHALL infer it. A declared `element_type` SHALL be kept by every re-ingest.
 
 #### Scenario: Undeclared element type
-- **WHEN** an `sql`-mode model over DuckDB selects the `VARCHAR[]` column `skills` and is ingested
+- **WHEN** an `sql`-mode model over DuckDB selects the `VARCHAR[]` column `skills` and declares it `type: ARRAY` without an `element_type`
 - **THEN** `skills` is `type: ARRAY`, `element_type: UNKNOWN`, and `skills.value` as a dimension fails naming the opaque element type
 
 #### Scenario: Declared element type

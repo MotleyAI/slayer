@@ -21,7 +21,9 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
+from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
     ingest_datasource,
     ingest_datasource_idempotent,
@@ -31,6 +33,9 @@ from slayer.engine.schema_drift import EditModelDelete, validate_datasource
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._dev2120_fixtures import contractors_model, contractors_statements
+from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -336,3 +341,89 @@ def test_every_bigquery_alias_failure_is_quoted(bq_dataset) -> None:
         dialect="bigquery", words=keyword_universe(BIGQUERY_KEYWORDS), table=f"{dataset_id}.plain", column="x",
         fails=fails, workers=8,
     ) == []
+
+
+# ---------------------------------------------------------------------------
+# List columns: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
+# queries/list-children, aggregations/collect)
+# ---------------------------------------------------------------------------
+
+
+def _stale_contractors(data_source: str) -> SlayerModel:
+    """``contractors`` as stored before list columns: ``skills`` as TEXT."""
+    return SlayerModel(name="stale", sql_table="contractors", data_source=data_source, columns=[
+        Column(name="id", type=DataType.INT, primary_key=True), Column(name="skills", type=DataType.TEXT)])
+
+
+@pytest.fixture(scope="module")
+def bq_lists(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    prefix = f"{dataset_id}."
+    for stmt in [*contractors_statements(dialect="bigquery", prefix=prefix),
+                 *assignments_statements(dialect="bigquery", prefix=prefix),
+                 *mixed_numbers_statements(dialect="bigquery", prefix=prefix)]:
+        client.query(stmt).result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
+    run_sync(storage.save_datasource(ds))
+    for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
+                  mixed_numbers_model(data_source=ds.name), _stale_contractors(ds.name)):
+        run_sync(storage.save_model(model))
+    return storage, ds
+
+
+async def test_lists(bq_lists) -> None:
+    await check_lists(SlayerQueryEngine(storage=bq_lists[0]), dialect="bigquery")
+
+
+async def test_mixed_numeric_lists(bq_lists) -> None:
+    await check_mixed_numbers(SlayerQueryEngine(storage=bq_lists[0]))
+
+
+async def test_repeated_field_ingested(bq_lists) -> None:
+    (model,) = await _ingest(bq_lists[1], include_tables=["contractors"])
+    skills = model.get_column("skills")
+    assert skills is not None
+    assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert "STRING" in (skills.db_type or "").upper(), skills.db_type
+
+
+async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
+    engine = SlayerQueryEngine(storage=bq_lists[0])
+    stale = SlayerQuery.model_validate({"source_model": "stale", "dimensions": ["skills"]})
+    with pytest.raises(SchemaDriftError) as info:
+        await engine.execute(stale)
+    assert "skills" in str(info.value), str(info.value)
+    assert "ingest" in str(info.value).lower(), str(info.value)
+
+
+# NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's empty-list fallback must unify with their ARRAY_AGG.
+_AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
+                "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
+_AMOUNT_COLUMNS = ("n", "big", "i")
+
+
+@pytest.fixture(scope="module")
+def bq_amounts(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    client.query(f"CREATE TABLE {dataset_id}.amounts "
+                 "(id INT64, team STRING, n NUMERIC, big BIGNUMERIC, i INT64)").result()
+    client.query(f"INSERT INTO {dataset_id}.amounts VALUES {_AMOUNT_ROWS}").result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_amounts")))
+    run_sync(storage.save_datasource(ds))
+    for model in run_sync(_ingest(ds, include_tables=["amounts"])):
+        run_sync(storage.save_model(model))
+    return storage
+
+
+async def test_collect_over_exact_numerics(bq_amounts) -> None:
+    resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
+        "source_model": "amounts", "dimensions": ["team"],
+        "measures": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+    }))
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+           for r in resp.data}
+    assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
+                   "b": {"n": [], "big": [], "i": []}}, resp.sql
+    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data

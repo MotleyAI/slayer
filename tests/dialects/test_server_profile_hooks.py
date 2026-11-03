@@ -17,6 +17,10 @@ CH = ClickhouseDialect()
 SETTING = "allow_experimental_correlated_subqueries"
 PROFILE_SQL = "SELECT version(), getSetting('readonly')"
 CORRELATED_SQL = f"SELECT getSetting('{SETTING}')"
+_EXISTS = "EXISTS(SELECT 1 FROM a WHERE a.c = p.id)"
+_EXISTS_BESIDE_ARRAY_JOIN = f"SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE {_EXISTS}"
+_EXISTS_ALONE = f"SELECT p.id FROM p WHERE {_EXISTS}"
+_ARRAY_JOIN_ALONE = "SELECT s.value FROM p ARRAY JOIN p.l AS s WHERE p.id > 1"
 
 
 def _profile(version: tuple[int, int] | None, readonly: int | None, correlated: bool | None) -> ServerProfile:
@@ -164,6 +168,15 @@ class TestCorrelatedSubqueryRefusal:
     @pytest.mark.parametrize("readonly", [1, None])
     def test_setting_already_on(self, readonly: int | None) -> None:
         assert CH.correlated_subquery_refusal(_profile((25, 4), readonly, True)) is None
+
+    @pytest.mark.parametrize(("version", "refused"), [((25, 4), True), ((25, 7), True), ((25, 8), False)])
+    def test_exists_beside_an_array_join_needs_25_8(self, version: tuple[int, int], refused: bool) -> None:
+        reason = CH.correlated_subquery_refusal(_profile(version, 0, None), sql=_EXISTS_BESIDE_ARRAY_JOIN)
+        assert (reason is not None and "25.8" in reason and "ARRAY JOIN" in reason) is refused
+
+    @pytest.mark.parametrize("sql", [_EXISTS_ALONE, _ARRAY_JOIN_ALONE])
+    def test_either_alone_runs_from_25_4(self, sql: str) -> None:
+        assert CH.correlated_subquery_refusal(_profile((25, 4), 0, None), sql=sql) is None
 
     def test_setting_unknown_under_readonly_1_refuses(self) -> None:
         reason = CH.correlated_subquery_refusal(_profile((25, 8), 1, None))
