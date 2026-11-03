@@ -216,7 +216,7 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
     db = str(tmp_path / "live.db")
     with transaction(db) as conn:
         conn.executescript("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL, org TEXT);"
-                           "INSERT INTO orders VALUES (1, 2.5, 'x');")
+                           "INSERT INTO orders VALUES (1, 2.5, 'secret-org');")
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db))
     await storage.save_model(_orders())

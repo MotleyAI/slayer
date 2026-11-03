@@ -32,5 +32,5 @@
 ## 4. Close-out
 
 - [x] 4.1 Apply the approved arc42 edit verbatim: system §3.6 → `[review] [enforced: test:tests/test_law_sql_built_as_ast.py]`; verify `poetry run la-arch-check`
-- [ ] 4.2 Law green with no allowlist (1.1 passes); full unit suite, CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors) all green
+- [x] 4.2 Law green with no allowlist (1.1 passes); full unit suite, CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors) all green
 - [x] 4.3 Docs: grep `docs/` for `get_column_types` / probe wording touched by the API change; update only user-facing text (one sentence each)
