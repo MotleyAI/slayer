@@ -97,7 +97,8 @@ async def test_mcp_inspect_model_warns_and_inspect_does_not(tmp_path: Path) -> N
     future = future_warnings(caught)
     assert len(future) == 1, [str(w.message) for w in future]
     message = str(future[0].message)
-    assert "inspect_model" in message and "SLayer 2.0" in message
+    assert "inspect_model" in message
+    assert "SLayer 2.0" in message
     assert "inspect" in message.replace("inspect_model", "")
 
     with recorded() as caught:

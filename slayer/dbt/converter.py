@@ -20,7 +20,9 @@ import re
 from collections import defaultdict
 from typing import Any, Literal
 
+import sqlalchemy as sa
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import parse_formula
@@ -50,6 +52,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.query_engine import run_over_caller_engine
 from slayer.sql.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
@@ -188,11 +191,21 @@ class DbtToSlayerConverter:
         self,
         project: DbtProject,
         data_source: str,
+        sa_engine: sa.Engine | None = None,
         include_hidden_models: bool = False,
         target_dialect: str | None = None,
     ) -> None:
+        """Passing ``sa_engine`` is deprecated: ``convert()`` then collects its own metadata through it."""
+        if sa_engine is not None:
+            warn_deprecated(
+                "DbtToSlayerConverter(sa_engine=...) is deprecated; await "
+                "converter.collect_metadata(client=engine.client_for(datasource)) before convert(). "
+                "sa_engine works until SLayer 2.0.",
+                removal="2.0",
+            )
         self.project = project
         self.data_source = data_source
+        self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
         # Regular-model tables read by ``collect_metadata``: the model, or why it could not be read.
         self._introspected: dict[str, SlayerModel | str] | None = None
@@ -236,6 +249,10 @@ class DbtToSlayerConverter:
 
     def convert(self) -> ConversionResult:
         """Full conversion pipeline (pure: hidden regular models come from ``collect_metadata``)."""
+        if self._introspected is None and self.sa_engine is not None:
+            run_over_caller_engine(
+                self.sa_engine, data_source=self.data_source, work=lambda client: self.collect_metadata(client=client),
+            )
         self.entity_registry.build(self.project.semantic_models)
 
         for sm in self.project.semantic_models:

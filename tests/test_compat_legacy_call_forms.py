@@ -291,7 +291,7 @@ async def test_validate_datasource_ignores_legacy_sql_clients(
     try:
         client = engine.client_for(sqlite_shop)
         expected = await schema_drift.validate_datasource(datasource=sqlite_shop, models=models, client=client)
-        extra = {"client": client} if with_client else {}
+        extra: dict[str, Any] = {"client": client} if with_client else {}
         with recorded() as caught:
             entries = await schema_drift.validate_datasource(
                 datasource=sqlite_shop, models=models, sql_clients={}, **extra,
@@ -321,7 +321,7 @@ def _legacy_converter(kind: str, *, sa_engine: sa.Engine, dialect: str, keyword:
     return OsiToSlayerConverter([ORDERS_OSI], DS_NAME, sa_engine, target_dialect=dialect)
 
 
-def _client_converter(kind: str, *, dialect: str) -> Any:
+def _client_converter(kind: str, *, dialect: str | None) -> Any:
     if kind == "dbt":
         return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
     return OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect=dialect)
@@ -635,10 +635,12 @@ def test_a_scope_error_in_a_no_client_call_leaks_nothing(
     sqlite_shop: DatasourceConfig, tmp_path: Path, ledger: _Ledger,
 ) -> None:
     store = YAMLStorage(base_dir=str(tmp_path / "store"))
-    with recorded(), pytest.raises(ValueError, match="all_schemas"):
-        run_sync(ingestion.ingest_datasource_idempotent(
+    with recorded():
+        idempotent = ingestion.ingest_datasource_idempotent(
             datasource=sqlite_shop, storage=store, schema="main", all_schemas=True,
-        ))
+        )
+        with pytest.raises(ValueError, match="all_schemas"):
+            run_sync(idempotent)
     with recorded(), pytest.raises(ValueError, match="all_schemas"):
         ingestion.ingest_datasource(sqlite_shop, schema="main", all_schemas=True)
     assert ledger.all_closed()

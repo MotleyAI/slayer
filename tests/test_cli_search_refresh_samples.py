@@ -28,7 +28,7 @@ def shop(tmp_path: Path) -> str:
 @pytest.fixture
 def default_shop(shop: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """``shop`` as the default storage, so commands need no ``--storage``."""
-    monkeypatch.setattr(cli, "_STORAGE_DEFAULT", shop)
+    monkeypatch.setenv("SLAYER_STORAGE", shop)
     return shop
 
 

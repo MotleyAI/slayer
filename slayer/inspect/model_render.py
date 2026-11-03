@@ -157,7 +157,7 @@ def _render_inspect_footer(
             lines.append(f"> Names-only: {', '.join(names_only)}.")
         if omitted:
             lines.append(f"> Omitted: {', '.join(omitted)}.")
-        lines.append("> Re-call inspect_model with `sections=[...]` to fetch.")
+        lines.append("> Re-call inspect with `sections=[...]` to fetch.")
     return "\n".join(lines) if lines else None
 
 
@@ -541,7 +541,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     fmt = format.lower().strip()
     if fmt not in ("markdown", "json"):
         raise ValueError(
-            f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            f"Invalid format '{format}'. Must be 'markdown' or 'json'."
         )
     failures = DocumentLoadFailures()
     if descriptions_max_chars is not None and descriptions_max_chars < 0:

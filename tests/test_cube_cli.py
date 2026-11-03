@@ -64,12 +64,10 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
     # still written ("report, don't crash"), the failure is categorized
     # SAVE_FAILED (not the misleading PARSE_ERROR), and the summary reports the
     # actual saved count.
-    import slayer.storage.yaml_storage as ys
-
     async def _boom(self, model):
         raise RuntimeError("save exploded")
 
-    monkeypatch.setattr(ys.YAMLStorage, "save_model", _boom)
+    monkeypatch.setattr(YAMLStorage, "save_model", _boom)
     storage_dir = tmp_path / "store"
     code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
     assert code == 0

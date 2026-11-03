@@ -715,7 +715,7 @@ class TestInspectModelSectionGating:
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
         """A names-only section with no entities does not emit a heading."""
@@ -772,7 +772,7 @@ class TestInspectModelSectionGating:
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
         assert "Omitted: samples, learnings, saved_queries" in result
-        assert "Re-call inspect_model with `sections=[...]`" in result
+        assert "Re-call inspect with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
@@ -1224,7 +1224,7 @@ class TestInspectModelHelpers:
         assert "Sections shown: columns." in result
         assert "Names-only: measures, joins." in result
         assert "Omitted: samples." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
 
 class TestBuildSampleQueryArgs:

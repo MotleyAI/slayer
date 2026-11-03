@@ -11,12 +11,12 @@ canonical entity matches via tantivy full-text — see the search docs).
 
 A memory has two flavours:
 
-- **Learning** — a memory with no attached query. Surfaces in
-  `inspect_model` and as a `kind="memory"` hit in `search` with
+- **Learning** — a memory with no attached query. Surfaces in a model
+  `inspect` and as a `kind="memory"` hit in `search` with
   `hit.query is None`.
 - **Query-bearing** — a memory whose `query` field carries a
   `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
-  with `hit.query is not None`. Not rendered in `inspect_model`.
+  with `hit.query is not None`. Not rendered in a model `inspect`.
 
 Both flavours land in the same flat `SearchResponse.results` list;
 callers split on `hit.query` rather than on separate
@@ -85,7 +85,7 @@ only by letter case from an existing one (`X` vs `x`) raises
 on macOS / Windows.
 
 `description` is optional (≤ 500 chars). When set, `search(compact=True)`
-and `inspect_model(compact=True)` surface this short preview instead of
+and `inspect(entity_type="model", compact=True)` surface this short preview instead of
 the full `learning` body — the token-saving counterpart of the verbose
 body. Empty / whitespace-only `description` is normalized to `None` at
 save time. When unset, compact rendering falls back to the first
@@ -151,9 +151,9 @@ list (exact-match only — `memory:42` never strips `memory:421`).
    (encoding, NULL semantics, business rule), call `save_memory`
    with the entities involved so the next agent benefits.
 
-## `inspect_model` integration
+## `inspect` integration
 
-`inspect_model` automatically renders a `Learnings` section listing
+A model `inspect` (`compact=False`) automatically renders a `Learnings` section listing
 every memory **whose `query` is `None`** and whose stored entity set
 overlaps the model's own entity set (the model itself, every column,
 every named measure, every custom aggregation). Query-bearing memories

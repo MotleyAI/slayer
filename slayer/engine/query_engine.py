@@ -4,13 +4,17 @@ Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL →
 """
 
 import asyncio
+import contextlib
 import copy
 import decimal
 import logging
+import tempfile
 import warnings as _warnings_module
+from collections.abc import AsyncGenerator, Awaitable
 from datetime import datetime
-from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
+import sqlalchemy as sa
 from sqlglot import exp
 from pydantic import (
     BaseModel,
@@ -19,7 +23,7 @@ from pydantic import (
     model_validator,
 )
 
-from slayer.async_utils import run_sync
+from slayer.async_utils import run_sync, run_sync_on_caller_thread
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -120,17 +124,9 @@ from slayer.ir.planned import (
     plan_has_semi_join_filters,
     plans_read_clock,
 )
-from slayer.engine.schema_drift import (
-    AppliedEntry,
-    ApplyDriftResult,
-    ApplyError,
-    LiveSnapshotCache,
-    NarrowedAccessFinding,
-    ToDeleteEntry,
-    unloadable_model_delete,
-    validate_datasource,
-)
+from slayer.engine import ingestion, schema_drift
 from slayer.engine.model_reads import narrowing_models
+from slayer.engine.schema_scope import IngestScopeArgs
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -160,7 +156,7 @@ from slayer.sql.client import (
     build_sql_model_trial_query,
     classify_model_sql,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
@@ -177,6 +173,7 @@ from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 
 logger = logging.getLogger(__name__)
@@ -755,7 +752,7 @@ class SlayerQueryEngine:
         # Column-presence facts; an unconfirmable ``None`` is re-probed, never cached.
         self._column_presence_cache: dict[tuple, bool] = {}
         # Live-schema facts reused by query-time drift attribution.
-        self._drift_snapshots = LiveSnapshotCache()
+        self._drift_snapshots = schema_drift.LiveSnapshotCache()
 
     @property
     def policy(self) -> Optional[SessionPolicy]:
@@ -1365,6 +1362,28 @@ class SlayerQueryEngine:
             self._sql_clients[key] = client
         return client
 
+    async def ingest(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> List[SlayerModel]:
+        """The models a scan of ``datasource`` finds, read through this engine's client."""
+        return await ingestion.ingest_datasource_async(datasource, client=self.client_for(datasource), **scope)
+
+    def ingest_sync(self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs]) -> List[SlayerModel]:
+        return self.run_sync(self.ingest(datasource, **scope))
+
+    async def ingest_idempotent(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> "schema_drift.IdempotentIngestResult":
+        """Idempotent ingestion of ``datasource`` into this engine's storage, through this engine's client."""
+        return await ingestion.ingest_datasource_idempotent(
+            datasource=datasource, storage=self.storage, client=self.client_for(datasource), **scope,
+        )
+
+    def ingest_idempotent_sync(
+        self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
+    ) -> "schema_drift.IdempotentIngestResult":
+        return self.run_sync(self.ingest_idempotent(datasource, **scope))
+
     async def _execute_pipeline(
         self,
         query: SlayerQuery,
@@ -1782,7 +1801,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-    ) -> "List[ToDeleteEntry]":
+    ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
         available = {n for d, n in identities if d == datasource.name}
@@ -1792,7 +1811,7 @@ class SlayerQueryEngine:
             if m is not None:
                 models.append(m)
         async with self._drift_snapshots.acquire(datasource) as snapshot:
-            return await validate_datasource(
+            return await schema_drift.validate_datasource(
                 datasource=datasource,
                 models=models,
                 client=self.client_for(datasource),
@@ -2344,12 +2363,12 @@ class SlayerQueryEngine:
         self, deletes: "List[Any]"
     ) -> "Any":
         """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
-        applied: List[AppliedEntry] = []
-        errors: List[ApplyError] = []
+        applied: List[schema_drift.AppliedEntry] = []
+        errors: List[schema_drift.ApplyError] = []
         touched_ds: set[str] = set()
 
         for entry in deletes:
-            if isinstance(entry, NarrowedAccessFinding):
+            if isinstance(entry, schema_drift.NarrowedAccessFinding):
                 continue  # report-only
             # Track the datasource up front so re-validation runs even if every
             # mutation on it fails.
@@ -2374,7 +2393,7 @@ class SlayerQueryEngine:
                 else:
                     raise ValueError(f"Unknown delete tool: {entry.tool!r}")
                 applied.append(
-                    AppliedEntry(
+                    schema_drift.AppliedEntry(
                         tool=entry.tool,
                         model_name=entry.model_name,
                         data_source=entry.data_source,
@@ -2382,7 +2401,7 @@ class SlayerQueryEngine:
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort per-entry isolation
                 errors.append(
-                    ApplyError(
+                    schema_drift.ApplyError(
                         tool=entry.tool,
                         model_name=entry.model_name,
                         data_source=entry.data_source,
@@ -2396,7 +2415,7 @@ class SlayerQueryEngine:
             try:
                 residual.extend(
                     e for e in await self.validate_models(data_source=ds_name)
-                    if not isinstance(e, NarrowedAccessFinding)
+                    if not isinstance(e, schema_drift.NarrowedAccessFinding)
                 )
             except Exception as inner:
                 logger.debug(
@@ -2404,7 +2423,7 @@ class SlayerQueryEngine:
                     ds_name,
                     inner,
                 )
-        return ApplyDriftResult(
+        return schema_drift.ApplyDriftResult(
             applied=applied,
             errors=errors,
             residual=list(residual),
@@ -2668,13 +2687,13 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        entries = await validate_datasource(datasource=ds, models=models, client=self.client_for(ds))
+        entries = await schema_drift.validate_datasource(datasource=ds, models=models, client=self.client_for(ds))
         findings = [
-            NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
+            schema_drift.NarrowedAccessFinding(model_name=name, data_source=ds_name, narrowed_by=[f"{d}.{n}" for d, n in by])
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(unloadable_model_delete(error=e) for e in unloadable), *findings]
+        return [*entries, *(schema_drift.unloadable_model_delete(error=e) for e in unloadable), *findings]
 
     def create_model_from_query_sync(
         self,
@@ -3037,6 +3056,47 @@ class SlayerQueryEngine:
     def _dialect_for_type(ds_type: Optional[str]) -> str:
         """Map a datasource ``type`` to its sqlglot dialect name (unknown/None → postgres)."""
         return dialect_for_ds_type(ds_type).sqlglot_name
+
+
+@contextlib.asynccontextmanager
+async def short_lived_engine(
+    storage: Optional[StorageBackend] = None, *, client_factory: Optional[ClientFactory] = None,
+) -> AsyncGenerator[SlayerQueryEngine]:
+    """An engine for one call that brought no client (a temporary store when none is given), closed on exit."""
+    with contextlib.ExitStack() as stack:
+        if storage is None:
+            storage = YAMLStorage(base_dir=stack.enter_context(tempfile.TemporaryDirectory()))
+        engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
+        try:
+            yield engine
+        finally:
+            try:
+                await asyncio.shield(engine.aclose())
+            finally:
+                engine.close()
+
+
+def run_over_caller_engine(
+    sa_engine: sa.Engine, *, data_source: str, work: Callable[[SqlClient], Awaitable[_T]],
+) -> _T:
+    """Run ``work`` synchronously over a short-lived engine's client wrapping the caller's ``sa_engine``.
+
+    The client reads on the caller's thread (in-memory pools are thread-bound) and never disposes the engine.
+    """
+    datasource = DatasourceConfig(
+        name=data_source,
+        type=dialect_for_sa_backend(sa_engine.url.get_backend_name()).sqlglot_name,
+        connection_string=str(sa_engine.url),
+    )
+
+    def _caller_client(ds: DatasourceConfig) -> SqlClient:
+        return SlayerSQLClient(datasource=ds, sa_engine=sa_engine)
+
+    async def _run() -> _T:
+        async with short_lived_engine(client_factory=_caller_client) as engine:
+            return await work(engine.client_for(datasource))
+
+    return run_sync_on_caller_thread(_run())
 
 
 def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:
