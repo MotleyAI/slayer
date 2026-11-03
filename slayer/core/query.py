@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 import re
 from collections.abc import Callable
@@ -36,18 +35,28 @@ from slayer.core.models import (
 )
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_measure_text, parse_expr
+from slayer.core.syntax import (
+    AggCall,
+    DottedRef,
+    Placeholder,
+    Ref,
+    StarSource,
+    call_source,
+    canonical_measure_text,
+    drop_root_qualifier,
+    parse_expr,
+    parse_template,
+    root_relative,
+    variable_names,
+)
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
-
-logger = logging.getLogger(__name__)
 
 #: The SlayerQuery version whose migration retired ``strict``.
 _STRICT_RETIRED_AT = 4
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
-_WHOLE_PLACEHOLDER_RE = re.compile(r"^\s*\{[a-zA-Z_]\w*\}\s*$", re.ASCII)
 
 # Leading callee of a whole-string single call ``name( ... )``; used only when
 # ``parse_expr`` rejects the shape (e.g. ``month()``) but the callee still names a
@@ -57,11 +66,10 @@ _WHOLE_CALL_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*\(.*\)\s*$", re.S)
 
 def _reject_call_placeholders(entry: str) -> None:
     """A functional time-dimension string whose granularity or column is a ``{var}`` is refused."""
-    # Any callee text, so a ``{g}(col)`` placeholder callee is caught.
-    head, paren, tail = entry.partition("(")
-    body = tail.rstrip()
-    if paren and ")" not in head and body.endswith(")"):
-        _reject_time_dimension_placeholders(entry, granularity=head.strip(), column=body[:-1])
+    call = call_source(entry)
+    if call is not None and len(call.callee) == 1:
+        column = call.arguments[0] if len(call.arguments) == 1 else None
+        _reject_time_dimension_placeholders(entry, granularity=call.callee[0], column=column)
 
 
 def _granularity_names() -> str:
@@ -78,17 +86,26 @@ def _single_col_of_source(node: AggCall) -> str | None:
     return None
 
 
-def call_callee(entry: str) -> tuple[Any, str | None]:
-    """``entry`` parsed (``None`` when unparseable) and its whole-call callee, if any; placeholders
-    parse as probe literals, since only the shape is read."""
+def _parsed_or_none(text: str) -> Any:
     try:
-        node: Any = parse_expr(render_probe_text(entry))
-    except Exception:
+        return parse_expr(text)
+    except Exception:  # noqa: BLE001 — the caller reports unparseable text
+        return None
+
+
+def call_callee(entry: str) -> tuple[Any, str | None]:
+    """``entry`` parsed as a template (``None`` when unparseable) and its whole-call callee, if any."""
+    try:
+        node: Any = parse_template(entry)
+    except Exception:  # noqa: BLE001 — the caller reports unparseable text
         node = None
     if isinstance(node, AggCall):
         return node, node.agg
-    m = _WHOLE_CALL_RE.match(entry)
-    return node, (m.group(1) if m else None)
+    if node is None:
+        m = _WHOLE_CALL_RE.match(entry)
+        return None, (m.group(1) if m else None)
+    call = call_source(entry)
+    return node, (call.callee[0] if call is not None and len(call.callee) == 1 else None)
 
 
 def functional_call_column(node: Any) -> str | None:
@@ -102,14 +119,12 @@ def granularity_call_argument(node: Any, entry: str) -> str | None:
     """The argument text of a single-argument call ``name(expr)``, else ``None``."""
     if not isinstance(node, AggCall) or node.args or node.kwargs or isinstance(node.source, StarSource):
         return None
-    whole = _WHOLE_CALL_RE.match(entry)
-    if not whole:
+    call = call_source(entry)
+    if call is None or len(call.callee) != 1:
         return _single_col_of_source(node)  # the legacy ``col:gran`` spelling
-    text = entry.strip()
-    inner = text[text.index("(") + 1:-1].strip()
-    if whole.group(1).lower() == "date_trunc":
-        return inner.partition(",")[2].strip()  # ``date_trunc('unit', expr)``: the unit is a plain literal
-    return inner
+    # ``date_trunc('unit', expr)``: the unit is a plain literal
+    arguments = call.arguments[1:] if call.callee[0].lower() == "date_trunc" else call.arguments
+    return arguments[0] if len(arguments) == 1 else None
 
 
 def _callee_granularity(callee: str) -> str:
@@ -407,31 +422,30 @@ def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
     return "".join(out)
 
 
-def query_variable_surfaces(query: "SlayerQuery") -> list[str]:
-    """Every text of ``query`` that substitutes ``{var}``: filters, measure formulas,
-    computed-dimension and time-dimension expressions, order expressions and ``date_range`` bounds."""
+def _mode_b_surfaces(query: "SlayerQuery") -> list[str]:
+    """Every Mode-B text of ``query`` that binds ``{var}``: filters, measure formulas,
+    computed-dimension and time-dimension expressions and order expressions."""
     return [
         *(query.filters or []),
         *(m.formula for m in query.measures or []),
         *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
         *(o.raw_formula for o in query.order or [] if o.raw_formula),
         *(td.dimension for td in query.time_dimensions or []),
-        *(b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None),
     ]
 
 
 def _bare_variable_names(text: str) -> set[str]:
+    """The ``{var}`` names of a non-Mode-B text (a granularity, a ``date_range`` bound)."""
     return {m.group(1) for m in _VAR_PATTERN.finditer(text) if m.group(1)}
 
 
-def has_variable_syntax(text: str) -> bool:
-    """True if ``text`` holds any ``{...}`` / ``{{`` / ``}}`` token substitution rewrites or rejects."""
-    return _VAR_PATTERN.search(text) is not None
-
-
 def extract_placeholder_names(query: "SlayerQuery") -> set:
-    """Valid ``{var}`` names referenced on any of ``query``'s substituted surfaces."""
-    return set().union(*(_bare_variable_names(text) for text in query_variable_surfaces(query)))
+    """The variables ``query``'s binding looks up, ``date_range`` bounds included."""
+    bounds = (b for td in query.time_dimensions or [] for b in td.date_range or [] if b is not None)
+    return {
+        *(name for text in _mode_b_surfaces(query) for name in variable_names(text)),
+        *(name for bound in bounds for name in _bare_variable_names(bound)),
+    }
 
 
 def _probe_replace(match: re.Match) -> str:
@@ -502,7 +516,7 @@ def extract_model_variables(model: SlayerModel) -> ModelVariables:
         bare |= s_bare
         blocked |= s_blocked
     for measure in model.measures:
-        bare |= set().union(*extract_variable_refs(measure.formula))
+        bare |= set(variable_names(measure.formula))
 
     defaults = set(model.query_variables or {})
     required = {name for name in bare if name not in defaults}
@@ -602,6 +616,10 @@ class ColumnRef(BaseModel):
             return f"{self.model}.{self.name}"
         return self.name
 
+    @property
+    def parts(self) -> tuple[str, ...]:
+        return (*self.model.split("."), self.name) if self.model else (self.name,)
+
     @classmethod
     def from_string(cls, s: str) -> ColumnRef:
         """Create a ColumnRef from a string. Dots are parsed by the validator."""
@@ -661,9 +679,6 @@ def _coerce_column_ref(v: Any) -> Any:
     return v
 
 
-_FUNCSTYLE_CALL_PATTERN = re.compile(r"^\w+\([^()]*\)$")
-
-
 # Sentinel ``ColumnRef.name`` values: this ORDER BY item is an expression to
 # resolve from ``raw_formula``, not a column reference. Consumers must also
 # require a non-empty ``raw_formula`` before treating a name as a sentinel, so a
@@ -677,14 +692,11 @@ def _order_formula_candidate(v: str) -> str | None:
     """``v`` verbatim if it is an expression rather than a column reference, else ``None``;
     shared by ``_capture_raw_formula`` and ``_coerce_order_column`` so they can't drift.
     Binding judges whether the expression is legal there."""
-    if ":" in v or _FUNCSTYLE_CALL_PATTERN.match(v):
-        return v
     if _is_valid_column_ref_name(v):
         return None
-    try:
-        parse_expr(v)
-    except Exception:
-        return None
+    if _parsed_or_none(v) is None:
+        # Rejected text: a colon spelling reaches binding, which reports the syntax error.
+        return v if ":" in v else None
     return v
 
 
@@ -697,25 +709,30 @@ def _is_valid_column_ref_name(name: str) -> bool:
     return True
 
 
+def _colon_spelled_name(node: Any) -> str | None:
+    """A legacy colon-spelled aggregation's result name (``revenue:sum`` → ``revenue_sum``), else ``None``."""
+    if not isinstance(node, AggCall) or node.filter is not None:
+        return None
+    base = "*" if isinstance(node.source, StarSource) else _single_col_of_source(node)
+    if base is None:
+        return None
+    name = f"_{node.agg}" if base == "*" else f"{base}_{node.agg}"
+    return name if _is_valid_column_ref_name(name) else None
+
+
 def _coerce_order_column(v: Any) -> Any:
     """Coerce an ORDER BY column. Legacy colon-spelling aggregations normalize to the
     underscore form (``revenue:sum`` → ``revenue_sum``); call-style entries (``sum(revenue)``,
     ``my_agg(price)``) emit a placeholder whose ``raw_formula`` the planner binds;
     other non-column expressions carry ``raw_formula`` under ``_EXPR_PENDING``."""
-    if isinstance(v, str):
-        candidate = _order_formula_candidate(v)
-        if candidate is None:
-            return {"name": v}
-        if _FUNCSTYLE_CALL_PATTERN.match(v):
-            return {"name": _FUNCSTYLE_PENDING}
-        if ":" in v:
-            base, agg = v.rsplit(":", 1)
-            agg_name = agg.split("(", 1)[0]
-            rewritten = f"_{agg_name}" if base == "*" else f"{base}_{agg_name}"
-            if _is_valid_column_ref_name(rewritten):
-                return {"name": rewritten}
-        return {"name": _EXPR_PENDING}
-    return v
+    if not isinstance(v, str):
+        return v
+    if _order_formula_candidate(v) is None:
+        return {"name": v}
+    call = call_source(v)
+    if call is not None:
+        return {"name": _FUNCSTYLE_PENDING if len(call.callee) == 1 else _EXPR_PENDING}
+    return {"name": _colon_spelled_name(_parsed_or_none(v)) or _EXPR_PENDING}
 
 
 def _is_direction(value: Any) -> bool:
@@ -751,7 +768,7 @@ def _reject_time_dimension_placeholders(entry: Any, *, granularity: Any = None, 
     whole dimension, is refused; one inside an expression is a literal."""
     for what, value, names_it in (
         ("granularity", granularity, lambda text: bool(_bare_variable_names(text))),
-        ("column", column, lambda text: _WHOLE_PLACEHOLDER_RE.match(text) is not None),
+        ("column", column, lambda text: isinstance(_parsed_or_none(text), Placeholder)),
     ):
         if isinstance(value, str) and names_it(value):
             raise ValueError(
@@ -771,9 +788,9 @@ def _legacy_column_ref_text(value: Any) -> Any:
 def _coerce_time_dimension_text(value: Any) -> Any:
     """A time dimension's dimension as Mode-B text; it must parse as an expression."""
     value = _legacy_column_ref_text(value)
-    if isinstance(value, str) and not _bare_variable_names(value):
+    if isinstance(value, str):
         try:
-            parse_expr(value)
+            parse_template(value)
         except Exception as exc:
             raise ValueError(f"Time dimension {value!r} is not a row-level expression: {exc}") from exc
     return value
@@ -1052,64 +1069,18 @@ SourceSpec = Annotated[
 ]
 
 
-def _strip_column_ref(ref, model_name: str):
-    """Strip the source-model prefix from a ColumnRef (a ``ComputedDimension`` passes through)."""
-    if isinstance(ref, ComputedDimension):
+def _root_relative_ref(ref: ColumnRef, root: str | None) -> ColumnRef:
+    """``ref`` with a leading root qualifier dropped."""
+    kept = drop_root_qualifier(ref.parts, root)
+    if kept == ref.parts:
         return ref
-    if ref.model is None:
-        return ref
-    if ref.model == model_name:
-        return ref.model_copy(update={"model": None})
-    prefix = model_name + "."
-    if ref.model.startswith(prefix):
-        return ref.model_copy(update={"model": ref.model[len(prefix):]})
-    return ref
+    return ColumnRef(name=kept[-1], model=".".join(kept[:-1]) or None, label=ref.label)
 
 
-def _model_prefix_pattern(model_name: str) -> re.Pattern:
-    """A leading ``<model>.`` qualifier, never an inner hop of a longer path."""
-    return re.compile(r"(?<![\w.])" + re.escape(model_name) + r"\.")
-
-
-def _strip_time_dimensions(tds: list[TimeDimension] | None, model_name: str) -> list[TimeDimension] | None:
-    """The prefix-stripped column time dimensions (an expression keeps its text, as a computed
-    dimension does), or ``None`` when nothing changed."""
-    if not tds:
-        return None
-    new_tds = [
-        td if td.column_ref is None or (stripped := _strip_column_ref(td.column_ref, model_name)) is td.column_ref
-        else td.model_copy(update={"dimension": stripped.full_name})
-        for td in tds
-    ]
-    return None if all(n is o for n, o in zip(new_tds, tds)) else new_tds
-
-
-def _strip_order(order: list[OrderItem] | None, model_name: str, pattern: re.Pattern) -> list[OrderItem] | None:
-    """The prefix-stripped order items, or ``None`` when nothing changed."""
-    if not order:
-        return None
-    new_order = []
-    for item in order:
-        stripped = _strip_column_ref(item.column, model_name)
-        raw_formula = pattern.sub("", item.raw_formula) if item.raw_formula else None
-        if stripped is item.column and raw_formula == item.raw_formula:
-            new_order.append(item)
-        else:
-            new_order.append(OrderItem(
-                column=stripped, direction=item.direction, nulls=item.nulls, raw_formula=raw_formula,
-            ))
-    return None if all(n is o for n, o in zip(new_order, order)) else new_order
-
-
-def _strip_measures(measures: list[ModelMeasure] | None, pattern: re.Pattern) -> list[ModelMeasure] | None:
-    """The prefix-stripped measures, or ``None`` when nothing changed."""
-    if not measures:
-        return None
-    new_measures = [
-        f if (formula := pattern.sub("", f.formula)) == f.formula else f.model_copy(update={"formula": formula})
-        for f in measures
-    ]
-    return None if all(n is o for n, o in zip(new_measures, measures)) else new_measures
+def _parsed_identity(text: str, root: str | None) -> str:
+    """``text``'s root-relative parsed meaning, as canonical text; the text itself when unparseable."""
+    node = _parsed_or_none(text)
+    return text if node is None else canonical_measure_text(root_relative(node, root))
 
 
 class SlayerQuery(BaseModel):
@@ -1383,16 +1354,15 @@ class SlayerQuery(BaseModel):
 
     @model_validator(mode="after")
     def _dedupe_time_dimensions(self) -> "SlayerQuery":
-        """Collapse exact-duplicate time dimensions; reject same text+granularity differing
-        in date range, name or label. Compares source-model-prefix-stripped text, so
+        """Collapse exact-duplicate time dimensions; reject same dimension+granularity differing
+        in date range, name or label. Dimensions compare by root-relative parsed meaning, so
         ``created_at`` and ``orders.created_at`` are one."""
         if not (tds := self.time_dimensions):
             return self
-        model_name = self.source_model_name
+        root = self.source_model_name
 
         def _canon(td: TimeDimension) -> tuple:
-            text = _model_prefix_pattern(model_name).sub("", td.template) if model_name else td.template
-            return (text, td.granularity, tuple(td.date_range or ()), td.name, td.label)
+            return (_parsed_identity(td.template, root), td.granularity, tuple(td.date_range or ()), td.name, td.label)
 
         seen: dict[tuple[str, str], tuple] = {}
         result: list[TimeDimension] = []
@@ -1470,47 +1440,6 @@ class SlayerQuery(BaseModel):
             case _:
                 return None
 
-    def strip_source_model_prefix(self) -> "SlayerQuery":
-        """Strip a redundant source-model-name prefix from all dotted references (agents write ``sum(orders.revenue)``)."""
-        model_name = self.source_model_name
-        if model_name is None:
-            return self
-
-        updates: dict[str, Any] = {}
-        pattern = _model_prefix_pattern(model_name)
-
-        if self.dimensions:
-            new_dims = [_strip_column_ref(d, model_name) for d in self.dimensions]
-            if any(n is not o for n, o in zip(new_dims, self.dimensions)):
-                updates["dimensions"] = new_dims
-
-        stripped_lists = (
-            ("time_dimensions", _strip_time_dimensions(self.time_dimensions, model_name)),
-            ("order", _strip_order(self.order, model_name, pattern)),
-            ("measures", _strip_measures(self.measures, pattern)),
-        )
-        updates.update((key, value) for key, value in stripped_lists if value is not None)
-
-        if self.filters:
-            new_filters = [pattern.sub("", f) for f in self.filters]
-            if new_filters != self.filters:
-                updates["filters"] = new_filters
-
-        prefix = model_name + "."
-        if self.main_time_dimension and self.main_time_dimension.startswith(prefix):
-            updates["main_time_dimension"] = self.main_time_dimension[len(prefix):]
-
-        if not updates:
-            return self
-
-        # Sanitize for log injection (S5145): strip CR/LF before logging.
-        safe_name = model_name.replace("\r", "\\r").replace("\n", "\\n")
-        logger.info(
-            "Stripped source model prefix '%s.' from query references",
-            safe_name,
-        )
-        return self.model_copy(update=updates)
-
 
 def _refinement_field(name: str) -> Any:
     """``SlayerQuery``'s field ``name`` with a ``None`` default (supplied-ness is ``model_fields_set``)."""
@@ -1569,14 +1498,6 @@ def _show(value: Any) -> str:
     return json.dumps(value)
 
 
-def _canonical_ref(ref: ColumnRef, model_name: str | None) -> ColumnRef:
-    return _strip_column_ref(ref, model_name) if model_name else ref
-
-
-def _canonical_text(text: str, model_name: str | None) -> str:
-    return _model_prefix_pattern(model_name).sub("", text) if model_name else text
-
-
 def _union(
     saved: list | None, refined: list | None, *, field: str, canon: Callable[[Any], Any],
     identity: Callable[[Any], tuple[str, str]],
@@ -1605,14 +1526,22 @@ def _union(
 _RESTATABLE_FIELDS = ("label", "type", "description", "meta")
 
 
+def _restated_name(formula: str, root: str | None) -> str | None:
+    """The saved-measure name ``formula`` restates: a bare name, or that name qualified by the root."""
+    node = _parsed_or_none(formula)
+    node = root_relative(node, root) if node is not None else None
+    return node.name if isinstance(node, Ref) else None
+
+
 def _drop_restatements(
-    saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None,
+    saved: list[ModelMeasure] | None, refined: list[ModelMeasure] | None, root: str | None,
 ) -> list[ModelMeasure] | None:
-    """``refined`` without the entries restating a saved entry by its bare name; a differing set field conflicts."""
+    """``refined`` without the entries restating a saved entry by name; a differing set field conflicts."""
     by_name = {m.name: m for m in saved or [] if m.name}
     kept: list[ModelMeasure] = []
     for entry in refined or []:
-        prior = by_name.get(entry.formula.strip())
+        name = _restated_name(entry.formula, root)
+        prior = by_name.get(name) if name is not None else None
         if prior is None or entry.name not in (None, prior.name):
             kept.append(entry)
             continue
@@ -1637,7 +1566,7 @@ def _merge_attribute(*, saved: Any, refined: Any, key: str, attribute: str) -> A
 
 
 def _merge_time_dimensions(
-    saved: list[TimeDimension] | None, refined: list[TimeDimension] | None, model_name: str | None,
+    saved: list[TimeDimension] | None, refined: list[TimeDimension] | None, root: str | None,
 ) -> list[TimeDimension] | None:
     """Per (dimension, granularity): append new keys, merge ``date_range`` / ``name`` / ``label`` of existing ones."""
     if not refined:
@@ -1645,9 +1574,9 @@ def _merge_time_dimensions(
     merged = list(saved or [])
     positions: dict[tuple[str, str], int] = {}
     for i, td in enumerate(merged):
-        positions.setdefault((_canonical_text(td.dimension, model_name), granularity_key(td.granularity)), i)
+        positions.setdefault((_parsed_identity(td.dimension, root), granularity_key(td.granularity)), i)
     for td in refined:
-        slot = (_canonical_text(td.dimension, model_name), granularity_key(td.granularity))
+        slot = (_parsed_identity(td.dimension, root), granularity_key(td.granularity))
         i = positions.get(slot)
         if i is None:
             positions[slot] = len(merged)
@@ -1666,17 +1595,20 @@ def _merge_time_dimensions(
 
 def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQuery:
     """The saved final stage with ``refinement`` merged in, revalidated as a whole."""
-    model_name = saved.source_model_name
+    root = saved.source_model_name
     supplied = refinement.model_fields_set
     data: dict[str, Any] = {name: getattr(saved, name) for name in saved.model_fields_set | {"version"}}
 
     def canonical_dimension(dim: ColumnRef | ComputedDimension) -> Any:
-        return dim if isinstance(dim, ComputedDimension) else _canonical_ref(dim, model_name)
+        return dim if isinstance(dim, ComputedDimension) else _root_relative_ref(dim, root)
 
     def dimension_identity(dim: ColumnRef | ComputedDimension) -> tuple[str, str]:
         if isinstance(dim, ComputedDimension):
             return "computed", dim.name or dim.expression
-        return "column", _canonical_ref(dim, model_name).full_name
+        return "column", _root_relative_ref(dim, root).full_name
+
+    def canonical_measure(m: ModelMeasure) -> ModelMeasure:
+        return m.model_copy(update={"formula": _parsed_identity(m.formula, root)})
 
     merged_lists = {
         "dimensions": _union(
@@ -1684,11 +1616,11 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
             identity=dimension_identity,
         ),
         "measures": _union(
-            saved.measures, _drop_restatements(saved.measures, refinement.measures), field="measures",
-            canon=lambda m: m,
-            identity=lambda m: ("name", m.name) if m.name else ("formula", m.formula),
+            saved.measures, _drop_restatements(saved.measures, refinement.measures, root), field="measures",
+            canon=canonical_measure,
+            identity=lambda m: ("name", m.name) if m.name else ("formula", _parsed_identity(m.formula, root)),
         ),
-        "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, model_name),
+        "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, root),
         "filters": _union(saved.filters, refinement.filters, field="filters", canon=str, identity=lambda f: ("filter", f)),
     }
     data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))

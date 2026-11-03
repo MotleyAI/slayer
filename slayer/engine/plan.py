@@ -7,7 +7,7 @@ multi-stage DAG through it, splicing the stored query-backed models its stages r
 
 from __future__ import annotations
 
-import re
+
 from typing import Any, Dict, Hashable, List, NoReturn, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
@@ -16,6 +16,7 @@ from slayer.core.errors import QueryBackedCycleError
 from slayer.core.join_walker import observe_traversals
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, extract_placeholder_names
+from slayer.core.syntax import text_paths
 from slayer.core.time_spine import is_spine_query, query_host
 from slayer.core.scope import (
     ModelScope,
@@ -378,10 +379,8 @@ class _StagePlanner:
             *(m.formula for m in query.measures or []), *(query.filters or []),
             *(getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []),
         ]
-        return [
-            n for n in self.bundle.query_backed
-            if any(re.search(rf"(?<![\w.]){re.escape(n)}\.", t) for t in texts)
-        ]
+        heads = {path[0] for t in texts for path in text_paths(t) if len(path) > 1}
+        return [n for n in self.bundle.query_backed if n in heads]
 
     def ensure(self, name: str, *, chain: Tuple[str, ...], explicit: bool) -> bool:
         """Splice query-backed model ``name`` under ``chain``; ``False`` if it stays a placeholder."""
@@ -447,7 +446,6 @@ class _StagePlanner:
         """A spliced stage, normalized and with its lexically layered variables
         substituted; its own source model with its Mode-A surfaces substituted
         (``None`` when it reads a sibling); and the placeholders that source reads."""
-        stage = stage.strip_source_model_prefix()
         base_name = stage.source_model_name
         source = None
         if base_name not in private and base_name not in self.bundle.query_backed \

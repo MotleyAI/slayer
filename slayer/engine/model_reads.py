@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel
 
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.join_walker import OrientedJoin, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec, render_probe_text
+from slayer.core.query import ComputedDimension, ModelExtension, SlayerQuery, SourceSpec
 from slayer.engine.param_binding import default_reference_sites
 from slayer.engine.reference_closure import parse_fragment_any_dialect
-from slayer.core.syntax import DottedRef, Ref, parse_expr
+from slayer.core.syntax import drop_root_hop, text_paths
 from slayer.ir.source_bundle import apply_extension_overlay, follow_sibling_chain, source_name_if_sibling
 from slayer.sql.column_expansion import is_trivial_base, reference_sites, root_scope_column_ids
 
@@ -95,35 +94,8 @@ def query_reference_parts(query: SlayerQuery) -> list[tuple[str, ...]]:
     """The dotted parts of every reference ``query_field_texts`` yields, aggregation arguments included."""
     out: list[tuple[str, ...]] = []
     for kind, text in query_field_texts(query):
-        if kind == "ref":
-            out.append(tuple(text.split(".")))
-        elif kind == "formula":
-            out.extend(_expr_parts(text))
-        else:
-            out.extend(_expr_parts(render_probe_text(text)))
+        out.extend([tuple(text.split("."))] if kind == "ref" else text_paths(text))
     return out
-
-
-def _expr_parts(text: str) -> list[tuple[str, ...]]:
-    try:
-        parsed = parse_expr(text)
-    except Exception:  # noqa: BLE001 — unparseable text reads nothing; the binder reports it
-        return []
-    return list(_node_parts(parsed))
-
-
-def _node_parts(node: Any) -> Iterator[tuple[str, ...]]:
-    """Parts of every ``Ref`` / ``DottedRef`` in a parsed tree, aggregation and transform arguments included."""
-    if isinstance(node, Ref):
-        yield (node.name,)
-    elif isinstance(node, DottedRef):
-        yield tuple(node.parts)
-    elif isinstance(node, BaseModel):
-        for name in type(node).model_fields:
-            yield from _node_parts(getattr(node, name))
-    elif isinstance(node, (list, tuple)):
-        for item in node:
-            yield from _node_parts(item)
 
 
 def _prefix_onto_placeholder(
@@ -192,7 +164,7 @@ class _Reads:
         measure = host.get_measure(name)
         if measure is None or not measure.formula or not self._first_visit(host, f"measure:{name}"):
             return
-        for parts in _expr_parts(measure.formula):
+        for parts in text_paths(measure.formula):
             self.ref(parts, host=host)
 
     def _first_visit(self, host: SlayerModel, key: str) -> bool:
@@ -212,9 +184,7 @@ class _Reads:
 
     def path(self, hops: Sequence[str], *, host: SlayerModel) -> SlayerModel | None:
         """The model ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
-        hops = tuple(hops)
-        if hops[:1] == (host.name,):
-            hops = hops[1:]
+        hops = drop_root_hop(hops, host.spelling)
         if not hops:
             return host
         peers = self.peers(host)

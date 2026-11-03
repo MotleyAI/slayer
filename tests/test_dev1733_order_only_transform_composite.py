@@ -266,7 +266,7 @@ class TestOrderItemEntryPoint:
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
                 measures=[ModelMeasure(formula="amount:sum")],
-                order=[OrderItem(column=order, direction="desc")],
+                order=[OrderItem.model_validate({"column": order, "direction": "desc"})],
             )
 
         qualified = await exec_engine.execute(query("orders.amount:sum / orders.id:count"))

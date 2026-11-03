@@ -5521,6 +5521,7 @@ class SQLGenerator:
                     column_name=time_column.column_name,
                     bundle=bundle,
                     owner_path=tuple(time_column.path),
+                    root_relation=source_relation,
                     cast=False,
                 )
                 owner = joined_model

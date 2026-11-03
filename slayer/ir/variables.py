@@ -15,7 +15,7 @@ import re
 from typing import Any, Dict, Optional
 
 from slayer.core.models import ModelMeasure, SlayerModel
-from slayer.core.syntax import bind_variables
+from slayer.core.syntax import bind_variables, has_bindings, variable_names
 from slayer.core.query import (
     ComputedDimension,
     OrderItem,
@@ -26,7 +26,6 @@ from slayer.core.query import (
     declares_variables,
     extract_placeholder_names,
     extract_variable_refs,
-    has_variable_syntax,
     list_valued_variable_names,
     substitute_variables,
 )
@@ -148,7 +147,7 @@ def _mode_a_surfaces(model: SlayerModel) -> list:
 
 
 def _measure_needs_pass(measure: ModelMeasure) -> bool:
-    return has_variable_syntax(measure.formula)
+    return has_bindings(measure.formula)
 
 
 def model_needs_substitution_pass(model: SlayerModel) -> bool:
@@ -163,8 +162,8 @@ def model_needs_substitution_pass(model: SlayerModel) -> bool:
 
 def model_placeholder_names(model: SlayerModel) -> set:
     """Every ``{var}`` a model's Mode-A surfaces and saved measure formulas read."""
-    out: set = set()
-    for text in [*_mode_a_surfaces(model), *(m.formula for m in model.measures)]:
+    out: set = {name for m in model.measures for name in variable_names(m.formula)}
+    for text in _mode_a_surfaces(model):
         if text:
             bare, blocked = extract_variable_refs(text)
             out |= bare | blocked

@@ -4572,28 +4572,26 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         assert "customers" in sql, sql
         # Resolved as a JOINED dimension under the dotted result key, not as a bare local column that silently referenced the wrong table.
         assert "orders.customers.name" in sql, sql
-        bare = SlayerQuery(source_model="orders", dimensions=["customers.name"])
+        bare = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["customers.name"]})
         assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
 
     async def test_self_ref_measure_resolves_as_the_joined_measure(self, engine_and_models) -> None:
         """'orders.customers.score:sum' reads as 'customers.score:sum'."""
         _engine, model = engine_and_models
-        query = SlayerQuery(
-            source_model="orders", measures=["orders.customers.score:sum"],
-        )
+        query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["orders.customers.score:sum"]})
         sql = await _engine_generate(
             query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
         )
         assert "SUM(" in sql.upper(), sql
         assert "customers" in sql, sql
-        bare = SlayerQuery(source_model="orders", measures=["customers.score:sum"])
+        bare = SlayerQuery.model_validate({"source_model": "orders", "measures": ["customers.score:sum"]})
         assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
 
     async def test_simple_self_ref_dimension_is_local(self, engine_and_models) -> None:
         """'orders.amount' on source_model=orders reads the local 'amount'."""
         _engine, model = engine_and_models
-        qualified = SlayerQuery(source_model="orders", dimensions=["orders.amount"])
-        bare = SlayerQuery(source_model="orders", dimensions=["amount"])
+        qualified = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["orders.amount"]})
+        bare = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["amount"]})
         assert await _engine_generate(query=qualified, model=model, extra_models=[_CUSTOMERS_SELF_REF]) == (
             await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
         )

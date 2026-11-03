@@ -18,7 +18,7 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine, is_spine_query, mentions_spine
+from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine, is_spine_query, reads_spine
 from slayer.core.join_walker import follow, resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
     AggregateKey,
@@ -61,6 +61,7 @@ from slayer.core.scope import (
     ModelScope,
     StageSchema,
     host_model_name,
+    root_spelling,
     stale_spelling_position,
 )
 from slayer.engine import dimension_routing
@@ -119,7 +120,9 @@ from slayer.core.syntax import (
     Ref,
     TransformCall,
     canonical_measure_text,
+    drop_root_qualifier,
     parse_expr,
+    root_relative,
     walk_parsed,
 )
 from slayer.ir.bound import (
@@ -435,7 +438,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 )
                 if matching_td is None:
                     check_spine_plain_use(
-                        offender=o.raw_formula if mentions_spine(_col) or (
+                        offender=o.raw_formula if reads_spine(_col) or (
                             isinstance(scope, ModelScope) and scope.source_model is not None
                             and is_spine(scope.source_model) and "." not in _col
                         ) else None,
@@ -471,9 +474,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 ))
                 continue
             # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
-            if o.raw_formula and (
-                "partition_by" in o.raw_formula or "window" in o.raw_formula
-            ):
+            if o.raw_formula and _passes_grain_kwargs(o.raw_formula):
                 _part_bound = bind_expr(
                     parsed=parse_expr(o.raw_formula),
                     scope=scope, bundle=bundle,
@@ -588,7 +589,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # left at None — the stage's own bucket is the axis on a StageSchema.
     active_td_key: Optional[TimeTruncKey] = None
     _active_model = scope.source_model if isinstance(scope, ModelScope) else None
-    active_td = _resolve_main_time_dimension(query=query, model=_active_model)
+    active_td = _resolve_main_time_dimension(query=query, model=_active_model, root=root_spelling(scope))
     if active_td is not None:
         atd_key = bind_time_dimension(
             td=active_td, scope=scope, bundle=bundle,
@@ -834,12 +835,7 @@ def _retyped_after_coercion(
 def _joined_column_type(
     *, source_model: SlayerModel, full_name: str, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    parts = full_name.split(".")
-    if parts and parts[0] == source_model.name:  # self-prefix strip
-        parts = parts[1:]
-    if not parts:
-        return None
-    *hops, leaf = parts
+    *hops, leaf = drop_root_qualifier(full_name.split("."), source_model.spelling)
     current = resolved_terminal(
         root=source_model, path=tuple(hops),
         models_by_name=bundle.models_by_name,
@@ -937,12 +933,14 @@ def _resolve_saved_measure_ref(
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
     host = scope.source_model
-    text = formula.strip()
-    parts = text.split(".")
-    if not all(p.isidentifier() for p in parts):
+    try:
+        node = parse_expr(formula)
+    except ValueError:
         return None
-    if len(parts) > 1 and parts[0] == host.name:  # C14 self-prefix strip
-        parts = parts[1:]
+    if not isinstance(node, (Ref, DottedRef)):
+        return None
+    parts = drop_root_qualifier((node.name,) if isinstance(node, Ref) else node.parts, host.spelling)
+    text = ".".join(parts)
     *hops, leaf = parts
     located = (
         _locate_dotted_saved_measure(
@@ -1169,7 +1167,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # The parsed tree drives text-shape alias derivation, so both spellings
             # of one formula share an alias.
             canonical = _canonical_alias_for_formula(
-                formula, bound=bound, parsed=parsed, bundle=bundle,
+                formula, bound=bound, parsed=parsed, bundle=bundle, root=root_spelling(scope),
             )
             # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
             saved_name = _saved_measure_public_name(
@@ -1179,7 +1177,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
             # A substituted formula is named from its template (text path: an aggregate
             # key's alias would embed the value), staying unnamed for dedupe.
             template_name = None if m.template == formula else _canonical_alias_for_formula(
-                m.template, parsed=parse_expr(m.template),
+                m.template, parsed=parse_expr(m.template), root=root_spelling(scope),
             )
             declared_name = alias_name or template_name or canonical
             public_name = declared_name
@@ -1240,10 +1238,11 @@ def _canonical_alias_for_formula(
     bound: Optional[BoundExpr] = None,
     parsed: Optional[ParsedExpr] = None,
     bundle: Optional[ResolvedSourceBundle] = None,
+    root: Optional[str] = None,
 ) -> str:
     """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an unfiltered
-    AggregateKey root, else :func:`formula_text_alias` of the canonical text of ``parsed`` (so every
-    spelling of one formula derives one alias)."""
+    AggregateKey root, else :func:`formula_text_alias` of the canonical text of ``parsed`` with its
+    ``root`` qualifier dropped (so every spelling of one formula derives one alias)."""
     filtered = parsed is not None and any(
         isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
     if bound is not None and isinstance(bound.value_key, AggregateKey) and not filtered:
@@ -1254,7 +1253,7 @@ def _canonical_alias_for_formula(
         if alias is not None:
             return alias
         # None means the source exposes no leaf/column name; use the text-shape path.
-    return formula_text_alias(canonical_measure_text(parsed) if parsed is not None else formula.strip())
+    return formula_text_alias(canonical_measure_text(root_relative(parsed, root)) if parsed is not None else formula.strip())
 
 
 def _resolve_shift_units(key: ValueKey, *, bundle: ResolvedSourceBundle) -> ValueKey:
@@ -1570,29 +1569,48 @@ def _check_time_dimension(
     return column_type
 
 
+def _passes_grain_kwargs(text: str) -> bool:
+    """Whether ``text`` passes ``partition_by=`` or ``window=`` to a call."""
+    return any(
+        name in ("partition_by", "window")
+        for node in walk_parsed(parse_expr(text)) for name, _ in getattr(node, "kwargs", ())
+    )
+
+
+def _td_column_parts(td: TimeDimension, *, root: Optional[str]) -> Optional[Tuple[str, ...]]:
+    return drop_root_qualifier(td.column_ref.parts, root) if td.column_ref is not None else None
+
+
+def _reference_parts(text: str) -> Tuple[str, ...]:
+    """A reference's path as parsed; unparseable text is one name."""
+    try:
+        node = parse_expr(text)
+    except ValueError:
+        return (text,)
+    return node.parts if isinstance(node, DottedRef) else (node.name,) if isinstance(node, Ref) else (text,)
+
+
 def _named_td_matches(
-    *, tds: List[TimeDimension], target: str,
+    *, tds: List[TimeDimension], target: str, root: Optional[str],
 ) -> Tuple[List[TimeDimension], List[TimeDimension]]:
     """(name or full-name matches, leaf matches) for ``target`` among ``tds``: a time
     dimension's name, else a column's full or leaf name. Two same-column buckets share
     a full name, so full matches is a list, not a single TD."""
-    named = [td for td in tds if td.effective_name == target]
+    parts = drop_root_qualifier(_reference_parts(target), root)
+    named = [td for td in tds if len(parts) == 1 and td.effective_name == parts[0]]
     if named:
         return named, []
-    full = [td for td in tds if td.column_ref is not None and td.column_ref.full_name == target]
+    full = [td for td in tds if _td_column_parts(td, root=root) == parts]
     if full:
         return full, []
-    return [], [td for td in tds if td.column_ref is not None and td.column_ref.name == target]
+    return [], [td for td in tds if len(parts) == 1 and td.column_ref is not None and td.column_ref.name == parts[0]]
 
 
 def _host_local_default_td(
-    *, tds: List[TimeDimension], default: str,
+    *, tds: List[TimeDimension], default: str, root: Optional[str],
 ) -> Optional[TimeDimension]:
     # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
-    matches = [
-        td for td in tds
-        if td.column_ref is not None and td.column_ref.model is None and td.column_ref.name == default
-    ]
+    matches = [td for td in tds if _td_column_parts(td, root=root) == (default,)]
     # Same column at several granularities: the passive model default can't pick a
     # bucket. Resolve to None (not raise) so no-transform queries still run; a
     # transform that needs the axis then fails via check_time_transforms_resolved.
@@ -1603,6 +1621,7 @@ def _resolve_main_time_dimension(
     *,
     query: SlayerQuery,
     model: Optional[SlayerModel],
+    root: Optional[str] = None,
 ) -> Optional[TimeDimension]:
     """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the model's default_time_dimension else None. A stage has no model, so its default step is skipped."""
     tds = list(query.time_dimensions or [])
@@ -1614,7 +1633,7 @@ def _resolve_main_time_dimension(
     if query.main_time_dimension:
         target = query.main_time_dimension
         # Prefer full-name (more specific) over leaf match.
-        full_matches, leaf_matches = _named_td_matches(tds=tds, target=target)
+        full_matches, leaf_matches = _named_td_matches(tds=tds, target=target, root=root)
         if len(full_matches) == 1:
             return full_matches[0]
         if len(full_matches) > 1:
@@ -1647,5 +1666,5 @@ def _resolve_main_time_dimension(
 
     default = model.effective_default_time_dimension if model is not None else None
     if default:
-        return _host_local_default_td(tds=tds, default=default)
+        return _host_local_default_td(tds=tds, default=default, root=root)
     return None

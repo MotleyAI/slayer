@@ -20,8 +20,8 @@ from slayer.core.errors import (
 from slayer.core.join_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
 from slayer.core.join_walker import canonical_path, provably_to_one, terminal_model, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
-from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
+from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.time_spine import TIME_SPINE_MODEL, reads_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
 from slayer.core.syntax import (
     AggCall,
@@ -127,7 +127,7 @@ def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
     nothing to determination.
     """
     try:
-        parsed = parse_expr(render_probe_text(filter_str))
+        parsed = parse_expr(filter_str)
     except Exception:
         return [], False
     nodes = list(walk_parsed_refs(parsed))
@@ -457,10 +457,10 @@ def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
     return query.model_copy(update={
         "dimensions": [
             d for d in query.dimensions or []
-            if not mentions_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
+            if not reads_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
         ] or None,
         "time_dimensions": [
-            td for td in query.time_dimensions or [] if not mentions_spine(td.dimension)
+            td for td in query.time_dimensions or [] if not reads_spine(td.dimension)
         ] or None,
         "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
         "measures": None,

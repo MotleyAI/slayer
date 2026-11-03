@@ -9,7 +9,13 @@ import pytest
 
 from slayer.core.errors import SlayerError, VariableError
 from slayer.core.models import ModelMeasure, SlayerModel
-from slayer.core.query import ORDER_PLACEHOLDER_NAMES, OrderItem, SlayerQuery, extract_placeholder_names
+from slayer.core.query import (
+    ORDER_PLACEHOLDER_NAMES,
+    ComputedDimension,
+    OrderItem,
+    SlayerQuery,
+    extract_placeholder_names,
+)
 from slayer.core.warnings import NormalizationWarning
 from slayer.engine.plan import _StagePlanner
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -87,8 +93,9 @@ QUOTED_ROOT_SURFACES = {
 
 @pytest.mark.parametrize("surface", sorted(QUOTED_ROOT_SURFACES))
 async def test_a_quoted_identifier_naming_the_root_is_one_identifier(engine: SlayerQueryEngine, surface: str) -> None:
+    body = _orders(**QUOTED_ROOT_SURFACES[surface])
     with pytest.raises(SlayerError) as info:
-        await engine.execute(_orders(**QUOTED_ROOT_SURFACES[surface]), dry_run=True)
+        await engine.execute(body, dry_run=True)
     assert "orders.x" in str(info.value)
 
 
@@ -117,8 +124,9 @@ async def test_a_quoted_main_time_dimension_names_its_column(engine: SlayerQuery
 
 
 async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(engine: SlayerQueryEngine) -> None:
+    body = _orders(**MAIN_TIME, main_time_dimension='"orders.created_at"')
     with pytest.raises(SlayerError) as info:
-        await engine.execute(_orders(**MAIN_TIME, main_time_dimension='"orders.created_at"'), dry_run=True)
+        await engine.execute(body, dry_run=True)
     assert "orders.created_at" in str(info.value)
 
 
@@ -206,8 +214,9 @@ async def test_reported_demand_is_what_binding_looks_up(engine: SlayerQueryEngin
     assert extract_placeholder_names(SlayerQuery.model_validate(body)) == expected
     await engine.execute({**body, "variables": dict.fromkeys(expected, 1)}, dry_run=True)
     for name in expected:
+        missing = {**body, "variables": dict.fromkeys(expected - {name}, 1)}
         with pytest.raises(VariableError, match=f"'{name}'"):
-            await engine.execute({**body, "variables": dict.fromkeys(expected - {name}, 1)}, dry_run=True)
+            await engine.execute(missing, dry_run=True)
 
 
 @pytest.mark.parametrize("surface", sorted(SURFACES))
@@ -215,9 +224,12 @@ async def test_a_quoted_identifier_placeholder_is_refused_and_never_demanded(
     engine: SlayerQueryEngine, surface: str,
 ) -> None:
     body = _orders(**SURFACES[surface]('"{x}" = 1'))
-    with pytest.raises(ValueError):
+    try:
         query = SlayerQuery.model_validate(body)
-        assert extract_placeholder_names(query) == set()
+    except ValueError:
+        return
+    assert extract_placeholder_names(query) == set()
+    with pytest.raises(ValueError):
         await engine.execute({**body, "variables": {"x": 1}}, dry_run=True)
 
 
@@ -374,7 +386,7 @@ def test_functional_time_dimension_refusal_pin(entry: str) -> None:
 def test_a_non_granularity_call_stays_a_dimension() -> None:
     query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["upper(status)"]})
     assert not query.time_dimensions
-    assert [d.expression for d in query.dimensions or []] == ["upper(status)"]
+    assert [d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)] == ["upper(status)"]
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:

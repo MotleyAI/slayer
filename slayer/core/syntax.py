@@ -19,7 +19,7 @@ import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
 from itertools import count
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import pyparsing as pp
 from pydantic import BaseModel, ConfigDict
@@ -1001,6 +1001,13 @@ _TERNARY = _kw("if") + _fail(
 )
 expr <<= _PREDICATE + pp.Optional(_TERNARY)
 _EXPRESSION = (expr + pp.StringEnd().set_fail_action(_record_failure)).parse_with_tabs()
+# A whole-text call with each argument's source offsets.
+_LOCATED_ARG = pp.Group(pp.Located(_ANY_ARG))
+_LOCATED_CALL = (
+    pp.Group(pp.Located(_PATH | _PLACEHOLDER)) + LPAR
+    + pp.Group(pp.Optional(_LOCATED_ARG + pp.ZeroOrMore(COMMA + _LOCATED_ARG) + pp.Optional(COMMA))) + RPAR
+    + pp.StringEnd()
+).parse_with_tabs()
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1085,43 @@ _DIGIT_BRACES_RE = re.compile(r"[0-9, ]*")
 _NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
+def _lookups(text: str, regions: List[_Region]) -> Iterator[Tuple["re.Match[str]", bool]]:
+    """Each brace pair binding looks up, with whether it sits in a string literal."""
+    for region in regions:
+        in_string = region.kind == "string"
+        for m in _ANY_BRACE_RE.finditer(text, region.start, region.end):
+            if m.group(0) not in ("{{", "}}") and not _literal_braces(m, in_string=in_string):
+                yield m, in_string
+
+
+def has_bindings(text: str) -> bool:
+    """Whether ``bind_variables`` reads ``text``: a variable or a doubled-brace escape."""
+    return any(_ANY_BRACE_RE.search(text, r.start, r.end) for r in _regions(text) if r.kind != "ident")
+
+
+def _bound_strings(text: str) -> str:
+    """``text`` with each string-literal variable read as a same-length run of zeros, as binding parses a template."""
+    chars = list(text)
+    for m, _ in _lookups(text, [r for r in _regions(text) if r.kind == "string"]):
+        if re.fullmatch(_VAR_NAME, m.group(1)):
+            chars[m.start():m.end()] = "0" * (m.end() - m.start())
+    return "".join(chars)
+
+
+def parse_template(text: str) -> ParsedExpr:
+    """``parse_expr`` of ``text`` before its string-literal variables are bound: the shape binding parses."""
+    return parse_expr(_bound_strings(text))
+
+
+def variable_names(text: str) -> List[str]:
+    """The variables binding ``text`` looks up, in text order."""
+    names: Dict[str, None] = {}
+    for m, _ in _lookups(text, [r for r in _regions(text) if r.kind != "ident"]):
+        if re.fullmatch(_VAR_NAME, m.group(1)):
+            names[m.group(1)] = None
+    return list(names)
+
+
 def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     """``text`` with every ``{name}`` bound as a literal value: inside a string literal its text,
     in a bare literal slot a number or boolean, as a whole ``IN`` list a list. The template is
@@ -1089,8 +1133,8 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
         chunk = text[region.start:region.end]
         if region.kind == "code" and ("{?" in chunk or "?}" in chunk):
             raise ValueError(f"{_OPTIONAL_BLOCKS} Got: {text!r}.")
-        for m in _ANY_BRACE_RE.finditer(chunk):
-            _check_variable(m, text=text, variables=variables, in_string=region.kind == "string")
+    for m, in_string in _lookups(text, regions):
+        _check_variable(m, text=text, variables=variables, in_string=in_string)
     # Strings bound and ``{{`` / ``}}`` outside strings read as braces: the grammar judges the variable slots.
     template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
     text_slots = _text_slot_ordinals(template, variables=variables)
@@ -1205,8 +1249,6 @@ def _literal_braces(match: "re.Match[str]", *, in_string: bool) -> bool:
 
 
 def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str, Any], in_string: bool) -> None:
-    if match.group(0) in ("{{", "}}") or _literal_braces(match, in_string=in_string):
-        return
     name = match.group(1)
     if not re.fullmatch(_VAR_NAME, name):
         raise VariableError(
@@ -1884,6 +1926,92 @@ def walk_parsed(node: Any) -> Iterator[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Readers
+# ---------------------------------------------------------------------------
+
+
+def drop_root_hop(hops: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
+    """A reference's join ``hops`` without a leading qualifier naming the query root ``root``."""
+    hops = tuple(hops)
+    return hops[1:] if root is not None and hops[:1] == (root,) else hops
+
+
+def drop_root_qualifier(parts: Sequence[str], root: Optional[str]) -> Tuple[str, ...]:
+    """``parts`` without a leading qualifier naming the query root ``root`` (``r.x`` ≡ ``x``)."""
+    parts = tuple(parts)
+    return parts if len(parts) < 2 else (*drop_root_hop(parts[:-1], root), parts[-1])
+
+
+def root_relative(parsed: Any, root: Optional[str]) -> Any:
+    """``parsed`` with each reference's root qualifier dropped."""
+    return parsed if root is None else _root_relative(parsed, root=root, memo={})
+
+
+def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
+    if isinstance(node, tuple):
+        return tuple(_root_relative(item, root=root, memo=memo) for item in node)
+    if not isinstance(node, _BaseNode):
+        return node
+    if id(node) not in memo:
+        if isinstance(node, DottedRef):
+            parts = drop_root_qualifier(node.parts, root)
+            if parts == ("*",):
+                memo[id(node)] = StarSource()
+            elif len(parts) == 1:
+                memo[id(node)] = Ref(name=parts[0], quoted=node.quoted)
+            else:
+                memo[id(node)] = node.model_copy(update={"parts": parts})
+        else:
+            memo[id(node)] = node.model_copy(
+                update={f: _root_relative(getattr(node, f), root=root, memo=memo) for f in type(node).model_fields},
+            )
+    return memo[id(node)]
+
+
+def referenced_paths(parsed: Any) -> Iterator[Tuple[str, ...]]:
+    """The path of each reference in ``parsed``; a quoted identifier is the one name it spells."""
+    for node in walk_parsed(parsed):
+        if isinstance(node, Ref):
+            yield (node.name,)
+        elif isinstance(node, DottedRef):
+            yield node.parts
+
+
+def text_paths(text: str) -> List[Tuple[str, ...]]:
+    """``referenced_paths`` of Mode-B ``text``; none when it does not parse (binding reports it)."""
+    try:
+        return list(referenced_paths(parse_expr(text)))
+    except Exception:  # noqa: BLE001 — unparseable text reads nothing
+        return []
+
+
+class CallSource(BaseModel):
+    """A whole-text call ``f(a, …)`` as written: its callee path (a ``{var}`` callee as written) and each
+    argument's source text."""
+
+    model_config = ConfigDict(frozen=True)
+
+    callee: Tuple[str, ...]
+    arguments: Tuple[str, ...]
+
+
+@lru_cache(maxsize=4096)
+def call_source(text: str) -> Optional[CallSource]:
+    """``text`` (a template) as one call with its callee's and arguments' source text, else ``None``."""
+    with _PARSE_LOCK:
+        _STATE.text, _STATE.farthest = text, 0
+        try:
+            callee, located = _LOCATED_CALL.parse_string(_mask_placeholders(_bound_strings(text)), parse_all=True)
+        except Exception:  # noqa: BLE001 — not a well-formed call
+            return None
+    words = callee[1][0]
+    return CallSource(
+        callee=(text[callee[0]:callee[-1]],) if isinstance(words, str) else tuple(w.name for w in words),
+        arguments=tuple(text[arg[0]:arg[-1]].strip() for arg in located),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Canonical text rendering + entity-ref splitting
 # ---------------------------------------------------------------------------
 
@@ -2041,10 +2169,10 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 
 
 __all__ = [
-    "AggCall", "ArrayLit", "Arith", "BoolOp", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr", "Placeholder", "Ref",
-    "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "aggregation_reading", "bind_variables", "canonical_measure_text", "comparison_hint", "keyword_spelling",
-    "measure_dependency_problems",
-    "parse_expr", "placeholder_names", "positional_hint", "split_entity_agg_ref", "walk_parsed",
-    "walk_parsed_refs",
+    "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
+    "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
+    "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "comparison_hint",
+    "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
+    "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",
+    "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

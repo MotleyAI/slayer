@@ -110,13 +110,15 @@ async def test_a_non_root_qualifier_keeps_its_hop(engine: SlayerQueryEngine) -> 
 
 
 async def test_an_inner_hop_named_like_the_root_is_still_a_revisit(engine: SlayerQueryEngine) -> None:
+    body = _orders(measures=["count(customers.orders.id)"])
     with pytest.raises(Exception, match="customers"):
-        await engine.execute(_orders(measures=["count(customers.orders.id)"]))
+        await engine.execute(body)
 
 
 async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> None:
+    body = _orders(measures=["count(*)"], filters=["reorders.status = 'paid'"])
     with pytest.raises(Exception, match="reorders"):
-        await engine.execute(_orders(measures=["count(*)"], filters=["reorders.status = 'paid'"]))
+        await engine.execute(body)
 
 
 # --------------------------------------------------------------------------- #
