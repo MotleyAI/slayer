@@ -20,6 +20,9 @@ jobs:
   # A fresh `pip install` resolves the newest allowed SQLAlchemy / DuckDB, not the lock's.
   unit-test-latest-deps:
     runs-on: ubuntu-latest
+    # Temp files on tmpfs: the suite is fsync-bound on the runner disk.
+    env:
+      TMPDIR: /dev/shm
     steps:
       - uses: actions/checkout@v4
 
