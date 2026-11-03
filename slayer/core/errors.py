@@ -92,6 +92,7 @@ class MemoryNotFoundError(SlayerError):
 
     def __init__(self, memory_id: str) -> None:
         self.memory_id = str(memory_id)
+        self._identifier = self.memory_id
         super().__init__(f"No memory with id '{self.memory_id}'.")
 
     @property
@@ -101,7 +102,11 @@ class MemoryNotFoundError(SlayerError):
             "The alias works until SLayer 2.0.",
             removal="2.0",
         )
-        return self.memory_id
+        return self._identifier
+
+    @identifier.setter
+    def identifier(self, value: str) -> None:
+        self._identifier = value
 
 
 class SchemaDriftError(SlayerError):

@@ -23,11 +23,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.dbt import converter as dbt_converter
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
 from slayer.engine import ingestion, schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult
+from slayer.osi import converter as osi_converter
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql import engine_factory
@@ -396,6 +398,29 @@ def test_converter_over_a_file_backed_duckdb_engine(kind: str, tmp_path: Path) -
     assert result.models
     assert result.model_dump(mode="json") == expected.model_dump(mode="json")
     assert len(future_warnings(caught)) == 1
+
+
+@pytest.mark.parametrize("kind", ["dbt", "osi"])
+def test_an_interrupted_collection_is_collected_again(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = _reference(kind, dialect="sqlite", tmp_path=tmp_path)
+
+    async def _cancelled(**kwargs: Any) -> SlayerModel:
+        raise asyncio.CancelledError
+
+    with disposable_engine("sqlite://") as sa_engine:
+        _seed(sa_engine)
+        with recorded():
+            converter = _legacy_converter(kind, sa_engine=sa_engine, dialect="sqlite")
+        client = SlayerSQLClient(datasource=DatasourceConfig(name=DS_NAME, type="sqlite"), sa_engine=sa_engine)
+        monkeypatch.setattr(dbt_converter if kind == "dbt" else osi_converter, "introspect_table_to_model", _cancelled)
+        collect = converter.collect_metadata(client=client)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(collect)
+        monkeypatch.undo()
+        result = converter.convert()
+    assert result.model_dump(mode="json") == expected.model_dump(mode="json")
 
 
 def _spy_ownership(monkeypatch: pytest.MonkeyPatch, sa_engine: sa.Engine) -> list[str]:

@@ -117,3 +117,13 @@ def test_memory_not_found_identifier_warns_and_memory_id_does_not() -> None:
         identifier = error.identifier
     assert identifier == "m-1"
     assert_one_deprecation(caught, call=".identifier", remedies=("memory_id",), filename=__file__, line=line)
+
+
+def test_memory_not_found_identifier_stays_assignable_as_in_1_5_0() -> None:
+    error = MemoryNotFoundError("m-1")
+    with recorded() as caught:
+        error.identifier = "other"
+    assert future_warnings(caught) == []
+    assert error.memory_id == "m-1"
+    with recorded():
+        assert error.identifier == "other"

@@ -249,7 +249,7 @@ class OsiToSlayerConverter:
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read every dataset's source and every type probe conversion needs through ``client``."""
-        self._collected = True
+        self._collected = False
         if self.target_dialect is None:
             self._target = dialect_for_ds_type(client.datasource.type).sqlglot_name
         for doc in self.documents:
@@ -259,12 +259,13 @@ class OsiToSlayerConverter:
             self._convert()
             misses = self._probe_misses - self._probes.keys()
             if not misses:
-                return
+                break
             for probe in sorted(misses):
                 try:
                     self._probes[probe] = await client.get_column_types(probe)
                 except Exception:  # noqa: BLE001 — probe is best-effort; conversion falls back
                     self._probes[probe] = None
+        self._collected = True
 
     async def _collect_source(self, *, client: SqlClient, ds: OSIDataset) -> None:
         try:

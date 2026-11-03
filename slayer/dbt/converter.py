@@ -231,21 +231,20 @@ class DbtToSlayerConverter:
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Introspect the hidden regular models' tables through ``client``; ``convert`` then needs no database."""
-        self._introspected = {}
-        if not self.include_hidden_models:
-            return
-        for rm in self.project.regular_models:
+        introspected: dict[str, SlayerModel | str] = {}
+        for rm in self.project.regular_models if self.include_hidden_models else []:
             table_name = rm.alias or rm.name
             try:
-                self._introspected[rm.name] = await introspect_table_to_model(
+                introspected[rm.name] = await introspect_table_to_model(
                     client=client, table_name=table_name, schema=rm.schema_name,
                     data_source=self.data_source, model_name=rm.name,
                 )
             except Exception as exc:  # noqa: BLE001 — one table's failure becomes a conversion warning
-                self._introspected[rm.name] = (
+                introspected[rm.name] = (
                     f"Skipped hidden import of dbt model '{rm.name}' "
                     f"(table '{table_name}'): {type(exc).__name__}: {exc}"
                 )
+        self._introspected = introspected
 
     def convert(self) -> ConversionResult:
         """Full conversion pipeline (pure: hidden regular models come from ``collect_metadata``)."""
