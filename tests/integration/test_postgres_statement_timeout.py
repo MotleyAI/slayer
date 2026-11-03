@@ -3,9 +3,11 @@
 import uuid
 
 import pytest
+import sqlglot
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.client import SlayerSQLClient, get_column_types_sync
+from slayer.sql.client import SlayerSQLClient, TypeProbe, get_column_types_sync, render_type_probe
+from slayer.sql.dialects import PostgresDialect
 
 factories = pytest.importorskip("pytest_postgresql.factories")
 psycopg = pytest.importorskip("psycopg")
@@ -14,6 +16,10 @@ pg_sql = pytest.importorskip("psycopg.sql")
 postgresql_proc = factories.postgresql_proc(port=None)
 
 _TIMEOUT_SQL = "SELECT current_setting('statement_timeout') AS t"
+
+
+def _probe(sql: str) -> TypeProbe:
+    return render_type_probe(sqlglot.parse_one(sql, dialect="postgres"), dialect=PostgresDialect())
 
 
 def _admin(info, dbname: str):
@@ -65,19 +71,21 @@ class TestPostgresStatementTimeout:
             assert conn.exec_driver_sql("SHOW statement_timeout").scalar() == "0"
 
     async def test_async_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
-        assert await pg_client.get_column_types("SELECT 1 AS n, 'a' AS s") == {"n": "number", "s": "string"}
+        assert await pg_client.get_column_types(_probe("SELECT 1 AS n, 'a' AS s")) == {"n": "number", "s": "string"}
 
     def test_sync_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
         types = get_column_types_sync(
-            "SELECT 1 AS n, 'a' AS s", engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
+            _probe("SELECT 1 AS n, 'a' AS s"), engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
         )
         assert types == {"n": "number", "s": "string"}
 
     async def test_async_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            await pg_client.get_column_types("SELECT bump() AS n")
+            await pg_client.get_column_types(probe)
 
     def test_sync_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
         engine = pg_client._get_sync_engine_for_client()
+        probe = _probe("SELECT bump() AS n")
         with pytest.raises(Exception, match="read-only transaction"):
-            get_column_types_sync("SELECT bump() AS n", engine=engine, db_type="postgres")
+            get_column_types_sync(probe, engine=engine, db_type="postgres")

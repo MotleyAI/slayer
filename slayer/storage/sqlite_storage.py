@@ -14,6 +14,8 @@ import sqlite3
 from collections.abc import Hashable
 from typing import Any
 
+from sqlglot import exp
+
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -625,14 +627,13 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             elif not entities:
                 return []
             else:
-                placeholders = ",".join("?" * len(entities))
-                rows = conn.execute(
-                    f"SELECT DISTINCT m.id, m.data FROM memories m "
-                    f"JOIN memory_entities me ON me.memory_id = m.id "
-                    f"WHERE me.entity IN ({placeholders}) "
-                    f"ORDER BY m.id",
-                    tuple(entities),
-                ).fetchall()
+                select = (
+                    exp.select("m.id", "m.data").distinct().from_("memories AS m")
+                    .join("memory_entities AS me", on="me.memory_id = m.id")
+                    .where(exp.column("entity", table="me").isin(*(exp.Placeholder() for _ in entities)))
+                    .order_by("m.id")
+                )
+                rows = conn.execute(select.sql(dialect="sqlite"), tuple(entities)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     async def _list_memories_rows(

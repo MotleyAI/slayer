@@ -108,7 +108,7 @@ All code, old and new, MUST obey these.
    architecture is changing: do it deliberately, with explicit user OK.
    [enforced: arch_check:baseline-ratchet]
 6. **SQL is built as sqlglot AST**, never by string concatenation of fragments.
-   [review]
+   [review] [enforced: test:tests/test_law_sql_built_as_ast.py]
 7. **Async-first**: engine and storage methods are async; sync entry points
    bridge via `execute_sync` / `run_sync`. [review]
 8. **The query algebra** lives in `semantics.arc42.md`; its observable face:

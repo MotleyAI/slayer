@@ -455,11 +455,11 @@ class ClickhouseDialect(SqlDialect):
     def server_profile_sql(self) -> str | None:
         return "SELECT version(), getSetting('readonly')"
 
-    def correlated_setting_sql(self, profile: ServerProfile) -> str | None:
+    def correlated_setting_probe(self, profile: ServerProfile) -> Expression | None:
         """``getSetting`` of a setting the server lacks errors, so ask only where it exists."""
         if profile.version is None or profile.version < _CORRELATED_MIN_VERSION:
             return None
-        return f"SELECT getSetting('{_CH_CORRELATED_SETTING}')"
+        return exp.select(anon("getSetting", exp.Literal.string(_CH_CORRELATED_SETTING)))
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,

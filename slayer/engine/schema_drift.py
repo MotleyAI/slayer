@@ -61,7 +61,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, render_type_probe
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import EngineCacheKey, _sql_client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -1967,23 +1967,25 @@ def _has_star_projection(parsed: exp.Expression) -> bool:
     return False
 
 
-def _scope_table_sources(*, scope: Scope, dialect: str) -> dict[str, str]:
-    """Alias/name → rendered bare table for one scope's physical tables (CTE/derived excluded)."""
-    out: dict[str, str] = {}
+SourceRefs = dict[exp.Table, set[exp.Column]]
+
+
+def _scope_table_sources(*, scope: Scope) -> dict[str, exp.Table]:
+    """Alias/name → bare table for one scope's physical tables (CTE/derived excluded)."""
+    out: dict[str, exp.Table] = {}
     for name, source in scope.sources.items():
         if isinstance(source, exp.Table) and source.name:
             bare = source.copy()
             bare.set("alias", None)
-            out[name] = bare.sql(dialect=dialect)
+            out[name] = bare
     return out
 
 
 def _add_using_join_columns(
     *,
     scope: Scope,
-    local_tables: dict[str, str],
-    refs: dict[str, set[str]],
-    dialect: str,
+    local_tables: dict[str, exp.Table],
+    refs: SourceRefs,
 ) -> bool:
     """Attribute ``JOIN .. USING (k)`` keys to the join's operand tables (USING idents aren't Columns, so the walk misses them); True when an operand is a CTE/derived table that can't be verified."""
     joins = scope.expression.args.get("joins") or []
@@ -1999,37 +2001,33 @@ def _add_using_join_columns(
         if not using:
             continue
         physical = [
-            rendered
+            table
             for op in operands
             if isinstance(op, exp.Table)
-            and (rendered := local_tables.get(op.alias_or_name)) is not None
+            and (table := local_tables.get(op.alias_or_name)) is not None
         ]
         if len(physical) < len(operands):
             cannot_verify = True
-        rendered_keys = [
-            exp.Column(this=ident.copy()).sql(dialect=dialect)
-            for ident in using
-            if isinstance(ident, exp.Identifier)
-        ]
+        keys = [exp.Column(this=ident.copy()) for ident in using if isinstance(ident, exp.Identifier)]
         for table in physical:
-            refs[table].update(rendered_keys)
+            refs[table].update(keys)
     return cannot_verify
 
 
 def _attribute_qualified_ref(
     *,
     qualifier: str,
-    rendered: str,
+    column: exp.Column,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
 ) -> bool:
     """Attribute ``qual.col`` in the nearest enclosing scope defining the qualifier; True ⇒ derived/CTE/unknown qualifier (not attributable)."""
     s = scope
     while s is not None:
         target = (tables_by_scope.get(id(s)) or {}).get(qualifier)
         if target is not None:
-            refs[target].add(rendered)
+            refs[target].add(column)
             return False
         if qualifier in s.sources:  # CTE / derived-table alias
             return True
@@ -2039,10 +2037,10 @@ def _attribute_qualified_ref(
 
 def _attribute_bare_ref(
     *,
-    rendered: str,
+    column: exp.Column,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
 ) -> bool | None:
     """Attribute a bare column in the nearest enclosing scope with sources; True ⇒ skippable derived ref, None ⇒ ambiguous over several sources."""
     s = scope
@@ -2055,17 +2053,16 @@ def _attribute_bare_ref(
     local = tables_by_scope.get(id(s)) or {}
     if not local:
         return True  # the single source is a CTE / derived table
-    refs[next(iter(local.values()))].add(rendered)
+    refs[next(iter(local.values()))].add(column)
     return False
 
 
 def _attribute_scope_columns(
     *,
     scope: Scope,
-    tables_by_scope: dict[int, dict[str, str]],
-    refs: dict[str, set[str]],
+    tables_by_scope: dict[int, dict[str, exp.Table]],
+    refs: SourceRefs,
     seen: set[int],
-    dialect: str,
 ) -> bool | None:
     """Attribute every yet-unseen column ref of one scope; ``seen`` (node ids) processes each ref once at its innermost scope, None when a bare column can't be attributed."""
     derived = False
@@ -2073,15 +2070,15 @@ def _attribute_scope_columns(
         if id(col) in seen or not isinstance(col.this, exp.Identifier):
             continue
         seen.add(id(col))
-        rendered = exp.Column(this=col.this.copy()).sql(dialect=dialect)
+        column = exp.Column(this=col.this.copy())
         if col.table:
             verdict = _attribute_qualified_ref(
-                qualifier=col.table, rendered=rendered, scope=scope,
+                qualifier=col.table, column=column, scope=scope,
                 tables_by_scope=tables_by_scope, refs=refs,
             )
         else:
             verdict = _attribute_bare_ref(
-                rendered=rendered, scope=scope,
+                column=column, scope=scope,
                 tables_by_scope=tables_by_scope, refs=refs,
             )
         if verdict is None:
@@ -2090,7 +2087,7 @@ def _attribute_scope_columns(
     return derived
 
 
-def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | None":
+def _sql_model_source_refs(*, sql: str, dialect: str) -> SourceRefs | None:
     """Map each source table of a sql-mode model to the columns it references (incl. JOIN USING keys); None when unparseable, a bare column isn't attributable, or a CTE/derived ref coexists with ``*``."""
     try:
         parsed = sqlglot.parse_one(sql, read=dialect)
@@ -2099,23 +2096,20 @@ def _sql_model_source_refs(*, sql: str, dialect: str) -> "dict[str, set[str]] | 
         return None
     if not scopes:
         return None
-    refs: dict[str, set[str]] = {}
-    tables_by_scope: dict[int, dict[str, str]] = {}
+    refs: SourceRefs = {}
+    tables_by_scope: dict[int, dict[str, exp.Table]] = {}
     has_derived_ref = False
     for scope in scopes:
-        local = _scope_table_sources(scope=scope, dialect=dialect)
+        local = _scope_table_sources(scope=scope)
         tables_by_scope[id(scope)] = local
-        for rendered in local.values():
-            refs.setdefault(rendered, set())
-        if _add_using_join_columns(
-            scope=scope, local_tables=local, refs=refs, dialect=dialect
-        ):
+        for table in local.values():
+            refs.setdefault(table, set())
+        if _add_using_join_columns(scope=scope, local_tables=local, refs=refs):
             has_derived_ref = True
     seen: set[int] = set()
     for scope in scopes:  # innermost first — a bare column binds innermost
         derived = _attribute_scope_columns(
-            scope=scope, tables_by_scope=tables_by_scope, refs=refs,
-            seen=seen, dialect=dialect,
+            scope=scope, tables_by_scope=tables_by_scope, refs=refs, seen=seen,
         )
         if derived is None:
             return None
@@ -2130,16 +2124,17 @@ async def _source_tables_resolve(
     *, model: SlayerModel, client: SlayerSQLClient
 ) -> bool:
     """Whether every table AND column in ``model.sql`` accepts a 0-row probe; True ⇒ the SQL itself is broken (not drift), any probe failure keeps the drift classification."""
-    dialect = dialect_for_ds_type(client.datasource.type).sqlglot_name
-    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect)
+    dialect = dialect_for_ds_type(client.datasource.type)
+    refs = _sql_model_source_refs(sql=model.sql or "", dialect=dialect.sqlglot_name)
     if refs is None:
         return False
     for table, columns in refs.items():
-        select_list = ", ".join(sorted(columns)) or "*"
+        projection = sorted(columns, key=lambda c: c.sql(dialect=dialect.sqlglot_name)) or [exp.Star()]
+        probe = exp.select(*(c.copy() for c in projection)).from_(
+            exp.alias_(table.copy(), "_sd_probe", table=True),
+        ).where(exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
         try:
-            await client.get_column_types(
-                f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
-            )
+            await client.get_column_types(render_type_probe(probe, dialect=dialect))
         except Exception:
             return False
     return True

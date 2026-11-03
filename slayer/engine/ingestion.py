@@ -34,7 +34,7 @@ from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import dialect_for_engine, reflect_columns, reflect_table_keys
 from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, build_sql_model_trial_query
+from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import (
     CLICKHOUSE_WRAPPER_MAX_DEPTH,
@@ -650,7 +650,9 @@ def _list_projections(query: exp.Query) -> dict[str, exp.DataType]:
 
 async def sql_result_types(*, sql: str, client: SlayerSQLClient) -> SqlResultTypes:
     """The result column types of an ``sql``-mode query (raises when the query fails)."""
-    categories = await client.get_column_types(build_sql_model_trial_query(sql))
+    dialect = dialect_for_ds_type(client.datasource.type)
+    categories = await client.get_column_types(
+        render_type_probe(sql_model_trial_query(sql, dialect=dialect), dialect=dialect))
     columns = {name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT) for name, cat in categories.items()}
     sa_engine = engine_factory.get_engine(client.datasource.resolve_env_vars())
     typed = await asyncio.to_thread(_typed_result_lists, sql=sql, sa_engine=sa_engine)
@@ -798,23 +800,17 @@ def introspect_table_to_model(
     sa_engine: sa.Engine,
     inspector: sa.engine.Inspector,
     table_name: str,
-    schema: str | None,
+    ref: SchemaRef | None,
     data_source: str,
     model_name: str | None = None,
     source_kind: ObjectKind | None = None,
 ) -> SlayerModel:
     """Introspect a single table (no joins) into a SlayerModel.
 
-    ``schema=None`` probes the catalog-qualified default (a bare token lets DuckDB
+    ``ref=None`` probes the catalog-qualified default (a bare token lets DuckDB
     sweep an attached twin) while ``sql_table`` stays bare.
     """
-    ref = (
-        schema_ref_from_token(
-            schema, dialect_name=sa_engine.dialect.name, requested=schema
-        )
-        if schema
-        else default_schema_ref(inspector, sa_engine)
-    )
+    ref = ref or default_schema_ref(inspector, sa_engine)
     keys = reflect_table_keys(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,

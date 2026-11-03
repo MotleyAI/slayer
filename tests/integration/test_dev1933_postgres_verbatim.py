@@ -16,7 +16,10 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import SlayerSQLClient
+import sqlglot
+
+from slayer.sql.client import SlayerSQLClient, render_type_probe
+from slayer.sql.dialects import PostgresDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytest.importorskip("pytest_postgresql")
@@ -108,7 +111,8 @@ class TestPostgresVerbatimExecution:
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
     async def test_get_column_types_async_regex(self, pg_client: SlayerSQLClient) -> None:
-        types = await pg_client.get_column_types(_PROBE_SQL)
+        types = await pg_client.get_column_types(
+            render_type_probe(sqlglot.parse_one(_PROBE_SQL, dialect="postgres"), dialect=PostgresDialect()))
         assert types == {"pat": "string", "pct": "string"}
 
     def test_execute_sync_regex_and_percent(self, pg_client: SlayerSQLClient) -> None:

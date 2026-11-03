@@ -26,6 +26,7 @@ from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     NativeFn,
+    set_statement,
     FALSE_WORDS,
     INT64_BOUNDS,
     INTEGER_TEXT_PATTERN,
@@ -241,8 +242,8 @@ class MysqlDialect(SqlDialect):
     async_driver: str | None = "aiomysql"
     install_extra: str | None = "mysql"
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        return f"SET max_execution_time = {timeout_seconds * 1000}"
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
+        return set_statement(name="max_execution_time", value=timeout_seconds * 1000)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
@@ -380,8 +381,8 @@ class MariadbDialect(MysqlDialect):
     sa_backend_names: frozenset[str] = frozenset({"mariadb"})
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - REGEX_LIBRARY - {"json_value"}
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        return f"SET max_statement_time = {timeout_seconds}"
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
+        return set_statement(name="max_statement_time", value=timeout_seconds)
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         if to.is_type(*exp.DataType.NUMERIC_TYPES):

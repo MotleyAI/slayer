@@ -15,6 +15,7 @@ from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     PORTABLE_LIBRARY,
+    set_statement,
     NativeFn,
     ListFn,
     ServerProfile,
@@ -264,9 +265,9 @@ class PostgresDialect(SqlDialect):
             alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
         ))
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         """Transaction-local, so it never outlives the call on a pooled connection."""
-        return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"
+        return set_statement(name="statement_timeout", value=timeout_seconds * 1000, kind="LOCAL")
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
         """Numeric-cast every 2-arg ROUND's and based LOG's value: their only overloads take ``numeric``."""

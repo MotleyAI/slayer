@@ -14,13 +14,16 @@ import ast
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import sqlglot
+
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, TypeProbe, render_type_probe
+from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
@@ -33,6 +36,7 @@ _DOOR_SQL = (
 )
 _DOOR_ROW = {"pat": _REGEX_LITERAL, "ym": "2020-03"}
 _DOOR_TYPES = {"pat": "string", "ym": "string"}
+_DOOR_PROBE: TypeProbe = render_type_probe(sqlglot.parse_one(_DOOR_SQL, dialect="sqlite"), dialect=SqliteDialect())
 
 # The two verbatim helpers the fix introduces; every driver-level execute lives
 # here and nowhere else.
@@ -124,7 +128,7 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
         assert rows == [_DOOR_ROW]
 
     async def test_get_column_types(self) -> None:
-        types = await _in_memory_client().get_column_types(_DOOR_SQL)
+        types = await _in_memory_client().get_column_types(_DOOR_PROBE)
         assert types == _DOOR_TYPES
 
     def test_execute_sql_sync_direct(self) -> None:
@@ -140,9 +144,7 @@ class TestSqliteDoorsPassRegexLiteralVerbatim:
     def test_get_column_types_sync_direct(self) -> None:
         engine = engine_factory.build_in_memory_sqlite_engine("sqlite:///:memory:")
         try:
-            types = sql_client._get_column_types_sync(
-                sql=_DOOR_SQL, db_type="sqlite", engine=engine,
-            )
+            types = sql_client.get_column_types_sync(_DOOR_PROBE, db_type="sqlite", engine=engine)
         finally:
             engine.dispose()
         assert types == _DOOR_TYPES
@@ -202,9 +204,9 @@ class TestAsyncPathsUseVerbatimDoor:
 
     async def test_get_column_types_async(self) -> None:
         conn = _fake_async_conn()
-        types = await sql_client._get_column_types_async(
-            sql=_DOOR_SQL, engine=_fake_async_engine(conn), db_type="postgres",
-        )
+        client = SlayerSQLClient(datasource=DatasourceConfig(name="pg", type="postgres", host="pg.invalid"))
+        client._get_async_engine = lambda: _fake_async_engine(conn)  # type: ignore[method-assign]
+        types = await client.get_column_types(_DOOR_PROBE)
         assert types == _DOOR_TYPES
         _assert_all_verbatim(conn)
         # The read-only-transaction SET went through the door too.
@@ -254,10 +256,7 @@ class TestSyncPathsUseVerbatimDoor:
 
     def test_get_column_types_sync(self) -> None:
         conn = _fake_sync_conn()
-        types = sql_client._get_column_types_sync(
-            sql=_DOOR_SQL, db_type="postgres",
-            engine=_fake_sync_engine(conn),
-        )
+        types = sql_client.get_column_types_sync(_DOOR_PROBE, db_type="postgres", engine=_fake_sync_engine(conn))
         assert types == _DOOR_TYPES
         _assert_all_verbatim_sync(conn)
         statements = [call.args[0] for call in conn.exec_driver_sql.call_args_list]

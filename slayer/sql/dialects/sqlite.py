@@ -557,6 +557,7 @@ def _like_source(pattern: LikePattern) -> str:
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     database_name: ClassVar[str] = "SQLite"
+    type_probe_rows: ClassVar[int] = 1
     # Any type name is a column affinity on SQLite.
     vendor_cast_types: ClassVar[frozenset[DType]] = VENDOR_ONLY_CAST_TYPES
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})

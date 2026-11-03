@@ -15,29 +15,34 @@ from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.snowflake import SnowflakeDialect
 
 
-class TestStatementTimeoutSql:
+def _rendered(dialect: SqlDialect, seconds: int) -> str | None:
+    statement = dialect.statement_timeout(seconds)
+    return None if statement is None else statement.sql(dialect=dialect.sqlglot_name)
+
+
+class TestStatementTimeout:
     def test_mysql_milliseconds(self) -> None:
-        assert MysqlDialect().statement_timeout_sql(120) == "SET max_execution_time = 120000"
+        assert _rendered(MysqlDialect(), 120) == "SET max_execution_time = 120000"
 
     def test_mariadb_seconds(self) -> None:
-        assert MariadbDialect().statement_timeout_sql(120) == "SET max_statement_time = 120"
+        assert _rendered(MariadbDialect(), 120) == "SET max_statement_time = 120"
 
     def test_postgres_transaction_local(self) -> None:
-        assert PostgresDialect().statement_timeout_sql(120) == "SET LOCAL statement_timeout = 120000"
+        assert _rendered(PostgresDialect(), 120) == "SET LOCAL statement_timeout = 120000"
 
     def test_snowflake_unchanged(self) -> None:
-        assert SnowflakeDialect().statement_timeout_sql(120) == (
+        assert _rendered(SnowflakeDialect(), 120) == (
             "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 120"
         )
 
     @pytest.mark.parametrize("ds_type", ["clickhouse", "duckdb", "sqlite", "bigquery", "mssql"])
     def test_no_statement(self, ds_type: str) -> None:
-        assert dialect_for_ds_type(ds_type).statement_timeout_sql(120) is None
+        assert dialect_for_ds_type(ds_type).statement_timeout(120) is None
 
     @pytest.mark.parametrize("ds_type", [None, "", "totally_unknown", "postgresql"])
     def test_untyped_and_unknown_take_postgres(self, ds_type: str | None) -> None:
         dialect = dialect_for_ds_type(ds_type)
-        assert dialect.statement_timeout_sql(120) == "SET LOCAL statement_timeout = 120000"
+        assert _rendered(dialect, 120) == "SET LOCAL statement_timeout = 120000"
         assert dialect.statement_timeout_best_effort is True
 
 

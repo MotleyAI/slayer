@@ -174,7 +174,7 @@ class TestAttachedCatalog:
         with _attached(attached_paths) as engine:
             model = introspect_table_to_model(
                 sa_engine=engine, inspector=sa.inspect(engine),
-                table_name="t", schema=None, data_source="ds",
+                table_name="t", ref=None, data_source="ds",
             )
         assert _pk(model) == ["id"]
         assert _unique(model) == {"u"}

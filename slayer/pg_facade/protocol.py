@@ -1,4 +1,4 @@
-"""Postgres wire protocol v3 — message encode/decode (DEV-1486).
+"""Postgres wire protocol v3 — message encode/decode.
 
 A flat module of pure byte encoders/decoders plus the OID, SQLSTATE, and
 startup-int constants. The connection layer (``connection.py``) drives an
@@ -135,8 +135,9 @@ def encode_data_row(values: list[bytes | None]) -> bytes:
     return _msg(b"D", payload)
 
 
-def encode_command_complete(tag: str) -> bytes:
-    return _msg(b"C", _cstr(tag))
+def encode_command_complete(*, command: str, rows: int | None = None) -> bytes:
+    """A CommandComplete frame: the command tag, plus the row count when given."""
+    return _msg(b"C", _cstr(command if rows is None else f"{command} {rows}"))
 
 
 def encode_empty_query_response() -> bytes:

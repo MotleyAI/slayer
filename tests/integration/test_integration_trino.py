@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 import pytest
+from sqlglot import exp
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -28,8 +29,8 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient, get_column_types_sync
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.client import SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.sql.dialects import TrinoDialect, dialect_for_ds_type
 from slayer.sql.dialects import trino as trino_dialect_module
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import (
@@ -77,6 +78,8 @@ _CATALOG = "memory"
 _DS = "testtrino"
 _AMOUNTS = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
 _CUSTOMER_IDS = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+
+_ONE_PROBE = render_type_probe(exp.select(exp.Literal.number(1).as_("x")), dialect=TrinoDialect())
 
 
 # ---------------------------------------------------------------------------
@@ -1162,7 +1165,7 @@ class TestTrinoStatementTimeout:
         seen = _spy_run_time(monkeypatch)
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
-        assert await client.get_column_types("SELECT 1 AS x") == {"x": "number"}
+        assert await client.get_column_types(_ONE_PROBE) == {"x": "number"}
         assert seen == ["60s"]
         assert _pooled_run_time(client) == prior
 
@@ -1171,7 +1174,7 @@ class TestTrinoStatementTimeout:
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
         types = get_column_types_sync(
-            "SELECT 1 AS x", engine=client._get_sync_engine_for_client(), db_type="trino", datasource_name=_DS,
+            _ONE_PROBE, engine=client._get_sync_engine_for_client(), db_type="trino", datasource_name=_DS,
         )
         assert types == {"x": "number"}
         assert seen == ["60s"]
