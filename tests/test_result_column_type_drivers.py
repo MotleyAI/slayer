@@ -177,7 +177,7 @@ class TestTypeNameCodes:
         ("duckdb", "INTERVAL", DataType.TEXT),
         ("duckdb", "INTEGER[]", DataType.TEXT),
         ("duckdb", "MAP(VARCHAR, INTEGER)", DataType.TEXT),
-        ("duckdb", "JSON", DataType.UNKNOWN),
+        ("duckdb", "JSON", DataType.TEXT),
         ("bigquery", "INTEGER", DataType.INT),
         ("bigquery", "FLOAT", DataType.DOUBLE),
         ("bigquery", "NUMERIC", DataType.DOUBLE),

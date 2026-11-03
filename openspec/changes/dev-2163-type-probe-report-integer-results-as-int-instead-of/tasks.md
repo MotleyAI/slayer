@@ -11,7 +11,7 @@
 ## 2. Types and the shared name mapper
 
 - [x] 2.1 Add `ResultColumnType` to `slayer/sql/dialects/reflection.py` and re-export it from `slayer.sql.client`; verify imports resolve and `la-arch-check` stays green
-- [ ] 2.2 Merge `_INFO_SCHEMA_TYPE_MAP` and `_SA_TYPE_MAP` into one name table behind the catalog-string mapper, with wrapper peeling, dialect/class overrides, container shapes, the opaque allow-list and exact numerics by scale; `_sa_type_to_data_type` reads the same table; verify the parity tests (1.6) and the existing reflection tests pass
+- [x] 2.2 Merge `_INFO_SCHEMA_TYPE_MAP` and `_SA_TYPE_MAP` into one name table behind the catalog-string mapper, with wrapper peeling, dialect/class overrides, container shapes, the opaque allow-list and exact numerics by scale; `_sa_type_to_data_type` reads the same table; verify the parity tests (1.6) and the existing reflection tests pass
 
 ## 3. Dialect-owned cursor descriptions
 
@@ -32,7 +32,7 @@
 
 - [x] 5.1 Centralise the logical INT → `BIGINT` cast target in `slayer/sql/render/value_expr.py` for insertion and idempotence; verify the statement-assembly tests pass
 - [x] 5.2 Set native-type preservation for row-level derived columns with an exact-numeric `db_type` (non-explicit type; SQLite keeps its cast); verify the preservation tests pass
-- [ ] 5.3 Re-bless the golden SQL baselines, reviewing that every diff is only `AS INT` → `AS BIGINT` or a dropped inferred cast around an exact-numeric derived column
+- [x] 5.3 Re-bless the golden SQL baselines, reviewing that every diff is only `AS INT` → `AS BIGINT`, a dropped inferred cast around an exact-numeric derived column, or a removed redundant double cast where a re-parsed dialect type now matches
 
 ## 6. Consumers
 
@@ -43,5 +43,5 @@
 ## 7. Docs and gates
 
 - [x] 7.1 Update `docs/configuration/sql-clients.md` (contract row, delegating example) and add one sentence to the schema-drift docs on type-mismatch entries for old OSI imports; verify the docs nav check and doc-example tests pass
-- [ ] 7.2 Run the full unit suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs the baseline) and `la-arch-check`; all green
-- [ ] 7.3 Run the integration suite with the CI invocation; all green on the locally runnable backends
+- [x] 7.2 Run the full unit suite, `ruff check slayer/ tests/`, `basedpyright` (no new errors vs the baseline) and `la-arch-check`; all green
+- [x] 7.3 Run the integration suite with the CI invocation; all green on the locally runnable backends

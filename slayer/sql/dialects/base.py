@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
@@ -216,12 +216,14 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
-def describe_type_name_code(description_row: Sequence[Any]) -> ResultColumnType | None:
+def describe_type_name_code(
+    description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
+) -> ResultColumnType | None:
     """A description row whose type code is a type name (DuckDB, BigQuery, Trino, ClickHouse); ``None`` otherwise."""
     code = description_row[1]
     if code is None or isinstance(code, (int, type)):
         return None
-    return result_column_type_of_name(str(code))
+    return result_column_type_of_name(str(code), overrides=overrides)
 
 
 def _scheme_driver(url_scheme: str | None) -> str | None:

@@ -76,9 +76,9 @@ def test_integer_expression_is_int(db: Path) -> None:
 
 @pytest.mark.parametrize(("select", "expected", "db_type"), [
     pytest.param("CAST(o_totalprice AS DECIMAL(18,2))", DataType.DOUBLE, "DECIMAL(18,2)", id="exact-decimal"),
-    pytest.param("CAST('{}' AS JSON)", DataType.UNKNOWN, "JSON", id="opaque"),
+    pytest.param("CAST('{}' AS JSON)", DataType.TEXT, None, id="duckdb-json-is-text"),
 ])
-def test_query_column_keeps_its_database_type(db: Path, select: str, expected: DataType, db_type: str) -> None:
+def test_query_column_keeps_its_database_type(db: Path, select: str, expected: DataType, db_type: str | None) -> None:
     source = f"SELECT o_orderkey, {select} AS x FROM orders"
     doc = flat([ds("priced", source=source, fields=[f("order_id", "o_orderkey"), f("x")])])
     x = cols(by_name(convert(db=db, docs=documents(doc)))["priced"])["x"]

@@ -74,6 +74,7 @@ Applicable principles: sql §3.1 (AST end to end; dialect hooks take typed opera
 25. One INT → `BIGINT` target for cast insertion and the idempotence check; rendering snapshots per dialect. (codex)
 26. Rejected (codex): SQLite saturation as "no verdict" — a probe has no prior type, the type is persisted at save, and INT vs DOUBLE share a drift bucket (SQLite skips type comparison), so row growth causes no drift. Decision 8 stands.
 27. Rejected (codex): a precision cutoff for scale-0 exact numerics — Snowflake stores every integer as `NUMBER(38,0)`; decision 18 covers the overflow instead.
+28. DuckDB `JSON` is TEXT in reflection and the probe (VARCHAR-backed and comparable), so the opaque allow-list is dialect-overridable, as SQL Server's `timestamp` already is. Rejected: UNKNOWN everywhere, which drops grouping and makes saved DuckDB JSON columns report false drift. (user)
 
 ## Risks / Trade-offs
 

@@ -8,7 +8,12 @@ from sqlalchemy.dialects import mssql, postgresql
 
 from slayer.core.enums import DataType
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string, info_schema_type
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    column_from_sa_type,
+    column_from_type_string,
+    info_schema_type,
+)
 
 _CASES = [
     ("INTEGER", sa.INTEGER(), DataType.INT),
@@ -44,7 +49,7 @@ _CASES = [
 def test_same_name_same_type(name: str, sa_type: sa.types.TypeEngine | None, expected: DataType) -> None:
     assert info_schema_type(name)[0] == expected
     assert column_from_type_string(name="c", data_type=name).type == expected
-    described = dialect_for_ds_type("duckdb").describe_cursor_column(("c", name, None, None, None, None, None))
+    described = dialect_for_ds_type("trino").describe_cursor_column(("c", name, None, None, None, None, None))
     assert described is not None
     assert described.type == expected
     if sa_type is not None:
@@ -54,3 +59,9 @@ def test_same_name_same_type(name: str, sa_type: sa.types.TypeEngine | None, exp
 @pytest.mark.parametrize("sa_type", [mssql.TIMESTAMP(), mssql.ROWVERSION()])
 def test_sql_server_timestamp_is_rowversion(sa_type: sa.types.TypeEngine) -> None:
     assert column_from_sa_type(name="c", sa_type=sa_type).type == DataType.TEXT
+
+
+def test_duckdb_json_is_text() -> None:
+    assert dialect_for_ds_type("duckdb").describe_cursor_column(("c", "JSON", None, None, None, None, None)) == (
+        ResultColumnType(type=DataType.TEXT, db_type="JSON")
+    )
