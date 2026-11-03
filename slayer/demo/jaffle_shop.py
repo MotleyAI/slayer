@@ -116,6 +116,17 @@ DATE_COLUMNS = {
     "tweets": ["tweeted_at"],
 }
 
+# List columns computed on insert from a sibling CSV (``{source}``), per table: column → (source CSV, per-row list).
+LIST_COLUMNS = {
+    "products": {"ingredients": (
+        "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM {source} s WHERE s.sku = _products_raw.sku",
+    )},
+    "orders": {"item_skus": (
+        "items", "SELECT list(i.sku ORDER BY i.id) FROM {source} i WHERE i.order_id = _orders_raw.id",
+    )},
+}
+
+
 JAFFLE_SCHEMA_SQL = """\
 CREATE TABLE regions (
     id VARCHAR PRIMARY KEY,
@@ -140,7 +151,8 @@ CREATE TABLE products (
     name VARCHAR NOT NULL,
     type VARCHAR NOT NULL,
     price DECIMAL(12,2) NOT NULL,
-    description VARCHAR NOT NULL
+    description VARCHAR NOT NULL,
+    ingredients VARCHAR[]
 );
 
 CREATE TABLE orders (
@@ -151,7 +163,8 @@ CREATE TABLE orders (
     subtotal DECIMAL(12,2) NOT NULL,
     tax_paid DECIMAL(12,2) NOT NULL,
     order_total DECIMAL(12,2) NOT NULL,
-    status VARCHAR NOT NULL
+    status VARCHAR NOT NULL,
+    item_skus VARCHAR[]
 );
 
 CREATE TABLE items (
@@ -264,6 +277,10 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                         "Order status: completed, refunded or cancelled. Refunded and "
                         "cancelled orders keep their order_total."
                     ),
+                ),
+                "item_skus": _ColumnEnrichment(
+                    label="Item SKUs",
+                    description="The SKU of each item on the order, one entry per unit (repeats kept).",
                 ),
             },
             measures=[
@@ -397,6 +414,10 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 ),
                 "description": _ColumnEnrichment(
                     label="Description", description="Product description."
+                ),
+                "ingredients": _ColumnEnrichment(
+                    label="Ingredients",
+                    description="The supplies the product is made from, a list sorted by name.",
                 ),
             },
             measures=[
@@ -808,6 +829,7 @@ def load_data(
                     select_parts.append(f"{col} AS {target_col}")
             declared = _declared_columns(conn, table)
             derived = {c: e for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared}
+            derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
             for target_col, expr in derived.items():
                 target_columns.append(target_col)
                 select_parts.append(f"{expr} AS {target_col}")
@@ -821,6 +843,18 @@ def load_data(
             conn.execute(f"DROP VIEW _{table}_raw")
 
     shift_dates_to_today(conn)
+
+
+def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, str]:
+    """The declared ``LIST_COLUMNS`` of ``csv_name`` as insert expressions (``[]`` for a row with none)."""
+    out: dict[str, str] = {}
+    for column, (source, values) in LIST_COLUMNS.get(csv_name, {}).items():
+        if column not in declared:
+            continue
+        path = os.path.join(data_dir, f"{prefix}_{source}.csv").replace("'", "''")
+        rows = values.format(source=f"read_csv_auto('{path}')")
+        out[column] = f"COALESCE(({rows}), [])"
+    return out
 
 
 def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
