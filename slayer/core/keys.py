@@ -755,7 +755,7 @@ class CastTypeParts(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     words: Tuple[str, ...]
-    params: Tuple[str, ...] = ()
+    sizes: Tuple[str, ...] = ()
     array_rank: int = 0
 
     @property
@@ -775,8 +775,8 @@ def cast_type_parts(type_text: str) -> CastTypeParts:
     if match is None:
         return CastTypeParts(words=tuple(type_text.upper().split()))
     words = tuple(match["head"].split()) + tuple(match["tail"].split())
-    params = tuple(match["params"].split(",")) if match["params"] else ()
-    return CastTypeParts(words=words, params=params, array_rank=len(match["arrays"]) // 2)
+    sizes = tuple(match["params"].split(",")) if match["params"] else ()
+    return CastTypeParts(words=words, sizes=sizes, array_rank=len(match["arrays"]) // 2)
 
 
 def cast_data_type(type_text: str) -> DataType:

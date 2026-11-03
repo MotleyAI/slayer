@@ -246,9 +246,9 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         trimmed = exp.Trim(this=text.copy())
         signed = exp.In(this=anon("LEFT", trimmed, lit(1)), expressions=[lit("+"), lit("-")])
         digits = case((signed, anon("SUBSTRING", trimmed.copy(), lit(2), lit(8000))), default=trimmed.copy())
-        valid = exp.and_(
-            exp.NEQ(this=digits, expression=lit("")),
-            exp.Not(this=exp.Like(this=digits.copy(), expression=lit("%[^0-9]%"))),
+        valid = exp.And(
+            this=exp.NEQ(this=digits, expression=lit("")),
+            expression=exp.Not(this=exp.Like(this=digits.copy(), expression=lit("%[^0-9]%"))),
         )
         return case((valid, self.build_try_cast(trimmed.copy(), to)))
 

@@ -1271,6 +1271,20 @@ def _bound_text(
     match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
     text_slots: frozenset[int], ordinal: Iterator[int], list_slots: frozenset[int] = frozenset(),
 ) -> str:
+    bound = _bound_value_text(
+        match, text=text, region_start=region_start, in_string=in_string, variables=variables,
+        text_slots=text_slots, ordinal=ordinal, list_slots=list_slots,
+    )
+    start = region_start + match.start()
+    # A negative value right after a ``-`` would make a ``--`` comment.
+    touches_minus = not in_string and start > 0 and text[start - 1] == "-" and bound.startswith("-")
+    return " " + bound if touches_minus else bound
+
+
+def _bound_value_text(
+    match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
+    text_slots: frozenset[int], ordinal: Iterator[int], list_slots: frozenset[int] = frozenset(),
+) -> str:
     whole = match.group(0)
     if whole in ("{{", "}}"):
         return whole[0]

@@ -19,10 +19,12 @@ ImportError at collection time.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.syntax import Literal, TransformCall, parse_expr
 from slayer.dbt.converter import ConversionResult, DbtToSlayerConverter
 from slayer.dbt.models import (
     DbtDimension,
@@ -212,6 +214,30 @@ def test_offset_window_maps_to_time_shift() -> None:
     assert "time_shift(" in growth.formula
     assert "-1" in norm
     assert "month" in norm.lower()
+
+
+def test_negative_offset_window_shifts_forward() -> None:
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric(name="revenue_metric", type="simple",
+                      type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"})),
+            DbtMetric(
+                name="revenue_lead",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="revenue_next",
+                    metrics=[DbtMetricInput(name="revenue_metric", alias="revenue_next", offset_window="-1 month")],
+                ),
+            ),
+        ],
+    )
+    shifted = parse_expr(_measure(_convert(project), "revenue_lead").formula)
+    assert isinstance(shifted, TransformCall)
+    assert shifted.args[0] == Literal(value=Decimal(1))
 
 
 def test_offset_to_grain_clean_fails() -> None:

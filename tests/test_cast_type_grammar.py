@@ -34,8 +34,9 @@ def _type_sql(sql: str, *, dialect: str) -> list[str]:
 
 
 async def _refused(expr: str, *, dialect: str, needle: str) -> None:
+    query = _dim(expr)
     with pytest.raises(CastTypeError) as info:
-        await emit(_dim(expr), dialect=dialect)
+        await emit(query, dialect=dialect)
     msg = str(info.value)
     assert needle.replace(" ", "").lower() in msg.replace(" ", "").lower(), msg
     assert dialect in msg.lower(), msg
@@ -160,18 +161,21 @@ class TestArrayCasts:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
     async def test_array_of_arrays_refused(self, dialect: str) -> None:
+        query = _dim("CAST(code AS INT[][])")
         with pytest.raises(CastTypeError):
-            await emit(_dim("CAST(code AS INT[][])"), dialect=dialect)
+            await emit(query, dialect=dialect)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_try_cast_to_an_array_refused_everywhere(self, dialect: str) -> None:
+        query = _dim("TRY_CAST(code AS INT[])")
         with pytest.raises(CastTypeError):
-            await emit(_dim("TRY_CAST(code AS INT[])"), dialect=dialect)
+            await emit(query, dialect=dialect)
 
     async def test_plain_cast_to_an_array_accepted_where_try_cast_is_not(self) -> None:
         await emit(_dim("CAST(code AS INT[])"), dialect="postgres")
+        query = _dim("TRY_CAST(code AS INT[])")
         with pytest.raises(CastTypeError):
-            await emit(_dim("TRY_CAST(code AS INT[])"), dialect="postgres")
+            await emit(query, dialect="postgres")
 
 
 class TestArrayTyping:

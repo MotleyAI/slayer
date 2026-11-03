@@ -88,6 +88,13 @@ class TestPlaceholders:
     def test_placeholder_outside_the_comment_still_binds(self) -> None:
         same(bind_variables("amount > {n} -- {other}", {"n": 15}), "amount > 15")
 
+    @pytest.mark.parametrize("value", [-5, "-5", -2.5])
+    def test_negative_value_after_a_minus_is_no_comment(self, value) -> None:
+        same(bind_variables("amount -{d} + 1", {"d": value}), f"amount - ({value}) + 1")
+
+    def test_negative_values_in_an_in_list(self) -> None:
+        same(bind_variables("amount in ({ds})", {"ds": [-5, 3]}), "amount in (-5, 3)")
+
 
 @pytest.fixture(params=EXEC_BACKENDS)
 async def engine(request):

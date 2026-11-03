@@ -225,9 +225,9 @@ class MysqlDialect(SqlDialect):
         unsigned = (0, 2 ** 64 - 1) if to.this in UNSIGNED_CAST_TYPES else INT64_BOUNDS
         low, high = NARROW_INTEGER_BOUNDS.get(to.this, unsigned)
         exact = exp.Cast(this=trimmed.copy(), to=exp.DataType.build("DECIMAL(65, 0)"))
-        valid = exp.and_(
-            self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
-            exp.Between(this=exact, low=lit(low), high=lit(high)),
+        valid = exp.And(
+            this=self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
+            expression=exp.Between(this=exact, low=lit(low), high=lit(high)),
         )
         return case((valid, self.build_try_cast(trimmed, to)))
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"

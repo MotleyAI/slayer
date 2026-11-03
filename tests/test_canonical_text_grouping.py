@@ -35,7 +35,8 @@ def test_round_trip(text: str) -> None:
 @pytest.mark.parametrize("text", CORPUS)
 def test_never_reads_as_a_comment(text: str) -> None:
     rendered = canonical_measure_text(parse_expr(text))
-    assert "--" not in rendered and "/*" not in rendered, rendered
+    assert "--" not in rendered, rendered
+    assert "/*" not in rendered, rendered
 
 
 def test_grouping_is_kept() -> None:

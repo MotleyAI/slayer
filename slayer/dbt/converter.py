@@ -1204,7 +1204,7 @@ class DbtToSlayerConverter:
         if not resolved_input:
             _, dbt_measure = leaf
             resolved_input = dbt_measure.name
-        return f"time_shift({resolved_input}, -{window.count}, '{gran}')"
+        return f"time_shift({resolved_input}, {-window.count}, '{gran}')"
 
     def _derived_input_replacement(
         self, metric: DbtMetric, m_input: DbtMetricInput

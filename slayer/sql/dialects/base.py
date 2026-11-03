@@ -342,22 +342,22 @@ UNSIGNED_CAST_TYPES: frozenset[DType] = frozenset({
 })
 #: Type groups a dialect's spelling may move within (DOUBLE → FLOAT, TEXT → VARCHAR(MAX), BOOLEAN → INTEGER).
 _CAST_FAMILIES: tuple[frozenset[DType], ...] = (
-    exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES | {exp.DataType.Type.BOOLEAN},
-    exp.DataType.TEXT_TYPES,
+    frozenset(exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES | {exp.DataType.Type.BOOLEAN}),
+    frozenset(exp.DataType.TEXT_TYPES),
     frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32}),
-    exp.DataType.TEMPORAL_TYPES - {exp.DataType.Type.DATE, exp.DataType.Type.DATE32, exp.DataType.Type.TIME,
-                                    exp.DataType.Type.TIMETZ},
+    frozenset(exp.DataType.TEMPORAL_TYPES - {exp.DataType.Type.DATE, exp.DataType.Type.DATE32,
+                                              exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ}),
     frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
 )
 
 
 class _CastSignature(BaseModel):
-    """What a rendering must keep of a cast type; ``params`` are compared only where the source has them."""
+    """What a rendering must keep of a cast type; ``sizes`` (its parameters) only where the source has them."""
 
     model_config = ConfigDict(frozen=True)
 
     family: int | DType
-    params: tuple[str, ...]
+    sizes: tuple[str, ...]
     zoned: bool
     unsigned: bool
     element: Optional["_CastSignature"] = None
@@ -365,7 +365,7 @@ class _CastSignature(BaseModel):
     def kept_by(self, other: "_CastSignature") -> bool:
         return (
             (self.family, self.zoned, self.unsigned) == (other.family, other.zoned, other.unsigned)
-            and (not self.params or self.params == other.params)
+            and (not self.sizes or self.sizes == other.sizes)
             and (self.element is None) == (other.element is None)
             and (self.element is None or other.element is None or self.element.kept_by(other.element))
         )
@@ -386,7 +386,7 @@ def _cast_signature(data_type: exp.DataType) -> _CastSignature:
     element = _element(data_type)
     return _CastSignature(
         family=next((i for i, family in enumerate(_CAST_FAMILIES) if t in family), t),
-        params=_type_params(data_type), zoned=t in _ZONED_TYPES, unsigned=t in UNSIGNED_CAST_TYPES,
+        sizes=_type_params(data_type), zoned=t in _ZONED_TYPES, unsigned=t in UNSIGNED_CAST_TYPES,
         element=_cast_signature(element) if element is not None else None,
     )
 
@@ -400,9 +400,9 @@ def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
 def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
     """Whether reading the author's type kept what they wrote: parameters, time zone, signedness, array."""
     base = _element(built) if parts.array_rank else built
-    if base is None or bool(parts.array_rank) != built.is_type(exp.DataType.Type.ARRAY):
+    if base is None:
         return False
-    if parts.params and _type_params(base) != parts.params:
+    if parts.sizes and _type_params(base) != parts.sizes:
         return False
     if parts.zone is not None and parts.zone != (base.this in _ZONED_TYPES):
         return False
@@ -753,9 +753,9 @@ class SqlDialect(BaseModel):
         """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL."""
         if not numeric:
             return self.build_integer_text_try_cast(as_text(value), to)
-        integral = exp.and_(
-            exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))),
-            exp.LT(this=exp.Abs(this=operand_copy(value)), expression=exp.Literal.number(_INT64_LIMIT)),
+        integral = exp.And(
+            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))),
+            expression=exp.LT(this=exp.Abs(this=operand_copy(value)), expression=exp.Literal.number(_INT64_LIMIT)),
         )
         whole = exp.Cast(this=operand_copy(value), to=exp.DataType.build("BIGINT"))
         return case((integral, self.build_integer_text_try_cast(as_text(whole), to)))
