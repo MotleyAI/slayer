@@ -105,7 +105,7 @@ from slayer.engine.elaborate_env import (
     check_windowed_time_dimension,
 )
 from slayer.engine.elaborate import elaborate_synthesized
-from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
+from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key, row_restriction_from_key
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate
@@ -396,13 +396,22 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     return prebound, [*dims, *tds]
 
 
+def _population_filters(
+    prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
+) -> Iterator[Tuple[int, BoundFilter, ConjunctTyping]]:
+    """``(index, filter, typing)`` per population filter; a producer's FILTER row restriction is not one."""
+    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+        if not bf.row_restriction:
+            yield idx, bf, ct
+
+
 def _regroup_inherited_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
 ) -> Tuple[List[BoundFilter], int]:
     """Stratum-0 field masks define every producer's population; nothing else inherits."""
     date_bounds: List[BoundFilter] = []
     others: List[BoundFilter] = []
-    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for idx, bf, ct in _population_filters(prebound, filter_typings):
         if ct.typing != MaskTyping.FIELD or ct.stratum != 0:
             continue
         if idx < prebound.n_date_range:
@@ -1144,7 +1153,7 @@ def _frame_free_filters(
 ) -> List[BoundFilter]:
     """Every field mask of the population (any stratum) minus every frame bound."""
     out: List[BoundFilter] = []
-    for idx, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for idx, bf, ct in _population_filters(prebound, filter_typings):
         if ct.typing != MaskTyping.FIELD or idx < prebound.n_date_range:
             continue
         residual = strip_frame_bounds(key=bf.value_key, time_columns=time_columns)
@@ -1997,7 +2006,7 @@ def dispose_population_filters(
     models_by_name = bundle.models_by_name
     texts = prebound.bound_filter_texts
     out: List[_DisposedConjunct] = []
-    for i, (bf, ct) in enumerate(zip(prebound.bound_filters, filter_typings)):
+    for i, bf, ct in _population_filters(prebound, filter_typings):
         if (bf.phase != Phase.ROW or ct.typing != MaskTyping.FIELD
                 or ct.stratum != 0):
             continue
@@ -2282,7 +2291,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     # SHARED TAIL: root at the home, compile the producer, attach on the host key.
     condition, unfiltered = _group_row_restriction([agg_rooted])
     if condition is not None:
-        inherited = [*inherited, bound_filter_from_key(condition)]
+        inherited = [*inherited, row_restriction_from_key(condition)]
         agg_rooted = unfiltered[agg_rooted]
     _check_attached_params_determined(
         agg=agg, alias=alias, target_path=target_path, root_model=root_model,
@@ -2436,7 +2445,7 @@ class _EndpointsSource(BaseModel):
     bundle: ResolvedSourceBundle
     scope: ModelScope | StageSchema
     stage_schemas: Dict[str, StageSchema]
-    population: Optional[Population]
+    population: Population | None
     population_filters: List[BoundFilter]
     n_population_date: int
     to_many_handling: Literal["broadcast", "associate", "error"]
@@ -3451,6 +3460,35 @@ def _local_regroup_kernel(
     )
 
 
+def _judged_as_masked(
+    aggs: Sequence[ValueKey], *, condition: Optional[ValueKey],
+) -> Dict[ValueKey, ValueKey]:
+    """Each producer aggregate by the key its reads are judged as: under a row restriction, the built-in input mask."""
+    if condition is None:
+        return {a: a for a in aggs}
+    return {(input_masked(a, condition=condition) if isinstance(a, AggregateKey) else a): a for a in aggs}
+
+
+def _with_population_endpoints(
+    attach_kwargs: Dict[str, Any], *, ctx: "_LocalRegroupContext", ordered_pks: List[ValueKey],
+) -> Dict[str, Any]:
+    """A row-restricted windowed producer's buckets: the population's cells, never its own restricted rows."""
+    kernel = attach_kwargs.get("kernel")
+    if not isinstance(kernel, TrailingWindowProducerKernel) or ctx.producer_model is None:
+        return attach_kwargs
+    source = _EndpointsSource(
+        host_model=ctx.producer_model, bundle=ctx.bundle, scope=ctx.scope, stage_schemas=ctx.stage_schemas,
+        population=ctx.population, population_filters=ctx.inherited,
+        n_population_date=ctx.n_inherited_date, to_many_handling=ctx.prebound.to_many_handling,
+    )
+    return {**attach_kwargs, "kernel": kernel.model_copy(update={
+        "endpoints": _window_endpoints(
+            host_keys=list(ordered_pks), source=source, producer_registry=ctx.producer_registry,
+        ),
+        "endpoint_keys": list(ordered_pks),
+    })}
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -3464,17 +3502,13 @@ def _synthesize_local_regroup(
     # A row-restricted group shares one condition: the producer aggregates the unfiltered keys over its rows.
     condition, unfiltered = _group_row_restriction(aggs)
     if condition is not None:
-        inherited = [*inherited, bound_filter_from_key(condition)]
+        inherited = [*inherited, row_restriction_from_key(condition)]
     producer_alias = {unfiltered.get(k, k): v for k, v in alias_map.items()}
     producer_aggs, canonical_of = _canonical_producer_aggs([unfiltered.get(a, a) for a in aggs])
     canonical_of = {a: canonical_of[unfiltered.get(a, a)] for a in aggs}
     canon_index = {c: i for i, c in enumerate(producer_aggs)}
     if producer_model is not None:
-        # The restriction's reads are judged as the built-in input mask's would be.
-        judged = {
-            (input_masked(a, condition=condition) if condition is not None and isinstance(a, AggregateKey) else a): a
-            for a in producer_aggs
-        }
+        judged = _judged_as_masked(producer_aggs, condition=condition)
         _assert_local_regroup_safe(
             producer_aggs=list(judged), producer_model=producer_model, bundle=bundle,
             active_td=prebound.main_time_key if windowed else None,
@@ -3534,17 +3568,8 @@ def _synthesize_local_regroup(
     attach_kwargs = _local_regroup_kernel(
         decision, producer_plan=producer_plan, bundle=bundle,
     )
-    kernel = attach_kwargs.get("kernel")
-    if condition is not None and isinstance(kernel, TrailingWindowProducerKernel) and producer_model is not None:
-        # The restriction thins the producer's rows, never the population's buckets.
-        attach_kwargs["kernel"] = kernel.model_copy(update={
-            "endpoints": _window_endpoints(host_keys=list(ordered_pks), source=_EndpointsSource(
-                host_model=producer_model, bundle=bundle, scope=scope, stage_schemas=ctx.stage_schemas,
-                population=ctx.population, population_filters=ctx.inherited,
-                n_population_date=n_inherited_date, to_many_handling=prebound.to_many_handling,
-            ), producer_registry=ctx.producer_registry),
-            "endpoint_keys": list(ordered_pks),
-        })
+    if condition is not None:
+        attach_kwargs = _with_population_endpoints(attach_kwargs, ctx=ctx, ordered_pks=ordered_pks)
     return RegroupAttachPlan(
         producer_plan=producer_plan,
         alias_hint=(
@@ -3734,11 +3759,13 @@ def _plan_regroups(
     )
     assert host_model_for_cm is not None
     models_by_name_cm = bundle.models_by_name
-    base_filters_with_text = list(zip(
-        prebound.bound_filters,
-        prebound.bound_filter_texts
-        + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
-    ))
+    base_filters_with_text = [
+        (bf, text) for bf, text in zip(
+            prebound.bound_filters,
+            prebound.bound_filter_texts
+            + [None] * (len(prebound.bound_filters) - len(prebound.bound_filter_texts)),
+        ) if not bf.row_restriction
+    ]
     synthesis_context = _ProducerSynthesisContext(
         prebound=prebound, bundle=bundle, host_model=host_model_for_cm,
         models_by_name=models_by_name_cm,
@@ -4254,7 +4281,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
                 phase=key.phase,
             )
         masks.append(MaskEntry(
-            slot_id=mask_sid, typing=ct.typing, stratum=ct.stratum,
+            slot_id=mask_sid, typing=ct.typing, stratum=ct.stratum, row_restriction=bf.row_restriction,
         ))
         mask_keys.append(key)
         if i < n_date_range:
@@ -4470,7 +4497,7 @@ def _plan_src_row_filters(
     *,
     producer_plan: PlannedQuery,
 ) -> "Tuple[List[str], List[SrcFilterRewrite]]":
-    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (Mode-A model filters exempt, date-range masks are frame bounds)."""
+    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (Mode-A model filters and row restrictions exempt, date-range masks are frame bounds)."""
     time_cols = frozenset(producer_plan.frame_bound_columns)
     slots_by_id = {
         s.id: s
@@ -4480,14 +4507,15 @@ def _plan_src_row_filters(
             *producer_plan.combined_expression_slots,
         )
     }
-    where_ids: List[str] = [mf.id for mf in producer_plan.mode_a_filters]
+    restricted = list(dict.fromkeys(m.slot_id for m in producer_plan.masks if m.row_restriction))
+    where_ids: List[str] = [mf.id for mf in producer_plan.mode_a_filters] + restricted
     rewrites: List[SrcFilterRewrite] = []
     date_ids = {
         m.slot_id
         for m in producer_plan.masks[:producer_plan.n_date_range_masks]
     }
     for m in producer_plan.masks:
-        if m.typing != MaskTyping.FIELD or m.slot_id in date_ids:
+        if m.typing != MaskTyping.FIELD or m.slot_id in date_ids or m.slot_id in restricted:
             continue
         key = slots_by_id[m.slot_id].key
         residual = strip_frame_bounds(key=key, time_columns=time_cols)

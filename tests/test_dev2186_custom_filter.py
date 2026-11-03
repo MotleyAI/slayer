@@ -97,6 +97,13 @@ class TestComposition:
         assert _by_region(resp) == {"EU": 2, "US": None, None: 1}
         assert not resp.warnings
 
+    async def test_attached_parameter_keeps_its_population(self, engine: SlayerQueryEngine) -> None:
+        # The weight averages every row of its region (EU 1.5, US 2.5), paid or not.
+        measure = m(f"wsum(price, weight=avg(quantity, partition_by=region)) FILTER (WHERE {PAID})")
+        assert num(single(await engine.execute(q(measures=[measure])))) == pytest.approx(20.0)
+        resp = await engine.execute(q(dimensions=["region"], measures=[measure]))
+        assert _by_region(resp) == pytest.approx({"EU": 7.5, "US": 12.5, None: None})
+
     async def test_unfiltered_siblings_unchanged(self, engine: SlayerQueryEngine) -> None:
         siblings = [m("rows(amount)", "r"), m("count(*)", "c")]
         alone = await engine.execute(q(dimensions=["region"], measures=siblings))
@@ -133,6 +140,37 @@ class TestWindow:
             m("rows(amount, window='2m') FILTER (WHERE status = 'void')"),
         ]))
         assert _by_month(resp) == {"2024-01": None, "2024-02": None, "2024-03": 1}
+
+    @pytest.mark.parametrize(("condition", "expected"), [
+        ("created_at >= '2024-02-01'", {"2024-01": None, "2024-02": 2, "2024-03": 3}),
+        (f"created_at >= '2024-02-01' AND {PAID}", {"2024-01": None, "2024-02": 1, "2024-03": 1}),
+    ], ids=["time-bound", "time-bound-and-status"])
+    async def test_time_column_condition_restricts_the_frame(
+        self, engine: SlayerQueryEngine, condition: str, expected: dict,
+    ) -> None:
+        resp = await engine.execute(q(time_dimensions=MONTH, measures=[
+            m(f"rows(amount, window='2m') FILTER (WHERE {condition})"),
+        ]))
+        assert _by_month(resp) == expected
+
+    async def test_condition_equal_to_a_query_frame_bound(self, engine: SlayerQueryEngine) -> None:
+        bound = "created_at >= '2024-02-01'"
+        resp = await engine.execute(q(time_dimensions=MONTH, filters=[bound], measures=[
+            m(f"rows(amount, window='2m') FILTER (WHERE {bound} AND {PAID})"),
+            m(f"rows(amount, window='2m') FILTER (WHERE {bound})", "b"),
+        ]))
+        assert _by_month(resp) == {"2024-02": 1, "2024-03": 1}
+        assert {str(r["orders.created_at"])[:7]: num(r["orders.b"]) for r in resp.data} == {"2024-02": 2, "2024-03": 3}
+
+    async def test_cross_model_time_column_condition(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(SlayerQuery.model_validate({
+            "source_model": "customers",
+            "time_dimensions": [{"dimension": "orders.created_at", "granularity": "month"}],
+            "measures": [{"formula": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+                          "name": "v"}],
+        }))
+        got = {str(r["customers.orders.created_at"])[:7]: num(r["customers.v"]) for r in resp.data}
+        assert got == {"2024-01": None, "2024-02": 2, "2024-03": 3}
 
 
 class TestPositions:
@@ -232,7 +270,7 @@ class TestTyping:
         errors = []
         for agg in ("sum", "rows"):
             query = q(measures=[m(f"{agg}(amount) FILTER (WHERE {condition})")])
-            with pytest.raises(Exception) as info:  # noqa: B017 — parity, whatever the type
+            with pytest.raises(Exception) as info:  # noqa: B017  # NOSONAR(S5958) — parity: type and message asserted equal below
                 await engine.execute(query)
             errors.append(info.value)
         builtin, custom = errors
