@@ -67,7 +67,7 @@ from slayer.engine import dimension_routing
 from slayer.engine.key_metadata import bundle_dialect, scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
 from slayer.core.query import TimeDimension
-from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column
+from slayer.core.scope import ModelScope, StageSchema, resolve_generated_column, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
@@ -90,6 +90,7 @@ from slayer.core.syntax import (
     aggregation_reading,
     canonical_measure_text,
     comparison_hint,
+    drop_root_qualifier,
     keyword_spelling,
     parse_expr,
     placeholder_names,
@@ -244,7 +245,7 @@ def bind_time_dimension(
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
             is_expression=True,
         )
-    bound_col = _resolve_column_ref(text, scope=scope, bundle=bundle)
+    bound_col = _resolve_column_ref(parsed, scope=scope, bundle=bundle)
     column_type, upstream = _column_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col, scope=scope)
     return BoundTimeDimension(
@@ -255,9 +256,10 @@ def bind_time_dimension(
 
 
 def _resolve_column_ref(
-    full: str, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    parsed: Ref | DottedRef, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> ColumnKey | ColumnSqlKey:
     """A time dimension's column against ``scope``: a stage ref is a flat ``StageColumn`` (dotted → illegal-scope, unknown → unknown-reference); a model ref walks joins."""
+    full = parsed.name if isinstance(parsed, Ref) else ".".join(parsed.parts)
     if isinstance(scope, ModelScope) and scope.source_model is None:
         raise UnknownReferenceError(
             name=full,
@@ -265,10 +267,10 @@ def _resolve_column_ref(
             scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
-    if "." in full:
-        bound_col = _resolve_dotted(tuple(full.split(".")), scope=scope, bundle=bundle)
+    if isinstance(parsed, DottedRef):
+        bound_col = _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
     else:
-        bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
+        bound_col = _resolve_ref(parsed.name, scope=scope, bundle=bundle)
     if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
         # Defensive: an identifier ref against a ModelScope is always a column.
         raise ValueError(
@@ -339,14 +341,8 @@ def _canonical_if_routed(
         return leaf if not column_path(key) and leaf != parsed.name else None
     if not isinstance(parsed, DottedRef):
         return None
-    if not isinstance(scope, ModelScope) or scope.source_model is None:
-        return None
-    typed = parsed.parts
-    if typed and typed[0] == scope.source_model.name:
-        typed = typed[1:]
-    if tuple(column_path(key)) == tuple(typed[:-1]):
-        return None
-    return ".".join((*column_path(key), column_leaf(key)))
+    canonical = (*column_path(key), column_leaf(key))
+    return None if tuple(parsed.parts) == canonical else ".".join(canonical)
 
 
 def _terminal_model_for_path(
@@ -859,21 +855,6 @@ def _broken_chain_error(
     )
 
 
-def _strip_self_prefix(
-    parts: Tuple[str, ...], *, host: SlayerModel
-) -> Tuple[str, ...]:
-    """Drop a leading same-model self-prefix (``orders.orders.x`` → ``orders.x``)."""
-    remainder = parts[1:]
-    if not remainder:
-        raise UnknownReferenceError(
-            name=host.name,
-            scope_kind="ModelScope",
-            scope_summary=f"model {host.name!r}",
-            suggestion="self-prefix only — expected a column or join target.",
-        )
-    return remainder
-
-
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
@@ -884,12 +865,20 @@ def _resolve_dotted(
 ) -> ValueKey:
     """Resolve a dotted ref against the scope.
 
-    Resolution order: declared alias (full dotted text) → join walk → leaf
-    column → saved measure (re-anchored into host coords, eligible position)."""
+    Resolution order: root qualifier dropped → declared alias (dotted text) → join walk
+    → leaf column → saved measure (re-anchored into host coords, eligible position)."""
+    original_parts = parts
+    parts = drop_root_qualifier(parts, root_spelling(scope))
     if alias_map:
-        dotted_text = ".".join(parts)
-        if dotted_text in alias_map:
-            return alias_map[dotted_text]
+        for dotted_text in dict.fromkeys((".".join(parts), ".".join(original_parts))):
+            if dotted_text in alias_map:
+                return alias_map[dotted_text]
+
+    if len(parts) == 1:
+        return _resolve_ref(
+            parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
 
     if isinstance(scope, StageSchema):
         scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
@@ -903,17 +892,7 @@ def _resolve_dotted(
             suggestion=None,
         )
 
-    # C14: strip same-model self-prefix, then resolve any single local ref.
     host = scope.source_model
-    original_parts = parts
-    if parts and parts[0] == host.name:
-        parts = _strip_self_prefix(parts, host=host)
-
-    if len(parts) == 1:
-        return _resolve_ref(
-            parts[0], scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
 
     # parts[:-1] are join targets; parts[-1] is the leaf column.
     hop_path = parts[:-1]
@@ -1094,6 +1073,9 @@ def _resolve_dotted_star(
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
+    parts = drop_root_qualifier(parts, root_spelling(scope))
+    if parts == ("*",):
+        return StarKey()
     if isinstance(scope, StageSchema):
         scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
     assert isinstance(scope, ModelScope)
@@ -1106,9 +1088,6 @@ def _resolve_dotted_star(
             suggestion=None,
         )
     hop_path = parts[:-1]
-    # Strip same-model self-prefix (``orders.*`` on ``orders``).
-    if hop_path and hop_path[0] == host.name:
-        hop_path = hop_path[1:]
     # Validate the hop chain (raises on missing / circular join, auto-routes a
     # short form); the routed effective path carries the star.
     _, effective_hop_path = _walk_join_chain(

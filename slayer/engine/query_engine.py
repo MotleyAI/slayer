@@ -1155,12 +1155,6 @@ class SlayerQueryEngine:
         if inferred_data_source is not None:
             prefer_data_source = inferred_data_source
 
-        query = query.strip_source_model_prefix()
-        named_queries = {
-            name: q.strip_source_model_prefix()
-            for name, q in named_queries.items()
-        }
-
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
         failures = DocumentLoadFailures()

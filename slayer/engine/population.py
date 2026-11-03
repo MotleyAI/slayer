@@ -9,6 +9,8 @@ core backs ``recommend_root_model``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from slayer.core.errors import (
@@ -20,14 +22,16 @@ from slayer.core.errors import (
 from slayer.core.join_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
 from slayer.core.join_walker import canonical_path, provably_to_one, terminal_model, walk
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
-from slayer.core.time_spine import TIME_SPINE_MODEL, mentions_spine, names_spine
+from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.time_spine import TIME_SPINE_MODEL, reads_spine, names_spine
 from slayer.engine.dimension_routing import resolve_route, safe_route_reachable
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
     Ref,
-    parse_expr,
+    drop_root_qualifier,
+    parse_template,
+    root_relative,
     walk_parsed_refs,
 )
 from slayer.memories.resolver import _all_models_in_datasource
@@ -55,6 +59,11 @@ def _ref_str(node: Ref | DottedRef) -> str:
     return ".".join(node.parts) if isinstance(node, DottedRef) else node.name
 
 
+def _parse(text: str, *, root: str | None) -> Any:
+    """``text`` as binding parses it, each reference relative to ``root``."""
+    return root_relative(parse_template(text), root)
+
+
 def _partition_refs(agg: AggCall) -> list[Ref | DottedRef]:
     """``partition_by=`` references of an aggregation node (row-valued regroup keys)."""
     out: list[Ref | DottedRef] = []
@@ -68,10 +77,10 @@ def _partition_refs(agg: AggCall) -> list[Ref | DottedRef]:
     return out
 
 
-def _computed_dimension_refs(expression: str) -> list[str]:
+def _computed_dimension_refs(expression: str, *, root: str | None) -> list[str]:
     """Row-valued + partition_by refs of a computed dimension; refs inside an aggregation are excluded."""
     try:
-        parsed = parse_expr(expression)
+        parsed = _parse(expression, root=root)
     except Exception:
         return []
     refs: list[str] = []
@@ -111,23 +120,23 @@ def _is_saved_measure_ref(ref: str, *, models_by_name: dict[str, SlayerModel]) -
     return owner.get_measure(leaf) is not None or owner.get_aggregation(leaf) is not None
 
 
-def _parsed_filter_refs(filter_str: str) -> tuple[list[str], bool]:
+def _parsed_filter_refs(filter_str: str, *, root: str | None) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter; spine refs are never determination items."""
-    refs, ok = _all_filter_refs(filter_str)
+    refs, ok = _all_filter_refs(filter_str, root=root)
     return [r for r in refs if not names_spine(r)], ok
 
 
-def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
+def _all_filter_refs(filter_str: str, *, root: str | None) -> tuple[list[str], bool]:
     """``(row-valued refs, ok)`` of one masked filter via the execution filter parser.
 
-    Uses ``parse_expr`` (the same parser execution binds with), so SQL operator
+    Uses ``parse_template`` (the shape execution binds), so SQL operator
     spellings and aggregations in either spelling (``sum(x)``) are all
     handled uniformly and string literals never surface as references. ``ok`` is False
     when the filter is aggregate-bearing or unparseable — either way it contributes
     nothing to determination.
     """
     try:
-        parsed = parse_expr(render_probe_text(filter_str))
+        parsed = _parse(filter_str, root=root)
     except Exception:
         return [], False
     nodes = list(walk_parsed_refs(parsed))
@@ -137,14 +146,14 @@ def _all_filter_refs(filter_str: str) -> tuple[list[str], bool]:
 
 
 def _filter_refs(
-    filter_str: str, *, model_scopes: list[dict[str, SlayerModel]]
+    filter_str: str, *, root: str | None, model_scopes: list[dict[str, SlayerModel]]
 ) -> list[str]:
     """Field references of one query filter; drops aggregate-bearing filters and saved-measure refs.
 
     All ``{var}`` are masked to a neutral literal first, so a reference introduced
     only by a variable value never participates.
     """
-    refs, _ = _parsed_filter_refs(filter_str)
+    refs, _ = _parsed_filter_refs(filter_str, root=root)
     return [
         r for r in refs
         if not _saved_measure_in_every_scope(r, model_scopes=model_scopes)
@@ -157,14 +166,15 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
     Computed and time dimensions contribute their row-valued and partition_by refs
     (never refs inside an aggregation); plain dimensions contribute their name.
     """
+    root = query.source_model_name
     refs: list[str] = []
     for dim in query.dimensions or []:
         if isinstance(dim, ComputedDimension):
-            refs.extend(_computed_dimension_refs(dim.expression))
+            refs.extend(_computed_dimension_refs(dim.expression, root=root))
         else:
-            refs.append(dim.full_name)
+            refs.append(".".join(drop_root_qualifier(dim.parts, root)))
     for td in query.time_dimensions or []:
-        refs.extend(_computed_dimension_refs(td.dimension))
+        refs.extend(_computed_dimension_refs(td.dimension, root=root))
     return refs
 
 
@@ -195,7 +205,7 @@ def determination_items(
     for ref in _query_dimension_refs(query):
         _add(ref)
     for f in query.filters or []:
-        for ref in _filter_refs(f, model_scopes=scopes):
+        for ref in _filter_refs(f, root=query.source_model_name, model_scopes=scopes):
             _add(ref)
     return items
 
@@ -395,13 +405,15 @@ def _anchor_names(
     """
     refs = _query_dimension_refs(query)
     for f in query.filters or []:
-        filter_refs, _ = _parsed_filter_refs(f)
+        filter_refs, _ = _parsed_filter_refs(f, root=query.source_model_name)
         refs.extend(
             r for r in filter_refs
             if not model_scopes
             or not _saved_measure_in_every_scope(r, model_scopes=model_scopes)
         )
-    return {ref.split(".")[0] for ref in refs if ref}
+    root = query.source_model_name
+    # A root-relative bare reference is the root's own column.
+    return {ref.split(".")[0] if root is None or "." in ref else root for ref in refs if ref}
 
 
 async def _classification_scopes(
@@ -454,21 +466,22 @@ def _resolve_datasource(
 # --------------------------------------------------------------------------- #
 def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
     """``query``'s P factor: its spine time dimensions and spine filters removed (measures too)."""
+    root = query.source_model_name
     return query.model_copy(update={
         "dimensions": [
             d for d in query.dimensions or []
-            if not mentions_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""))
+            if not reads_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""), root=root)
         ] or None,
         "time_dimensions": [
-            td for td in query.time_dimensions or [] if not mentions_spine(td.dimension)
+            td for td in query.time_dimensions or [] if not reads_spine(td.dimension, root=root)
         ] or None,
-        "filters": [f for f in query.filters or [] if not _spine_only_filter(f)] or None,
+        "filters": [f for f in query.filters or [] if not _spine_only_filter(f, root=root)] or None,
         "measures": None,
     })
 
 
-def _spine_only_filter(filter_str: str) -> bool:
-    refs, ok = _all_filter_refs(filter_str)
+def _spine_only_filter(filter_str: str, *, root: str | None) -> bool:
+    refs, ok = _all_filter_refs(filter_str, root=root)
     return ok and bool(refs) and all(names_spine(r) for r in refs)
 
 
@@ -487,7 +500,7 @@ def _measure_anchor_names(query: SlayerQuery) -> set[str]:
     names: set[str] = set()
     for m in query.measures or []:
         try:
-            parsed = parse_expr(m.formula)
+            parsed = _parse(m.formula, root=query.source_model_name)
         except Exception:
             continue
         names.update(ref.split(".")[0] for ref in _qualified_refs(parsed))

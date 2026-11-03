@@ -290,10 +290,10 @@ class TestNamesAndKeys:
         got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["orders.v"]) for r in resp.data}
         assert got == {(k, "2025"): v for k, v in EFF_MONTH_COUNT.items()}
 
-    async def test_equivalent_spellings_with_differing_label_rejected_at_binding(self, engine) -> None:
-        query = _count(time_dimensions=[td(EFF, label="a"), td("COALESCE(shipped_at,created_at)", label="b")])
-        msg = str(await _plan_fails(engine, query, GranularityCallError))
-        assert "Conflicting" in msg
+    def test_equivalent_spellings_with_differing_label_rejected_at_construction(self) -> None:
+        tds = [td(EFF, label="a"), td("COALESCE(shipped_at,created_at)", label="b")]
+        with pytest.raises(ValueError, match="Conflicting"):
+            _count(time_dimensions=tds)
 
     @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"name": "effective_at"}])
     async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine, extra: dict) -> None:

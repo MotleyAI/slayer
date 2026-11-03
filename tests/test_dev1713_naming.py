@@ -563,9 +563,8 @@ class TestBareNamedMeasureResultKey:
 
     async def test_self_qualified_saved_measure_ref_matches_bare(self) -> None:
         """Codex F4 (qualified ref): a SELF-qualified saved-measure reference
-        (``orders.rev_total`` on source model ``orders``) is normalized to the
-        bare form by ``SlayerQuery.strip_source_model_prefix`` before planning,
-        so it preserves the measure NAME exactly like the bare reference — the
+        (``orders.rev_total`` on source model ``orders``) resolves at binding
+        as the bare form, so it preserves the measure NAME exactly like the bare reference — the
         two are equivalent, not divergent. Pinned so the equivalence is
         explicit."""
         model = _orders_named_model(

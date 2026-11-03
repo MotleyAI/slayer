@@ -63,7 +63,8 @@ is the coercion from coarser to finer.
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
      anchored at the query root. Only definition defaults cancel — a revisiting
-     query path is refused, a revisiting `Column.sql` likewise.
+     query path is refused (its root qualifier is no revisit, system §3.9), a revisiting
+     `Column.sql` likewise.
      It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
