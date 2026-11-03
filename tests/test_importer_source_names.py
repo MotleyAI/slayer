@@ -17,13 +17,16 @@ from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.cube.converter import CubeToSlayerConverter
+from slayer.core.query import SlayerQuery
 from slayer.cube.models import CubeProject
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import column, typing_notes
 from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import ds, f, flat
@@ -37,6 +40,7 @@ postgresql = factories.postgresql("postgresql_proc")
 
 DS = "ds"
 MIXED = '"Sales"."Order Items"'
+UNQUOTED_MIXED = "Sales.OrderItems"
 RESERVED = "order"
 DOTTED = '"sales.v2".orders'
 
@@ -44,6 +48,8 @@ _MIXED_SEED = (
     'CREATE SCHEMA "Sales"',
     'CREATE TABLE "Sales"."Order Items" (qty INTEGER, placed_at TIMESTAMP)',
     "INSERT INTO \"Sales\".\"Order Items\" VALUES (3, '2026-01-01 10:00:00')",
+    'CREATE TABLE "Sales"."OrderItems" (qty INTEGER)',
+    'INSERT INTO "Sales"."OrderItems" VALUES (4)',
 )
 _DOTTED_SEED = (
     'CREATE SCHEMA "sales.v2"',
@@ -57,8 +63,10 @@ _CATALOG_SEED = ("CREATE SCHEMA sales", "CREATE TABLE sales.orders (qty INTEGER)
 class Live:
     """A seeded live database: its engine, the statements run on it, and the catalog it reaches."""
 
-    def __init__(self, *, engine: sa.Engine, catalog: str | None, schemas: bool) -> None:
+    def __init__(self, *, engine: sa.Engine, datasource: DatasourceConfig, catalog: str | None,
+                 schemas: bool) -> None:
         self.engine = engine
+        self.datasource = datasource
         self.catalog = catalog
         self.schemas = schemas
         self.statements: list[str] = []
@@ -90,7 +98,8 @@ def _duckdb(tmp_path: Path, *, decoy: bool = False) -> Generator[Live]:
         _run(engine, _CATALOG_SEED)
     with disposable_engine(f"duckdb:///{sales}") as engine:
         _run(engine, ("CREATE SCHEMA v2", "CREATE TABLE v2.orders (qty VARCHAR)", "INSERT INTO v2.orders VALUES ('x')"))
-    with disposable_engine(f"duckdb:///{tmp_path / 'shop.duckdb'}") as engine:
+    shop = tmp_path / "shop.duckdb"
+    with disposable_engine(f"duckdb:///{shop}") as engine:
         _run(engine, (*(() if decoy else _MIXED_SEED), *_DOTTED_SEED, *_COMMON_SEED))
 
         @event.listens_for(engine, "connect")
@@ -100,15 +109,18 @@ def _duckdb(tmp_path: Path, *, decoy: bool = False) -> Generator[Live]:
                 dbapi_connection.execute(f"ATTACH '{sales}' AS sales (READ_ONLY)")
 
         engine.dispose()
-        yield Live(engine=engine, catalog="analytics", schemas=True)
+        yield Live(engine=engine, datasource=DatasourceConfig(name=DS, type="duckdb", database=str(shop)),
+                   catalog="analytics", schemas=True)
 
 
 @contextlib.contextmanager
 def _sqlite(tmp_path: Path) -> Generator[Live]:
-    with disposable_engine(f"sqlite:///{tmp_path / 'shop.db'}") as engine:
+    shop = tmp_path / "shop.db"
+    with disposable_engine(f"sqlite:///{shop}") as engine:
         _run(engine, ('CREATE TABLE "Order Items" (qty INTEGER, placed_at TIMESTAMP)',
                       "INSERT INTO \"Order Items\" VALUES (3, '2026-01-01 10:00:00')", *_COMMON_SEED))
-        yield Live(engine=engine, catalog=None, schemas=False)
+        yield Live(engine=engine, datasource=DatasourceConfig(name=DS, type="sqlite", database=str(shop)),
+                   catalog=None, schemas=False)
 
 
 @contextlib.contextmanager
@@ -119,10 +131,10 @@ def _postgres(request: pytest.FixtureRequest) -> Generator[Live]:
         cur.execute(statement)
     conn.commit()
     info = conn.info
-    url = DatasourceConfig(name=DS, type="postgres", host=info.host, port=info.port, database=info.dbname,
-                           username=info.user, password="").get_connection_string()
-    with disposable_engine(url) as engine:
-        yield Live(engine=engine, catalog=info.dbname, schemas=True)
+    datasource = DatasourceConfig(name=DS, type="postgres", host=info.host, port=info.port, database=info.dbname,
+                                  username=info.user, password="")
+    with disposable_engine(datasource.get_connection_string()) as engine:
+        yield Live(engine=engine, datasource=datasource, catalog=info.dbname, schemas=True)
 
 
 @pytest.fixture(params=["sqlite", "duckdb", "postgres"])
@@ -198,6 +210,23 @@ def test_mixed_case_schema_qualified_table(live: Live) -> None:
     assert _typed(models["items"], "qty") is DataType.INT
     assert _typed(models["items"], "placed_at") is DataType.TIMESTAMP
     assert typing_notes(messages) == []
+
+
+async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live, tmp_path: Path) -> None:
+    """Postgres would fold an unquoted ``Sales.OrderItems``; probe and query both keep its case."""
+    _schemas(live)
+    models, messages = _cube(live, _qty_cube(UNQUOTED_MIXED))
+    assert _typed(models["items"], "qty") is DataType.INT
+    assert typing_notes(messages) == []
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    await storage.save_datasource(live.datasource)
+    await storage.save_model(models["items"])
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        response = await engine.execute(SlayerQuery.model_validate({"source_model": "items", "dimensions": ["qty"]}))
+    finally:
+        await engine.aclose()
+    assert response.data == [{"items.qty": 4}]
 
 
 def test_reserved_word_table_cube(live: Live) -> None:
