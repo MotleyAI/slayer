@@ -21,7 +21,7 @@ from slayer.api.server import QueryRequest, create_app
 from slayer.core import query as core_query
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.ir import source_bundle
 from slayer.ir.source_bundle import (
@@ -302,14 +302,11 @@ class TestSourceModelName:
     def test_property_over_the_four_cases(self, spec, expected) -> None:
         assert SlayerQuery(source_model=spec).source_model_name == expected
 
-    def test_prefix_strip_uses_the_typed_name(self) -> None:
-        q = _query(source_model=EXTENSION, dimensions=["orders.status"])
-        stripped = q.strip_source_model_prefix()
-        assert stripped.dimensions
-        dim = stripped.dimensions[0]
-        assert isinstance(dim, ColumnRef)
-        assert dim.model is None
-        assert dim.name == "status"
+    async def test_root_qualifier_uses_the_typed_name(self, chain_engine) -> None:
+        qualified = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["orders.status"]))
+        bare = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["status"]))
+        assert qualified.sql == bare.sql
+        assert qualified.columns == bare.columns == ["orders.status"]
 
 
 # ---------------------------------------------------------------------------

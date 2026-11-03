@@ -4561,15 +4561,10 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         engine = SlayerQueryEngine(storage=storage)
         return engine, orders
 
-    async def test_self_ref_dimension_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly."""
+    async def test_self_ref_dimension_resolves_as_the_joined_dimension(self, engine_and_models) -> None:
+        """'orders.customers.name' reads as 'customers.name'."""
         _engine, model = engine_and_models
         query = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
-        # The strip itself stays pinned directly — it is pure and deterministic.
-        stripped = query.strip_source_model_prefix()
-        assert (stripped.dimensions[0].model, stripped.dimensions[0].name) == (
-            "customers", "name",
-        )
         sql = await _engine_generate(
             query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
         )
@@ -4577,27 +4572,31 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         assert "customers" in sql, sql
         # Resolved as a JOINED dimension under the dotted result key, not as a bare local column that silently referenced the wrong table.
         assert "orders.customers.name" in sql, sql
+        bare = SlayerQuery(source_model="orders", dimensions=["customers.name"])
+        assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
 
-    async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
+    async def test_self_ref_measure_resolves_as_the_joined_measure(self, engine_and_models) -> None:
+        """'orders.customers.score:sum' reads as 'customers.score:sum'."""
         _engine, model = engine_and_models
         query = SlayerQuery(
             source_model="orders", measures=["orders.customers.score:sum"],
         )
-        stripped = query.strip_source_model_prefix()
-        assert stripped.measures[0].formula == "customers.score:sum"
         sql = await _engine_generate(
             query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
         )
         assert "SUM(" in sql.upper(), sql
         assert "customers" in sql, sql
+        bare = SlayerQuery(source_model="orders", measures=["customers.score:sum"])
+        assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
 
-    def test_simple_self_ref_dimension_stripped(self) -> None:
-        """'orders.status' on source_model=orders becomes local 'status'."""
-        query = SlayerQuery(source_model="orders", dimensions=["orders.status"])
-        stripped = query.strip_source_model_prefix()
-        assert stripped.dimensions[0].model is None
-        assert stripped.dimensions[0].name == "status"
+    async def test_simple_self_ref_dimension_is_local(self, engine_and_models) -> None:
+        """'orders.amount' on source_model=orders reads the local 'amount'."""
+        _engine, model = engine_and_models
+        qualified = SlayerQuery(source_model="orders", dimensions=["orders.amount"])
+        bare = SlayerQuery(source_model="orders", dimensions=["amount"])
+        assert await _engine_generate(query=qualified, model=model, extra_models=[_CUSTOMERS_SELF_REF]) == (
+            await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
+        )
 
 
 class TestConstantSQLFilters:
