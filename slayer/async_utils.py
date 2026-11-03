@@ -82,6 +82,6 @@ def run_sync_on_caller_thread(coro: Coroutine[Any, Any, T]) -> T:
             if done.set_running_or_notify_cancel():
                 try:
                     done.set_result(func())
-                except BaseException as exc:  # noqa: BLE001 — delivered to the awaiting coroutine
+                except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — delivered to the awaiting coroutine; narrower would hang shutdown
                     done.set_exception(exc)
         return result.result()

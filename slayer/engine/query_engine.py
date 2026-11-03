@@ -3089,7 +3089,7 @@ def run_over_caller_engine(
         connection_string=str(sa_engine.url),
     )
 
-    def _caller_client(ds: DatasourceConfig) -> SqlClient:
+    def _caller_client(ds: DatasourceConfig) -> SlayerSQLClient:
         return SlayerSQLClient(datasource=ds, sa_engine=sa_engine)
 
     async def _run() -> _T:

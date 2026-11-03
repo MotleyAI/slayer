@@ -2364,6 +2364,9 @@ async def _collect_sql_diffs(
     return out
 
 
+_UNSET: Any = object()
+
+
 @marked_coroutine_function
 def validate_datasource(
     *,
@@ -2372,7 +2375,7 @@ def validate_datasource(
     client: SqlClient | None = None,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-    sql_clients: object = None,
+    sql_clients: object = _UNSET,
 ) -> Coroutine[Any, Any, list[ToDeleteEntry]]:
     """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
 
@@ -2380,7 +2383,7 @@ def validate_datasource(
     ``snapshot`` scopes introspection to ``models``' objects and reuses its facts.
     Omitting ``client`` or passing ``sql_clients`` (ignored) is deprecated.
     """
-    if client is None or sql_clients is not None:
+    if client is None or sql_clients is not _UNSET:
         warn_deprecated(
             "validate_datasource() without client= (or with sql_clients=, now ignored) is deprecated; pass "
             "client=engine.client_for(datasource). The old form works until SLayer 2.0.",

@@ -303,6 +303,20 @@ async def test_validate_datasource_ignores_legacy_sql_clients(
     _assert_one_deprecation(caught, call=VALIDATE[0], remedies=VALIDATE[1])
 
 
+async def test_an_explicit_none_sql_clients_still_warns(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
+    try:
+        with recorded() as caught:
+            await schema_drift.validate_datasource(
+                datasource=sqlite_shop, models=[orders_model()], client=engine.client_for(sqlite_shop),
+                sql_clients=None,
+            )
+    finally:
+        await engine.aclose()
+        engine.close()
+    _assert_one_deprecation(caught, call=VALIDATE[0], remedies=VALIDATE[1])
+
+
 # --------------------------------------------------------------------------- #
 # Converters
 # --------------------------------------------------------------------------- #
