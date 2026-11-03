@@ -21,6 +21,7 @@ import pytest
 import sqlalchemy as sa
 
 # ── dbt ──────────────────────────────────────────────────────────────────────
+from slayer.core.models import DatasourceConfig
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import convert_dbt_filter
@@ -50,6 +51,7 @@ from slayer.osi.models import (
 # Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
 from tests._dev1743_fixtures import chain_models
 from tests._engine_helpers import disposable_engine
+from tests._osi_helpers import run_converter
 
 DS = "test"
 
@@ -73,6 +75,10 @@ def sqlite_engine(tmp_path: Path) -> Iterator[sa.Engine]:
             ))
             conn.commit()
         yield engine
+
+
+def _datasource(engine: sa.Engine) -> DatasourceConfig:
+    return DatasourceConfig(name=DS, type="sqlite", database=engine.url.database)
 
 
 def _osi_expr(sql: str) -> OSIExpression:
@@ -111,12 +117,10 @@ def test_dbt_hidden_regular_model_dunder_name_is_imported(
             ),
         ],
     )
-    result = DbtToSlayerConverter(
-        project=project,
-        data_source=DS,
-        include_hidden_models=True,
-        sa_engine=sqlite_engine,
-    ).convert()
+    result = run_converter(
+        DbtToSlayerConverter(project=project, data_source=DS, include_hidden_models=True),
+        datasource=_datasource(sqlite_engine),
+    )
 
     names = {m.name for m in result.models}
     assert "stg_jaffle_shop__orders" in names, (
@@ -201,9 +205,10 @@ def test_osi_dunder_dataset_name_is_accepted(sqlite_engine: sa.Engine) -> None:
             fields=[OSIField(name="amount", expression=_osi_expr("amount"))],
         ),
     ])
-    result = OsiToSlayerConverter(
-        documents=[doc], data_source=DS, sa_engine=sqlite_engine
-    ).convert()
+    result = run_converter(
+        OsiToSlayerConverter(documents=[doc], data_source=DS),
+        datasource=_datasource(sqlite_engine),
+    )
     names = {m.name for m in result.models}
     assert "foo__bar" in names, (
         f"dunder-named OSI dataset was skipped as illegal instead of built: {names}"
@@ -233,9 +238,7 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     reaches it is delicate to stage); this is the exact function DEV-1743 must
     make strict (slayer/osi/converter.py ``_walk_join_alias``).
     """
-    conv = OsiToSlayerConverter(
-        documents=[], data_source=DS, sa_engine=sqlite_engine
-    )
+    conv = OsiToSlayerConverter(documents=[], data_source=DS)
     conv._models = {m.name: m for m in chain_models()}  # orders → customers → regions
     orders = conv._models["orders"]
 

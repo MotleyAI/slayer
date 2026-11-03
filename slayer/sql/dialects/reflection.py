@@ -7,8 +7,9 @@ from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from typing import Any, Protocol, TypeVar
 
+import sqlalchemy as sa
+import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.types import TypeEngine
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -36,12 +37,12 @@ class TableLocation(BaseModel):
 
 
 class ReflectedColumn(BaseModel):
-    """One live column; ``type`` is an Inspector ``TypeEngine`` or an already-mapped ``DataType``."""
+    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque or exact-numeric)."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     name: str
-    type: DataType | TypeEngine
+    type: DataType
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
@@ -157,6 +158,185 @@ def column_from_type_string(*, name: str, data_type: str | None, comment: str | 
     )
 
 
+# --- SQLAlchemy types → DataType ---
+
+# Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
+_logged_unmapped_sa_types: set[str] = set()
+
+# Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
+# A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
+_OPAQUE_SA_TYPE_NAMES = frozenset({
+    "JSON",  # ``jsonb`` is groupable and deliberately absent
+    "XML",
+    "TXID_SNAPSHOT",
+    # Geometric / spatial — none have a default btree/hash opclass
+    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
+    "GEOMETRY", "GEOGRAPHY", "RASTER",
+    # Range types
+    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
+})
+
+_SA_TYPE_MAP = {
+    "INTEGER": DataType.INT,
+    "BIGINT": DataType.INT,
+    "SMALLINT": DataType.INT,
+    "SERIAL": DataType.INT,
+    "BIGSERIAL": DataType.INT,
+    "FLOAT": DataType.DOUBLE,
+    "REAL": DataType.DOUBLE,
+    "DOUBLE": DataType.DOUBLE,
+    "DOUBLE_PRECISION": DataType.DOUBLE,
+    # Refined by scale in _sa_type_to_data_type; DOUBLE when scale is unknown.
+    "NUMERIC": DataType.DOUBLE,
+    "DECIMAL": DataType.DOUBLE,
+    "VARCHAR": DataType.TEXT,
+    "CHAR": DataType.TEXT,
+    "TEXT": DataType.TEXT,
+    "STRING": DataType.TEXT,
+    "BOOLEAN": DataType.BOOLEAN,
+    "BOOL": DataType.BOOLEAN,
+    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
+    "TIMESTAMP": DataType.TIMESTAMP,
+    "DATETIME": DataType.TIMESTAMP,
+    "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
+    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_TZ": DataType.TIMESTAMP,
+    "DATE": DataType.DATE,
+    "TIME": DataType.TIMESTAMP,
+    # ClickHouse
+    "INT8": DataType.INT,
+    "INT16": DataType.INT,
+    "INT32": DataType.INT,
+    "INT64": DataType.INT,
+    "INT128": DataType.INT,
+    "INT256": DataType.INT,
+    "UINT8": DataType.INT,
+    "UINT16": DataType.INT,
+    "UINT32": DataType.INT,
+    "UINT64": DataType.INT,
+    "UINT128": DataType.INT,
+    "UINT256": DataType.INT,
+    "FLOAT32": DataType.DOUBLE,
+    "FLOAT64": DataType.DOUBLE,
+    "DATETIME64": DataType.TIMESTAMP,
+    "DATE32": DataType.DATE,
+    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
+    "TINYINT": DataType.INT,
+    "DATETIME2": DataType.TIMESTAMP,
+    "SMALLDATETIME": DataType.TIMESTAMP,
+    "DATETIMEOFFSET": DataType.TIMESTAMP,
+    "NVARCHAR": DataType.TEXT,
+    "NCHAR": DataType.TEXT,
+    "NTEXT": DataType.TEXT,
+    "UUID": DataType.TEXT,  # ClickHouse (not an sa.Uuid)
+    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
+    "MONEY": DataType.DOUBLE,
+    "SMALLMONEY": DataType.DOUBLE,
+    # SQL Server rowversion — 8-byte binary counter, not temporal
+    "ROWVERSION": DataType.TEXT,
+}
+
+# NUMERIC/DECIMAL are float-like only by scale (see _sa_type_is_float).
+_FLOAT_LIKE_SA_TYPES = frozenset({
+    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "FLOAT32", "FLOAT64", "MONEY", "SMALLMONEY",
+})
+
+
+def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
+    """Peel nested ClickHouse Nullable/LowCardinality wrappers (as-is if no ``nested_type``)."""
+    current = sa_type
+    for _ in range(CLICKHOUSE_WRAPPER_MAX_DEPTH):
+        if type(current).__name__.upper() not in CLICKHOUSE_WRAPPER_NAMES:
+            return current
+        inner = getattr(current, "nested_type", None)
+        if inner is None:
+            return current
+        current = inner
+    return current
+
+
+def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
+    if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
+        return DataType.TEXT
+    # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
+    if isinstance(sa_type, sa.Uuid):
+        return DataType.TEXT
+    type_name = type(sa_type).__name__.upper()
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
+        return DataType.UNKNOWN
+    if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
+        return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
+    if type_name in _SA_TYPE_MAP:
+        return _SA_TYPE_MAP[type_name]
+    if type_str in _SA_TYPE_MAP:
+        return _SA_TYPE_MAP[type_str]
+    if type_name not in _logged_unmapped_sa_types:
+        _logged_unmapped_sa_types.add(type_name)
+        logger.warning(
+            "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
+            "DataType.TEXT. Most unmapped types (bytea, arrays) "
+            "are comparable and work as TEXT; add genuinely non-comparable "
+            "ones to _OPAQUE_SA_TYPE_NAMES and the rest to _SA_TYPE_MAP.",
+            type_name,
+            str(sa_type),
+        )
+    return DataType.TEXT
+
+
+def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
+    """Best-effort raw database type string for ``Column.db_type`` (never raises)."""
+    try:
+        text = str(sa_type).strip()
+    except Exception:
+        text = ""
+    if text:
+        return text
+    name = type(sa_type).__name__
+    return name or None
+
+
+def _sa_type_is_exact_numeric(sa_type: sa.types.TypeEngine) -> bool:
+    """Whether ``sa_type`` is an exact NUMERIC/DECIMAL database type."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    return is_exact_numeric_db_type(type(sa_type).__name__) or is_exact_numeric_db_type(str(sa_type))
+
+
+def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
+    """Whether the type is float-like; NUMERIC/DECIMAL only when scale > 0 or unknown."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    type_name = type(sa_type).__name__.upper()
+    if type_name in _FLOAT_LIKE_SA_TYPES:
+        return True
+    if is_exact_numeric_db_type(type_name):
+        scale = getattr(sa_type, "scale", None)
+        return scale is None or scale > 0
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    if type_str in _FLOAT_LIKE_SA_TYPES:
+        return True
+    if is_exact_numeric_db_type(type_str):
+        scale = getattr(sa_type, "scale", None)
+        return scale is None or scale > 0
+    return False
+
+
+def column_from_sa_type(*, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None) -> ReflectedColumn:
+    """A column read through the Inspector; ``db_type`` kept only for opaque and exact-numeric types."""
+    data_type = _sa_type_to_data_type(sa_type)
+    db_type = (
+        _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+        if data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) else None
+    )
+    return ReflectedColumn(
+        name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=db_type,
+        comment=clean_comment(comment),
+    )
+
+
 # --- Catalog queries ---
 
 
@@ -240,8 +420,14 @@ def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -
 
 
 def without_primary_key(primary_key: list[str], key_sets: list[list[str]]) -> list[list[str]]:
-    pk = set(primary_key)
-    return [ks for ks in key_sets if set(ks) != pk]
+    """``key_sets`` without the primary key, each set once (a constraint and its backing index repeat it)."""
+    seen = {frozenset(primary_key)}
+    out: list[list[str]] = []
+    for ks in key_sets:
+        if frozenset(ks) not in seen:
+            seen.add(frozenset(ks))
+            out.append(ks)
+    return out
 
 
 # --- Inspector reads (the base hooks) ---

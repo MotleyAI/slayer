@@ -21,10 +21,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import sqlalchemy as sa
 from pydantic import BaseModel
 
-from slayer.sql.dialects import dialect_for_sa_backend
+from slayer.core.models import DatasourceConfig
+from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
+from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
 
 logger = logging.getLogger(__name__)
 
@@ -202,66 +203,19 @@ def validate_scope_args(
 # ---------------------------------------------------------------------------
 
 
-def _current_catalog(sa_engine: sa.Engine) -> Optional[str]:
-    """The connection's current catalog (``current_database()``), or None.
-
-    Only a real string counts — a mock engine's non-str attribute or row value
-    is treated as "no catalog" rather than propagated into a ``SchemaRef``.
-    """
-    try:
-        with sa_engine.connect() as conn:
-            row = conn.execute(sa.text("SELECT current_database()")).fetchone()
-        value = row[0] if row else None
-        return value if isinstance(value, str) else None
-    except Exception:  # noqa: BLE001 — best-effort; absence just means "no catalog"
-        return None
+#: Failures that mean the datasource gave no answer at all; never read as "nothing there".
+UNREACHABLE = (DatabaseUnavailable, AuthenticationRefused)
 
 
-def connection_default_schema(
-    inspector: sa.engine.Inspector, sa_engine: Optional[sa.Engine]
-) -> Optional[str]:
-    """The connection's default schema name (bare, e.g. ``main`` / ``public``), from its dialect."""
-    dialect = dialect_for_sa_backend(_dialect_name(sa_engine))
-    return dialect.reflect_default_schema(sa_engine=sa_engine, inspector=inspector)
+def qualifies_tokens(datasource: DatasourceConfig) -> bool:
+    """True when the datasource's dialect emits catalog-qualified schema tokens (DuckDB)."""
+    return dialect_for_ds_type(datasource.type).catalog_qualified_schema_tokens
 
 
-def _dialect_name(engine: Optional[sa.Engine]) -> Optional[str]:
-    return getattr(getattr(engine, "dialect", None), "name", None)
-
-
-def default_schema_ref(
-    inspector: sa.engine.Inspector, sa_engine: Optional[sa.Engine] = None
-) -> SchemaRef:
-    """The catalog-qualified default-schema ref for an inspector.
-
-    Used to resolve a ``ref=None`` discovery / fallback request to the
-    connection default BEFORE listing, so a bare lookup never sweeps an
-    attached catalog.
-    """
-    engine = sa_engine if sa_engine is not None else getattr(inspector, "bind", None)
-    dialect = _dialect_name(engine)
-    catalog = (
-        _current_catalog(engine)
-        if (engine is not None and _dialect_qualifies_tokens(dialect))
-        else None
-    )
-    return SchemaRef(
-        catalog=catalog,
-        name=connection_default_schema(inspector, engine),
-        is_default=True,
-    )
-
-
-def default_schema_ref_for_engine(sa_engine: sa.Engine) -> SchemaRef:
-    """``default_schema_ref`` for callers that hold only an engine."""
-    return default_schema_ref(sa.inspect(sa_engine), sa_engine)
-
-
-def engine_qualifies_tokens(engine: Optional[sa.Engine]) -> bool:
-    """True when the engine's dialect emits catalog-qualified schema tokens
-    (DuckDB) — the same predicate scope resolution uses. Prefer this over
-    inferring from a ref's ``catalog`` (which is best-effort and may be None)."""
-    return _dialect_qualifies_tokens(_dialect_name(engine))
+async def default_schema_ref(client: SqlClient) -> SchemaRef:
+    """The catalog-qualified connection default, so a bare lookup never sweeps an attached catalog."""
+    catalog = await client.current_catalog() if qualifies_tokens(client.datasource) else None
+    return SchemaRef(catalog=catalog, name=await client.default_schema(), is_default=True)
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +260,19 @@ def _hint_schemas(
     return out
 
 
+async def _listed_schemas(client: SqlClient) -> Optional[list[str]]:
+    """The visible schema tokens, ``None`` when they cannot be listed (an unreachable database raises)."""
+    try:
+        return await client.list_schemas()
+    except UNREACHABLE:
+        raise
+    except Exception:  # noqa: BLE001 — no schema listing → default-only scope
+        return None
+
+
 def _enumerate_own_schemas(
     *,
-    inspector: sa.engine.Inspector,
+    tokens: Optional[list[str]],
     dialect: Optional[str],
     qualifies: bool,
     current_catalog: Optional[str],
@@ -317,18 +281,13 @@ def _enumerate_own_schemas(
 
     A schema in an attached catalog other than the connection's own is dropped
     to ``skipped``, never silently ingested. Third value ``enum_ok`` is False
-    when ``get_schema_names()`` failed, so ``all_schemas`` can raise rather than
-    return a silent empty scope.
+    when the schemas could not be listed (``tokens`` is None), so ``all_schemas``
+    can raise rather than return a silent empty scope.
     """
     own_refs: list[SchemaRef] = []
     skipped: list[SkippedSchema] = []
-    enum_ok = True
-    try:
-        tokens = list(inspector.get_schema_names() or [])
-    except Exception:  # noqa: BLE001 — no schema listing → default-only scope
-        tokens = []
-        enum_ok = False
-    for tok in tokens:
+    enum_ok = tokens is not None
+    for tok in tokens or []:
         if is_system_schema(tok, qualifies=qualifies):
             continue
         ref = schema_ref_from_token(tok, dialect_name=dialect)
@@ -425,10 +384,9 @@ def _drop_out_of_scope_refs(
     return kept
 
 
-def resolve_ingest_scope(
+async def resolve_ingest_scope(
     *,
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
+    client: SqlClient,
     requested: Optional[list[str]],
     all_schemas: bool,
     datasource_schema: Optional[str],
@@ -447,13 +405,13 @@ def resolve_ingest_scope(
     Raises :class:`SchemaEnumerationError` for ``all_schemas`` when the schema
     list can't be read (the other branches resolve from a bare default instead).
     """
-    dialect = _dialect_name(sa_engine)
-    qualifies = _dialect_qualifies_tokens(dialect)
-    current_catalog = _current_catalog(sa_engine) if qualifies else None
-    default_schema = connection_default_schema(inspector, sa_engine)
+    dialect = client.datasource.type
+    qualifies = qualifies_tokens(client.datasource)
+    current_catalog = await client.current_catalog() if qualifies else None
+    default_schema = await client.default_schema()
 
     own_refs, skipped, enum_ok = _enumerate_own_schemas(
-        inspector=inspector, dialect=dialect, qualifies=qualifies,
+        tokens=await _listed_schemas(client), dialect=dialect, qualifies=qualifies,
         current_catalog=current_catalog,
     )
     own_by_name: dict[Optional[str], SchemaRef] = {}

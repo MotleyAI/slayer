@@ -92,9 +92,9 @@ def setup_diamond_example() -> tuple:
     ds = DatasourceConfig(name="diamond", type="duckdb", database=db_path)
     run_sync(storage.save_datasource(ds))
 
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds)))
     for model in models:
         run_sync(storage.save_model(model))
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models, db_path, work_dir

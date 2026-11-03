@@ -25,19 +25,21 @@ async def decimal_engine(tmp_path):
         )
 
     datasource = DatasourceConfig(name="test", type="duckdb", database=database)
-    model = next(model for model in ingest_datasource(datasource=datasource) if model.name == "orders")
+    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingest_datasource(datasource, client=engine.client_for(datasource))
+    model = next(model for model in models if model.name == "orders")
     amount = model.get_column("amount")
     assert amount is not None
     assert amount.type is DataType.DOUBLE
     assert amount.db_type == "DECIMAL(18,2)"
 
-    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     await storage.save_datasource(datasource)
     customers = model.model_copy(update={"name": "customers", "joins": []})
     model.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
     await storage.save_model(model)
     await storage.save_model(customers)
-    return SlayerQueryEngine(storage=storage)
+    return engine
 
 
 @pytest.mark.parametrize(

@@ -93,10 +93,18 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
 
 
 def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
-    """Cache key for ``SlayerQueryEngine._sql_clients`` — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
+    """A datasource's connection identity — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
     return _cache_key(
         datasource=datasource, connection_string=datasource.get_connection_string(),
     )
+
+
+ClientCacheKey = tuple[str, EngineCacheKey]
+
+
+def client_cache_key(datasource: DatasourceConfig) -> ClientCacheKey:
+    """A query engine's client-cache key: datasource name plus connection identity."""
+    return (datasource.name, _sql_client_cache_key(datasource))
 
 
 def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
@@ -184,7 +192,7 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
 
 
 def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
-    """The one in-memory SQLite engine builder (DEV-1943 D2).
+    """The one in-memory SQLite engine builder.
 
     ``StaticPool`` + ``check_same_thread=False`` pin one connection shared across
     threads, so the in-memory DB survives across ``asyncio`` worker threads and

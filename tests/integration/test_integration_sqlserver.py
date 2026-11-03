@@ -46,6 +46,7 @@ import re as _re
 import statistics
 import tempfile
 import uuid
+from typing import Any
 from datetime import datetime, timezone
 
 import pytest
@@ -78,6 +79,7 @@ from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery,
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -198,6 +200,15 @@ def _drop_module_db(sqlserver_container, db_name: str) -> None:
                 f"ALTER DATABASE [{db_name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
             ))
             conn.execute(sa.text(f"DROP DATABASE [{db_name}]"))
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(sqlserver_container, db_name: str) -> DatasourceConfig:
@@ -733,7 +744,7 @@ def sqlserver_ingest_env(sqlserver_container):
                 ))
 
         ds = _ds_config(sqlserver_container, db_name)
-        models = ingest_datasource(datasource=ds, schema=None)
+        models = run_sync(_ingest(ds, schema=None))
         yield models, ds, None
     finally:
         _drop_module_db(sqlserver_container, db_name)

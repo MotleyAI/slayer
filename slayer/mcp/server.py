@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any
 
-import sqlalchemy as sa
 from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
@@ -47,9 +46,9 @@ from slayer.engine.ingestion import (
     list_ingestable_objects,
 )
 from slayer.engine.schema_scope import schema_ref_from_token, validate_scope_args
-from slayer.sql import engine_factory
 from slayer.search.service import handle_edit_refresh
-from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
+from slayer.sql.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
@@ -233,20 +232,21 @@ def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
     )
 
 
-def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
+#: Failures rendered as a friendly database message rather than raised.
+_DB_FAILURES = (DatabaseError, SqlClientError)
+
+
+async def _test_connection(client: SqlClient) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        with engine.connect() as conn:
-            conn.execute(sa.text("SELECT 1"))
-        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        await client.ping()
         return True, "Connection successful."
     except Exception as e:
         return False, _friendly_db_error(e)
 
 
-def _fetch_tables(
-    ds: DatasourceConfig, schema_name: str | None = None,
+async def _fetch_tables(
+    client: SqlClient, schema_name: str | None = None,
 ) -> tuple[list[IngestableObject] | None, str | None]:
     """Inspect a datasource's table and view objects (name + kind).
 
@@ -254,33 +254,26 @@ def _fetch_tables(
     default schema. Views are always included so a views-only schema isn't empty.
     """
     try:
-        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
-        inspector = sa.inspect(sa_engine)
         # Route through a SchemaRef so schema_name=None resolves to the
         # catalog-qualified default rather than sweeping every schema.
         ref = (
-            schema_ref_from_token(
-                schema_name, dialect_name=sa_engine.dialect.name,
-                requested=schema_name,
-            )
+            schema_ref_from_token(schema_name, dialect_name=client.datasource.type, requested=schema_name)
             if schema_name
             else None
         )
-        objects = list_ingestable_objects(
-            inspector=inspector, ref=ref, include_views=True
-        )
+        objects = await list_ingestable_objects(client=client, ref=ref, include_views=True)
         return sorted(objects, key=lambda o: o.name), None
     except Exception as e:
-        if isinstance(e, DatabaseError):
+        if isinstance(e, _DB_FAILURES):
             return None, _friendly_db_error(e)
         return None, str(e)
 
 
-def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
+async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
     """Agent-facing wrapper over the shared engine renderer."""
-    return _shared_empty_ingest_message(
+    return await _shared_empty_ingest_message(
         schema_name=schema_name,
-        ds=ds,
+        client=client,
         retry_hint=(
             "Try: ingest_datasource_models with schema_name set to one of these."
         ),
@@ -410,11 +403,12 @@ def _render_errors_section(errors: list[Any]) -> list[str]:
     return out
 
 
-def _render_ingest_result(
+async def _render_ingest_result(
     result: Any,
     *,
     schema_name: str,
     ds: DatasourceConfig,
+    client: SqlClient,
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
@@ -437,7 +431,7 @@ def _render_ingest_result(
         # which only sees the default schema) to tell the two apart.
         scanned_objects = getattr(result, "objects", None) or []
         if not scanned_objects:
-            return _empty_ingest_message(schema_name=schema_name, ds=ds)
+            return await _empty_ingest_message(schema_name=schema_name, client=client)
         return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
@@ -497,11 +491,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
+    client_factory: ClientFactory | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
-    engine = SlayerQueryEngine(storage=storage)
+    engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
     # Seed conceptual-help memories (idempotent; _seed_help=False when
     # create_app already seeds). Best-effort — never abort the build on a
     # seed failure, and skip for metadata-only (non-StorageBackend) builds.
@@ -514,10 +509,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
+    # Every tool reads models, and the live database, through the server's engine.
+    storage = engine.storage
     if ingest_on_startup:
-        async_utils.run_sync(
+        engine.run_sync(
             engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, stream=sys.stderr,
+                storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
@@ -597,7 +594,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
         except Exception as e:
-            if isinstance(e, DatabaseError):
+            if isinstance(e, _DB_FAILURES):
                 return _friendly_db_error(e)
             raise
 
@@ -809,7 +806,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     warnings_out=notes,
                 )
             except Exception as e:
-                if isinstance(e, DatabaseError):
+                if isinstance(e, _DB_FAILURES):
                     return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
             cols = [c.name for c in model.columns]
@@ -840,7 +837,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         try:
             await engine.save_model(model, warnings_out=notes)
         except Exception as e:
-            if isinstance(e, DatabaseError):
+            if isinstance(e, _DB_FAILURES):
                 return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
@@ -1329,8 +1326,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except ValueError as exc:
             return f"Cannot create datasource: {exc}"
         verb = "replaced" if existed else "created"
+        # Re-read: storage resolves ${ENV_VAR} credentials.
+        ds = await storage.get_datasource(name) or ds
+        client = engine.client_for(ds)
 
-        ok, msg = _test_connection(ds)
+        ok, msg = await _test_connection(client)
         if not ok:
             return f"Datasource '{ds.name}' {verb}, but connection test failed.\n{msg}"
 
@@ -1342,14 +1342,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Auto-ingest models
         try:
             # Via the module so tests can monkeypatch the seam.
-            ingest_output = engine_ingestion.ingest_datasource_report(
+            ingest_output = await engine_ingestion.ingest_datasource_report(
                 datasource=ds,
+                client=client,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, DatabaseError):
+            if isinstance(e, _DB_FAILURES):
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
@@ -1378,7 +1379,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         if not models and not save_errors:
             lines.append("No tables found to ingest.")
-            available = _get_schemas(ds)
+            available = await _get_schemas(client)
             if available:
                 lines.append(f"Available schemas: {', '.join(available)}")
         elif models:
@@ -1443,18 +1444,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds.connection_string:
             lines.append("Connection string: (set)")
 
-        ok, msg = _test_connection(ds)
+        client = engine.client_for(ds)
+        ok, msg = await _test_connection(client)
         lines.append(f"\nConnection: {'OK' if ok else 'FAILED'}")
         if not ok:
             lines.append(msg)
             return "\n".join(lines)
 
-        schemas = _get_schemas(ds)
+        schemas = await _get_schemas(client)
         if schemas:
             lines.append(f"Available schemas: {', '.join(schemas)}")
 
         if list_tables:
-            tables, err = _fetch_tables(ds=ds, schema_name=schema_name or None)
+            tables, err = await _fetch_tables(client, schema_name=schema_name or None)
             schema_label = f" in schema '{schema_name}'" if schema_name else ""
             if err is not None:
                 lines.append(f"\nTables{schema_label}: (error — {err})")
@@ -1561,7 +1563,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # disposed at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
-        except DatabaseError as exc:
+        except _DB_FAILURES as exc:
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
@@ -1646,23 +1648,25 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except ValueError as e:
             return f"Invalid scope: {e}"
 
+        client = engine.client_for(ds)
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
             result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
+                client=client,
                 include_tables=include,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
         except Exception as e:
-            if isinstance(e, DatabaseError):
+            if isinstance(e, _DB_FAILURES):
                 return _friendly_db_error(e)
             raise
 
-        return _render_ingest_result(
-            result, schema_name=schema_name, ds=ds
+        return await _render_ingest_result(
+            result, schema_name=schema_name, ds=ds, client=client,
         )
 
     @tool()

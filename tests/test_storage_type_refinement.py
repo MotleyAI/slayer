@@ -28,7 +28,9 @@ from slayer.cli import _refine_one_model_for_cli, _run_storage
 from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.type_refinement import (
     has_refineable_columns,
@@ -44,6 +46,16 @@ _NEWEST_REFINED_VERSION = 7
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
+
+
+async def _refine(d: dict, ds: DatasourceConfig) -> bool:
+    """``refine_dict_with_live_schema`` through a fresh client, closed afterwards."""
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await refine_dict_with_live_schema(d, ds, client)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 @pytest.fixture
@@ -80,7 +92,7 @@ def sqlite_with_int_double_text():
 
 
 @pytest.fixture
-def storage_with_v4_model(sqlite_with_int_double_text):
+async def storage_with_v4_model(sqlite_with_int_double_text):
     """A YAMLStorage backend with a hand-written v4 model on disk pointing at
     the ``items`` table. ``id`` and ``qty`` are INT in the live DB but stored
     as legacy ``number`` in the YAML — refinement should narrow them to
@@ -132,13 +144,15 @@ def storage_with_v4_model(sqlite_with_int_double_text):
             f,
         )
 
-    storage = YAMLStorage(base_dir=base)
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
     yield {
-        "storage": storage,
+        "storage": engine.storage,
         "base": base,
         "model_path": model_path,
         "db_path": db_path,
     }
+    await engine.aclose()
+    engine.close()
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +171,7 @@ class TestRefineDictWithLiveSchema:
             database=db_path,
         )
 
-    def test_refines_double_to_int_when_live_is_int(self, sqlite_with_int_double_text) -> None:
+    async def test_refines_double_to_int_when_live_is_int(self, sqlite_with_int_double_text) -> None:
         d = {
             "name": "items",
             "sql_table": "items",
@@ -168,12 +182,12 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is True
         assert d["columns"][0]["type"] == "INT"
         assert d["columns"][1]["type"] == "INT"
 
-    def test_leaves_double_for_real_columns(self, sqlite_with_int_double_text) -> None:
+    async def test_leaves_double_for_real_columns(self, sqlite_with_int_double_text) -> None:
         d = {
             "name": "items",
             "sql_table": "items",
@@ -183,11 +197,11 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is False
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_skips_text_and_other_types(self, sqlite_with_int_double_text) -> None:
+    async def test_skips_text_and_other_types(self, sqlite_with_int_double_text) -> None:
         d = {
             "name": "items",
             "sql_table": "items",
@@ -198,11 +212,11 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
-        refine_dict_with_live_schema(d, ds)
+        await _refine(d, ds)
         assert d["columns"][0]["type"] == "TEXT"
         assert d["columns"][1]["type"] == "DOUBLE"
 
-    def test_skips_non_base_derived_columns(self, sqlite_with_int_double_text) -> None:
+    async def test_skips_non_base_derived_columns(self, sqlite_with_int_double_text) -> None:
         d = {
             "name": "items",
             "sql_table": "items",
@@ -214,11 +228,11 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is False
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_skips_query_backed_models(self) -> None:
+    async def test_skips_query_backed_models(self) -> None:
         """Models without ``sql_table`` (e.g. query-backed) must short-circuit."""
         d = {
             "name": "rollup",
@@ -229,11 +243,11 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is False
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_skips_sql_mode_models(self) -> None:
+    async def test_skips_sql_mode_models(self) -> None:
         """Models in ``sql`` source-mode (explicit subquery) must short-circuit."""
         d = {
             "name": "rollup",
@@ -244,11 +258,11 @@ class TestRefineDictWithLiveSchema:
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is False
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_unreachable_datasource_propagates(self) -> None:
+    async def test_unreachable_datasource_propagates(self) -> None:
         """DS unreachable → SQLAlchemy connect error propagates. Hard-fail per
         DEV-1361 plan."""
         d = {
@@ -269,8 +283,8 @@ class TestRefineDictWithLiveSchema:
             username="nobody",
             password="nope",  # NOSONAR(S2068) — test fixture, not a real credential; targets a closed port to assert hard-fail
         )
-        with pytest.raises(OperationalError):
-            refine_dict_with_live_schema(d, ds)
+        with pytest.raises(DatabaseUnavailable):
+            await _refine(d, ds)
 
 
 # ---------------------------------------------------------------------------
@@ -391,19 +405,23 @@ class TestYamlStorageRefinementOnLoad:
                 },
                 f,
             )
-        storage = YAMLStorage(base_dir=base)
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
 
         def _boom(*_args, **_kw):
-            raise OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
+            raise OperationalError("simulated", None, Exception("connection refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
         # DEV-1551: every engine consumer goes through engine_factory.get_engine;
         # patching it surfaces the same connect failure the legacy
         # type_refinement.sa.create_engine patch used to.
         engine_factory.reset_cache()
         monkeypatch.setattr(engine_factory, "get_engine", _boom)
-        with pytest.raises(StoredDocumentLoadError) as ei:
-            await storage.get_model("items", data_source="live")
-        assert isinstance(ei.value.__cause__, OperationalError)
+        try:
+            with pytest.raises(StoredDocumentLoadError) as ei:
+                await engine.storage.get_model("items", data_source="live")
+        finally:
+            await engine.aclose()
+            engine.close()
+        assert isinstance(ei.value.__cause__, DatabaseUnavailable)
 
 
 def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_called check fires first
@@ -443,7 +461,7 @@ class TestRefineSqliteAffinityProbe:
     def _ds_for(self, db_path: str) -> DatasourceConfig:
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
 
-    def test_sqlite_int_with_real_storage_widens_to_double(
+    async def test_sqlite_int_with_real_storage_widens_to_double(
         self, tmp_path: Path
     ) -> None:
         db_path = str(tmp_path / "live.db")
@@ -462,13 +480,13 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is True
         assert d["columns"][0]["type"] == "DOUBLE"
         # Auto-default integer format is updated to FLOAT.
         assert d["columns"][0]["format"]["type"] == "float"
 
-    def test_sqlite_double_narrows_to_int_when_probe_certifies_int(
+    async def test_sqlite_double_narrows_to_int_when_probe_certifies_int(
         self, tmp_path: Path
     ) -> None:
         """On SQLite, the DEV-1361 DOUBLE → INT narrowing is now probe-
@@ -488,10 +506,10 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        refine_dict_with_live_schema(d, ds)
+        await _refine(d, ds)
         assert d["columns"][0]["type"] == "INT"
 
-    def test_sqlite_double_stays_double_when_probe_says_double(
+    async def test_sqlite_double_stays_double_when_probe_says_double(
         self, tmp_path: Path
     ) -> None:
         """A persisted DOUBLE column stays DOUBLE when the probe sees REAL
@@ -509,10 +527,10 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        refine_dict_with_live_schema(d, ds)
+        await _refine(d, ds)
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_sqlite_double_stays_double_when_probe_returns_none(
+    async def test_sqlite_double_stays_double_when_probe_returns_none(
         self, tmp_path: Path
     ) -> None:
         """A None probe verdict (failure or saturation) is conservative:
@@ -533,10 +551,10 @@ class TestRefineSqliteAffinityProbe:
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             return_value=None,
         ):
-            refine_dict_with_live_schema(d, ds)
+            await _refine(d, ds)
         assert d["columns"][0]["type"] == "DOUBLE"
 
-    def test_postgres_still_narrows_double_to_int(self) -> None:
+    async def test_postgres_still_narrows_double_to_int(self) -> None:
         """Sanity: the DEV-1361 narrowing rule is preserved for non-SQLite
         datasources. (Postgres datasource is unreachable here, but the
         SQLite-only carve-out must not apply.)"""
@@ -559,10 +577,10 @@ class TestRefineSqliteAffinityProbe:
             username="nobody",
             password="nope",  # NOSONAR(S2068)
         )
-        with pytest.raises(OperationalError):
-            refine_dict_with_live_schema(d, ds)
+        with pytest.raises(DatabaseUnavailable):
+            await _refine(d, ds)
 
-    def test_sqlite_int_with_pure_int_storage_stays_int(
+    async def test_sqlite_int_with_pure_int_storage_stays_int(
         self, tmp_path: Path
     ) -> None:
         """All-INTEGER storage → probe returns INT → no widening, type
@@ -579,10 +597,10 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        refine_dict_with_live_schema(d, ds)
+        await _refine(d, ds)
         assert d["columns"][0]["type"] == "INT"
 
-    def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
+    async def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
         """A user-set custom format on a widening column is left untouched."""
         db_path = str(tmp_path / "live.db")
         _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7])
@@ -604,14 +622,14 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        refine_dict_with_live_schema(d, ds)
+        await _refine(d, ds)
         assert d["columns"][0]["type"] == "DOUBLE"
         # Custom format preserved verbatim.
         assert d["columns"][0]["format"]["type"] == "currency"
         assert d["columns"][0]["format"]["symbol"] == "€"
         assert d["columns"][0]["format"]["precision"] == 3
 
-    def test_sqlite_int_with_text_storage_widens_to_text(
+    async def test_sqlite_int_with_text_storage_widens_to_text(
         self, tmp_path: Path
     ) -> None:
         """Persisted INT column whose live storage is non-coercible TEXT
@@ -632,7 +650,7 @@ class TestRefineSqliteAffinityProbe:
             ],
         }
         ds = self._ds_for(db_path)
-        changed = refine_dict_with_live_schema(d, ds)
+        changed = await _refine(d, ds)
         assert changed is True
         assert d["columns"][0]["type"] == "TEXT"
         # Auto-default integer format must be cleared on TEXT widening.
@@ -901,9 +919,10 @@ class TestCliMigrateTypes:
                 f,
             )
         storage = YAMLStorage(base_dir=base)
+        engine = SlayerQueryEngine(storage=storage)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
-            _refine_one_model_for_cli(
-                inner=storage, ds_name="live", model_name="items", dry_run=True,
+            await _refine_one_model_for_cli(
+                inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
             )
 
     async def test_missing_datasource_silent_for_text_only_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
@@ -924,9 +943,10 @@ class TestCliMigrateTypes:
                 f,
             )
         storage = YAMLStorage(base_dir=base)
+        engine = SlayerQueryEngine(storage=storage)
         # No raise — returns False because nothing needed refinement.
-        result = _refine_one_model_for_cli(
-            inner=storage, ds_name="live", model_name="events", dry_run=True,
+        result = await _refine_one_model_for_cli(
+            inner=storage, engine=engine, ds_name="live", model_name="events", dry_run=True,
         )
         assert result is False
 
@@ -963,9 +983,11 @@ class TestCliMigrateTypes:
                 f,
             )
         storage = YAMLStorage(base_dir=base)
-        result = _refine_one_model_for_cli(
-            inner=storage, ds_name="live", model_name="items", dry_run=True,
-        )
+        engine = SlayerQueryEngine(storage=storage)
+        result = engine.run_sync(_refine_one_model_for_cli(
+            inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
+        ))
+        engine.close()
         assert result is True
         out = capsys.readouterr().out
         assert "qty" in out
@@ -995,9 +1017,11 @@ class TestCliMigrateTypes:
                 f,
             )
         storage = YAMLStorage(base_dir=base)
-        result = _refine_one_model_for_cli(
-            inner=storage, ds_name="live", model_name="items", dry_run=True,
-        )
+        engine = SlayerQueryEngine(storage=storage)
+        result = engine.run_sync(_refine_one_model_for_cli(
+            inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
+        ))
+        engine.close()
         assert result is False
         # Skip message printed on stderr.
         err = capsys.readouterr().err

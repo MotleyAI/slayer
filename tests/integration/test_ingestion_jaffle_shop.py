@@ -19,6 +19,7 @@ import yaml
 
 import duckdb
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -28,6 +29,7 @@ from slayer.demo.jaffle_shop import (
     load_data,
 )
 from slayer.engine.ingestion import ingest_datasource
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -69,6 +71,15 @@ def jaffle_duckdb_path(tmp_path_factory):
     return str(db_path)
 
 
+async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=client)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 @pytest.fixture(scope="module")
 def jaffle_models(jaffle_duckdb_path):
     """Ingest the Jaffle Shop DuckDB and return models keyed by name."""
@@ -77,7 +88,7 @@ def jaffle_models(jaffle_duckdb_path):
         type="duckdb",
         database=jaffle_duckdb_path,
     )
-    models = ingest_datasource(datasource=ds)
+    models = run_sync(_ingest(ds))
     return {m.name: m for m in models}
 
 

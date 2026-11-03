@@ -12,13 +12,16 @@ schema on teardown. A ``SELECT 1`` warm-up runs once at fixture entry to
 absorb warehouse-suspend latency.
 """
 
+import asyncio
 import os
 import pathlib
 import tomllib
 import uuid
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
@@ -33,6 +36,7 @@ from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimens
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
+from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
@@ -212,6 +216,15 @@ def sf_datasource(sf_transient_schema: str) -> DatasourceConfig:
         connection_name=_CONNECTION_NAME,
         schema_name=sf_transient_schema,
     )
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    try:
+        return await ingest_datasource(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 @pytest.fixture
@@ -604,6 +617,49 @@ def test_column_types_round_trip(sf_engine) -> None:
     assert types["as_ts"] == "time"
 
 
+def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
+    profile = _profile_or_skip()
+    if not all(profile.get(k) for k in ("role", "warehouse", "database")):
+        pytest.skip("profile lacks role / warehouse / database to override")
+    ds = DatasourceConfig(
+        name="sf_overrides", type="snowflake", connection_name=_CONNECTION_NAME,
+        role=profile["role"], warehouse=profile["warehouse"], database=profile["database"],
+        schema_name=sf_transient_schema,
+    )
+    states: dict[int, tuple] = {}
+
+    def _record(dbapi_conn, _conn_record, _proxy) -> None:  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()")
+            states[id(dbapi_conn)] = tuple(cur.fetchone())
+        finally:
+            cur.close()
+
+    sa_engine = engine_factory.get_engine(ds)
+    event.listen(sa_engine, "checkout", _record)
+    sql_client = client.SlayerSQLClient(datasource=ds)
+    locations = [TableLocation(name=n) for n in ("orders", "customers", "products", "regions")]
+
+    async def _reads() -> None:
+        await asyncio.gather(
+            sql_client.list_objects(None),
+            *(sql_client.reflect_columns(loc) for loc in locations),
+            *(sql_client.reflect_table_keys(loc) for loc in locations),
+        )
+
+    try:
+        # A held connection forces the client's reads onto further pooled connections.
+        with sa_engine.connect():
+            run_sync(_reads())
+    finally:
+        sql_client.close()
+        engine_factory.invalidate_engine(ds)
+    expected = tuple(v.upper() for v in (profile["role"], profile["warehouse"], profile["database"], sf_transient_schema))
+    assert len(states) >= 2
+    assert set(states.values()) == {expected}
+
+
 # ---------------------------------------------------------------------------
 # Auto-ingestion + FK discovery
 # ---------------------------------------------------------------------------
@@ -622,7 +678,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
       - source/target column names on each join
     """
     schema_to_introspect = sf_transient_schema
-    models = ingest_datasource(datasource=sf_datasource, schema=schema_to_introspect)
+    models = run_sync(_ingest(sf_datasource, schema=schema_to_introspect))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name.get("orders")
     customers = by_name.get("customers")
@@ -659,7 +715,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
 
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
     """Snowflake table/column comments must land on model/column descriptions."""
-    models = ingest_datasource(datasource=sf_datasource, schema=sf_transient_schema)
+    models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name["orders"]
     assert orders.description == "All orders"

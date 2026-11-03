@@ -3,8 +3,8 @@
 import logging
 import os
 import tempfile
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from typing import Any, NoReturn
 from unittest.mock import patch
@@ -41,10 +41,9 @@ from slayer.engine.schema_drift import _live_schema_for_datasource
 from slayer.engine.ingestion import (
     IntrospectedColumn,
     ingest_datasource,
-    _sa_type_is_float,
-    _sa_type_to_data_type,
     _sqlite_probe_integer_columns,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import (
     BigqueryDialect,
     ClickhouseDialect,
@@ -56,7 +55,13 @@ from slayer.sql.dialects import (
     TableKeys,
     dialect_for_sa_backend,
 )
-from slayer.sql.dialects.reflection import info_schema_type, parse_info_schema_is_float
+from slayer.sql.dialects import reflection
+from slayer.sql.dialects.reflection import (
+    _sa_type_is_float,
+    _sa_type_to_data_type,
+    info_schema_type,
+    parse_info_schema_is_float,
+)
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import disposable_engine
 
@@ -137,6 +142,21 @@ def _pk_engine(rows: list[tuple] | Exception, *, backend: str = "firebird") -> _
 
 def _pk_queries(engine: _CatalogEngine) -> list[str]:
     return [s for s in engine.statements if "key_column_usage" in s.lower()]
+
+
+@asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list:
+    async with _client(ds) as client:
+        return await ingest_datasource(ds, client=client, **kwargs)
 
 
 def _literals(sql: str, *, read: str = "postgres") -> dict[str, str]:
@@ -386,7 +406,7 @@ class TestGenerateJoinsDedup:
     """FK deduplication when joins are generated from the reflected keys."""
 
     @staticmethod
-    def _ingest(tmp_path, monkeypatch, fks: list[ReflectedForeignKey]):
+    async def _ingest(tmp_path, monkeypatch, fks: list[ReflectedForeignKey]):
         db = str(tmp_path / "dedup.db")
         with transaction(db) as conn:
             conn.executescript(
@@ -401,22 +421,22 @@ class TestGenerateJoinsDedup:
             )
 
         monkeypatch.setattr(SqliteDialect, "reflect_table_keys", _keys)
-        report = ingestion.ingest_datasource_report(
-            datasource=DatasourceConfig(name="ds", type="sqlite", database=db),
-        )
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db)
+        async with _client(ds) as client:
+            report = await ingestion.ingest_datasource_report(datasource=ds, client=client)
         return next(m for m in report.models if m.name == "orders").joins
 
-    def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch):
+    async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch):
         """Two distinct FKs to the same target table should both produce joins."""
-        joins = self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
+        joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
         pairs = [j.join_pairs for j in joins]
         assert [["buyer_id", "id"]] in pairs
         assert [["seller_id", "id"]] in pairs
 
-    def test_exact_duplicate_fk_deduplicated(self, tmp_path, monkeypatch):
+    async def test_exact_duplicate_fk_deduplicated(self, tmp_path, monkeypatch):
         """Identical FK pair to the same target should be deduplicated."""
-        joins = self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("buyer_id")])
+        joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("buyer_id")])
         assert len(joins) == 1
 
 
@@ -642,9 +662,9 @@ class TestSaTypeToDataTypeUuidJsonb:
 
     @pytest.fixture(autouse=True)
     def _reset_warning_dedup(self):
-        ingestion._logged_unmapped_sa_types.clear()
+        reflection._logged_unmapped_sa_types.clear()
         yield
-        ingestion._logged_unmapped_sa_types.clear()
+        reflection._logged_unmapped_sa_types.clear()
 
     @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
     def test_maps_to_text(self, sa_type) -> None:
@@ -654,7 +674,7 @@ class TestSaTypeToDataTypeUuidJsonb:
 
     @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
     def test_no_unmapped_warning_logged(self, sa_type, caplog) -> None:
-        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
             _sa_type_to_data_type(sa_type)
         assert "Unrecognized SQLAlchemy type" not in caplog.text
 
@@ -691,7 +711,7 @@ class TestUnmappedTypeBecomesOpaque:
         # The explicit isinstance guard must survive the UNKNOWN fallback.
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
-    def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
+    async def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "opaque.db")
             with disposable_engine(f"sqlite:///{db_path}") as engine:
@@ -703,7 +723,7 @@ class TestUnmappedTypeBecomesOpaque:
                     c.commit()
 
             ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
-            model = next(m for m in ingest_datasource(datasource=ds) if m.name == "t")
+            model = next(m for m in await _ingest(ds) if m.name == "t")
             by_name = {c.name: c for c in model.columns}
 
             # Opaque: explicit UNKNOWN + raw DB type retained.
@@ -728,7 +748,7 @@ class TestUnmappedTypeBecomesOpaque:
 class TestSqliteIngestionRoundTrip:
     """End-to-end: introspect a real SQLite table and confirm narrow types."""
 
-    def test_int_double_text_distinction_via_inspector(self) -> None:
+    async def test_int_double_text_distinction_via_inspector(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "live.db")
             with disposable_engine(f"sqlite:///{db_path}") as conn:
@@ -739,7 +759,8 @@ class TestSqliteIngestionRoundTrip:
                     ))
                     c.commit()
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
-            schema = _live_schema_for_datasource(datasource=ds)
+            async with _client(ds) as client:
+                schema = await _live_schema_for_datasource(client=client, datasource=ds)
             cols = schema["t"].columns
             assert cols["id"] is DataType.INT
             assert cols["q"] is DataType.INT
@@ -775,7 +796,7 @@ class TestSqliteIngestionProbe:
     """Ingest-time probe widens INT → DOUBLE/TEXT based on actual
     stored values, not declared affinity."""
 
-    def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
+    async def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -788,14 +809,14 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "sensordata")
             col = next(c for c in model.columns if c.name == "tempstabidx")
             assert col.type is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
-    def test_keeps_int_on_pure_integer_storage(self) -> None:
+    async def test_keeps_int_on_pure_integer_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -807,14 +828,14 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "qty")
             assert col.type is DataType.INT
             assert col.format is not None
             assert col.format.type is NumberFormatType.INTEGER
 
-    def test_widens_int_to_text_on_non_coercible_text_storage(self) -> None:
+    async def test_widens_int_to_text_on_non_coercible_text_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -826,13 +847,13 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "status")
             assert col.type is DataType.TEXT
             assert col.format is None
 
-    def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
+    async def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -844,14 +865,14 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.columns if c.name == "v")
             assert col.type is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
-    def test_non_sqlite_ingest_skips_probe(self) -> None:
+    async def test_non_sqlite_ingest_skips_probe(self) -> None:
         """For a DuckDB-backed datasource the probe must never fire, even
         when the SA-derived type lands on INT. We assert this by patching
         the probe helper to raise — if the probe runs, the test errors;
@@ -870,10 +891,10 @@ class TestSqliteIngestionProbe:
                 "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
                 side_effect=AssertionError("probe must not run on DuckDB"),
             ):
-                models = ingest_datasource(datasource=ds)
+                models = await _ingest(ds)
             assert any(m.name == "t" for m in models)
 
-    def test_probe_failure_keeps_int_logs_warning(self, caplog) -> None:
+    async def test_probe_failure_keeps_int_logs_warning(self, caplog) -> None:
         """If the probe raises for any reason, fall back to the SA-derived
         INT type and log one WARNING. Ingest does not abort.
 
@@ -900,7 +921,7 @@ class TestSqliteIngestionProbe:
             ):
                 with caplog.at_level(logging.WARNING):
                     try:
-                        models = ingest_datasource(datasource=ds)
+                        models = await _ingest(ds)
                     except RuntimeError as exc:
                         pytest.fail(
                             f"ingest_datasource must tolerate probe exceptions "
@@ -912,19 +933,17 @@ class TestSqliteIngestionProbe:
             warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
             assert any("probe" in r.getMessage().lower() for r in warnings)
 
-    def test_dotted_alias_not_passed_to_probe(self) -> None:
+    async def test_dotted_alias_not_passed_to_probe(self) -> None:
         """``_sqlite_probe_integer_columns`` must skip aliases containing
         '.' — dotted aliases are joined-column references that belong to
         the target model's own probe pass, not the source table's."""
-        # A real SQLite engine, so the integer-affinity gate lets the probe run.
-        with disposable_engine("sqlite:///:memory:") as sa_engine:
-            with sa_engine.connect() as conn:
-                conn.execute(sa.text('CREATE TABLE t (qty INTEGER)'))
-                conn.commit()
+        # A real SQLite client, so the integer-affinity gate lets the probe run.
+        async with _client(DatasourceConfig(name="mem", type="sqlite", database=":memory:")) as client:
+            await client.execute("CREATE TABLE t (qty INTEGER)")
 
             seen_columns: list[str] = []
 
-            def _capture(*, conn, table, column, schema=None):
+            def _capture(*, client, table, column, schema=None):
                 seen_columns.append(column)
                 return DataType.INT
 
@@ -937,8 +956,8 @@ class TestSqliteIngestionProbe:
                     IntrospectedColumn(name="qty", type=DataType.INT),
                     IntrospectedColumn(name="customers.region_id", type=DataType.INT),
                 ]
-                _sqlite_probe_integer_columns(
-                    sa_engine=sa_engine,
+                await _sqlite_probe_integer_columns(
+                    client=client,
                     sql_table="t",
                     columns=columns,
                 )
@@ -947,7 +966,7 @@ class TestSqliteIngestionProbe:
             assert "qty" in seen_columns
             assert "customers.region_id" not in seen_columns
 
-    def test_joined_column_probed_via_owning_model(self) -> None:
+    async def test_joined_column_probed_via_owning_model(self) -> None:
         """Each table's columns are probed
         when that table is ingested as its own model. Joined references to
         another table's column inherit the probed type via the FK target's
@@ -975,7 +994,7 @@ class TestSqliteIngestionProbe:
                 ],
             )
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-            models = ingest_datasource(datasource=ds)
+            models = await _ingest(ds)
             measurements = next(m for m in models if m.name == "measurements")
             weight_col = next(c for c in measurements.columns if c.name == "weight")
             # FK target's own model carries the probed type.
@@ -985,7 +1004,7 @@ class TestSqliteIngestionProbe:
 class TestCountColumnRenameInJoinKeys:
     """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
 
-    def _ingest(self, ddl: list[str]):
+    async def _ingest(self, ddl: list[str]):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "cnt.db")
             with disposable_engine(f"sqlite:///{db_path}") as engine:
@@ -994,10 +1013,10 @@ class TestCountColumnRenameInJoinKeys:
                         c.execute(sa.text(stmt))
                     c.commit()
             ds = DatasourceConfig(name="cnt_ds", type="sqlite", database=db_path)
-            return {m.name: m for m in ingest_datasource(datasource=ds)}
+            return {m.name: m for m in await _ingest(ds)}
 
-    def test_source_fk_named_count(self) -> None:
-        models = self._ingest([
+    async def test_source_fk_named_count(self) -> None:
+        models = await self._ingest([
             "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
             "CREATE TABLE children (id INTEGER PRIMARY KEY, "
             "_count INTEGER REFERENCES parents(id))",
@@ -1009,8 +1028,8 @@ class TestCountColumnRenameInJoinKeys:
         (join,) = children.joins
         assert join.join_pairs == [["count_col", "id"]]
 
-    def test_target_key_named_count(self) -> None:
-        models = self._ingest([
+    async def test_target_key_named_count(self) -> None:
+        models = await self._ingest([
             "CREATE TABLE tallies (_count INTEGER PRIMARY KEY)",
             "CREATE TABLE events (id INTEGER PRIMARY KEY, "
             "tally INTEGER REFERENCES tallies(_count))",

@@ -46,6 +46,7 @@ from slayer.engine.schema_drift import (
     WholeModelDelete,
     EditModelDelete,
 )
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -56,6 +57,15 @@ def workspace():
         yield Path(tmp.name)
     finally:
         tmp.cleanup()
+
+
+async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await ingest_datasource_idempotent(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
 
 
 def _create_schema(db_path: str) -> None:
@@ -86,7 +96,7 @@ async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
     await storage.save_datasource(ds)
     if persist_models:
         # Run ingest once so that subsequent calls test idempotency.
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
 
 
@@ -103,7 +113,7 @@ def _addition_for(name: str, additions: Iterable[ModelAddition]):
 class TestIdempotency:
     async def test_re_run_on_identical_schema_is_no_op(self, workspace: Path) -> None:
         storage, ds, _ = await _setup(workspace)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         assert isinstance(result, IdempotentIngestResult)
         # Nothing new
         for addition in result.additions:
@@ -122,7 +132,7 @@ class TestAdditive:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders ADD COLUMN delivery_address TEXT")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert "delivery_address" in addition.new_columns
@@ -140,7 +150,7 @@ class TestAdditive:
             )
             conn.execute("INSERT INTO products VALUES (1, 'A1')")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("products", result.additions)
         assert addition is not None
         assert addition.created is True
@@ -220,7 +230,7 @@ class TestAdditive:
                 """
             )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
         assert any(j.target_model == "customers" for j in loaded.joins)
@@ -247,7 +257,7 @@ class TestPreservation:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
         loaded2 = await storage.get_model("orders", data_source="ds")
         assert loaded2 is not None
         amount = next(c for c in loaded2.columns if c.name == "amount")
@@ -277,7 +287,7 @@ class TestSkipNonSqlTableModes:
                 ],
             )
         )
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # custom_orders is sql-mode — additive pass must not touch it.
         loaded = await storage.get_model("custom_orders", data_source="ds")
         assert loaded is not None
@@ -296,7 +306,7 @@ class TestSkipNonSqlTableModes:
             ),
             name="orders_summary",
         )
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         assert _addition_for("orders_summary", result.additions) is None
         # And the persisted query-backed model is unchanged.
         loaded = await storage.get_model("orders_summary", data_source="ds")
@@ -327,7 +337,7 @@ class TestCombinedReturnShape:
                 """
             )
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # No additions for this drift — the additive pass simply skips the
         # name (it is taken in the persisted model) and lets validate_models
         # surface the bucket mismatch.
@@ -361,7 +371,7 @@ class TestErrorIsolation:
 
         monkeypatch.setattr(storage, "save_model", flaky_save)
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         # One success (b_new), one failure (a_new)
         assert _addition_for("b_new", result.additions) is not None
         assert any(e.model_name == "a_new" for e in result.errors)
@@ -486,7 +496,7 @@ class TestMemoryEmbeddingRefresh:
             failing_refresh,
         )
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage,
         )
         memory_errors = [
@@ -595,7 +605,7 @@ class TestMemoryEmbeddingRefresh:
 
         monkeypatch.setattr(storage, "save_embeddings", selective_save)
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage,
         )
         memory_errors = [
@@ -640,7 +650,7 @@ class TestExcludeTables:
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
-        result = await ingest_datasource_idempotent(
+        result = await _ingest(
             datasource=ds, storage=storage, exclude_tables=["orders"]
         )
         # No addition for orders
@@ -725,7 +735,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "tempstabidx")
@@ -743,7 +753,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "status")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "status")
@@ -790,7 +800,7 @@ class TestSqliteProbeWideningOnReingest:
             )
         )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "tempstabidx")
@@ -820,7 +830,7 @@ class TestSqliteProbeWideningOnReingest:
             "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
             side_effect=AssertionError("probe must not run on DuckDB"),
         ):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("t", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -849,7 +859,7 @@ class TestSqliteProbeWideningOnReingest:
         # Persist with stale INT type (e.g. left over from a prior schema).
         await _persist_int_model(storage, "ds", "t", "qty")
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("t", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -871,7 +881,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
         assert addition is not None
         assert hasattr(addition, "widened_columns"), (
@@ -894,7 +904,7 @@ class TestSqliteProbeWideningOnReingest:
         await storage.save_datasource(ds)
         await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
 
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
         assert addition is not None
 
@@ -933,7 +943,7 @@ class TestSqliteProbeWideningOnReingest:
             )
         )
 
-        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
@@ -967,7 +977,7 @@ class TestSqliteProbeWideningOnReingest:
         )
 
         with caplog.at_level(_logging.INFO, logger="slayer.engine.ingestion"):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+            await _ingest(datasource=ds, storage=storage)
 
         loaded = await storage.get_model("sensordata", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "amount")

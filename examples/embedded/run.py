@@ -49,7 +49,8 @@ def main():
 
     # 3. Auto-ingest models (with rollup joins) + set default time dimension
     print("\n=== Ingesting models ===")
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds)))
     for model in models:
         if model.name == "orders":
             model.default_time_dimension = "created_at"
@@ -58,7 +59,6 @@ def main():
         print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} named formulas{has_rollup}")
 
     # 4. Run queries
-    engine = SlayerQueryEngine(storage=storage)
 
     print("\n=== Query 1: Order count by status ===")
     result = engine.execute_sync(query=SlayerQuery(

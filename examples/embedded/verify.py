@@ -48,13 +48,13 @@ def main():
     storage = YAMLStorage(base_dir=os.path.join(workdir, "slayer_data"))
     ds = DatasourceConfig(name="demo", type="sqlite", database=db_path)
     run_sync(storage.save_datasource(ds))
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds)))
     for m in models:
         if m.name == "orders":
             m.default_time_dimension = "created_at"
         run_sync(storage.save_model(m))
 
-    engine = SlayerQueryEngine(storage=storage)
     passed = 0
     failed = 0
 
