@@ -134,6 +134,10 @@ class TestLosslessRendering:
     async def test_wide_integer_accepted_where_the_database_has_it(self, dialect: str, type_text: str) -> None:
         await emit(_dim(f"CAST(amount AS {type_text})"), dialect=dialect)
 
+    @pytest.mark.parametrize("dialect", ["postgres", "trino"])
+    async def test_zoned_time_accepted(self, dialect: str) -> None:
+        await emit(_dim("CAST(created_at AS TIME WITH TIME ZONE)"), dialect=dialect)
+
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "trino", "snowflake", "bigquery", "tsql"])
     async def test_unsigned_int_refused_without_unsigned_types(self, dialect: str) -> None:
         await _refused("CAST(amount AS INT UNSIGNED)", dialect=dialect, needle="UNSIGNED")

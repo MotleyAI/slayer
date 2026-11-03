@@ -1540,10 +1540,10 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
 
 
 def integer_text_valued(key: ValueKey, *, column_type: ColumnTypeFn) -> bool:
-    """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with no fractional literal."""
+    """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with every literal plain digits."""
     if not integer_valued(key, column_type=column_type) or boolean_valued(key, column_type=column_type):
         return False
-    return not any(_written_with_fraction(a) for k in walk_value_keys(key) for a in _literals_of(k))
+    return not any(_not_plain_digits(a) for k in walk_value_keys(key) for a in _literals_of(k))
 
 
 def _literals_of(key: ValueKey) -> Iterator[object]:
@@ -1553,9 +1553,9 @@ def _literals_of(key: ValueKey) -> Iterator[object]:
         yield from (a for a in key.args if not isinstance(a, _FrozenKey))
 
 
-def _written_with_fraction(value: object) -> bool:
-    exponent = value.as_tuple().exponent if isinstance(value, Decimal) else 0
-    return isinstance(exponent, int) and exponent < 0
+def _not_plain_digits(value: object) -> bool:
+    """A number literal written with a fraction or an exponent (``2.0``, ``1e3``)."""
+    return isinstance(value, Decimal) and value.as_tuple().exponent != 0
 
 
 def _aggregate_integer_valued(key: AggregateKey, *, column_type: ColumnTypeFn) -> bool:

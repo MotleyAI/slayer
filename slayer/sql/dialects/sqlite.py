@@ -660,7 +660,9 @@ class SqliteDialect(SqlDialect):
         from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
         direct: list = []
         if target is DataType.INT:
-            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")), read.copy())]
+            from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
+            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.INT))]
         elif target is DataType.DOUBLE:
             direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
                        exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]

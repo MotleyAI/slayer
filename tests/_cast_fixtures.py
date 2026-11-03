@@ -103,6 +103,7 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
     ("CAST('9223372036854775807' AS BIGINT)", "BIGINT", 9223372036854775807),
     ("CAST('-9223372036854775808' AS BIGINT)", "BIGINT", -9223372036854775808),
     ("1 > 0", "INT", 1),
+    ("1e3", "INT", 1000),
     ("1 > 2", "DOUBLE", 0.0),
     ("'1.5'", "DOUBLE", 1.5),
     ("'1e3'", "DOUBLE", 1000.0),

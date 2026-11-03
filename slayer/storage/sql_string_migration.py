@@ -48,9 +48,11 @@ def sql_quote_strings(text: str) -> str:
     edits = _edits(tokens, line_starts=line_starts)
     if edits is None:
         return text
+    replaced = [(start, end) for start, end, _ in edits]
     for comment in (t for t in every if t.type == tokenize.COMMENT):
         start = line_starts[comment.start[0] - 1] + comment.start[1]
-        edits.append((start, start + 1, " --" if text[start - 1:start] == "-" else "--"))
+        if not any(low <= start < high for low, high in replaced):
+            edits.append((start, start + 1, " --" if text[start - 1:start] == "-" else "--"))
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text

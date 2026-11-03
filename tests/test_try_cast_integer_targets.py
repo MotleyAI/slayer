@@ -50,6 +50,15 @@ class TestIntegerRule:
         assert _value(single(resp), target="INT") == expected, resp.sql
 
 
+class TestJsonSource:
+    @pytest.mark.parametrize(("json", "expected"), [
+        ('{{"v": 32768}}', None), ('{{"v": "32768"}}', None), ('{{"v": 7}}', 7), ('{{"v": "7"}}', 7), ('{{"v": 1.5}}', None),
+    ])
+    async def test_narrow_target_range(self, engine: SlayerQueryEngine, json: str, expected) -> None:
+        resp = await engine.execute(q(measures=[m(f"max(TRY_CAST(json_value('{json}', '$.v') AS SMALLINT))")]))
+        assert _value(single(resp), target="SMALLINT") == expected, resp.sql
+
+
 class TestBooleanSource:
     @pytest.mark.parametrize("target", ["INT", "SMALLINT", "DOUBLE"])
     async def test_reads_as_one_or_zero(self, engine: SlayerQueryEngine, target: str) -> None:

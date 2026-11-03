@@ -353,7 +353,7 @@ def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
 
 
 _ZONED_TYPES: frozenset[DType] = frozenset({
-    exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ,
+    exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ, exp.DataType.Type.TIMETZ,
 })
 UNSIGNED_CAST_TYPES: frozenset[DType] = frozenset({
     exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
