@@ -5,7 +5,7 @@
 - [x] 1.3 `tests/test_dev2187_one_reader_law.py`: literal inertness over every Mode-B surface — `'orders.x'`, `"orders.x"`, `'time_spine.x'`, a literal naming a query-backed model leave SQL, population, spine status and splices unchanged; variable-demand parity (`'{x}'`, `{x}` demanded; `'{{x}}'`, `'{3}'` not; `"{x}"` refused) across query surfaces, saved measure formulas, inspection and the splice footprint. Verify: the prefix/spine/splice cases fail on unchanged code.
 - [x] 1.4 Same file: parity pins with today's output for order coercion (colon, call-style, expression, column entries, literals holding `:` / `(`), functional time dimensions (nested calls, quoted `)` and `,`, `date_trunc('unit', x)`, kwargs, `--` comments) and the misplaced-measure bare-token check. Verify: green on unchanged code (pins).
 - [x] 1.5 Port the direct strip tests (design Decision 18) to behavioural equivalence; delete assertions on the strip's own output. Verify: ported tests pass on unchanged code and stay green after the strip is deleted.
-- [ ] 1.6 Codex-review the tests against this change. Verify: findings resolved or logged.
+- [x] 1.6 Codex-review the tests against this change. Verify: findings resolved or logged.
 
 ## 2. core.syntax readers
 
