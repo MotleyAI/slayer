@@ -30,9 +30,9 @@ Fixture (`tests/_dev2101_fixtures.py`): orders 1 EU c1 paid 10 Jan · 2 EU c1 pa
 - [x] 1.7 Cross-model and stage tests:
   - Rooted at `customers` by `name`, `rows(orders.amount) FILTER (WHERE orders.status = 'paid')` → A 2, B 1, C NULL.
   - A non-final stage `s` on `orders` by region with `rows(amount) FILTER (WHERE status = 'paid')` named `pr`, consumed by a final stage `sum(pr)` → 3 (today 5).
-- [ ] 1.8 Warnings, typing and emission tests:
+- [x] 1.8 Warnings, typing and emission tests:
   - The joined-condition and cross-model cases return no response warnings.
-  - Typing parity: every condition the built-in path rejects with `AggregationFilterError` (aggregate inside `c`, a condition the source anchor does not determine) is rejected identically for `rows(...)`.
+  - Typing parity: every condition the built-in path rejects (aggregate inside `c` → `AggregationFilterError`; a condition the source anchor does not determine → `UnsafeJoinInputError`) is rejected identically for `rows(...)`.
   - `TIER1` emission of the three custom formulas FILTERed by region succeeds on every dialect.
 - [x] 1.9 Renderer fail-closed unit test: feeding an `AggregateKey` with `filter` set and `builtin=False` straight to aggregate rendering raises the internal error instead of emitting SQL.
 - [x] 1.10 Create `tests/test_dev2186_postgres.py` (pytest-postgresql, unit, modelled on `tests/test_dev2177_postgres.py`) asserting `rows` and `per_order` grouped (incl. the NULL-region cell) and ungrouped, and the saved `paid_rows`; verify it runs locally (TCP-only Postgres options).
