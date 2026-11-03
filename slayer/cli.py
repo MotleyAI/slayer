@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from slayer import usage_reporting
 from slayer.async_utils import run_sync
+from slayer.core.deprecation import deprecations_on_one_line, warn_deprecated
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.recommend import render_recommendation_markdown
@@ -69,12 +70,11 @@ from slayer.storage.type_refinement import (
 )
 from slayer.usage_reporting import control as usage_reporting_control
 
-_STORAGE_DEFAULT = default_storage_path()
 _DATASOURCE_NAME_HELP = "Datasource name"
 _FORMAT_HELP = "Output format (default: text)."
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
-    f"(default: {_STORAGE_DEFAULT})"
+    "(default: $SLAYER_STORAGE, else the platform data directory)"
 )
 _INGEST_ON_STARTUP_HELP = (
     "Walk every configured datasource and run idempotent auto-ingestion before "
@@ -126,10 +126,24 @@ def _add_storage_arg(parser):
     )
 
 
+def _storage_path(args) -> str:
+    """The storage location, resolved once per command: --storage, --models-dir, then ``default_storage_path``."""
+    resolved = getattr(args, "_resolved_storage_path", None)
+    if resolved is None:
+        if args.storage:
+            resolved = args.storage
+        elif args.models_dir:
+            warn_deprecated("--models-dir is deprecated; use --storage. It works until SLayer 2.0.", removal="2.0")
+            resolved = args.models_dir
+        else:
+            resolved = default_storage_path()
+        args._resolved_storage_path = resolved
+    return resolved
+
+
 def _resolve_storage(args):
     """Resolve storage backend from --storage or --models-dir flags."""
-    path = args.storage or args.models_dir or _STORAGE_DEFAULT
-    storage = resolve_storage(path)
+    storage = resolve_storage(_storage_path(args))
     usage_reporting.observe_storage(storage)
     return storage
 
@@ -186,7 +200,8 @@ def main():
     token = getattr(args, "usage_token", None)
     guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
     try:
-        _run_command(parser, args, token=token, guard=guard)
+        with deprecations_on_one_line():
+            _run_command(parser, args, token=token, guard=guard)
     except Exception as exc:
         if args.debug:
             raise
@@ -1061,7 +1076,7 @@ examples:
         default=None,
         help=(
             "Optional compact preview (<= 500 chars) surfaced by "
-            "`slayer search` and `inspect_model` when run in compact "
+            "`slayer search` and `slayer inspect` when run in compact "
             "mode (the default). Omit to let the renderer compute the "
             "preview from the first paragraph of --learning."
         ),
@@ -1778,7 +1793,7 @@ def _prepare_demo(args, storage, *, stream=None):
     transports (``slayer mcp``) remain protocol-safe.
     """
     out = stream if stream is not None else sys.stderr
-    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_path = _storage_path(args)
     try:
         ds, models, db_built = ensure_demo_datasource(
             storage,
@@ -1841,7 +1856,7 @@ async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
     ds = await storage.get_datasource(args.datasource)
     if ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        storage_path = _storage_path(args)
         _fail(f"Datasource '{args.datasource}' not found in {storage_path}")
 
     client = engine.client_for(ds)
@@ -1958,7 +1973,7 @@ def _resolve_validate_scope(args, storage) -> None:
     Either would otherwise yield an empty report, indistinguishable from
     "no drift" — and exit 0.
     """
-    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_path = _storage_path(args)
     if args.datasource:
         if run_sync(storage.get_datasource(args.datasource)) is None:
             print(
@@ -2204,7 +2219,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
 
     ds = await storage.get_datasource(args.datasource)
     if include_hidden and ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        storage_path = _storage_path(args)
         _fail(
             f"Datasource '{args.datasource}' not found in {storage_path}; "
             "required for --include-hidden-models."
@@ -2300,7 +2315,7 @@ def _print_cube_import_summary(result, *, include_hidden):
 
 
 def _write_cube_report(result, args) -> str:
-    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_base = _storage_path(args)
     if storage_base.endswith(".db"):
         storage_base = os.path.dirname(storage_base) or "."
     report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
@@ -2327,7 +2342,7 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
 
     ds = await storage.get_datasource(args.datasource)
     if ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        storage_path = _storage_path(args)
         print(
             f"Datasource '{args.datasource}' not found in {storage_path}; "
             "a reachable datasource is required (types come from live introspection)."
@@ -2646,7 +2661,7 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
     try:
         # Report form, not models-only ``ingest_datasource``: otherwise this
         # path hides recognised internals and skips with no output at all.
-        report = engine.run_sync(engine_ingestion.ingest_datasource_report(
+        report = engine.run_sync(engine_ingestion.ingest_datasource_report_async(
             datasource=live_ds,
             client=engine.client_for(live_ds),
             schemas=schema_list,
@@ -2690,7 +2705,7 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     scope = _ingest_scope_flags(args)
     if scope:
         _fail(f"{', '.join(scope)} cannot be used with the demo, which always ingests all of its tables.")
-    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    storage_path = _storage_path(args)
     name = args.name or DEMO_NAME
     db_path = resolve_demo_db_path(storage_path)
 

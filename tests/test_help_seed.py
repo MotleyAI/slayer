@@ -375,7 +375,7 @@ class TestCliSeeding:
 
         monkeypatch.setattr(cli, "seed_help_memories", _counting_seed)
         with tempfile.TemporaryDirectory() as tmpdir:
-            monkeypatch.setattr(cli, "_STORAGE_DEFAULT", os.path.join(tmpdir, "s"))
+            monkeypatch.setenv("SLAYER_STORAGE", os.path.join(tmpdir, "s"))
             result = run_cli_in_process(["datasources", "refresh-samples"])
         assert result.returncode == 0, result.stderr
         assert "Sample-value refresh completed successfully." in result.stdout

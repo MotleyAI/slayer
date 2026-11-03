@@ -16,6 +16,7 @@ cross_cutting_specs:
   models: {touches: [python.core, python.storage, python.engine]}
   aggregations: {touches: [python.core, python.engine, python.sql]}
   cli: {touches: [python.surfaces, python.protocols]}
+  compatibility: {touches: [python.core, python.engine, python.importers, python.storage, python.surfaces]}
 
 # arc42 files not owned by one node; arch_check flags unlisted orphans.
 cross_cutting_arc42: [architecture/semantics.arc42.md]

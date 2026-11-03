@@ -11,7 +11,7 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -120,7 +120,7 @@ class TestDuckDBQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, duckdb_env: SlayerQueryEngine) -> None:
-        """DEV-1933: an ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
+        """An ad-hoc column holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         query = SlayerQuery(
             source_model=ModelExtension(
@@ -339,7 +339,7 @@ class TestDuckDBQueries:
     async def test_unbounded_cumsum_matches_running_total(
         self, duckdb_env: SlayerQueryEngine
     ) -> None:
-        """DEV-1595: the unbounded ``cumsum`` a cumulative dbt metric maps to
+        """The unbounded ``cumsum`` a cumulative dbt metric maps to
         must numerically equal the running total of the per-grain measure.
 
         Monthly totals: Jan=300, Feb=200, Mar=375 → running totals 300, 500, 875.
@@ -368,7 +368,7 @@ class TestDuckDBQueries:
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     client = SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
     finally:
         await client.aclose()
         client.close()
@@ -577,7 +577,7 @@ class TestDuckDBMedianPercentile:
 
 @pytest.mark.integration
 class TestDuckDBStatAggregations:
-    """DEV-1317 cross-dialect smoke on DuckDB. DuckDB has native
+    """Cross-dialect smoke on DuckDB. DuckDB has native
     STDDEV_SAMP / STDDEV_POP / VAR_SAMP / VAR_POP / CORR (via sqlglot
     transpilation, may emit VARIANCE for var_samp). Same expected
     numeric results as Postgres / SQLite.
@@ -649,7 +649,7 @@ class TestDuckDBStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_log10_round_trip_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        """DEV-1337: a `log10(amount)` formula must execute correctly on
+        """A `log10(amount)` formula must execute correctly on
         DuckDB (native single-arg LOG10) and the emitted SQL must contain
         `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
         existing = await duckdb_env.storage.get_model("orders")
@@ -691,7 +691,7 @@ class TestDuckDBStatAggregations:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters, DuckDB parity
+# Window functions in filters, DuckDB parity
 # ---------------------------------------------------------------------------
 
 
@@ -752,7 +752,7 @@ async def planets_duckdb_env(tmp_path):
 
 @pytest.mark.integration
 async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
-    """DuckDB parity for DEV-1369: filtering a windowed Column.sql raises
+    """DuckDB parity: filtering a windowed Column.sql raises
     (use rank-family transforms instead)."""
     engine = planets_duckdb_env
     query = SlayerQuery(
@@ -765,7 +765,7 @@ async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model derived ``Column.sql`` chaining (DuckDB)
+# Cross-model derived ``Column.sql`` chaining (DuckDB)
 # ---------------------------------------------------------------------------
 
 
@@ -840,7 +840,7 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1531 (landed Stage 5 / DEV-1709): executed-value coverage for first/last
+# Executed-value coverage for first/last
 # over a cross-join derived source. The aggregate isolates into a host-rooted
 # CTE where the crossed value is materialised inside the ranked subquery.
 # --------------------------------------------------------------------------- #
@@ -1142,7 +1142,7 @@ class TestDev1709SiblingProtection:
 
 # --------------------------------------------------------------------------- #
 # F1 / F4 semantic pins — executed-value coverage (decision 3A).
-#   F4 (revised by DEV-1840): a host-local filter restricts a scalar
+#   F4 (revised): a host-local filter restricts a scalar
 #       cross-model aggregate's population by semi-join — the aggregate counts
 #       exactly the target rows related to at least one passing host row.
 #   F1: a 1:N crossing aggregate keeps multiply-per-match semantics.
@@ -1201,7 +1201,7 @@ def f1f4_env(_f1f4_duckdb_storage):
 @pytest.mark.integration
 class TestF1F4SemanticValues:
     async def test_f4_scalar_cross_model_agg_semi_joins_host_paid_filter(self, f1f4_env) -> None:
-        # DEV-1840: scalar customers.balance:sum counts customers with at least
+        # Scalar customers.balance:sum counts customers with at least
         # one paid order — only customer 1 (100.0); customer 3 has no orders
         # and customer 2 is reached only via an unpaid order.
         query = SlayerQuery(
@@ -1255,7 +1255,7 @@ class TestF1F4SemanticValues:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1728: a cross-model aggregate grouped by a joined DERIVED dimension
+# A cross-model aggregate grouped by a joined DERIVED dimension
 # (shared-grain rendering). Executed on DuckDB so the mainstream native
 # ``IS NOT DISTINCT FROM`` grain join-back path runs end-to-end (SQLite uses
 # the ``IS`` override). orders → customers → regions chain with a target-local
@@ -1423,14 +1423,14 @@ class TestDev1728DerivedSharedGrain:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1753: greatest/least NULL-ignoring witness (GREATEST-native backend).
+# Greatest/least NULL-ignoring witness (GREATEST-native backend).
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def _dev1753_storage(tmp_path_factory):
     """A DuckDB with a nullable ``disc`` column: DuckDB's ``GREATEST``/``LEAST``
-    IGNORE NULLs (the ratified Postgres-side of the DEV-1753 divergence), the
+    IGNORE NULLs (the ratified Postgres-side of the divergence), the
     counterpart to SQLite's propagating ``MAX(a,b)``."""
     tmp_path = tmp_path_factory.mktemp("dev1753")
     db_path = tmp_path / "nulls.duckdb"

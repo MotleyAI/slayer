@@ -449,7 +449,7 @@ class TestInspectModelQueryBacked:
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
-        # engine.save_model warms the cache (columns + SQL); read paths don't (issue #74).
+        # engine.save_model warms the cache (columns + SQL); read paths don't.
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -715,7 +715,7 @@ class TestInspectModelSectionGating:
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
         """A names-only section with no entities does not emit a heading."""
@@ -772,7 +772,7 @@ class TestInspectModelSectionGating:
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
         assert "Omitted: samples, learnings, saved_queries" in result
-        assert "Re-call inspect_model with `sections=[...]`" in result
+        assert "Re-call inspect with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
@@ -1224,7 +1224,7 @@ class TestInspectModelHelpers:
         assert "Sections shown: columns." in result
         assert "Names-only: measures, joins." in result
         assert "Omitted: samples." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
 
 class TestBuildSampleQueryArgs:
@@ -2765,13 +2765,13 @@ class TestDatasources:
         with transaction(db_path) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
-        real = ingestion_mod.ingest_datasource_report
+        real = ingestion_mod.ingest_datasource_report_async
 
         async def _fake(*args, **kwargs):
             out = await real(*args, **kwargs)
             return out.model_copy(update={"schema_description": "From the dataset"})
 
-        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
+        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
         result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "ds", "type": "sqlite", "database": db_path,
         })

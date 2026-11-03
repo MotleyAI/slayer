@@ -18,7 +18,7 @@ from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine.ingestion import ingest_datasource_report
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import WholeModelDelete
 from slayer.sql import engine_factory
@@ -274,7 +274,7 @@ class TestReflectedMetadataUsesSlayerTypes:
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
         try:
             client = engine.client_for(ds)
-            report = await ingest_datasource_report(datasource=ds, client=client)
+            report = await ingestion.ingest_datasource_report_async(datasource=ds, client=client)
             reflected = await client.reflect_columns(TableLocation(name="kinds"))
         finally:
             await engine.aclose()

@@ -10,7 +10,7 @@ import threading
 import time
 import warnings as _warnings_module
 import weakref
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import sqlalchemy as sa
@@ -21,6 +21,7 @@ from sqlglot import expressions as exp
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from slayer.async_utils import on_caller_thread
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
@@ -35,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 _ENV_REF = re.compile(r"\$\{\w+\}")
+
+# Who disposes a client's sync engine: the caller who passed it, the client (private in-memory), or the factory.
+EngineOwner = Literal["caller", "client", "factory"]
 
 
 class SqlClientError(Exception):
@@ -579,18 +583,15 @@ class SlayerSQLClient:
 
     A native async driver where the dialect has one (a missing one raises), else
     sync-in-thread. The async engine is cached per instance (bound to the current event loop).
+    A caller's ``sa_engine`` serves every call on the caller's thread and is never disposed here.
     """
 
-    def __init__(self, datasource: DatasourceConfig):
+    def __init__(self, datasource: DatasourceConfig, *, sa_engine: sa.Engine | None = None):
         self.datasource = datasource
         self._async_engine = None
-        self._sync_engine: sa.Engine | None = None
-        # Set only when ``_sync_engine`` is this client's PRIVATE in-memory
-        # engine (built off the factory's StaticPool builder). A factory-owned
-        # engine is disposed by the factory, never here.
-        self._owns_sync_engine = False
-        # weakref backstop: disposes the private engine if the client is
-        # collected without ``close()`` (D4). Detached whenever we dispose it.
+        self._sync_engine: sa.Engine | None = sa_engine
+        self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
+        # Backstop disposing a client-owned engine when the client is collected unclosed.
         self._sync_engine_finalizer: weakref.finalize | None = None
 
     def close(self) -> None:
@@ -611,13 +612,13 @@ class SlayerSQLClient:
 
     def _dispose_private_sync_engine(self) -> bool:
         """Dispose the private in-memory engine (detaching its finalizer) and
-        forget it; return whether there was one. Idempotent; a factory-owned
-        engine is left untouched."""
+        forget it; return whether there was one. Idempotent; a factory- or
+        caller-owned engine is left untouched."""
         finalizer = self._sync_engine_finalizer
-        if self._owns_sync_engine and self._sync_engine is not None:
+        if self._sync_engine_owner == "client" and self._sync_engine is not None:
             engine = self._sync_engine
             self._sync_engine = None
-            self._owns_sync_engine = False
+            self._sync_engine_owner = None
             self._sync_engine_finalizer = None
             if finalizer is not None:
                 finalizer.detach()
@@ -627,7 +628,7 @@ class SlayerSQLClient:
 
     async def aclose(self) -> None:
         """Release loop-bound resources (the async engine, idle pooled connections); the client stays usable."""
-        if self._sync_engine is not None and not self._owns_sync_engine:
+        if self._sync_engine is not None and self._sync_engine_owner == "factory":
             engine_factory.release_idle(self._sync_engine)
         engine = self._async_engine
         if engine is None:
@@ -650,8 +651,8 @@ class SlayerSQLClient:
         return ds
 
     def _get_async_engine(self):
-        """Get or create the async engine for this client (cached per instance)."""
-        if self._async_engine is None:
+        """Get or create the async engine for this client (cached per instance); none over a caller's engine."""
+        if self._async_engine is None and self._sync_engine_owner != "caller":
             ds = self._connection_datasource()
             conn_str = ds.get_connection_string()
             dialect = dialect_for_ds_type(ds.type)
@@ -678,25 +679,35 @@ class SlayerSQLClient:
         if engine_factory._is_in_memory_sqlite(conn_str):
             engine = engine_factory.build_in_memory_sqlite_engine(conn_str)
             self._sync_engine = engine
-            self._owns_sync_engine = True
+            self._sync_engine_owner = "client"
             self._sync_engine_finalizer = weakref.finalize(
                 self, _dispose_engine_quietly, engine,
             )
             return engine
         self._sync_engine = engine_factory.get_engine(ds)
+        self._sync_engine_owner = "factory"
         return self._sync_engine
+
+    async def _blocking(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run blocking ``func``: on the caller's thread over a caller's engine (pools may be thread-bound), else in a worker."""
+        if self._sync_engine_owner == "caller":
+            return await on_caller_thread(functools.partial(func, *args, **kwargs))
+        return await _run_sync_in_thread(func, *args, **kwargs)
 
     def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
         """Drop the sync engine on a credential rejection; return whether exc was one.
 
         Credentials are fixed at construction, so a revoked grant poisons the
-        engine permanently — dispose a private one, evict a factory one.
-        Best-effort; never displace exc.
+        engine permanently — dispose a private one, evict a factory one, leave
+        a caller's alone. Best-effort; never displace exc.
         """
         if not _is_auth_failure(exc):
             return False
+        if self._sync_engine_owner == "caller":
+            return True
         if not self._dispose_private_sync_engine():
             self._sync_engine = None
+            self._sync_engine_owner = None
             try:
                 engine_factory.invalidate_engine(self._connection_datasource())
             except Exception:
@@ -757,6 +768,7 @@ class SlayerSQLClient:
             timeout_seconds=timeout_seconds,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
+            run=self._blocking,
         )
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
@@ -774,7 +786,7 @@ class SlayerSQLClient:
                 sql=sql, engine=async_engine, db_type=self.datasource.type,
                 datasource_name=self.datasource.name,
             )
-        return await _run_sync_in_thread(
+        return await self._blocking(
             _get_column_types_sync,
             sql=sql,
             db_type=self.datasource.type,
@@ -792,19 +804,19 @@ class SlayerSQLClient:
             if async_engine is not None:
                 async with async_engine.connect() as conn:
                     return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
-            return await _run_sync_in_thread(
+            return await self._blocking(
                 _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
             )
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    # Live metadata: synchronous reflection run in a worker thread over the sync engine.
+    # Live metadata: synchronous reflection over the sync engine, off the event loop.
 
     async def _metadata(self, read: Callable[[sa.Engine], _T]) -> _T:
         try:
             engine = self._get_sync_engine_for_client()
-            return await _run_sync_in_thread(read, engine)
+            return await self._blocking(read, engine)
         except Exception as exc:
             await self._typed(exc)
             raise
@@ -1186,10 +1198,11 @@ async def _execute_with_retry_threaded(
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
+    run: Callable[..., Awaitable[Any]] = _run_sync_in_thread,
 ) -> ExecutionResult:
     return await _retry_with_backoff(
         sql=sql,
-        do_call=lambda: _run_sync_in_thread(
+        do_call=lambda: run(
             _execute_sql_sync,
             sql=sql,
             db_type=db_type,

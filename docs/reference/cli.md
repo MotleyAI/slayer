@@ -439,7 +439,7 @@ slayer search --question "lifetime spend" --format json
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
 
-In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / `inspect_model` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
+In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / MCP `inspect` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
 
 ### `slayer memory`
 

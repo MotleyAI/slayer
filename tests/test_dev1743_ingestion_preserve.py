@@ -1,12 +1,8 @@
-"""DEV-1743 — ingestion preserves ``__`` in object names (WP6 / D3).
+"""Ingestion preserves ``__`` in object names (WP6 / D3).
 
-Fresh ingests keep faithful names (``stg_jaffle_shop__orders``), instead of
-sanitising them to ``stg_jaffle_shop_orders`` as they must today because of the
-ban this issue lifts. ``sanitize_model_name`` is KEPT (it becomes the re-ingest
-fallback-matching spelling), so its unit behavior is an invariant lock.
-
-Fail-first: the fresh-ingest assertions expect the preserved ``__`` name, which
-the current sanitiser strips.
+Fresh ingests keep faithful names (``stg_jaffle_shop__orders``) rather than
+sanitising them to ``stg_jaffle_shop_orders``. ``sanitize_model_name`` is kept
+(the re-ingest fallback-matching spelling), so its unit behavior is an invariant lock.
 """
 
 from __future__ import annotations
@@ -26,10 +22,9 @@ from slayer.core.models import (
     SlayerModel,
     sanitize_model_name,
 )
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
 )
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
@@ -91,7 +86,7 @@ class TestFreshIngestPreservesDunder:
             workspace,
             "CREATE TABLE stg_jaffle_shop__orders (id INTEGER PRIMARY KEY, x TEXT);",
         )
-        models = run_sync(_with_client(ingest_datasource, datasource=ds))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         names = {m.name for m in models}
         assert "stg_jaffle_shop__orders" in names, (
             f"fresh ingest must preserve the __ name; got {names}"
@@ -107,7 +102,7 @@ class TestFreshIngestPreservesDunder:
             CREATE VIEW stg__nested__thing AS SELECT id, x FROM base;
             """,
         )
-        models = run_sync(_with_client(ingest_datasource, datasource=ds))
+        models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         assert "stg__nested__thing" in {m.name for m in models}
 
 
@@ -123,7 +118,7 @@ class TestNoSpuriousCollision:
 
     def test_both_names_are_distinct_models(self, workspace: Path) -> None:
         ds = _sqlite_ds(workspace, self._SCRIPT)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ingestion.ingest_datasource_report_async, datasource=ds))
         names = {m.name for m in report.models}
         assert "a__b" in names
         assert "a_b" in names
@@ -146,7 +141,7 @@ class TestJoinTargetsPreservedName:
             );
             """,
         )
-        models = {m.name: m for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        models = {m.name: m for m in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))}
         assert "reports__patient__drug" in models
         visits = models["visits"]
         assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
