@@ -49,8 +49,10 @@ from slayer.core.keys import (
     numeric_boolean_positions,
     temporal_type,
     unit_word,
+    reads_no_rows,
 )
 from slayer.sql.dialects.base import (
+    CONSTANT_INPUT,
     SqlDialect,
     TemporalComparisonOp,
     bare_comparands,
@@ -289,6 +291,8 @@ def render_cast(
     value = part(source)
     if not key.try_:
         return dialect.build_cast(value, to)
+    if reads_no_rows(source):
+        value.meta[CONSTANT_INPUT] = True
     if key.data_type is DataType.INT:
         return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
     return dialect.build_try_cast(value, to)

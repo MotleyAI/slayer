@@ -14,6 +14,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     set_statement,
     NativeFn,
@@ -91,6 +92,10 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _constant(value: Expression) -> bool:
+    return any(node.meta.get(CONSTANT_INPUT) for node in value.walk())
+
+
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
     array_cast_types: ClassVar[bool] = True
@@ -164,7 +169,7 @@ class PostgresDialect(SqlDialect):
             as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
         ])
         # A constant input is read through a subquery: Postgres folds a constant cast at plan time, invalid or not.
-        read = value.copy() if value.find(exp.Column) else exp.Subquery(this=exp.select(value.copy()))
+        read = exp.Subquery(this=exp.select(value.copy())) if _constant(value) else value.copy()
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:

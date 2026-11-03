@@ -305,6 +305,8 @@ FALSE_WORDS = ("false", "f", "no", "0")
 
 #: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
 ZONED_READ = "slayer_zoned_read"
+#: ``meta`` tag on a ``TRY_CAST`` input that reads no rows (a constant).
+CONSTANT_INPUT = "slayer_constant_input"
 
 
 def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:

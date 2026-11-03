@@ -38,6 +38,7 @@ CASES = [
     pytest.param('concat(status, "--") --x', "concat(status, '--') - -x", id="string-and-minus"),
     pytest.param("sum(a) + (sum(b)-# c\n sum(c))", "sum(a) + (sum(b)- -- c\n sum(c))", id="python-comment-after-minus"),
     pytest.param('concat("a" # note\n "b")', "concat('ab')", id="python-comment-inside-a-string-run"),
+    pytest.param("(sum(a) # x\u2028y\n + sum(b)) # end", "(sum(a) -- x\u2028y\n + sum(b)) -- end", id="unicode-line-separator"),
 ]
 
 

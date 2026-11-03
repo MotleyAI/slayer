@@ -43,7 +43,7 @@ def sql_quote_strings(text: str) -> str:
     if any(t.type == tokenize.ERRORTOKEN for t in tokens):
         return text
     line_starts = [0]
-    for line in text.splitlines(keepends=True):
+    for line in io.StringIO(text):  # the lines ``tokenize`` reads (``splitlines`` also splits at U+2028 & co.)
         line_starts.append(line_starts[-1] + len(line))
     edits = _edits(tokens, line_starts=line_starts)
     if edits is None:

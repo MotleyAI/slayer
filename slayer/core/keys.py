@@ -1539,6 +1539,14 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     return False
 
 
+def reads_no_rows(key: ValueKey) -> bool:
+    """A constant: every leaf a literal, no aggregate or transform."""
+    return all(
+        not isinstance(k, (AggregateKey, TransformKey)) and (bool(k.children()) or isinstance(k, LiteralKey))
+        for k in walk_value_keys(key)
+    )
+
+
 def integer_text_valued(key: ValueKey, *, column_type: ColumnTypeFn) -> bool:
     """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with every literal plain digits."""
     if not integer_valued(key, column_type=column_type) or boolean_valued(key, column_type=column_type):
