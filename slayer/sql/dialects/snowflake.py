@@ -12,6 +12,7 @@ import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
@@ -153,6 +154,8 @@ class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
 
     sqlglot_name: str = "snowflake"
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})

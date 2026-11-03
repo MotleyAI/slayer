@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
+from slayer.core.keys import is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, cast_element_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -415,7 +415,7 @@ def _bind(
         measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
-        return _bind_cast(parsed, source=sub(parsed.source), bundle=bundle)
+        return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
@@ -552,13 +552,23 @@ def _temporal_literal_value(parsed: TemporalLiteral):
     return value
 
 
-def _bind_cast(parsed: Cast, *, source: ValueKey, bundle: ResolvedSourceBundle) -> CastKey:
+def _bind_cast(
+    parsed: Cast, *, source: ValueKey, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> CastKey:
+    data_type = cast_data_type(parsed.type_text)
+    if parsed.try_ and data_type is DataType.ARRAY:
+        raise CastTypeError(
+            summary=f"TRY_CAST to the array type {parsed.type_text} is not supported.",
+            suggestion="use CAST(x AS <type>[]), whose invalid input is the database's own.",
+        )
     try:
         build_cast_type(parsed.type_text, dialect=bundle.dialect)
     except ValueError as e:
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
     return CastKey(
-        source=source, type_text=parsed.type_text, data_type=cast_data_type(parsed.type_text), try_=parsed.try_,
+        source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
+        element_type=cast_element_type(parsed.type_text),
+        numeric_source=parsed.try_ and numeric_valued(source, column_type=scope_column_type(scope=scope, bundle=bundle)),
     )
 
 

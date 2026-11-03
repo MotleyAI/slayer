@@ -6,7 +6,6 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
-from decimal import Decimal
 from functools import lru_cache
 
 from sqlglot import exp
@@ -24,6 +23,8 @@ from slayer.core.time_points import parse_temporal_value
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     FALSE_WORDS,
+    INTEGER_TEXT_PATTERN,
+    NARROW_INTEGER_BOUNDS,
     PORTABLE_LIBRARY,
     TRUE_WORDS,
     VENDOR_ONLY_CAST_TYPES,
@@ -352,18 +353,27 @@ def _slayer_date_add(ts, n, unit):
 _NUMBER_TEXT_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
-_INT64_BOUND = 2 ** 63
+_INTEGER_TEXT_RE = re.compile(INTEGER_TEXT_PATTERN)
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
 
 
-def _try_number(text: str, kind: DataType):
+def _try_double(text: str):
     stripped = text.strip()
     if not _NUMBER_TEXT_RE.fullmatch(stripped):
         return None
-    if kind is DataType.DOUBLE:
-        number = float(stripped)
-        return number if math.isfinite(number) else None
-    exact = Decimal(stripped)
-    return int(exact) if -_INT64_BOUND <= exact < _INT64_BOUND else None
+    number = float(stripped)
+    return number if math.isfinite(number) else None
+
+
+def _slayer_try_integer(value, low, high):
+    """``TRY_CAST`` to an integer type in ``[low, high]``: integer text or an integral number, else NULL."""
+    if isinstance(value, str):
+        number = int(value) if _INTEGER_TEXT_RE.fullmatch(value) else None
+    elif isinstance(value, float):
+        number = int(value) if value.is_integer() else None
+    else:
+        number = value if isinstance(value, int) else None
+    return number if number is not None and low <= number <= high else None
 
 
 def _try_boolean(text: str):
@@ -390,8 +400,10 @@ def _slayer_try_cast(text, target):
     if text is None:
         return None
     kind = cast_data_type(target)
-    if kind in (DataType.INT, DataType.DOUBLE):
-        return _try_number(text, kind)
+    if kind is DataType.INT:
+        return _slayer_try_integer(text, _INT64_MIN, _INT64_MAX)
+    if kind is DataType.DOUBLE:
+        return _try_double(text)
     if kind is DataType.BOOLEAN:
         return _try_boolean(text)
     if kind in (DataType.DATE, DataType.TIMESTAMP):
@@ -519,6 +531,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("power", 2, _pow)
     dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
     dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
+    dbapi_connection.create_function("slayer_try_cast", 3, _slayer_try_integer)
 
     dbapi_connection.create_aggregate("median", 1, _MedianAgg)
     dbapi_connection.create_aggregate("percentile_cont", 2, _PercentileContAgg)
@@ -672,6 +685,11 @@ class SqliteDialect(SqlDialect):
         return exp.Anonymous(this="slayer_try_cast", expressions=[
             as_text(value), exp.Literal.string(to.sql(dialect="postgres")),
         ])
+
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, numeric: bool) -> Expression:
+        """Every integer is 64-bit here: a narrower type's range is checked; a number is read as itself."""
+        low, high = NARROW_INTEGER_BOUNDS.get(to.this, (_INT64_MIN, _INT64_MAX))
+        return anon("slayer_try_cast", value if numeric else as_text(value), lit(low), lit(high))
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

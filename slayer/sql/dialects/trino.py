@@ -69,6 +69,7 @@ class PrestoFamilyDialect(SqlDialect):
     """Grammar and portable library shared by Trino, Presto and Athena."""
 
     sqlglot_name: str = "presto"
+    array_cast_types: ClassVar[bool] = True
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True

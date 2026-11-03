@@ -1,7 +1,7 @@
 """SlayerModel v15 / SlayerQuery v6 / Memory v4: stored Mode-B text adopts the SQL string and identifier rules.
 
-A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one and a ``|``
-concatenation becomes ``||``. Stored-only: a fresh payload is never rewritten, nor is text the old grammar
+A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one, a ``|``
+concatenation becomes ``||`` and touching minus signs are spaced (``a--b`` → ``a- -b``). Stored-only: a fresh payload is never rewritten, nor is text the old grammar
 could not have held.
 """
 
@@ -79,8 +79,16 @@ def _edits(tokens: list[tokenize.TokenInfo], *, line_starts: list[int]) -> list[
             continue
         if tok.type == tokenize.OP and tok.string == "|" and not _pipe_pair(tokens, i):
             edits.append((offset(tok.start), offset(tok.end), "||"))
+        if _minus_pair(tokens, i):
+            edits.append((offset(tok.end), offset(tok.end), " "))
         i += 1
     return edits
+
+
+def _minus_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
+    """Whether the ``-`` at ``i`` touches a following ``-`` (SQL would read the pair as a comment)."""
+    return (i + 1 < len(tokens) and tokens[i].type == tokens[i + 1].type == tokenize.OP
+            and tokens[i].string == tokens[i + 1].string == "-" and tokens[i].end == tokens[i + 1].start)
 
 
 def _string_run(tokens: list[tokenize.TokenInfo], i: int) -> tuple[int, str | None]:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -124,6 +125,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
 
     sqlglot_name: str = "bigquery"
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
     sa_backend_names: frozenset[str] = frozenset({"bigquery"})
     primary_key_inspector_only: bool = True

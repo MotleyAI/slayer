@@ -92,6 +92,7 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
+    array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ilike_native: ClassVar[bool] = True
@@ -161,7 +162,13 @@ class PostgresDialect(SqlDialect):
         check = exp.Anonymous(this="pg_input_is_valid", expressions=[
             as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
         ])
-        return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=value.copy(), to=to))])
+        # A constant input is read through a subquery: Postgres folds a constant cast at plan time, invalid or not.
+        read = value.copy() if value.find(exp.Column) else exp.Subquery(this=exp.select(value.copy()))
+        return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """``pg_input_is_valid`` already accepts only integer text in range."""
+        return self.build_try_cast(text, to)
 
     def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
         node = exp.RegexpILike if case_insensitive else exp.RegexpLike

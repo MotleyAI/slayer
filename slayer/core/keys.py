@@ -6,6 +6,7 @@ the same slot. Keys carry only what's needed to decide "are these the same slot?
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from enum import IntEnum
@@ -745,20 +746,66 @@ _CAST_TYPE_WORDS: Mapping[str, DataType] = MappingProxyType({
 })
 
 
+_CAST_TYPE_RE = re.compile(r"(?P<head>[A-Z_][A-Z0-9_ ]*?)(?:\((?P<params>[\d,]*)\))?(?P<tail>(?: [A-Z_]+)*)(?P<arrays>(?:\[\])*)")
+
+
+class CastTypeParts(BaseModel):
+    """The parts of a canonical cast type text (``TIMESTAMP(6) WITH TIME ZONE``, ``DECIMAL(10,2)[]``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    words: Tuple[str, ...]
+    params: Tuple[str, ...] = ()
+    array_rank: int = 0
+
+    @property
+    def unsigned(self) -> bool:
+        return "UNSIGNED" in self.words
+
+    @property
+    def zone(self) -> Optional[bool]:
+        """``True`` for a zoned type (``WITH [LOCAL] TIME ZONE``), ``False`` for ``WITHOUT TIME ZONE``, else ``None``."""
+        if "ZONE" not in self.words:
+            return None
+        return "WITHOUT" not in self.words
+
+
+def cast_type_parts(type_text: str) -> CastTypeParts:
+    match = _CAST_TYPE_RE.fullmatch(type_text.strip().upper())
+    if match is None:
+        return CastTypeParts(words=tuple(type_text.upper().split()))
+    words = tuple(match["head"].split()) + tuple(match["tail"].split())
+    params = tuple(match["params"].split(",")) if match["params"] else ()
+    return CastTypeParts(words=words, params=params, array_rank=len(match["arrays"]) // 2)
+
+
 def cast_data_type(type_text: str) -> DataType:
-    """SLayer's type for a cast to ``type_text`` (UNKNOWN for any unmapped type)."""
-    word = type_text.split("(")[0].split()[0].upper() if type_text.strip() else ""
-    return _CAST_TYPE_WORDS.get(word, DataType.UNKNOWN)
+    """SLayer's type for a cast to ``type_text`` (ARRAY for ``T[]``; UNKNOWN for any unmapped type)."""
+    parts = cast_type_parts(type_text)
+    if parts.array_rank:
+        return DataType.ARRAY
+    return _CAST_TYPE_WORDS.get(parts.words[0] if parts.words else "", DataType.UNKNOWN)
+
+
+def cast_element_type(type_text: str) -> Optional[DataType]:
+    """The element type of a cast to ``T[]`` (``T``'s SLayer type), else ``None``."""
+    parts = cast_type_parts(type_text)
+    if parts.array_rank != 1:
+        return None
+    return _CAST_TYPE_WORDS.get(parts.words[0] if parts.words else "", DataType.UNKNOWN)
 
 
 class CastKey(_FrozenKey, frozen=True):
     """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the database's
-    own cast of the author's type; ``data_type`` is SLayer's type for the target."""
+    own cast of the author's type; ``data_type`` is SLayer's type for the target, ``element_type``
+    its elements' for an array target; ``numeric_source``: a ``TRY_CAST`` reads its source as a number, not text."""
 
     source: "ValueKey"
     type_text: str
     data_type: DataType
     try_: bool = False
+    element_type: Optional[DataType] = None
+    numeric_source: bool = False
 
     @property
     def phase(self) -> Phase:
@@ -1756,6 +1803,8 @@ def list_element_type(
         return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
     if isinstance(key, TransformKey):
         return list_element_type(key.input, column_type=column_type, column_element=column_element)
+    if isinstance(key, CastKey):
+        return key.element_type
     if isinstance(key, ScalarCallKey):
         types = {list_element_type(a, column_type=column_type, column_element=column_element)
                  for a in _returned_args(key)} - {None}

@@ -287,7 +287,11 @@ def render_cast(
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)
-    return dialect.build_try_cast(value, to) if key.try_ else dialect.build_cast(value, to)
+    if not key.try_:
+        return dialect.build_cast(value, to)
+    if key.data_type is DataType.INT:
+        return dialect.build_integer_try_cast(value, to, numeric=key.numeric_source)
+    return dialect.build_try_cast(value, to)
 
 
 def render_temporal_comparison(

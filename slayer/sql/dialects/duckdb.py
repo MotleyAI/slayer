@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Optional
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
@@ -91,6 +92,10 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     sqlglot_name: str = "duckdb"
+    array_cast_types: ClassVar[bool] = True
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
+    })
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
