@@ -37,7 +37,7 @@ See proposal.md — Why. Constraints that shape the approach:
 | `parse_table(name, *, dialect)` | `sql/render/parse.py` | `exp.to_table(name, dialect=…)` + `naming.quote_mixed_case_identifiers`. Used by `SQLGenerator._to_table` (now dialect-aware), `query_engine._side_stats_sql`, every probe. |
 | `parse_query(sql, *, target_dialect, parse_dialect)` | `sql/render/parse.py` | `parse_expression` + a read-only query-root check (root in the read-only roots, no data-modifying node). `classify_model_sql` uses the same check; the root/modifying constants move here from `client.py`. Raises on anything else. |
 | `SqlDialect.type_probe(query) -> exp.Select` | `sql/dialects/base.py` | `SELECT * FROM (<query>) AS _types LIMIT <type_probe_rows>`; `type_probe_rows` 0, `SqliteDialect` 1. T-SQL `TOP` comes from sqlglot. Replaces `_NEEDS_ROW_FOR_TYPES` / `_TSQL_DB_TYPES`. |
-| `TypeProbe` | `sql/client.py` | Frozen pydantic model holding a bounded, rendered statement (`sql: str`). |
+| `TypeProbe` / `mint_type_probe` | `sql/type_probe.py` (re-exported by `client.py`) | Frozen pydantic model holding a rendered statement (`sql: str`), never constructed directly: `mint_type_probe(statement, *, dialect, render)` checks the AST is a read-only query bounded to `dialect.type_probe_rows`, then renders it once. |
 | `render_type_probe(query, *, dialect) -> TypeProbe` | `sql/client.py` | `dialect.type_probe(query)` rendered once. The only way an AST caller reaches the door. |
 | `generate_planned_stages(..., type_probe=True)` | `sql/generator.py` | Applies `dialect.type_probe` to the composed statement AST before its one render; statement settings (sequence / correlated) attach to the outer statement. |
 | `sql_model_trial_query(sql, *, dialect) -> exp.Select` | `sql/client.py` | `SELECT * FROM (<parse_query(sql)>) AS _sd_validate WHERE 1=0`; replaces `build_sql_model_trial_query`. |
@@ -51,7 +51,7 @@ See proposal.md — Why. Constraints that shape the approach:
 | `LiveSource._reflect` | `SchemaRef(catalog=…, name=…)` from `parse_table` parts (quotes stripped, dots in quoted parts kept); `introspect_table_to_model` takes `ref: SchemaRef | None` instead of a dotted `schema` token, callers migrated. A backend that cannot reach the catalog fails into the reason-string path. |
 | `osi/converter.py` | `_probe_expression_type` and `_build_sql_mode_model`'s typing go through a `LiveSource` (datasource `target_dialect`; parse dialect = the dialect its stored SQL is in). The twin is deleted. |
 | `engine/schema_drift.py` | `_sql_model_source_refs` yields AST nodes (table expression, column identifiers); probe `SELECT <cols> FROM <table> AS _sd_probe WHERE 1=0` via `render_type_probe`. |
-| `engine/query_engine.py` `get_column_types` | `generate_planned_stages(..., type_probe=True)`, policy applied to that text, minted as `TypeProbe`. Same SQL shape as today's wrapper. |
+| `engine/query_engine.py` `get_column_types` | `generate_planned_stages(..., type_probe=True)` returns a minted `TypeProbe`; a session policy re-mints it from its rewritten AST (`apply_session_policy_to_probe`). Same SQL shape as today's wrapper. |
 | `query_engine.py` trial, `ingestion.sql_result_types` | `render_type_probe(sql_model_trial_query(...))`. |
 | `sql/sqlite_introspect.py` | sqlite AST from raw table/column names (no pre-quoted `qtable`/`qcol`). |
 | `facade/catalog_sql.py` | `exp.Create` + `ColumnDef`s; `exp.insert` with `exp.Placeholder` values (DuckDB positional `?`); the empty subquery as `exp.select(CAST(NULL AS VARCHAR) AS <ident>…).where(FALSE)`; no `parse_one`. |
@@ -112,6 +112,9 @@ whitespace or the end. Shape exemptions: an argument of `raise` / a logging call
     scope; a probe has none, and `parse_expression` is the same normalization the generator uses for `model.sql`.
 23. Rejected (codex): drop `[review]` beside the new tag — §4 allows several tags per clause (python.sql §3.1 does
     the same) and the user approved the wording.
+24. `TypeProbe` is minted only from a checked AST (read-only root, literal row bound equal to `type_probe_rows`); direct
+    construction is refused and no emitted text is parsed for the check (python.sql §3.1, the client re-parse law).
+    Rejected: a parse-based check in `client.py`. (codex, user)
 
 ## Risks / Trade-offs
 
@@ -119,8 +122,8 @@ whitespace or the end. Shape exemptions: an argument of `raise` / a logging call
   generator executes for an sql-mode model (§3.20); `classify_model_sql` already refuses what sqlglot cannot read.
 - [Generator `_to_table` becoming dialect-aware could shift goldens] → re-bless only for quoting; any other diff is
   a bug.
-- [`TypeProbe` is minted in two places (`render_type_probe`, the engine's generator output)] → both bound through
-  `SqlDialect.type_probe`; basedpyright rejects a raw string at the door.
+- [`TypeProbe` is minted in three places (`render_type_probe`, the generator, the session policy)] → each goes through
+  `mint_type_probe`, which checks the AST before its render.
 - [Catalog reachability differs per backend] → calibrated per backend in tests; unsupported falls back with a reason.
 - [Law false positives on future messages] → tuned by shape; a genuine non-SQL hit is restructured (e.g. typed
   arguments), never allowlisted.
