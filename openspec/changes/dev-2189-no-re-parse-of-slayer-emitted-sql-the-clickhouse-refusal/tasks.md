@@ -19,4 +19,4 @@
 - [x] 2.8 Split `_expand_query_backed_model` (D7): AST-level expansion for `get_column_types` (probe spliced as stages), render kept for save-time validation. Verify: existing type-probe suites + the D7 law test green
 - [x] 2.9 arc42 python.sql §3.1: add the approved tag line "[enforced: test:tests/test_law_no_emitted_reparse.py]" verbatim. Verify: `poetry run la-arch-check` green
 - [x] 2.10 Docs: grep `docs/` for `apply_session_policy`, `expected_columns_from_sql`, `parse_referenced_tables`; no user-facing change expected. Verify: grep clean or one-sentence updates
-- [ ] 2.11 Full gates: `poetry run pytest -m "not integration" -n 8`, the CI integration invocation (with `-n 8`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`. Verify: all green; ClickHouse integration runs unchanged in its CI workflow
+- [x] 2.11 Full gates: `poetry run pytest -m "not integration" -n 8`, the CI integration invocation (with `-n 8`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check`. Verify: all green; ClickHouse integration runs unchanged in its CI workflow

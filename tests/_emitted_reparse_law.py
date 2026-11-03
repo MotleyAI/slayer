@@ -145,6 +145,16 @@ def _guard_flag(fn: Callable, flag: contextvars.ContextVar[bool], mark: str) -> 
     return _marked(fn, mark, flagged)
 
 
+@contextlib.contextmanager
+def as_database() -> Generator[None]:
+    """The block stands in for the database: it may read the SQL the execution sends it."""
+    token = _IN_VALIDATOR.set(True)
+    try:
+        yield
+    finally:
+        _IN_VALIDATOR.reset(token)
+
+
 def guard_validator(fn: Callable) -> Callable:
     """``fn`` may parse what the execution rendered."""
     return _guard_flag(fn, _IN_VALIDATOR, "validator")
@@ -224,6 +234,7 @@ __all__ = [
     "StatementReparsed",
     "VALIDATORS",
     "VALUE_LAYER_EXEMPT",
+    "as_database",
     "entry_points",
     "guard_entry",
     "guard_finisher",

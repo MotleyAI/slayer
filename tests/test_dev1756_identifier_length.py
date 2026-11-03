@@ -26,6 +26,7 @@ from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skip
 from slayer.sql.naming import AliasAllocator, cte_name_from_alias, dialect_folds_case, encode_alias
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._engine_helpers import _engine_generate
 
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
@@ -961,9 +962,9 @@ class TestEngineContract:
         class _FakeClient:
             async def get_column_types(self, sql: str) -> dict[str, str]:
                 # Echo back server keys exactly as emitted.
-                for name, _ in _projection_aliases(
-                    next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
-                ):
+                with emitted_reparse_law.as_database():
+                    tree = sqlglot.parse_one(sql, dialect="postgres")
+                for name, _ in _projection_aliases(next(iter(tree.find_all(exp.Select)))):
                     captured[name] = "double precision"
                 return dict(captured)
 
