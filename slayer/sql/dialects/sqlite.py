@@ -16,7 +16,6 @@ from typing import Callable, ClassVar, Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
-from slayer.core.keys import cast_data_type
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
 from slayer.core.time_points import parse_temporal_value
@@ -38,6 +37,7 @@ from slayer.sql.dialects.base import (
     case,
     iso_text,
     lit,
+    slayer_type_of,
 )
 from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
 
@@ -396,10 +396,10 @@ def _try_temporal(text: str, kind: DataType):
 
 
 def _slayer_try_cast(text, target):
-    """``TRY_CAST(text AS target)``: the converted value, or NULL where the cast cannot convert ``text``."""
+    """``TRY_CAST`` of ``text`` to the SLayer type named ``target``: the converted value, or NULL where it cannot convert."""
     if text is None:
         return None
-    kind = cast_data_type(target)
+    kind = DataType(target)
     if kind is DataType.INT:
         return _slayer_try_integer(text, _INT64_MIN, _INT64_MAX)
     if kind is DataType.DOUBLE:
@@ -683,13 +683,13 @@ class SqliteDialect(SqlDialect):
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return exp.Anonymous(this="slayer_try_cast", expressions=[
-            as_text(value), exp.Literal.string(to.sql(dialect="postgres")),
+            as_text(value), exp.Literal.string(slayer_type_of(to)[0].value),
         ])
 
-    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, numeric: bool) -> Expression:
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
         """Every integer is 64-bit here: a narrower type's range is checked; a number is read as itself."""
         low, high = NARROW_INTEGER_BOUNDS.get(to.this, (_INT64_MIN, _INT64_MAX))
-        return anon("slayer_try_cast", value if numeric else as_text(value), lit(low), lit(high))
+        return anon("slayer_try_cast", as_text(value) if source is None else value, lit(low), lit(high))
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

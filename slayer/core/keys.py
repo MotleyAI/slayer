@@ -732,21 +732,7 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
-# A cast target's SLayer type, by the type's leading word.
-_CAST_TYPE_WORDS: Mapping[str, DataType] = MappingProxyType({
-    **{w: DataType.INT for w in ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT", "HUGEINT",
-                                 "INT2", "INT4", "INT8", "INT64", "LONG")},
-    **{w: DataType.DOUBLE for w in ("FLOAT", "FLOAT4", "FLOAT8", "FLOAT64", "DOUBLE", "REAL", "DECIMAL",
-                                    "NUMERIC", "NUMBER", "BIGNUMERIC", "DEC")},
-    **{w: DataType.TEXT for w in ("TEXT", "VARCHAR", "CHAR", "CHARACTER", "NVARCHAR", "NCHAR", "STRING",
-                                  "CLOB", "NTEXT", "BPCHAR")},
-    **{w: DataType.BOOLEAN for w in ("BOOLEAN", "BOOL")},
-    "DATE": DataType.DATE,
-    **{w: DataType.TIMESTAMP for w in ("TIMESTAMP", "DATETIME", "DATETIME2", "TIMESTAMPTZ", "SMALLDATETIME")},
-})
-
-
-_CAST_TYPE_RE = re.compile(r"(?P<head>[A-Z_][A-Z0-9_ ]*?)(?:\((?P<params>[\d,]*)\))?(?P<tail>(?: [A-Z_]+)*)(?P<arrays>(?:\[\])*)")
+_CAST_TYPE_TOKEN_RE = re.compile(r"\[\]|\(([^()]*)\)|[A-Z_][A-Z0-9_]*")
 
 
 class CastTypeParts(BaseModel):
@@ -771,41 +757,31 @@ class CastTypeParts(BaseModel):
 
 
 def cast_type_parts(type_text: str) -> CastTypeParts:
-    match = _CAST_TYPE_RE.fullmatch(type_text.strip().upper())
-    if match is None:
-        return CastTypeParts(words=tuple(type_text.upper().split()))
-    words = tuple(match["head"].split()) + tuple(match["tail"].split())
-    sizes = tuple(match["params"].split(",")) if match["params"] else ()
-    return CastTypeParts(words=words, sizes=sizes, array_rank=len(match["arrays"]) // 2)
-
-
-def cast_data_type(type_text: str) -> DataType:
-    """SLayer's type for a cast to ``type_text`` (ARRAY for ``T[]``; UNKNOWN for any unmapped type)."""
-    parts = cast_type_parts(type_text)
-    if parts.array_rank:
-        return DataType.ARRAY
-    return _CAST_TYPE_WORDS.get(parts.words[0] if parts.words else "", DataType.UNKNOWN)
-
-
-def cast_element_type(type_text: str) -> Optional[DataType]:
-    """The element type of a cast to ``T[]`` (``T``'s SLayer type), else ``None``."""
-    parts = cast_type_parts(type_text)
-    if parts.array_rank != 1:
-        return None
-    return _CAST_TYPE_WORDS.get(parts.words[0] if parts.words else "", DataType.UNKNOWN)
+    words: list[str] = []
+    sizes: Tuple[str, ...] = ()
+    array_rank = 0
+    for token in _CAST_TYPE_TOKEN_RE.finditer(type_text.upper()):
+        if token[0] == "[]":
+            array_rank += 1
+        elif token[1] is not None:
+            sizes = tuple(p.strip() for p in token[1].split(",") if p.strip())
+        else:
+            words.append(token[0])
+    return CastTypeParts(words=tuple(words), sizes=sizes, array_rank=array_rank)
 
 
 class CastKey(_FrozenKey, frozen=True):
     """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the database's
     own cast of the author's type; ``data_type`` is SLayer's type for the target, ``element_type``
-    its elements' for an array target; ``numeric_source``: a ``TRY_CAST`` reads its source as a number, not text."""
+    its elements' for an array target; ``numeric_source``: what a ``TRY_CAST`` reads its source as — ``INT``
+    (integer text), ``DOUBLE`` (another number), else ``None`` (text)."""
 
     source: "ValueKey"
     type_text: str
     data_type: DataType
     try_: bool = False
     element_type: Optional[DataType] = None
-    numeric_source: bool = False
+    numeric_source: Optional[DataType] = None
 
     @property
     def phase(self) -> Phase:
@@ -1560,6 +1536,25 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, ScalarCallKey):
         return _scalar_integer_valued(key, column_type=column_type)
     return False
+
+
+def integer_text_valued(key: ValueKey, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with no fractional literal."""
+    if not integer_valued(key, column_type=column_type) or boolean_valued(key, column_type=column_type):
+        return False
+    return not any(_written_with_fraction(a) for k in walk_value_keys(key) for a in _literals_of(k))
+
+
+def _literals_of(key: ValueKey) -> Iterator[object]:
+    if isinstance(key, LiteralKey):
+        yield key.value
+    elif isinstance(key, ScalarCallKey):
+        yield from (a for a in key.args if not isinstance(a, _FrozenKey))
+
+
+def _written_with_fraction(value: object) -> bool:
+    exponent = value.as_tuple().exponent if isinstance(value, Decimal) else 0
+    return isinstance(exponent, int) and exponent < 0
 
 
 def _aggregate_integer_valued(key: AggregateKey, *, column_type: ColumnTypeFn) -> bool:

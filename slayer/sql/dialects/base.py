@@ -279,8 +279,13 @@ NARROW_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
     exp.DataType.Type.MEDIUMINT: (-(2 ** 23), 2 ** 23 - 1), exp.DataType.Type.UTINYINT: (0, 2 ** 8 - 1),
     exp.DataType.Type.USMALLINT: (0, 2 ** 16 - 1), exp.DataType.Type.UMEDIUMINT: (0, 2 ** 24 - 1),
 }
-_INT64_LIMIT = "9223372036854775808e0"
 INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
+#: The half-open ranges of the integer types wider than BIGINT.
+WIDE_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.UBIGINT: (0, 2 ** 64), exp.DataType.Type.INT128: (-(2 ** 127), 2 ** 127),
+    exp.DataType.Type.UINT128: (0, 2 ** 128), exp.DataType.Type.INT256: (-(2 ** 255), 2 ** 255),
+    exp.DataType.Type.UINT256: (0, 2 ** 256),
+}
 TRUE_WORDS = ("true", "t", "yes", "1")
 FALSE_WORDS = ("false", "f", "no", "0")
 
@@ -304,6 +309,12 @@ def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Ex
     return new_left, new_right
 
 
+def _exact_bound(bound: int) -> Expression:
+    """A power-of-two bound as an exact float literal (``9223372036854775808e0``)."""
+    literal = exp.Literal.number(f"{abs(bound)}e0")
+    return exp.Neg(this=literal) if bound < 0 else literal
+
+
 def as_text(value: Expression) -> Expression:
     """``CAST(value AS TEXT)`` — the input a validity check reads."""
     return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
@@ -323,6 +334,15 @@ def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
     return built
 
 
+def cast_type_of(type_text: str, *, dialect: "SqlDialect") -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a cast to ``type_text``, read as Postgres (the reference) spells it, else as ``dialect`` does."""
+    for reader in ("postgres", dialect.sqlglot_name):
+        built = _read_type(type_text, readers=(reader,))
+        if built is not None and not built.is_type(exp.DataType.Type.USERDEFINED):
+            return slayer_type_of(built)
+    return DataType.UNKNOWN, None
+
+
 def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
     for reader in readers:
         try:
@@ -340,15 +360,37 @@ UNSIGNED_CAST_TYPES: frozenset[DType] = frozenset({
     exp.DataType.Type.UBIGINT, exp.DataType.Type.UINT128, exp.DataType.Type.UINT256, exp.DataType.Type.UDECIMAL,
     exp.DataType.Type.UDOUBLE,
 })
+_DATE_TYPES: frozenset[DType] = frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32})
+_TIMESTAMP_TYPES: frozenset[DType] = frozenset(
+    exp.DataType.TEMPORAL_TYPES - _DATE_TYPES - {exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
 #: Type groups a dialect's spelling may move within (DOUBLE → FLOAT, TEXT → VARCHAR(MAX), BOOLEAN → INTEGER).
 _CAST_FAMILIES: tuple[frozenset[DType], ...] = (
     frozenset(exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES | {exp.DataType.Type.BOOLEAN}),
     frozenset(exp.DataType.TEXT_TYPES),
-    frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32}),
-    frozenset(exp.DataType.TEMPORAL_TYPES - {exp.DataType.Type.DATE, exp.DataType.Type.DATE32,
-                                              exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ}),
+    _DATE_TYPES,
+    _TIMESTAMP_TYPES,
     frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
 )
+_SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
+    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INT),
+    (frozenset(exp.DataType.REAL_TYPES), DataType.DOUBLE),
+    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.TEXT),
+    (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
+    (_DATE_TYPES, DataType.DATE),
+    (_TIMESTAMP_TYPES, DataType.TIMESTAMP),
+)
+
+
+def _scalar_slayer_type(data_type: exp.DataType) -> DataType:
+    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.UNKNOWN)
+
+
+def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a SQL type, with its elements' for an array; UNKNOWN where unmapped."""
+    if not data_type.is_type(exp.DataType.Type.ARRAY):
+        return _scalar_slayer_type(data_type), None
+    element = _element(data_type)
+    return DataType.ARRAY, DataType.UNKNOWN if element is None else _scalar_slayer_type(element)
 
 
 class _CastSignature(BaseModel):
@@ -411,7 +453,7 @@ def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
 
 #: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
 VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
-    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY, exp.DataType.Type.INT128, exp.DataType.Type.INT256,
 })
 
 
@@ -749,15 +791,21 @@ class SqlDialect(BaseModel):
     #: Integer types narrower than INT this database only has as aliases of a wider one.
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset()
 
-    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, numeric: bool) -> Expression:
-        """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL."""
-        if not numeric:
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
+        """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
+        ``source``: ``CastKey.numeric_source``."""
+        if source is not DataType.DOUBLE:
             return self.build_integer_text_try_cast(as_text(value), to)
-        integral = exp.And(
-            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))),
-            expression=exp.LT(this=exp.Abs(this=operand_copy(value)), expression=exp.Literal.number(_INT64_LIMIT)),
+        wide = to.this in WIDE_INTEGER_BOUNDS
+        low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
+        in_range = exp.And(
+            this=exp.GTE(this=operand_copy(value), expression=_exact_bound(low)),
+            expression=exp.LT(this=operand_copy(value), expression=_exact_bound(high)),
         )
-        whole = exp.Cast(this=operand_copy(value), to=exp.DataType.build("BIGINT"))
+        integral = exp.And(
+            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))), expression=in_range,
+        )
+        whole = exp.Cast(this=operand_copy(value), to=to.copy() if wide else exp.DataType.build("BIGINT"))
         return case((integral, self.build_integer_text_try_cast(as_text(whole), to)))
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
@@ -1079,7 +1127,7 @@ class SqlDialect(BaseModel):
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         text = self.build_json_value(value, path, native)
         if target is DataType.INT:
-            return self.build_integer_try_cast(text, to, numeric=False)
+            return self.build_integer_try_cast(text, to, source=None)
         return self.build_try_cast(text, to)
 
     # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.

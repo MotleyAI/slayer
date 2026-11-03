@@ -1,8 +1,8 @@
 """SlayerModel v15 / SlayerQuery v6 / Memory v4: stored Mode-B text adopts the SQL string and identifier rules.
 
 A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one, a ``|``
-concatenation becomes ``||`` and touching minus signs are spaced (``a--b`` → ``a- -b``). Stored-only: a fresh payload is never rewritten, nor is text the old grammar
-could not have held.
+concatenation becomes ``||``, touching minus signs are spaced (``a--b`` → ``a- -b``) and a ``#`` comment becomes ``--``.
+Stored-only: a fresh payload is never rewritten, nor is text the old grammar could not have held.
 """
 
 import ast
@@ -33,12 +33,13 @@ def _star_sources_named(text: str) -> str:
 
 
 def sql_quote_strings(text: str) -> str:
-    """``text`` with Python string literals re-spelled as SQL ``'…'`` literals (adjacent ones joined) and a lone
-    ``|`` as ``||``; everything else byte-for-byte. Untokenisable text is returned unchanged."""
+    """``text`` with Python string literals re-spelled as SQL ``'…'`` literals (adjacent ones joined), a lone
+    ``|`` as ``||`` and ``#`` comments as ``--``; everything else byte-for-byte. Untokenisable text is returned unchanged."""
     try:
-        tokens = [t for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type not in _SKIP]
+        every = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, SyntaxError):
         return text
+    tokens = [t for t in every if t.type not in _SKIP]
     if any(t.type == tokenize.ERRORTOKEN for t in tokens):
         return text
     line_starts = [0]
@@ -47,6 +48,9 @@ def sql_quote_strings(text: str) -> str:
     edits = _edits(tokens, line_starts=line_starts)
     if edits is None:
         return text
+    for comment in (t for t in every if t.type == tokenize.COMMENT):
+        start = line_starts[comment.start[0] - 1] + comment.start[1]
+        edits.append((start, start + 1, " --" if text[start - 1:start] == "-" else "--"))
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text

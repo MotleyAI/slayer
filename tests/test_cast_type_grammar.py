@@ -121,6 +121,19 @@ class TestLosslessRendering:
     async def test_unsigned_decimal_refused_without_unsigned_types(self, dialect: str) -> None:
         await _refused("CAST(amount AS DECIMAL(10,2) UNSIGNED)", dialect=dialect, needle="UNSIGNED")
 
+    @pytest.mark.parametrize(("dialect", "type_text"), [
+        (d, t) for d in TIER1 if d not in ("sqlite", "duckdb", "clickhouse") for t in ("HUGEINT", "INT128", "INT256")
+    ] + [("duckdb", "INT256")])
+    async def test_wide_integer_refused_where_the_database_lacks_it(self, dialect: str, type_text: str) -> None:
+        await _refused(f"CAST(amount AS {type_text})", dialect=dialect, needle=type_text)
+
+    @pytest.mark.parametrize(("dialect", "type_text"), [
+        ("duckdb", "HUGEINT"), ("duckdb", "INT128"), ("clickhouse", "Int128"), ("clickhouse", "Int256"),
+        ("sqlite", "INT128"), ("sqlite", "INT256"),
+    ])
+    async def test_wide_integer_accepted_where_the_database_has_it(self, dialect: str, type_text: str) -> None:
+        await emit(_dim(f"CAST(amount AS {type_text})"), dialect=dialect)
+
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "trino", "snowflake", "bigquery", "tsql"])
     async def test_unsigned_int_refused_without_unsigned_types(self, dialect: str) -> None:
         await _refused("CAST(amount AS INT UNSIGNED)", dialect=dialect, needle="UNSIGNED")
@@ -198,6 +211,13 @@ class TestArrayTyping:
 
     def test_unsigned_integer_is_an_integer(self) -> None:
         assert _planned_type("CAST(amount AS INT UNSIGNED)", dialect="mysql") is DataType.INT
+
+    @pytest.mark.parametrize(("dialect", "type_text", "expected"), [
+        ("duckdb", "UBIGINT", DataType.INT), ("duckdb", "UINTEGER", DataType.INT), ("clickhouse", "UInt32", DataType.INT),
+        ("clickhouse", "Int16", DataType.INT), ("clickhouse", "Float32", DataType.DOUBLE),
+    ])
+    def test_vendor_type_names(self, dialect: str, type_text: str, expected: DataType) -> None:
+        assert _planned_type(f"CAST(amount AS {type_text})", dialect=dialect) is expected
 
     def test_unsigned_decimal_is_a_double(self) -> None:
         assert _planned_type("CAST(amount AS DECIMAL(10,2) UNSIGNED)", dialect="mysql") is DataType.DOUBLE

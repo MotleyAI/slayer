@@ -96,6 +96,7 @@ class DuckdbDialect(SqlDialect):
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
     })
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128})
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})

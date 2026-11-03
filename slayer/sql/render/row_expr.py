@@ -290,7 +290,7 @@ def render_cast(
     if not key.try_:
         return dialect.build_cast(value, to)
     if key.data_type is DataType.INT:
-        return dialect.build_integer_try_cast(value, to, numeric=key.numeric_source)
+        return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
     return dialect.build_try_cast(value, to)
 
 

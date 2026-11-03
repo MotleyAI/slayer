@@ -8,6 +8,7 @@ import pytest
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.syntax import parse_expr
 from slayer.sql import engine_factory
 from slayer.storage.sql_string_migration import sql_quote_strings
 from tests._stored_upgrade_fixtures import (
@@ -32,15 +33,21 @@ CASES = [
     pytest.param("sum(a) + (sum(b)\n--sum(c))", "sum(a) + (sum(b)\n- -sum(c))", id="multi-line"),
     pytest.param("sum(a) -\n-sum(b)", "sum(a) -\n-sum(b)", id="split-across-lines"),
     pytest.param('note == "a--b"', "note == 'a--b'", id="inside-string"),
-    pytest.param("sum(a)  # x--y", "sum(a)  # x--y", id="inside-python-comment"),
-    pytest.param("sum(a--b)  # net", "sum(a- -b)  # net", id="before-python-comment"),
+    pytest.param("sum(a)  # x--y", "sum(a)  -- x--y", id="inside-python-comment"),
+    pytest.param("sum(a--b)  # net", "sum(a- -b)  -- net", id="before-python-comment"),
     pytest.param('concat(status, "--") --x', "concat(status, '--') - -x", id="string-and-minus"),
+    pytest.param("sum(a) + (sum(b)-# c\n sum(c))", "sum(a) + (sum(b)- -- c\n sum(c))", id="python-comment-after-minus"),
 ]
 
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_token_rewrite(stored: str, loaded: str) -> None:
     assert sql_quote_strings(stored) == loaded
+
+
+@pytest.mark.parametrize(("stored", "loaded"), CASES)
+def test_loaded_text_parses(stored: str, loaded: str) -> None:
+    parse_expr(sql_quote_strings(stored))
 
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)

@@ -207,6 +207,7 @@ class ClickhouseDialect(SqlDialect):
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
         exp.DataType.Type.UINT128, exp.DataType.Type.UINT256,
     })
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128, exp.DataType.Type.INT256})
     ilike_native: ClassVar[bool] = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
