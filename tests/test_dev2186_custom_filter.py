@@ -231,8 +231,9 @@ class TestTyping:
     async def test_custom_rejected_like_builtin(self, engine: SlayerQueryEngine, condition: str) -> None:
         errors = []
         for agg in ("sum", "rows"):
+            query = q(measures=[m(f"{agg}(amount) FILTER (WHERE {condition})")])
             with pytest.raises(Exception) as info:  # noqa: B017 — parity, whatever the type
-                await engine.execute(q(measures=[m(f"{agg}(amount) FILTER (WHERE {condition})")]))
+                await engine.execute(query)
             errors.append(info.value)
         builtin, custom = errors
         assert type(custom) is type(builtin)
@@ -257,7 +258,7 @@ class TestRendererFailsClosed:
         orders = orders_model()
         bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers_model()])
         with pytest.raises(RuntimeError, match="(?i)filter"):
-            gen._build_agg(gen._build_agg_render_spec_from_planned(
+            gen._build_agg_render_spec_from_planned(
                 slot=None, key=key, source_model=orders, source_relation="orders", full_alias="orders.v",
                 bundle=bundle,
-            ))
+            )

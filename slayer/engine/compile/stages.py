@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.engine.reference_closure import (
@@ -2086,6 +2086,14 @@ class _ProducerSynthesisContext(BaseModel):
     def dim_display(self, key: ValueKey) -> str:
         return _query_dim_display(self.prebound, key)
 
+    def endpoints_source(self) -> "_EndpointsSource":
+        return _EndpointsSource(
+            host_model=self.host_model, bundle=self.bundle, scope=self.scope,
+            stage_schemas=self.stage_schemas, population=self.population,
+            population_filters=self.population_filters, n_population_date=self.n_population_date,
+            to_many_handling=self.prebound.to_many_handling,
+        )
+
 
 def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
     """A key's query name: its first explicitly declared dimension name, else its formula text."""
@@ -2272,6 +2280,10 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         )
 
     # SHARED TAIL: root at the home, compile the producer, attach on the host key.
+    condition, unfiltered = _group_row_restriction([agg_rooted])
+    if condition is not None:
+        inherited = [*inherited, bound_filter_from_key(condition)]
+        agg_rooted = unfiltered[agg_rooted]
     _check_attached_params_determined(
         agg=agg, alias=alias, target_path=target_path, root_model=root_model,
         host_model=host_model, models_by_name=models_by_name, bundle=bundle,
@@ -2370,7 +2382,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     if isinstance(kernel, TrailingWindowProducerKernel):
         cm_attach_kwargs["kernel"] = kernel.model_copy(update={
             "endpoints": _window_endpoints(
-                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], context=context,
+                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], source=context.endpoints_source(),
                 producer_registry=producer_registry,
             ),
             "endpoint_keys": list(ordered_pks),
@@ -2415,25 +2427,40 @@ def _unrelated_attach_fields(
     }
 
 
+class _EndpointsSource(BaseModel):
+    """The host state a windowed producer's population cells are planned from."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host_model: SlayerModel
+    bundle: ResolvedSourceBundle
+    scope: ModelScope | StageSchema
+    stage_schemas: Dict[str, StageSchema]
+    population: Optional[Population]
+    population_filters: List[BoundFilter]
+    n_population_date: int
+    to_many_handling: Literal["broadcast", "associate", "error"]
+
+
 def _window_endpoints(
-    *, host_keys: List[ValueKey], context: _ProducerSynthesisContext,
+    *, host_keys: List[ValueKey], source: _EndpointsSource,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
 ) -> Optional[PlannedQuery]:
     """The population's cells at a windowed producer's grain, in host coordinates, host keys' order."""
-    if context.population is None or not isinstance(context.scope, ModelScope):
+    if source.population is None or not isinstance(source.scope, ModelScope):
         return None
     prebound, _ = _regroup_producer_prebound(
-        pks=Grain.of(host_keys), aggs=[], model=context.host_model, bundle=context.bundle,
-        inherited=context.population_filters, n_date_range=context.n_population_date,
+        pks=Grain.of(host_keys), aggs=[], model=source.host_model, bundle=source.bundle,
+        inherited=source.population_filters, n_date_range=source.n_population_date,
         partition_order=lambda _pks: list(host_keys),
-        to_many_handling=context.prebound.to_many_handling,
+        to_many_handling=source.to_many_handling,
     )
     plan = compile_synthesized(
-        prebound=prebound, source_model=context.host_model.name, bundle=context.bundle,
-        scope=context.scope, stage_schemas=context.stage_schemas,
-        producer_registry=producer_registry, population=context.population,
+        prebound=prebound, source_model=source.host_model.name, bundle=source.bundle,
+        scope=source.scope, stage_schemas=source.stage_schemas,
+        producer_registry=producer_registry, population=source.population,
     )
-    return plan.model_copy(update={"stage_bundle": context.bundle})
+    return plan.model_copy(update={"stage_bundle": source.bundle})
 
 
 def _param_values(agg: AggregateKey) -> List[Tuple[str, ValueKey]]:
@@ -3296,8 +3323,8 @@ def _local_regroup_groups(
     projected_td_keys: List[ValueKey], active_bucket: Optional[ValueKey],
     crossing: Callable[[ValueKey], bool],
 ) -> List[Tuple[Grain, bool, List[ValueKey]]]:
-    """``(grain, windowed, roots)`` per producer: one per grain and, for a windowed /
-    ranked / crossing-input root, per partition-free identity."""
+    """``(grain, windowed, roots)`` per producer: one per grain and row restriction and, for a
+    windowed / ranked / crossing-input root, per partition-free identity."""
     groups: Dict[Tuple, List[ValueKey]] = {}
     meta: Dict[Tuple, Tuple[Grain, bool]] = {}
     for agg in roots:
@@ -3309,7 +3336,7 @@ def _local_regroup_groups(
         # A crossing-input root needs its OWN producer, else another aggregate's crossed joins fan its rows.
         if ident is None and isinstance(agg, AggregateKey) and crossing(agg):
             ident = ("crossing", _partition_free_identity(agg))
-        gkey = (grain, ident)
+        gkey = (grain, ident, agg.filter if restricts_own_rows(agg) else None)
         groups.setdefault(gkey, []).append(agg)
         meta[gkey] = (grain, windowed)
     return [(*meta[g], aggs) for g, aggs in groups.items()]
@@ -3331,6 +3358,16 @@ class _LocalRegroupContext(BaseModel):
     mapping: Dict[ValueKey, ValueKey]
     inherited: List[Any]
     n_inherited_date: int
+
+
+def _group_row_restriction(
+    aggs: Sequence[ValueKey],
+) -> Tuple[Optional[ValueKey], Dict[ValueKey, AggregateKey]]:
+    """A producer group's shared FILTER row restriction and each restricted root's unfiltered key."""
+    restricted = [a for a in aggs if restricts_own_rows(a)]
+    conditions = {a.filter for a in restricted}
+    assert len(conditions) <= 1 and len(restricted) in (0, len(aggs)), conditions
+    return next(iter(conditions), None), {a: a.model_copy(update={"filter": None}) for a in restricted}
 
 
 def _canonical_producer_aggs(
@@ -3424,20 +3461,32 @@ def _synthesize_local_regroup(
     producer_model, mapping = ctx.producer_model, ctx.mapping
     inherited, n_inherited_date = ctx.inherited, ctx.n_inherited_date
     pks = _prune_functionally_determined_grain(pks)
-    producer_aggs, canonical_of = _canonical_producer_aggs(aggs)
+    # A row-restricted group shares one condition: the producer aggregates the unfiltered keys over its rows.
+    condition, unfiltered = _group_row_restriction(aggs)
+    if condition is not None:
+        inherited = [*inherited, bound_filter_from_key(condition)]
+    producer_alias = {unfiltered.get(k, k): v for k, v in alias_map.items()}
+    producer_aggs, canonical_of = _canonical_producer_aggs([unfiltered.get(a, a) for a in aggs])
+    canonical_of = {a: canonical_of[unfiltered.get(a, a)] for a in aggs}
     canon_index = {c: i for i, c in enumerate(producer_aggs)}
     if producer_model is not None:
+        # The restriction's reads are judged as the built-in input mask's would be.
+        judged = {
+            (input_masked(a, condition=condition) if condition is not None and isinstance(a, AggregateKey) else a): a
+            for a in producer_aggs
+        }
         _assert_local_regroup_safe(
-            producer_aggs=producer_aggs, producer_model=producer_model, bundle=bundle,
-            active_td=prebound.main_time_key if windowed else None, alias_map=alias_map,
+            producer_aggs=list(judged), producer_model=producer_model, bundle=bundle,
+            active_td=prebound.main_time_key if windowed else None,
+            alias_map={j: producer_alias[a] for j, a in judged.items() if a in producer_alias},
             display=functools.partial(_query_dim_display, prebound),
         )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
         pks=pks, aggs=producer_aggs, model=producer_model, bundle=bundle,
         inherited=inherited, n_date_range=n_inherited_date,
-        partition_order=order_fn, public_alias_by_agg=alias_map,
+        partition_order=order_fn, public_alias_by_agg=producer_alias,
         explicit_types={
-            dm.bound.value_key: dm.type
+            unfiltered.get(dm.bound.value_key, dm.bound.value_key): dm.type
             for dm in prebound.declared_measures
             if phase == "combined" and dm.type_is_explicit and dm.type is not None
         },
@@ -3485,6 +3534,17 @@ def _synthesize_local_regroup(
     attach_kwargs = _local_regroup_kernel(
         decision, producer_plan=producer_plan, bundle=bundle,
     )
+    kernel = attach_kwargs.get("kernel")
+    if condition is not None and isinstance(kernel, TrailingWindowProducerKernel) and producer_model is not None:
+        # The restriction thins the producer's rows, never the population's buckets.
+        attach_kwargs["kernel"] = kernel.model_copy(update={
+            "endpoints": _window_endpoints(host_keys=list(ordered_pks), source=_EndpointsSource(
+                host_model=producer_model, bundle=bundle, scope=scope, stage_schemas=ctx.stage_schemas,
+                population=ctx.population, population_filters=ctx.inherited,
+                n_population_date=n_inherited_date, to_many_handling=prebound.to_many_handling,
+            ), producer_registry=ctx.producer_registry),
+            "endpoint_keys": list(ordered_pks),
+        })
     return RegroupAttachPlan(
         producer_plan=producer_plan,
         alias_hint=(
@@ -3935,7 +3995,7 @@ def _producer_nesting_rule(
     prebound: PreboundQuery, *, context: ProducerContext,
 ) -> Callable[[ValueKey, str], bool]:
     """A row root always nests. A combined root at exactly the producer grain nests
-    iff it is kernel-requiring and not the producer's kernel answer; off the
+    iff it is row-restricted, or kernel-requiring and not the producer's kernel answer; off the
     producer grain only the producer's own answers stay inline (their dropped
     members are the synthesizer's disposition)."""
     dim_dms, td_dms, _ = partition_declared_measures(
@@ -3957,7 +4017,7 @@ def _producer_nesting_rule(
         )
         if not grain.is_subgrain_of(context.enclosing_grain):
             return root not in answers
-        return grain != context.enclosing_grain or (
+        return grain != context.enclosing_grain or restricts_own_rows(root) or (
             is_kernel_requiring(root) and root != context.kernel_answer
         )
 

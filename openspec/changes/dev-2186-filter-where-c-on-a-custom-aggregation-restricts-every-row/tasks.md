@@ -39,16 +39,16 @@ Fixture (`tests/_dev2101_fixtures.py`): orders 1 EU c1 paid 10 Jan · 2 EU c1 pa
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/core/keys.py`: add `restricts_own_rows(key)` (`key.filter is not None and not key.builtin`) and generalise the `AggregateKey.filter` comment; verify via 1.2.
-- [ ] 2.2 `slayer/engine/binding.py` `_bind_filtered_agg`: a non-built-in key runs the existing anchor check on the would-be masked candidate, then carries `c` unmasked on `filter` (no `_carrying_filter` window refusal); built-ins unchanged; verify 1.8 typing parity and that `tests/test_dev2101_agg_filter.py` stays green.
-- [ ] 2.3 `slayer/engine/compile/discovery.py`: route a `restricts_own_rows` root like a bare windowed / ranked root (local → `local_producer`, cross-model → `target_rooted`, association mode → the association producer); teach every guard keyed on `is_kernel_requiring` that must also hold for it; verify 1.2–1.5.
-- [ ] 2.4 `slayer/engine/compile/stages.py`: the producer aggregates the filter-stripped key, and `c` is appended after the inherited filters as its own row filter (never counted in `n_date_range`; rerooted onto the target for a target-rooted producer). Map the original key to the producer slot. Key `_local_regroup_groups` by (grain, window identity, condition). Verify 1.6, 1.7, 1.8 warnings.
-- [ ] 2.5 Windowed producers: `c` restricts only `_src`; the local windowed producer's buckets come from the population (an endpoints plan like `_window_endpoints` where missing); verify 1.4.
-- [ ] 2.6 `slayer/sql/generator.py`: fail-closed guard on a filtered non-built-in key reaching aggregate rendering; verify 1.9.
-- [ ] 2.7 `docs/concepts/formulas.md` › Filtered aggregation: add the one sentence "On a custom aggregation the clause restricts the rows its formula reads (`COUNT(*)` included), and a grouped cell with no passing rows reads NULL."; verify `zensical.toml` nav needs no change (existing page).
+- [x] 2.1 `slayer/core/keys.py`: add `restricts_own_rows(key)` (`key.filter is not None and not key.builtin`) and generalise the `AggregateKey.filter` comment; verify via 1.2.
+- [x] 2.2 `slayer/engine/binding.py` `_bind_filtered_agg`: a non-built-in key runs the existing anchor check on the would-be masked candidate, then carries `c` unmasked on `filter` (no `_carrying_filter` window refusal); built-ins unchanged; verify 1.8 typing parity and that `tests/test_dev2101_agg_filter.py` stays green.
+- [x] 2.3 `slayer/engine/compile/discovery.py`: route a `restricts_own_rows` root like a bare windowed / ranked root (local → `local_producer`, cross-model → `target_rooted`, association mode → the association producer); teach every guard keyed on `is_kernel_requiring` that must also hold for it; verify 1.2–1.5.
+- [x] 2.4 `slayer/engine/compile/stages.py`: the producer aggregates the filter-stripped key, and `c` is appended after the inherited filters as its own row filter (never counted in `n_date_range`; rerooted onto the target for a target-rooted producer). Map the original key to the producer slot. Key `_local_regroup_groups` by (grain, window identity, condition). Verify 1.6, 1.7, 1.8 warnings.
+- [x] 2.5 Windowed producers: `c` restricts only `_src`; the local windowed producer's buckets come from the population (an endpoints plan like `_window_endpoints` where missing); verify 1.4.
+- [x] 2.6 `slayer/sql/generator.py`: fail-closed guard on a filtered non-built-in key reaching aggregate rendering; verify 1.9.
+- [x] 2.7 `docs/concepts/formulas.md` › Filtered aggregation: add the one sentence "On a custom aggregation the clause restricts the rows its formula reads (`COUNT(*)` included), and a grouped cell with no passing rows reads NULL."; verify `zensical.toml` nav needs no change (existing page).
 
 ## 3. Verification
 
-- [ ] 3.1 Full unit suite `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `poetry run la-arch-check` all green.
-- [ ] 3.2 Integration suite with the CI invocation from `.github/workflows/ci.yml` green.
-- [ ] 3.3 `openspec validate dev-2186-filter-where-c-on-a-custom-aggregation-restricts-every-row --strict` green.
+- [x] 3.1 Full unit suite `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and `poetry run la-arch-check` all green.
+- [x] 3.2 Integration suite with the CI invocation from `.github/workflows/ci.yml` green.
+- [x] 3.3 `openspec validate dev-2186-filter-where-c-on-a-custom-aggregation-restricts-every-row --strict` green.
