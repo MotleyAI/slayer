@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-from slayer.core.enums import DataType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType
 from slayer.core.keys import (
+    is_ranked,
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
@@ -37,7 +38,7 @@ _TEMPORAL_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
 def explicit_ranking_time_arg(key: AggregateKey) -> Optional[ValueKey]:
     """The explicit positional ranking-time arg (first positional iff a column ref), or ``None``."""
-    if key.agg not in RANKED_AGGREGATIONS:
+    if not is_ranked(key):
         return None
     for arg in key.args:
         return arg if isinstance(arg, (ColumnKey, ColumnSqlKey)) else None

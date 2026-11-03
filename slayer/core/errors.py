@@ -104,13 +104,15 @@ class SchemaDriftError(SlayerError):
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
+        findings: list[str] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
+        notes = "".join(f" {f}" for f in findings or [])
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s). Original error: {original}"
+            f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
@@ -415,6 +417,11 @@ class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
 
 
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 
@@ -584,6 +591,21 @@ class AmbiguousReferenceError(SlayerError, ValueError):
             cls_name=type(self).__name__,
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
+        ))
+
+
+class AmbiguousAggregationError(SlayerError):
+    """A call matches several of its model's aggregations case-insensitively and none exactly."""
+
+    def __init__(self, *, model: str, call: str, candidates: List[str]) -> None:
+        self.model = model
+        self.call = call
+        self.candidates = sorted(candidates)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Aggregation call {call!r} is ambiguous on model {model!r}: it matches "
+            f"{', '.join(self.candidates)} case-insensitively.",
+            suggestion="Spell the call exactly as one of them.",
         ))
 
 

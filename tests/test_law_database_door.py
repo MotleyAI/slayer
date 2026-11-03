@@ -185,6 +185,7 @@ class TestListPathsUseTheEngineClient:
         assert result.errors == []
         assert model is not None
         skills = model.get_column("skills")
+        assert skills is not None
         assert (skills.type, skills.element_type, skills.description) == (DataType.ARRAY, DataType.TEXT, "Skills")
 
     async def test_list_profiling(self, tmp_path: Path) -> None:
@@ -195,7 +196,9 @@ class TestListPathsUseTheEngineClient:
         engine, factory = await _gateway_engine(tmp_path, datasource=ds, models=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
-                outcome = await ensure_samples_fresh(model=model, columns=[model.get_column("skills")],
+                skills = model.get_column("skills")
+                assert skills is not None
+                outcome = await ensure_samples_fresh(model=model, columns=[skills],
                                                      engine=engine, storage=engine.storage, force=True)
         finally:
             await engine.aclose()
@@ -299,4 +302,5 @@ async def test_snowflake_element_inference_uses_the_engine_client(tmp_path: Path
     assert any("TYPEOF" in sql.upper() for c in clients for sql in c.executed)
     assert model is not None
     scores = model.get_column("scores")
+    assert scores is not None
     assert (scores.type, scores.element_type) == (DataType.ARRAY, DataType.INT)

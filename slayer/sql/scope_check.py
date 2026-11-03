@@ -159,32 +159,41 @@ def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
 
 
 def _scope_leaks(scope: Scope, *, allow_rls_correlation: bool) -> list[ScopeLeak]:
-    leaks: list[ScopeLeak] = []
     label = _scope_label(scope)
     bound = tuple(scope.sources.keys())
-    for col in scope.columns:
-        qualifier = col.table
-        if not qualifier:
-            continue  # unverifiable without a schema
-        source = _resolve_source(scope=scope, qualifier=qualifier)
-        if source is None:
-            source = _resolve_correlated(scope=scope, qualifier=qualifier)
-        if source is None:
-            # C1: the qualifier is not bound in this scope.
-            if allow_rls_correlation and qualifier == _RLS_SRC:
-                continue
-            leaks.append(ScopeLeak(
-                kind="unbound_table", reference=_ref(col), scope=label,
-                bound_sources=bound,
-            ))
-        elif isinstance(source, Scope):
-            # C2: bound to an inner SELECT scope — the name must be projected.
-            if not _projects(source, col.name):
-                leaks.append(ScopeLeak(
-                    kind="unprojected_column", reference=_ref(col), scope=label,
-                    bound_sources=bound,
-                ))
-    return leaks
+    return [
+        ScopeLeak(kind=kind, reference=_ref(col), scope=label, bound_sources=bound)
+        for col in scope.columns
+        if (kind := _leak_kind(scope, col, allow_rls_correlation=allow_rls_correlation)) is not None
+    ]
+
+
+def _leak_kind(scope: Scope, col: exp.Column, *, allow_rls_correlation: bool) -> Optional[str]:
+    """C1 ``unbound_table`` (qualifier not bound here), C2 ``unprojected_column`` (an inner SELECT does not project
+    the name), else ``None``."""
+    qualifier = col.table
+    if not qualifier or _array_joined(col, qualifier):
+        return None  # unverifiable without a schema
+    source = _resolve_source(scope=scope, qualifier=qualifier)
+    if source is None:
+        source = _resolve_correlated(scope=scope, qualifier=qualifier)
+    if source is None:
+        return None if allow_rls_correlation and qualifier == _RLS_SRC else "unbound_table"
+    if isinstance(source, Scope) and not _projects(source, col.name):
+        return "unprojected_column"
+    return None
+
+
+def _array_joined(col: exp.Column, qualifier: str) -> bool:
+    """Whether a SELECT enclosing ``col`` ClickHouse-``ARRAY JOIN``s ``… AS qualifier`` (unverifiable without a schema)."""
+    select = col.find_ancestor(exp.Select)
+    while select is not None:
+        joins = select.args.get("joins") or []
+        if any(j.args.get("kind") == "ARRAY" and isinstance(j.this, exp.Alias) and j.this.alias == qualifier
+               for j in joins):
+            return True
+        select = select.find_ancestor(exp.Select)
+    return False
 
 
 def _resolve_source(scope: Scope, qualifier: str):
@@ -200,13 +209,14 @@ def _resolve_source(scope: Scope, qualifier: str):
 
 
 def _resolve_correlated(scope: Scope, qualifier: str):
-    """Resolve ``qualifier`` in ancestor scopes across expression-subquery boundaries only (where SQL
-    permits correlation); a derived table sees nothing of its own parent."""
+    """Resolve ``qualifier`` in ancestor scopes across expression-subquery, table-function (``UNNEST``) and
+    ``LATERAL`` boundaries only (where SQL permits correlation); any other derived table sees nothing of its parent."""
     current = scope
     while current.parent is not None:
         kind = current.scope_type
+        lateral = _is_lateral(current)
         current = current.parent
-        if kind == ScopeType.SUBQUERY:
+        if kind in (ScopeType.SUBQUERY, ScopeType.UDTF) or lateral:
             source = _resolve_source(scope=current, qualifier=qualifier)
             if source is not None:
                 return source
@@ -215,27 +225,41 @@ def _resolve_correlated(scope: Scope, qualifier: str):
     return None
 
 
+def _is_lateral(scope: Scope) -> bool:
+    """A ``LATERAL (…)`` derived table: it reads the FROM items before it."""
+    wrapper = scope.expression.parent
+    return isinstance(wrapper, exp.Subquery) and isinstance(wrapper.parent, exp.Lateral)
+
+
 def _projects(inner: Scope, name: str) -> bool:
     """Whether the inner scope projects ``name``; a star exports every name its ``EXCEPT`` list keeps."""
     folded = name.casefold()
     expr = inner.expression
+    if inner.scope_type == ScopeType.UDTF:
+        # A table function (``UNNEST``, ``LATERAL (…)``): its alias's column list, else its subquery's outputs.
+        alias = expr.args.get("alias")
+        if isinstance(alias, exp.TableAlias) and alias.columns and alias.this is not None:
+            return folded in {c.name.casefold() for c in alias.columns}
+        if not (isinstance(expr, exp.Lateral) and isinstance(expr.this, exp.Subquery)):
+            return True  # unverifiable without the function's signature
+        expr = expr.this.this
     alias = expr.parent.args.get("alias") if isinstance(expr.parent, (exp.CTE, exp.Subquery)) else None
     if isinstance(alias, exp.TableAlias) and alias.columns:
         return folded in {c.name.casefold() for c in alias.columns}  # ``n(k)`` renames the outputs
     while isinstance(expr, exp.SetOperation):
         expr = expr.this  # left leg carries the public output names
-    selects = getattr(expr, "selects", None) or []
+    return _selects_project(getattr(expr, "selects", None) or [], folded)
+
+
+def _selects_project(selects: list, folded: str) -> bool:
+    """Whether a projection list exports ``folded``; a star exports every name its ``EXCEPT`` list keeps."""
     explicit: set = set()
     for projection in selects:
         star = _star_of(projection)
-        if star is not None:
-            excepted = {
-                _identifier_name(x).casefold() for x in (star.args.get("except_") or [])
-            }
-            if folded in excepted:
-                continue  # this star explicitly drops the name
-            return True  # otherwise the star exports everything, including name
-        explicit.add(projection.alias_or_name.casefold())
+        if star is None:
+            explicit.add(projection.alias_or_name.casefold())
+        elif folded not in {_identifier_name(x).casefold() for x in (star.args.get("except_") or [])}:
+            return True
     return folded in explicit
 
 

@@ -320,8 +320,9 @@ async def test_clickhouse_before_25_8_refuses_elements_beside_a_pushed_filter(mo
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _clickhouse_25_4)
     q = query(dimensions=["team"], filters=["assignments.id = 1"],
               measures=[measure("count(skills.*)", "n"), measure("collect(skills.value)", "c")])
+    models = all_models()
     with pytest.raises(SlayerError, match=r"25\.8"):
-        await emit_contractors(q, dialect="clickhouse", models=all_models())
+        await emit_contractors(q, dialect="clickhouse", models=models)
 
 
 async def test_clickhouse_25_4_runs_a_pushed_filter_without_elements(monkeypatch: pytest.MonkeyPatch) -> None:

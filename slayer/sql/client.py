@@ -21,6 +21,7 @@ from sqlglot import expressions as exp
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
@@ -94,6 +95,13 @@ def _async_connection_string(connection_string: str, db_type: str | None) -> str
     return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
 
 
+#: Cursor type categories → their ``DataType``.
+CATEGORY_DATA_TYPES: dict[str, DataType] = {
+    "number": DataType.DOUBLE, "string": DataType.TEXT, "boolean": DataType.BOOLEAN,
+    "time": DataType.TIMESTAMP, "list": DataType.ARRAY,
+}
+
+
 def _map_type_code(type_code, db_type: str | None = None) -> str:
     """Map a DB-API type_code to a SLayer type category.
 
@@ -109,6 +117,8 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
         type_code = str(type_code)
     if isinstance(type_code, str):
         tc = type_code.upper()
+        if tc.endswith("[]") or tc.startswith(("LIST(", "ARRAY(", "ARRAY<")):
+            return "list"
         # Check temporal names before numeric ones: INTERVAL contains "INT".
         if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
             return "time"
@@ -161,6 +171,23 @@ _PG_OID_MAP: dict[int, str] = {
     1114: "time",    # timestamp
     1184: "time",    # timestamptz
     1186: "time",    # interval
+    1000: "list",    # bool[]
+    1005: "list",    # int2[]
+    1007: "list",    # int4[]
+    1009: "list",    # text[]
+    1015: "list",    # varchar[]
+    1016: "list",    # int8[]
+    1021: "list",    # float4[]
+    1022: "list",    # float8[]
+    1182: "list",    # date[]
+    1115: "list",    # timestamp[]
+    1185: "list",    # timestamptz[]
+    1014: "list",    # bpchar[]
+    1231: "list",    # numeric[]
+    2951: "list",    # uuid[]
+    199: "list",     # json[]
+    3807: "list",    # jsonb[]
+    1001: "list",    # bytea[]
 }
 
 # MySQL field-type codes (aiomysql wire protocol)
@@ -1169,7 +1196,7 @@ async def _execute_sql_async(
             timing.record("set_timeout", _t)
             _t = timing.start()
             result = await _exec_verbatim_async(conn, sql)
-            rows = _fetch_rows(result)
+            rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
             if not result.returns_rows:
                 await conn.commit()
             timing.record("query", _t)
@@ -1249,18 +1276,27 @@ def _execute_sql_sync(
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
     ) as skipped:
         result = _exec_verbatim(conn=conn, sql=sql)
-        rows = _fetch_rows(result)
+        rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
         if not result.returns_rows:
             conn.commit()
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
-def _fetch_rows(result) -> list[dict[str, Any]]:
-    """A row-returning result's rows; a statement returning none (DDL) yields ``[]``."""
+def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
+    """A row-returning result's rows, each cell read by its dialect reader and each driver tuple as a Python list;
+    a statement returning none (DDL) yields ``[]``."""
     if not result.returns_rows:
         return []
     columns = list(result.keys())
-    return [dict(zip(columns, row)) for row in result.fetchall()]
+    description = getattr(getattr(result, "cursor", None), "description", None)
+    readers = dialect.result_readers(description) if description else {}
+
+    def cell(i: int, v: Any) -> Any:
+        if v is not None and i in readers:
+            v = readers[i](v)
+        return list(v) if isinstance(v, tuple) else v
+
+    return [{c: cell(i, v) for i, (c, v) in enumerate(zip(columns, row))} for row in result.fetchall()]
 
 
 def _typed_failure(exc: BaseException) -> SqlClientError | None:

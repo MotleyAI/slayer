@@ -29,6 +29,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.format import list_json_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
@@ -944,7 +945,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
+                'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
                 '"label", "granularity"}; type string, number, time, date or boolean; unique marks '
                 "single-column uniqueness other than the primary key (used for join cardinality); set "
@@ -1873,7 +1874,8 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     for row in data:
         values = []
         for c in columns:
-            v = str(row.get(c, ""))
+            cell = row.get(c, "")
+            v = list_json_text(cell) if isinstance(cell, list) else str(cell)
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
             values.append(v)

@@ -63,6 +63,13 @@ _MD_FENCE = "---\n"
 # ---- memory <-> .md --------------------------------------------
 
 
+def _memory_dict_to_md(data: dict[str, Any]) -> str:
+    """A stored memory dict as ``.md`` text: ``id`` is the file name, ``learning`` the body."""
+    front = {k: v for k, v in data.items() if k not in ("id", "learning") and v is not None}
+    fm = yaml.safe_dump(front, sort_keys=True, default_flow_style=False, allow_unicode=True)
+    return f"{_MD_FENCE}{fm}{_MD_FENCE}{data.get('learning', '')}"
+
+
 def _memory_to_md(memory: Memory) -> str:
     """Serialise a :class:`Memory` to ``---\\n{frontmatter}---\\n{learning}``.
 
@@ -333,6 +340,31 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         return raw if isinstance(raw, dict) else None
 
+    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        path = self._model_path(data_source, name)
+        self._model_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+        self._forget_raw(data_source=data_source, name=name)
+
+    async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
+        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        self._datasource_cache.pop(path, None)
+        _atomic_write_yaml(path=path, data=data)
+
+    async def _raw_memory_dicts(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for memory_id in self._memory_ids_on_disk():
+            try:
+                with open(self._memory_md_path(memory_id), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                    out[memory_id] = _md_to_memory_dict(memory_id, f.read())
+            except (OSError, yaml.YAMLError):
+                continue
+        return out
+
+    async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
+        with self._memories_file_lock():
+            _atomic_write_text(path=self._memory_md_path(memory_id), text=_memory_dict_to_md(data))
+
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
@@ -483,6 +515,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             else:
                 with open(path) as f:
                     data = yaml.safe_load(f)
+                data = await self._with_library_granularities_renamed(name=name, data=data)
                 ds = DatasourceConfig.model_validate(data)
                 admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
                 if admit is not None:

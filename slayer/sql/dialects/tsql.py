@@ -95,6 +95,8 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     sa_backend_names: frozenset[str] = frozenset({"mssql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"

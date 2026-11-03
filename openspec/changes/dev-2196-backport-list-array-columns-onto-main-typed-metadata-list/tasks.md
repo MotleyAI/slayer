@@ -15,52 +15,52 @@ Port from the branch (see design.md › Context for refs) keeping its symbol nam
 
 ## 2. Types and metadata
 
-- [ ] 2.1 `DataType.ARRAY`, `is_list`, `ELEMENT_TYPES`, `type_display`; `Column.element_type` + `check_element_type`, `list_operations_hint`, `column_type_text`; `SlayerModel.list_columns()` / `_list_of` / `_list_children`; `DEFAULT_AGGREGATIONS_BY_TYPE[ARRAY] = [count]` and the save-time check; verify the metadata tests in 1.2 pass
-- [ ] 2.2 Thread `element_type` through `StageColumn`, `ValueSlot`, `DeclaredMeasure`, `model_from_stage_schema` and `aggregation_result_type` returning `(type, element)`; verify the threading tests in 1.2 pass
+- [x] 2.1 `DataType.ARRAY`, `is_list`, `ELEMENT_TYPES`, `type_display`; `Column.element_type` + `check_element_type`, `list_operations_hint`, `column_type_text`; `SlayerModel.list_columns()` / `_list_of` / `_list_children`; `DEFAULT_AGGREGATIONS_BY_TYPE[ARRAY] = [count]` and the save-time check; verify the metadata tests in 1.2 pass
+- [x] 2.2 Thread `element_type` through `StageColumn`, `ValueSlot`, `DeclaredMeasure`, `model_from_stage_schema` and `aggregation_result_type` returning `(type, element)`; verify the threading tests in 1.2 pass
 
 ## 3. Ingestion, cursor typing and drift
 
-- [ ] 3.1 Native list mapping in main's `sql/dialects/reflection.py` (`ReflectedColumn.element_type`, `column_from_sa_type`, `column_from_type_string`, `_sa_list_item`, `_sa_element_type`, `sa_data_types`, `list_db_type`, `info_schema_list_element`); verify the ingestion tests pass
-- [ ] 3.2 Snowflake untyped-ARRAY element inference through the ingesting engine's `SqlClient` (`list_element_types_query` / `list_element_type` hooks; never `sa_engine.connect()` — design D13); verify its tests and `tests/test_law_database_door.py` pass
-- [ ] 3.3 Cursor typing and row fetch in `sql/client.py` (`CATEGORY_DATA_TYPES`, `"list"` in `_map_type_code`, Postgres array OIDs, tuples → lists in `_fetch_rows`, per-dialect `result_readers`, `sql/dialects/_clickhouse_cells.py`); sql-mode list columns get `element_type: UNKNOWN` unless declared (design D18); verify the sql-mode tests pass
-- [ ] 3.4 Drift: `ListRetypeFinding`, `list_retype_findings`, `REPORT_ONLY_FINDINGS`, `SchemaDriftError(findings=)`; re-ingest `_retyped_list` for any non-list base column (keep description / label / meta / sql / hidden / keys; keep only `count`; drop `format` and granularity); verify 1.7 passes
+- [x] 3.1 Native list mapping in main's `sql/dialects/reflection.py` (`ReflectedColumn.element_type`, `column_from_sa_type`, `column_from_type_string`, `_sa_list_item`, `_sa_element_type`, `sa_data_types`, `list_db_type`, `info_schema_list_element`); verify the ingestion tests pass
+- [x] 3.2 Snowflake untyped-ARRAY element inference through the ingesting engine's `SqlClient` (`list_element_types_query` / `list_element_type` hooks; never `sa_engine.connect()` — design D13); verify its tests and `tests/test_law_database_door.py` pass
+- [x] 3.3 Cursor typing and row fetch in `sql/client.py` (`CATEGORY_DATA_TYPES`, `"list"` in `_map_type_code`, Postgres array OIDs, tuples → lists in `_fetch_rows`, per-dialect `result_readers`, `sql/dialects/_clickhouse_cells.py`); sql-mode list columns get `element_type: UNKNOWN` unless declared (design D18); verify the sql-mode tests pass
+- [x] 3.4 Drift: `ListRetypeFinding`, `list_retype_findings`, `REPORT_ONLY_FINDINGS`, `SchemaDriftError(findings=)`; re-ingest `_retyped_list` for any non-list base column (keep description / label / meta / sql / hidden / keys; keep only `count`; drop `format` and granularity); verify 1.7 passes
 
 ## 4. Eligibility, list functions and the array literal
 
-- [ ] 4.1 `ListTypeError`; `ListTyping`, `check_list_operands`, `check_list_dimension`, `_check_list_*`, `_check_native_lists`, wired through `_list_typing` in `bind_inputs.py` in the branch's order (check, then `coerce_list_arguments` in `_map_bound_keys` — design D17); `native_lists` / `database_name` ClassVars, `False` on the eight non-list dialects; verify the eligibility and refusal tests pass
-- [ ] 4.2 `contains`, `contains_any`, `contains_all`, list `length` in main's `SCALAR_SPECS`; `boolean_valued` covers the three booleans; `list_valued`, `is_list_call`, `literal_type`, `value_type`, `list_element_type`; `contains` list-only with the `LIKE` remedy (design D1); A′ in `_same_family` / `coerce_list_arguments` (design D2, D17); verify the typing tests pass
-- [ ] 4.3 Dialect hooks `build_list_call`, `list_each`, `list_length`, `list_contains`, `list_overlaps`, `list_contains_all` with overrides in postgres (incl. canonical-array casts), duckdb, bigquery, snowflake, clickhouse, trino; rendered from `render_scalar_call`; verify the list matrix passes
-- [ ] 4.4 `ArrayLit` in `engine/syntax._convert`, `canonical_measure_text`, `_walk_parsed`; `ArrayLiteralKey`, `_bind_array_literal`, `render_array_literal`; audit every key-kind dispatch site PR #518 touched so the new kind is handled or fails closed (design D12); verify 1.9's traversal tests pass
-- [ ] 4.5 List variables: `_LIST_ARG_FUNCTIONS` / `_list_slot_ordinals` re-homed into `core/query.substitute_variables` (design D15); verify the list-variable tests pass
+- [x] 4.1 `ListTypeError`; `ListTyping`, `check_list_operands`, `check_list_dimension`, `_check_list_*`, `_check_native_lists`, wired through `_list_typing` in `bind_inputs.py` in the branch's order (check, then `coerce_list_arguments` in `_map_bound_keys` — design D17); `native_lists` / `database_name` ClassVars, `False` on the eight non-list dialects; verify the eligibility and refusal tests pass
+- [x] 4.2 `contains`, `contains_any`, `contains_all`, list `length` in main's `SCALAR_SPECS`; `boolean_valued` covers the three booleans; `list_valued`, `is_list_call`, `literal_type`, `value_type`, `list_element_type`; `contains` list-only with the `LIKE` remedy (design D1); A′ in `_same_family` / `coerce_list_arguments` (design D2, D17); verify the typing tests pass
+- [x] 4.3 Dialect hooks `build_list_call`, `list_each`, `list_length`, `list_contains`, `list_overlaps`, `list_contains_all` with overrides in postgres (incl. canonical-array casts), duckdb, bigquery, snowflake, clickhouse, trino; rendered from `render_scalar_call`; verify the list matrix passes
+- [x] 4.4 `ArrayLit` in `engine/syntax._convert`, `canonical_measure_text`, `_walk_parsed`; `ArrayLiteralKey`, `_bind_array_literal`, `render_array_literal`; audit every key-kind dispatch site PR #518 touched so the new kind is handled or fails closed (design D12); verify 1.9's traversal tests pass
+- [x] 4.5 List variables: `_LIST_ARG_FUNCTIONS` / `_list_slot_ordinals` re-homed into `core/query.substitute_variables` (design D15); verify the list-variable tests pass
 
 ## 5. List children
 
-- [ ] 5.1 `LIST_ELEMENT_COLUMN`, `list_child_name`, `list_child`, `with_list_children`, `_lateral_edge`, `_list_edges`, `is_lateral_edge`, `OrientedJoin.lateral`; `_reject_opaque_elements`; a list child built once per parent (`649ecc2b`); verify the resolution tests pass
-- [ ] 5.2 Element filters by EXISTS (`SemiJoinHop.lateral`, `SemiJoinFilter.outer_list_only`, `_leaf_list_predicates`, `_element_test`, `list_exists` per dialect); verify the filter tests pass
-- [ ] 5.3 Element aggregates, histogram, association and no fan-out (`generator._list_relation` / `_list_join`, `compile/stages._forward_lateral` / `_is_parent_hop` / `_reached_by_root_lists`, `AssociationProducerKernel.list_rows`, `scope_check._array_joined` / `_is_lateral`, `list_relation` per dialect); the filter across another to-many hop and the ClickHouse < 25.8 refusal (`02a1fc10`); verify 1.4 and the cross-model-aggregates delta pass
-- [ ] 5.4 Stage element access (`_stage_list_scope`, `_stage_element`, `stage_column_element`, `key_element_type`); verify the stage tests pass
-- [ ] 5.5 Save-time hop-name collision (`storage/base._check_list_hop_collisions`); verify the collision tests pass
+- [x] 5.1 `LIST_ELEMENT_COLUMN`, `list_child_name`, `list_child`, `with_list_children`, `_lateral_edge`, `_list_edges`, `is_lateral_edge`, `OrientedJoin.lateral`; `_reject_opaque_elements`; a list child built once per parent (`649ecc2b`); verify the resolution tests pass
+- [x] 5.2 Element filters by EXISTS (`SemiJoinHop.lateral`, `SemiJoinFilter.outer_list_only`, `_leaf_list_predicates`, `_element_test`, `list_exists` per dialect); verify the filter tests pass
+- [x] 5.3 Element aggregates, histogram, association and no fan-out (`generator._list_relation` / `_list_join`, `compile/stages._forward_lateral` / `_is_parent_hop` / `_reached_by_root_lists`, `AssociationProducerKernel.list_rows`, `scope_check._array_joined` / `_is_lateral`, `list_relation` per dialect); the filter across another to-many hop and the ClickHouse < 25.8 refusal (`02a1fc10`); verify 1.4 and the cross-model-aggregates delta pass
+- [x] 5.4 Stage element access (`_stage_list_scope`, `_stage_element`, `stage_column_element`, `key_element_type`); verify the stage tests pass
+- [x] 5.5 Save-time hop-name collision (`storage/base._check_list_hop_collisions`); verify the collision tests pass
 
 ## 6. collect
 
-- [ ] 6.1 `LIST_AGGREGATIONS`, `AggregationValueClass.LIST`, the `AGG_REGISTRY` entry; `build_collect` / `filtered_collect` / `empty_list` per dialect; `EmptyList` and `_empty_value_expr` (untyped empty list at aggregate and join-back, `4322c840`); BigQuery exact numerics; a formula-backed `collect` stays the model's own; verify 1.5 passes
+- [x] 6.1 `LIST_AGGREGATIONS`, `AggregationValueClass.LIST`, the `AGG_REGISTRY` entry; `build_collect` / `filtered_collect` / `empty_list` per dialect; `EmptyList` and `_empty_value_expr` (untyped empty list at aggregate and join-back, `4322c840`); BigQuery exact numerics; a formula-backed `collect` stays the model's own; verify 1.5 passes
 
 ## 7. Library-name collisions
 
-- [ ] 7.1 Lift the scalar-name check from `Aggregation._reject_transform_names`; `shadows_library_function`, case-resolving `aggregation_definition` with `AmbiguousAggregationError`; parse deferral in `engine/syntax.py` (`ScalarCall.written` / `written_args`, `AggCall.library_error`; scalar keyword-argument, arity and method-call refusals deferred to binding — design D11); binder resolves the shadow against the owning model; verify `test_library_name_shadowing.py` passes
-- [ ] 7.2 Shadow warning in `core/warnings.py` and its plumbing through save, load and every response incl. dry run, EXPLAIN, cached, REST and MCP (design D16); verify `test_library_name_shadow_warnings.py` passes
-- [ ] 7.3 `storage/granularity_rename.py` and the on-load rename in `storage/base.py` (both backends; dependants persisted first; converging); `reserved_granularity_names()` covers the new names; verify `test_granularity_name_migration.py` and `test_library_growth.py` pass
+- [x] 7.1 Lift the scalar-name check from `Aggregation._reject_transform_names`; `shadows_library_function`, case-resolving `aggregation_definition` with `AmbiguousAggregationError`; parse deferral in `engine/syntax.py` (`ScalarCall.written` / `written_args`, `AggCall.library_error`; scalar keyword-argument, arity and method-call refusals deferred to binding — design D11); binder resolves the shadow against the owning model; verify `test_library_name_shadowing.py` passes
+- [x] 7.2 Shadow warning in `core/warnings.py` and its plumbing through save, load and every response incl. dry run, EXPLAIN, cached, REST and MCP (design D16); verify `test_library_name_shadow_warnings.py` passes
+- [x] 7.3 `storage/granularity_rename.py` and the on-load rename in `storage/base.py` (both backends; dependants persisted first; converging); `reserved_granularity_names()` covers the new names; verify `test_granularity_name_migration.py` and `test_library_growth.py` pass
 
 ## 8. Profiling, facades and the MCP surface
 
-- [ ] 8.1 Element profiling (`engine/profiling._profile_type` / `_values_ref`); verify the profiling tests pass
-- [ ] 8.2 `core/format.list_json_text`; ARRAY → text in `facade/datatypes.py`, `pg_facade/types.py`, `flight/types.py`; list cells in `flight/handlers.py` and `mcp/server._format_csv`; REST/MCP JSON lists; verify 1.6 passes
-- [ ] 8.3 `model_render._render_column_type` / `_choose_sample_agg`, `search/render`, `collection_render`; query-tool field-description clauses in `core/query.py`; `element_type` in `edit_model`'s column-key list; MCP query-schema budget; verify the rendering and `tests/test_mcp_surface_budget.py` tests pass
+- [x] 8.1 Element profiling (`engine/profiling._profile_type` / `_values_ref`); verify the profiling tests pass
+- [x] 8.2 `core/format.list_json_text`; ARRAY → text in `facade/datatypes.py`, `pg_facade/types.py`, `flight/types.py`; list cells in `flight/handlers.py` and `mcp/server._format_csv`; REST/MCP JSON lists; verify 1.6 passes
+- [x] 8.3 `model_render._render_column_type` / `_choose_sample_agg`, `search/render`, `collection_render`; query-tool field-description clauses in `core/query.py`; `element_type` in `edit_model`'s column-key list; MCP query-schema budget; verify the rendering and `tests/test_mcp_surface_budget.py` tests pass
 
 ## 9. Architecture, docs and help
 
-- [ ] 9.1 Apply the four approved arc42 edits verbatim (design D5); verify `poetry run la-arch-check` passes
-- [ ] 9.2 Docs, list-column content only, worded against main's grammar: `docs/concepts/{models,formulas,queries,references,ingestion,terminology}.md`, `docs/database-support.md`, `docs/interfaces/{pg-facade,flight-sql}.md`, `docs/reference/mcp.md`; help topics 01 / 02 / 03 / 06 / 07; verify the help-memory tests pass and no new page needs a `zensical.toml` entry
+- [x] 9.1 Apply the four approved arc42 edits verbatim (design D5); verify `poetry run la-arch-check` passes
+- [x] 9.2 Docs, list-column content only, worded against main's grammar: `docs/concepts/{models,formulas,queries,references,ingestion,terminology}.md`, `docs/database-support.md`, `docs/interfaces/{pg-facade,flight-sql}.md`, `docs/reference/mcp.md`; help topics 01 / 02 / 03 / 06 / 07; verify the help-memory tests pass and no new page needs a `zensical.toml` entry
 
 ## 10. Verification
 

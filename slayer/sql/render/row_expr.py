@@ -26,7 +26,10 @@ from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    LIST_ONLY_FUNCTIONS,
     ArithmeticKey,
+    ArrayLiteralKey,
+    ColumnElementFn,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -37,11 +40,14 @@ from slayer.core.keys import (
     _FrozenKey,
     boolean_valued,
     check_scalar_arity,
+    is_list_call,
+    list_element_type,
+    literal_type,
     numeric_boolean_positions,
     temporal_type,
     unit_word,
 )
-from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, temporal_type_of
+from slayer.sql.dialects.base import SqlDialect, TemporalComparisonOp, is_list_fn, temporal_type_of
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
 
 _BINARY_OPS: Dict[str, Any] = {
@@ -249,6 +255,47 @@ def render_temporal_comparison(
     return dialect.build_temporal_comparison(op=op, operand=grouped, value=value)
 
 
+_NUMBER_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
+
+
+def _shared_element(
+    key: ScalarCallKey, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
+) -> Optional[DataType]:
+    """The one element type of ``contains_any`` / ``contains_all``'s two lists (numbers join to ``DOUBLE`` when
+    either list holds one), when known."""
+    if key.name not in LIST_ONLY_FUNCTIONS or key.name == "contains":
+        return None
+    types: set[Optional[DataType]] = set()
+    for arg in key.args:
+        if isinstance(arg, ArrayLiteralKey):
+            types |= {literal_type(v.value) for v in arg.values}
+        else:
+            types.add(list_element_type(arg, column_type=column_type, column_element=column_element))
+    types -= {None}
+    if types and types <= _NUMBER_TYPES:
+        return DataType.DOUBLE if DataType.DOUBLE in types else DataType.INT
+    return types.pop() if len(types) == 1 else None
+
+
+def _no_element(_key: Any) -> Optional[DataType]:
+    return None
+
+
+def render_scalar_key(
+    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    column_element: Optional[ColumnElementFn] = None,
+) -> Expression:
+    """A non-date scalar key: a list function over a list through the dialect, else ``render_scalar_call``."""
+    if is_list_fn(key.name) and is_list_call(key, column_type=column_type):
+        element = _shared_element(key, column_type=column_type, column_element=column_element or _no_element)
+        return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args), element=element))
+    return render_scalar_call(name=key.name, args=args, dialect=dialect)
+
+
+def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expression:
+    return dialect.build_array_literal([_literal(v.value, dialect=dialect) for v in key.values])
+
+
 def render_scalar_call(
     *, name: str, args: List[Expression], dialect: SqlDialect,
 ) -> Expression:
@@ -368,6 +415,7 @@ def render_row_expression(
     dialect: SqlDialect,
     resolve_column: Callable[[Any], Expression],
     column_type: ColumnTypeFn,
+    column_element: Optional[ColumnElementFn] = None,
 ) -> Expression:
     """Render an aggregation-free row-level ``ValueKey`` tree (an
     ``AggregateKey``'s expression source) to sqlglot AST.
@@ -382,6 +430,7 @@ def render_row_expression(
         if isinstance(a, _FrozenKey):
             return render_row_expression(
                 key=a, dialect=dialect, resolve_column=resolve_column, column_type=column_type,
+                column_element=column_element,
             )
         return _literal(a, dialect=dialect)
 
@@ -406,10 +455,14 @@ def render_row_expression(
         args = numeric_parts(key=key, parts=[_part(a) for a in key.args], column_type=column_type)
         if key.name in DATE_FUNCTIONS:
             return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-        return render_scalar_call(name=key.name, args=args, dialect=dialect)
+        return render_scalar_key(
+            key=key, args=args, dialect=dialect, column_type=column_type, column_element=column_element,
+        )
     if isinstance(key, InKey):
         (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
         return render_in_predicate(key=key, column=column, dialect=dialect)
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=dialect)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )

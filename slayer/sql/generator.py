@@ -37,19 +37,23 @@ from slayer.core.errors import (
     MaterialisationStageError,
     QueryBackedCycleError,
 )
-from slayer.core.enums import RANK_FAMILY_TRANSFORMS
+from slayer.core.enums import LIST_AGGREGATIONS, RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, walk_value_keys
+from slayer.core.keys import BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, aggregation_source_type, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, value_type, walk_value_keys
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
+    is_lateral_edge,
     is_unrelated_edge,
+    model_column_element,
     model_column_type,
     physical_join_pairs,
     resolved_terminal,
 )
-from slayer.core.models import VALUE_PLACEHOLDER, aggregation_definition, rendered_formula, reserved_value_param_message
+from slayer.core.models import (
+    VALUE_PLACEHOLDER, EmptyList, EmptyValue, aggregation_definition, rendered_formula, reserved_value_param_message,
+)
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.column_expansion import (
@@ -188,6 +192,9 @@ class AggRenderSpec(BaseModel):
 
     #: An expression source's rendered value, never re-parsed from text.
     value: Optional[Expression] = None
+
+    #: A list aggregation's element type (the input's type).
+    element_type: Optional[DataType] = None
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
@@ -701,8 +708,12 @@ _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 def _apply_joins(*, select, joins):
-    """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order,"""
+    """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order (``ARRAY``: ClickHouse's ARRAY JOIN)."""
     for join_expr, on_expr, join_type in joins:
+        if join_type == "ARRAY":
+            select = select.copy()
+            select.append("joins", exp.Join(this=join_expr, kind="ARRAY"))
+            continue
         select = select.join(join_expr, on=on_expr, join_type=join_type)
     return select
 
@@ -733,12 +744,12 @@ def _cycle_public_aliases_in_projection_order(
 
 
 class _SemiJoinOps:
-    """Alias / column / table callbacks of one semi-join EXISTS."""
+    """Alias / column / table callbacks of one semi-join EXISTS; a list hop is its parent row's elements."""
 
     def __init__(
         self, *, alias: Callable[[Tuple[str, ...]], str],
         col: Callable[[str, str], exp.Column],
-        table: Callable[[Any], Expression],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
+        table: Callable[[Any, bool], Tuple[Expression, str]],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
     ) -> None:
         self.alias = alias
@@ -757,10 +768,11 @@ class _SemiJoinOps:
         ]
 
     def join(self, *, inner, hop, eqs: List[Any]):
+        relation, kind = self.table(hop, False)
+        if hop.lateral is not None:
+            return _apply_joins(select=inner, joins=[(relation, None, kind)])
         on = exp.and_(*eqs) if len(eqs) > 1 else eqs[0]
-        return inner.join(
-            self.table(hop), on=on, join_type="left" if hop.null_extended else "inner",
-        )
+        return inner.join(relation, on=on, join_type="left" if hop.null_extended else "inner")
 
 
 def _spine_projection(*, ops: _SemiJoinOps, hops, ident):
@@ -804,6 +816,29 @@ def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
     return inner
 
 
+def _leaf_list_predicates(
+    *, group, conjuncts: List[Expression], alias,
+) -> Tuple[List[Tuple[Any, List[Expression]]], List[Expression]]:
+    """The group's leaf list hops, each with the conjuncts that read its elements, and the other conjuncts.
+
+    A conjunct reading two leaf lists keeps every list hop in the subquery's FROM."""
+    parents = {tuple(h.node_path[:-1]) for h in group.hops}
+    leaves = [h for h in group.hops
+              if h.lateral is not None and not h.null_extended and tuple(h.node_path) not in parents]
+    names = {alias(h.node_path): h for h in leaves}
+    by_hop: Dict[Tuple[str, ...], List[Expression]] = {tuple(h.node_path): [] for h in leaves}
+    plain: List[Expression] = []
+    for conjunct in conjuncts:
+        read = {tuple(names[c.table].node_path) for c in conjunct.find_all(exp.Column) if c.table in names}
+        if len(read) > 1:
+            return [], conjuncts
+        if read:
+            by_hop[next(iter(read))].append(conjunct)
+        else:
+            plain.append(conjunct)
+    return [(h, by_hop[tuple(h.node_path)]) for h in leaves], plain
+
+
 def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
     """Flat shape: FROM the first attached hop, further attached hops CROSS-joined
     with their correlations in WHERE, deeper hops ON their parent."""
@@ -814,8 +849,11 @@ def _semi_join_flat(*, ops: _SemiJoinOps, hops, inner):
         if not ops.is_attached(hop):
             inner = ops.join(inner=inner, hop=hop, eqs=eqs)
             continue
-        table = ops.table(hop)
-        inner = inner.join(table, join_type="cross") if first_seen else inner.from_(table)
+        table, kind = ops.table(hop, not first_seen)
+        if first_seen:
+            inner = _apply_joins(select=inner, joins=[(table, None, kind if hop.lateral else "CROSS")])
+        else:
+            inner = inner.from_(table)
         first_seen = True
         correlation.extend(eqs)
     for eq in correlation:
@@ -874,7 +912,8 @@ class SQLGenerator:
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
         #: Column-type resolvers of the planned queries being rendered (innermost last).
         self._gen_column_types: List[ColumnTypeFn] = []
-        self._gen_placeholder_types: List[Dict[Any, DataType]] = []
+        #: Per planned query: its placeholders' types and their list element types.
+        self._gen_placeholder_types: List[Tuple[Dict[Any, DataType], Dict[Any, DataType]]] = []
         #: Multi-stage statement state: every stage relation, the current
         #: statement's declared reads and its in-flight splice chain.
         # Spine factors of the plans being rendered; the innermost reads its spine relation.
@@ -940,6 +979,7 @@ class SQLGenerator:
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
             placeholder_types=self._placeholder_types(),
+            placeholder_elements=self._placeholder_elements(),
         )
 
     def _current_column_types(self) -> Optional[ColumnTypeFn]:
@@ -1166,6 +1206,8 @@ class SQLGenerator:
             return self._build_stat_agg(spec), True
         if agg_name == "percentile":
             return self._build_percentile(spec), True
+        if agg_name == "collect":
+            return self._dialect.build_collect(self._resolve_value_ast(spec), spec.element_type), True
         if agg_name == "count_distinct_approx":
             return self._dialect.build_approx_count_distinct(
                 col_expr=self._resolve_value_ast(spec),
@@ -1182,6 +1224,12 @@ class SQLGenerator:
         return apply_aggregate(
             entry=entry, value=inner, input_type=spec.input_type, dialect=self._dialect,
         ), True
+
+    def _empty_value_expr(self, empty: EmptyValue) -> Optional[Expression]:
+        """An aggregate's empty value as SQL (``None``: NULL)."""
+        if isinstance(empty, EmptyList):
+            return self._dialect.empty_list()
+        return None if empty is None else exp.Literal.number(empty)
 
     def _pick_once(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
         """An association producer's per-entity pick of a constant ``value`` (MAX)."""
@@ -1334,9 +1382,19 @@ class SQLGenerator:
             sub.placeholder: dt
             for attach in planned_query.regroup_attach_plans
             for sub in attach.substitutions
-            if (dt := temporal_type(sub.original_key, column_type=model_types)) is not None
+            if (dt := temporal_type(sub.original_key, column_type=model_types) or (
+                DataType.ARRAY if list_valued(sub.original_key, column_type=model_types) else None
+            )) is not None
         }
-        self._gen_placeholder_types.append(placeholders)
+        model_elements = model_column_element(model=source_model, models_by_name=bundle.models_by_name)
+        elements = {
+            sub.placeholder: element
+            for attach in planned_query.regroup_attach_plans
+            for sub in attach.substitutions
+            if (element := list_element_type(sub.original_key, column_type=model_types,
+                                             column_element=model_elements)) is not None
+        }
+        self._gen_placeholder_types.append((placeholders, elements))
         self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
         # The outermost spine render declares every sequence CTE rendered within it (nested producers included).
         owns_spine = planned_query.spine is not None and not self._gen_spines
@@ -1362,7 +1420,10 @@ class SQLGenerator:
                 self._gen_spine_ctes = outer_spine_ctes
 
     def _placeholder_types(self) -> Dict[Any, DataType]:
-        return dict(self._gen_placeholder_types[-1]) if self._gen_placeholder_types else {}
+        return dict(self._gen_placeholder_types[-1][0]) if self._gen_placeholder_types else {}
+
+    def _placeholder_elements(self) -> Dict[Any, DataType]:
+        return dict(self._gen_placeholder_types[-1][1]) if self._gen_placeholder_types else {}
 
     def _generate_from_planned_body(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
@@ -2005,6 +2066,7 @@ class SQLGenerator:
             allocator=allocator,
             attached_columns=dict(attached_columns or {}),
             placeholder_types=self._placeholder_types(),
+            placeholder_elements=self._placeholder_elements(),
         )
 
     def _render_computed_dims_via_scope(
@@ -3071,7 +3133,13 @@ class SQLGenerator:
 
         # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
         # the input is root-determined, constant per entity); ``count(*)`` keeps no
-        # value column — level 2 counts the entity rows.
+        # value column — level 2 counts the entity rows. List rows are already one
+        # per root row and cell, so they read their values as is.
+        list_rows = getattr(kernel, "list_rows", False)
+
+        def pick(value: Expression, *, input_type: Optional[DataType]) -> Expression:
+            return value if list_rows else self._pick_once(value, input_type=input_type)
+
         is_star = isinstance(agg_slot.key.source, StarKey)
         picked_alias = "_v"
         # Parameters the grain determines are picked once per cell as
@@ -3099,7 +3167,7 @@ class SQLGenerator:
                 input_type=aggregation_source_type(agg_slot.key.source, column_type=scope.column_type),
             )
             inner_cols.append(exp.Alias(
-                this=self._pick_once(value_expr.copy(), input_type=spec.input_type),
+                this=pick(value_expr.copy(), input_type=spec.input_type),
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
@@ -3126,7 +3194,7 @@ class SQLGenerator:
                 scope=scope,
             )
             inner_cols.append(
-                self._pick_once(self._resolve_value_ast(spec), input_type=spec.input_type).as_(
+                pick(self._resolve_value_ast(spec), input_type=spec.input_type).as_(
                     exp.to_identifier(picked_alias),
                 ),
             )
@@ -3139,9 +3207,7 @@ class SQLGenerator:
             _p_alias = f"_p{_i}"
             _picked = render_value_key(key=_pp.key, ctx=ctx)
             inner_cols.append(exp.Alias(
-                this=self._pick_once(
-                    _picked, input_type=aggregation_source_type(_pp.key, column_type=scope.column_type),
-                ),
+                this=pick(_picked, input_type=aggregation_source_type(_pp.key, column_type=scope.column_type)),
                 alias=exp.to_identifier(_p_alias),
             ))
             picked_kwarg_exprs[_pp.name] = ResolvedAggKwarg(
@@ -3165,7 +3231,7 @@ class SQLGenerator:
         )
         from_expr, joins = self._build_from_and_joins(
             source_model=source_model, source_relation=source_relation,
-            joined_paths=scope.join_paths.as_list(), bundle=bundle,
+            joined_paths=scope.join_paths.as_list(), bundle=bundle, distinct_lists=list_rows,
         )
         inner = exp.Select().select(*inner_cols).from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
@@ -3191,7 +3257,7 @@ class SQLGenerator:
             source_relation=source_relation, bundle=bundle,
         ):
             inner = inner.where(cond)
-        for g in group:
+        for g in [] if list_rows else group:
             inner = inner.group_by(g)
 
         base_subq = exp.Subquery(
@@ -4079,7 +4145,7 @@ class SQLGenerator:
                         f"{sub.producer_slot_id!r}.",
                     )
                 placeholder_to_cm[sub.placeholder] = AttachedValue(
-                    cte_name=cte_name, column_name=agg_col, empty_value=sub.empty_value,
+                    cte_name=cte_name, column_name=agg_col, empty=self._empty_value_expr(sub.empty_value),
                 )
                 ph_slot = slot_by_key.get(sub.placeholder)
                 if ph_slot is not None:
@@ -4161,7 +4227,7 @@ class SQLGenerator:
                 for sub in attach.substitutions:
                     attached_env[sub.placeholder] = AttachedValue(
                         cte_name=dedup_cte, column_name=okey_to_col[sub.original_key],
-                        empty_value=sub.empty_value,
+                        empty=self._empty_value_expr(sub.empty_value),
                     ).value()
                 join_specs.append((dedup_cte, list(grain_pairs)))
                 reused_cte_names.append(dedup_cte)
@@ -4178,7 +4244,7 @@ class SQLGenerator:
                 for sub in attach.substitutions:
                     attached_env[sub.placeholder] = AttachedValue(
                         cte_name=shared_cte, column_name=col_by_sid[sub.producer_slot_id],
-                        empty_value=sub.empty_value,
+                        empty=self._empty_value_expr(sub.empty_value),
                     ).value()
                 join_specs.append((shared_cte, [
                     (host_key, col_by_sid[producer_slot_id])
@@ -4248,7 +4314,7 @@ class SQLGenerator:
                     )
                 attached_env[sub.placeholder] = AttachedValue(
                     cte_name=cte_name, column_name=_flat(agg_slot),
-                    empty_value=sub.empty_value,
+                    empty=self._empty_value_expr(sub.empty_value),
                 ).value()
             pairs: List[Tuple[Any, str]] = []
             for host_key, producer_slot_id in attach.join_pairs:
@@ -4329,15 +4395,26 @@ class SQLGenerator:
         source_relation: str,
         joined_paths: List[Tuple[str, ...]],
         bundle,
+        distinct_lists: bool = False,
     ):
-        """Build ``(from_expr, joins)`` for a base SELECT."""
-        base_from = self._build_from_clause_from_planned(
-            source_model=source_model, source_relation=source_relation,
-        )
+        """Build ``(from_expr, joins)`` for a base SELECT; a list child root reads its parent's own rows."""
         joins: List = []
+        emitted_aliases: set = {source_relation}
+        if source_model.list_of is not None:
+            parent_name, column = source_model.list_of
+            parent = bundle.models_by_name[parent_name]
+            parent_alias = self._join_alias(root=source_relation, path=(column,))
+            base_from = self._emit_relation(model=parent, alias=parent_alias)
+            joins.append(self._list_join(
+                parent=parent, column=column, parent_alias=parent_alias, alias=source_relation, bundle=bundle,
+            ))
+            emitted_aliases.add(parent_alias)
+        else:
+            base_from = self._build_from_clause_from_planned(
+                source_model=source_model, source_relation=source_relation,
+            )
         if not joined_paths:
             return base_from, joins
-        emitted_aliases: set = {source_relation}
         for path in joined_paths:
             current_alias = source_relation
             chain = self._oriented_hop_chain(
@@ -4351,19 +4428,49 @@ class SQLGenerator:
                 if next_alias not in emitted_aliases:
                     joins.append(self._hop_join(
                         edge=edge, prev_model=prev_model, next_model=next_model,
-                        current_alias=current_alias, next_alias=next_alias,
+                        current_alias=current_alias, next_alias=next_alias, bundle=bundle,
+                        distinct_lists=distinct_lists,
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
                 prev_model = next_model
         return base_from, joins
 
+    def _list_relation(
+        self, *, parent, column: str, parent_alias: str, alias: str, bundle, leading: bool, distinct: bool = False,
+    ):
+        """``parent``'s list ``column`` (read at ``parent_alias``) as its element relation ``alias``."""
+        col = parent.get_column(column)
+        assert col is not None and col.type is DataType.ARRAY, (parent.name, column)
+        frame = self._throwaway_frame(model=parent, relation=parent_alias, bundle=bundle)
+        values = frame.resolve(
+            ColumnSqlKey(model=parent.name, column_name=column) if col.needs_expansion else ColumnKey(leaf=column),
+        )
+        return self._dialect.list_relation(
+            values, alias=exp.to_identifier(alias), element=col.element_type, leading=leading, distinct=distinct,
+        )
+
+    def _list_join(self, *, parent, column: str, parent_alias: str, alias: str, bundle, distinct: bool = False):
+        relation = self._list_relation(
+            parent=parent, column=column, parent_alias=parent_alias, alias=alias, bundle=bundle, leading=False,
+            distinct=distinct,
+        )
+        return relation.relation, None, relation.join_kind
+
     def _hop_join(
-        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str,
+        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str, bundle=None,
+        distinct_lists: bool = False,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
         if is_unrelated_edge(edge):
             raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
+        if is_lateral_edge(edge):
+            if next_model.list_of is None:
+                raise ValueError(f"The hop from list child {prev_model.name!r} back to its parent is its own row.")
+            return self._list_join(
+                parent=prev_model, column=edge.lateral, parent_alias=current_alias, alias=next_alias, bundle=bundle,
+                distinct=distinct_lists,
+            )
         join_on_parts = [
             # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
             exp.EQ(
@@ -5229,6 +5336,8 @@ class SQLGenerator:
         hop): a stage relation must be one the statement declared it reads."""
         if is_spine(model):
             return self._spine_relation(alias=alias)
+        if model.list_of is not None:
+            raise ValueError(f"List child {model.name!r} is read inside its parent's rows, never as a relation.")
         if model.sql_table:
             if model.sql_table in self._gen_stage_relations:
                 if model.sql_table not in self._gen_stage_reads:
@@ -5652,6 +5761,7 @@ class SQLGenerator:
             bundle=bundle or ResolvedSourceBundle(dialect=self.dialect, source_model=source_model),
         )
         input_type = aggregation_source_type(source, column_type=param_scope.column_type)
+        element_type = value_type(source, column_type=param_scope.column_type) if key.agg in LIST_AGGREGATIONS else None
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             host_grain_root: Optional[str] = None
             if source.path and _is_host_grain(key) and bundle is not None:
@@ -5722,6 +5832,7 @@ class SQLGenerator:
                 type=slot_type,
                 column_type=column_type,
                 input_type=input_type,
+                element_type=element_type,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
@@ -5753,6 +5864,7 @@ class SQLGenerator:
                 type=slot_type,
                 column_type=None,
                 input_type=input_type,
+                element_type=element_type,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, formula=formula, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
@@ -5798,7 +5910,7 @@ class SQLGenerator:
 
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
-    ) -> exp.Exists:
+    ) -> Expression:
         """Build one correlated EXISTS lowering the group's join product:
         outer-attached hops (parent outside the group) correlate to the outer
         body — the flat shape when none is null-extended, else the spine shape (a
@@ -5812,24 +5924,20 @@ class SQLGenerator:
             )
 
         in_group = {tuple(h.node_path) for h in group.hops}
-        ops = _SemiJoinOps(
-            alias=_alias,
-            col=lambda table, name: exp.Column(
-                this=self._to_ident(name), table=exp.to_identifier(table)),
-            table=lambda hop: self._hop_table_expr(
-                hop_model=self._hop_model(name=hop.target_model, bundle=bundle),
-                alias=_alias(hop.node_path)),
-            attached={
-                tuple(h.node_path) for h in group.hops
-                if tuple(h.node_path[:-1]) not in in_group
-            },
-        )
-        inner = exp.select(exp.Literal.number(1))
-        if any(h.null_extended for h in group.hops if ops.is_attached(h)):
-            inner = _semi_join_spine(
-                ops=ops, hops=group.hops, inner=inner, ident=self._to_ident)
-        else:
-            inner = _semi_join_flat(ops=ops, hops=group.hops, inner=inner)
+        node_models = {(): source_model.name, **{tuple(h.node_path): h.target_model for h in group.hops}}
+
+        def _table(hop, leading: bool) -> Tuple[Expression, str]:
+            if hop.lateral is None:
+                return self._hop_table_expr(
+                    hop_model=self._hop_model(name=hop.target_model, bundle=bundle), alias=_alias(hop.node_path),
+                ), "CROSS"
+            parent_path = tuple(hop.node_path[:-1])
+            relation = self._list_relation(
+                parent=bundle.models_by_name[node_models[parent_path]], column=hop.lateral,
+                parent_alias=_alias(parent_path), alias=_alias(hop.node_path), bundle=bundle, leading=leading,
+            )
+            return relation.relation, relation.join_kind
+
         # Conjunct refs carry tree-node paths, so the same allocator resolves
         # them to the hop aliases; root-local refs correlate to the outer body.
         ctx = RenderContext(
@@ -5842,12 +5950,58 @@ class SQLGenerator:
                 cast_column_sql=True, paren_comparison_operands=True,
             ),
         )
+        conjuncts = []
         for key in group.conjuncts:
             rendered = render_value_key(key=key, ctx=ctx)
-            if isinstance(rendered, (exp.And, exp.Or)):
-                rendered = exp.Paren(this=rendered)
-            inner = inner.where(rendered)
+            conjuncts.append(exp.Paren(this=rendered) if isinstance(rendered, (exp.And, exp.Or)) else rendered)
+        leaves, plain = _leaf_list_predicates(group=group, conjuncts=conjuncts, alias=_alias)
+        conditions = [*plain, *(
+            self._element_test(hop=hop, predicates=predicates, node_models=node_models,
+                               source_relation=source_relation, bundle=bundle, alias=_alias)
+            for hop, predicates in leaves
+        )]
+        rest = [h for h in group.hops if all(h is not hop for hop, _ in leaves)]
+        if not rest:
+            combined = conditions[0]
+            for condition in conditions[1:]:
+                combined = exp.And(this=combined, expression=condition)
+            return combined
+        ops = _SemiJoinOps(
+            alias=_alias,
+            col=lambda table, name: exp.Column(
+                this=self._to_ident(name), table=exp.to_identifier(table)),
+            table=_table,
+            attached={
+                tuple(h.node_path) for h in rest
+                if tuple(h.node_path[:-1]) not in in_group
+            },
+        )
+        inner = exp.select(exp.Literal.number(1))
+        if any(h.null_extended for h in rest if ops.is_attached(h)):
+            inner = _semi_join_spine(
+                ops=ops, hops=rest, inner=inner, ident=self._to_ident)
+        else:
+            inner = _semi_join_flat(ops=ops, hops=rest, inner=inner)
+        for condition in conditions:
+            inner = inner.where(condition)
         return exp.Exists(this=inner)
+
+    def _element_test(
+        self, *, hop, predicates: List[Expression], node_models, source_relation: str, bundle, alias,
+    ) -> Expression:
+        """Some non-NULL element of the leaf list hop satisfies every predicate (read on its parent's row)."""
+        parent_path = tuple(hop.node_path[:-1])
+        parent = bundle.models_by_name[node_models[parent_path]]
+        col = parent.get_column(hop.lateral)
+        assert col is not None
+        relation = alias(parent_path) if parent_path else source_relation
+        values = self._throwaway_frame(model=parent, relation=relation, bundle=bundle).resolve(
+            ColumnSqlKey(model=parent.name, column_name=hop.lateral) if col.needs_expansion else ColumnKey(leaf=hop.lateral),
+        )
+        return self._dialect.list_exists(
+            values, alias=exp.to_identifier(alias(hop.node_path)), element=col.element_type,
+            predicate=exp.and_(*predicates) if predicates else exp.true(),
+        )
 
     def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over the lowered entries routing each to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering inline. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,

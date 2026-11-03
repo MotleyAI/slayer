@@ -61,7 +61,7 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient, build_sql_model_trial_query
+from slayer.sql.client import CATEGORY_DATA_TYPES, SqlClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -127,6 +127,17 @@ ToDeleteEntry = Annotated[
 ]
 
 
+class ListRetypeFinding(BaseModel):
+    """Report-only: a non-list column whose live column is a list; re-ingesting re-types it."""
+
+    finding: Literal["list_retype"] = "list_retype"
+    model_name: str
+    data_source: str
+    column: str
+    live_type: str
+    summary: str
+
+
 class NarrowedAccessFinding(BaseModel):
     """Report-only: the model reads tagged models (``narrowed_by``) whose tags do not cover its own."""
 
@@ -134,6 +145,10 @@ class NarrowedAccessFinding(BaseModel):
     model_name: str
     data_source: str
     narrowed_by: list[str]
+
+
+#: Validation entries that report rather than delete.
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, ListRetypeFinding)
 
 
 def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
@@ -230,6 +245,8 @@ class LiveTable(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     columns: dict[str, DataType] = Field(default_factory=dict)
+    # Each live list column's database type (``VARCHAR[]``, ``ARRAY<STRING>``).
+    list_types: dict[str, str] = Field(default_factory=dict)
     # Listed but its metadata read failed: present, yet no drift evidence.
     readable: bool = True
 
@@ -251,12 +268,33 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does)."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict."""
+    if live is DataType.ARRAY and persisted is not DataType.ARRAY:
+        return False
     if live.is_opaque:
         return not persisted.is_opaque
     if persisted.is_opaque:
         return False
     return data_type_bucket(persisted) != data_type_bucket(live)
+
+
+def list_retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list[ListRetypeFinding]:
+    """One finding per stored non-list base column whose live column is a list."""
+    if live_table is None:
+        return []
+    out: list[ListRetypeFinding] = []
+    for col in model.columns:
+        if col.type is DataType.ARRAY or not _column_is_base(col.sql):
+            continue
+        live = physical_column_sql(sql=col.sql, name=col.name)
+        if live_table.columns.get(live) is DataType.ARRAY:
+            live_type = live_table.list_types.get(live, "ARRAY")
+            out.append(ListRetypeFinding(
+                model_name=model.name, data_source=model.data_source, column=col.name, live_type=live_type,
+                summary=f"Column '{model.name}.{col.name}' is stored as {col.type.value} but its live column is "
+                f"the list {live_type}; re-ingest datasource '{model.data_source}' to re-type it.",
+            ))
+    return out
 
 
 def _is_bare_identifier(s: str | None) -> bool:
@@ -1828,16 +1866,10 @@ class LiveSnapshotCache:
 async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: SchemaRef | None) -> LiveTable:
     """One table's live columns via the reflection door; ``ref`` keeps the read catalog-scoped."""
     cols = await reflect_columns(client=client, table_name=table_name, ref=ref)
-    return LiveTable(columns={c.name: c.type for c in cols})
-
-
-# Cursor type-category strings → DataType buckets.
-_CURSOR_CATEGORY_TO_DATATYPE = {
-    "number": DataType.DOUBLE,
-    "string": DataType.TEXT,
-    "boolean": DataType.BOOLEAN,
-    "time": DataType.TIMESTAMP,
-}
+    return LiveTable(
+        columns={c.name: c.type for c in cols},
+        list_types={c.name: c.db_type or "ARRAY" for c in cols if c.type is DataType.ARRAY},
+    )
 
 
 async def _live_columns_for_sql_model(
@@ -1859,7 +1891,7 @@ async def _live_columns_for_sql_model(
         )
         return None
     return {
-        name: _CURSOR_CATEGORY_TO_DATATYPE.get(cat, DataType.TEXT)
+        name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT)
         for name, cat in cats.items()
     }
 
@@ -2257,8 +2289,9 @@ async def _collect_sql_table_diffs(
     sql_table_models: list[SlayerModel],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
+    findings: list[ListRetypeFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
-    """Introspect live and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff."""
+    """Introspect live and diff each sql_table-mode model; on SQLite also run the affinity probe and merge drift into each diff. Re-type findings append to ``findings``."""
     if not sql_table_models:
         return {}
     # Cover every own-catalog schema (a model may be qualified to another own
@@ -2292,6 +2325,10 @@ async def _collect_sql_table_diffs(
         client=client,
         sql_table_models=sql_table_models,
     )
+    if findings is not None:
+        for m in sql_table_models:
+            live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
+            findings.extend(list_retype_findings(model=m, live_table=live if live is not None and live.readable else None))
     return {
         m.name: _diff_one_sql_table_model(
             model=m,
@@ -2368,11 +2405,13 @@ async def validate_datasource(
     client: SqlClient,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
+    findings_out: list[ListRetypeFinding] | None = None,
 ) -> list[ToDeleteEntry]:
     """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
-    ``snapshot`` scopes introspection to ``models``' objects and reuses its facts.
+    ``snapshot`` scopes introspection to ``models``' objects and reuses its facts;
+    ``findings_out`` collects the report-only re-type findings.
     """
     if not models:
         return []
@@ -2387,6 +2426,7 @@ async def validate_datasource(
         sql_table_models=[m for m in models if m.sql_table],
         available_in_ds=available_in_ds,
         snapshot=snapshot,
+        findings=findings_out,
     )
     sql_diffs = await _collect_sql_diffs(
         datasource=datasource,
@@ -2394,8 +2434,8 @@ async def validate_datasource(
         client=client,
         snapshot=snapshot,
     )
-    return compute_datasource_drops(
+    return list(compute_datasource_drops(
         models=models,
         sql_table_diffs=sql_table_diffs,
         sql_diffs=sql_diffs,
-    )
+    ))

@@ -206,9 +206,11 @@ class TestRefusedWithoutNativeLists:
     @pytest.mark.parametrize(("dialect", "database"), [("oracle", "Oracle"), ("mysql", "MySQL")])
     async def test_refused(self, dialect: str, database: str) -> None:
         q = query(dimensions=["team"], measures=[measure("collect(team)", "c")])
+        models = [_scalar_contractors()]
         with pytest.raises(ListTypeError) as info:
-            await emit_contractors(q, dialect=dialect, models=[_scalar_contractors()])
-        assert "collect" in str(info.value) and database in str(info.value), str(info.value)
+            await emit_contractors(q, dialect=dialect, models=models)
+        assert "collect" in str(info.value), str(info.value)
+        assert database in str(info.value), str(info.value)
 
 
 def _scalar_contractors(*, aggregations: list[Aggregation] | None = None) -> SlayerModel:

@@ -1,6 +1,7 @@
 """Number formatting for SLayer query results."""
 
 import decimal
+import json
 import math
 import numbers
 from enum import Enum
@@ -174,3 +175,17 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
             value=value, default_precision=3, explicit_precision=precision
         )
         return f"{formatted_value:.{calc_precision}f}{suffix}"
+
+
+def _json_scalar(value: object) -> object:
+    if isinstance(value, decimal.Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    raise TypeError(f"Cannot write {type(value).__name__} as a JSON list element.")
+
+
+def list_json_text(values: list) -> str:
+    """A list value as JSON array text: strings escaped, booleans ``true`` / ``false``, dates ISO."""
+    return json.dumps(list(values), default=_json_scalar, ensure_ascii=False)

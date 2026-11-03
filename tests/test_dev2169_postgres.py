@@ -121,7 +121,7 @@ async def test_collect_over_uuid(pg) -> None:
 @pytest.mark.parametrize("fn", ["contains_any", "contains_all"])
 async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
     # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
-    hit = f"{fn}(collect(uid, partition_by=team), collect(uid || '', partition_by=team))"
+    hit = f"{fn}(collect(uid, partition_by=team), collect(concat(uid, ''), partition_by=team))"
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": [
         "id", {"expression": hit, "name": "hit"}]}))
     assert {int(r["typed.id"]): r["typed.hit"] for r in resp.data} == {

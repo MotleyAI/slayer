@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from typing import Optional
+from typing import ClassVar, Optional
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
@@ -376,6 +376,8 @@ def register_sqlite_udfs(dbapi_connection) -> None:
 
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "SQLite"
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
     sa_backend_names: frozenset[str] = frozenset({"sqlite"})
     probes_integer_affinity: bool = True

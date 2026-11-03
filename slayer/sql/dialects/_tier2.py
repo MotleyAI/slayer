@@ -12,6 +12,8 @@ Tier 1 modules.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
@@ -20,6 +22,8 @@ from slayer.sql.dialects.trino import PrestoFamilyDialect
 
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "Redshift"
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
     sa_backend_names: frozenset[str] = frozenset({"redshift"})
     explain_prefix: str | None = "EXPLAIN"
@@ -39,12 +43,15 @@ class RedshiftDialect(SqlDialect):
 
 class PrestoDialect(PrestoFamilyDialect):
     sqlglot_name: str = "presto"
+    database_name: ClassVar[str] = "Presto"
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
 
 
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "Databricks"
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
     sa_backend_names: frozenset[str] = frozenset({"databricks"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
@@ -57,6 +64,8 @@ class DatabricksDialect(SqlDialect):
 
 class SparkDialect(SqlDialect):
     sqlglot_name: str = "spark"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "Spark"
     ds_type_aliases: frozenset[str] = frozenset({"spark"})
     explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""
@@ -68,6 +77,8 @@ class SparkDialect(SqlDialect):
 
 class OracleDialect(SqlDialect):
     sqlglot_name: str = "oracle"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "Oracle"
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
     sa_backend_names: frozenset[str] = frozenset({"oracle"})
     explain_prefix: str | None = "EXPLAIN PLAN FOR"

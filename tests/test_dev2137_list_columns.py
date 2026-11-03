@@ -450,8 +450,9 @@ NO_LISTS = [("sqlite", "SQLite"), ("mysql", "MySQL"), ("mariadb", "MariaDB"), ("
 
 
 async def _refused_on(dialect: str, *, names: tuple[str, ...], **body: Any) -> None:
+    q = query(**body)
     with pytest.raises(ListTypeError) as info:
-        await emit_contractors(query(**body), dialect=dialect)
+        await emit_contractors(q, dialect=dialect)
     msg = str(info.value)
     for name in names:
         assert name in msg, msg

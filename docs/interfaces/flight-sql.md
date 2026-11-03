@@ -179,6 +179,9 @@ If a `ModelMeasure` has an incorrect or absent declared `type`, the wire-schema 
 data-row type mismatch surfaces as `ArrowTypeError`. Set `ModelMeasure.type` on custom
 formulas that surface over Flight SQL.
 
+A list column is a `utf8` dimension whose values are JSON array text (`["go","sql"]`), with `count` its only
+metric.
+
 ## Unobserved Commands
 
 The Apache JDBC driver did not exercise these commands during the Phase 1.0 wire

@@ -394,6 +394,7 @@ async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixtur
     await store.storage.get_memory("m")
     before = store.raw()
     storage = reopen(backend=backend, base=store.base)
+    caplog.clear()
     with _captured(caplog) as texts:
         assert await _granularity_names(storage) == ["contains_granularity"]
         assert _td_granularity(await _stage(storage, "bucketed")) == "contains_granularity"

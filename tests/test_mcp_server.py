@@ -1600,7 +1600,9 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True, result
-        tags = next(c for c in (await storage.get_model("orders")).columns if c.name == "tags")
+        stored = await storage.get_model("orders")
+        assert stored is not None
+        tags = next(c for c in stored.columns if c.name == "tags")
         assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_upsert_existing_column(self, mcp_server, storage: YAMLStorage) -> None:

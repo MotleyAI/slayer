@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from typing import ClassVar, Optional
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import ListFn, SqlDialect, is_empty_array, lit
 from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
+
+
+#: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
+_CANONICAL_ARRAYS = {
+    DataType.TEXT: "TEXT[]", DataType.INT: "BIGINT[]", DataType.DOUBLE: "DOUBLE PRECISION[]",
+    DataType.BOOLEAN: "BOOLEAN[]", DataType.DATE: "DATE[]", DataType.TIMESTAMP: "TIMESTAMP[]",
+}
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -49,6 +59,22 @@ class PostgresDialect(SqlDialect):
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
+    database_name: ClassVar[str] = "Postgres"
+    native_lists: ClassVar[bool] = True
+
+    def build_list_call(
+        self, fn: ListFn, args: tuple[Expression, ...], *, element: Optional[DataType] = None,
+    ) -> Expression:
+        """``&&`` / ``@>`` need one array type on both sides: each list is read as its element's canonical one."""
+        array = _CANONICAL_ARRAYS.get(element) if element is not None else None
+        if fn in ("contains_any", "contains_all") and array and not is_empty_array(args[1]):
+            to = exp.DataType.build(array, dialect=self.sqlglot_name)
+            args = tuple(exp.Cast(this=a.copy(), to=to.copy()) for a in args)
+        return super().build_list_call(fn, args, element=element)
+
+    def empty_list(self) -> Expression:
+        """``'{}'``: an empty ``ARRAY[]`` has no type to take."""
+        return lit("{}")
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         scope = (

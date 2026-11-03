@@ -172,7 +172,7 @@ class TestEverySurface:
 
     async def test_mcp(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_UPPER])]) as engine:
-            server = create_mcp_server(storage=engine.storage)
+            server: Any = create_mcp_server(storage=engine.storage)  # call_tool's annotation omits its (blocks, dict) tuple
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 blocks, _ = await server.call_tool("query", {"query": _query(), "format": "json"})

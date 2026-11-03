@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
     INTEGER_AGGREGATIONS,
+    LIST_AGGREGATIONS,
     NUMERIC_ONLY_AGGREGATIONS,
     DataType,
     DatePart,
@@ -87,6 +88,7 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "ltrim": _spec(1, 1), "rtrim": _spec(1, 1),
     "replace": _spec(3, 3), "substr": _spec(2, 3), "substring": _spec(2, 3), "instr": _spec(2, 2),
     "concat": _spec(1, None),
+    "contains": _spec(2, 2), "contains_any": _spec(2, 2), "contains_all": _spec(2, 2),
     "like": _spec(2, 2, sql=False),  # emits the LIKE operator
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
     "date_part": _spec(2, 2, sql=False),
@@ -98,6 +100,9 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
 })
 
 SCALAR_FUNCTIONS: frozenset[str] = frozenset(SCALAR_SPECS)
+# List functions: over a list first argument (``length`` also takes TEXT).
+LIST_FUNCTIONS: frozenset[str] = frozenset({"contains", "contains_any", "contains_all", "length"})
+LIST_ONLY_FUNCTIONS: frozenset[str] = frozenset({"contains", "contains_any", "contains_all"})
 SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     name: (spec.min_args, spec.max_args) for name, spec in SCALAR_SPECS.items()
 }
@@ -447,6 +452,8 @@ class AggregateKey(_FrozenKey, frozen=True):
     locus: Literal["target", "host"] = "target"
     # None = grain inherited from context; Grain.EMPTY = explicitly scalar.
     partition_keys: Optional["Grain"] = None
+    # The built-in aggregation's semantics (its owner declares no formula for ``agg``); not part of identity.
+    builtin: bool = Field(default=True, repr=False)
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -752,12 +759,33 @@ class InKey(_FrozenKey, frozen=True):
         return self.model_copy(update=update) if m.changed else self
 
 
+class ArrayLiteralKey(_FrozenKey, frozen=True):
+    """Identity for a literal list ``['a', 'b']``; ``[]`` takes its element type from the other operand."""
+
+    values: Tuple[LiteralKey, ...] = ()
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.values
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ArrayLiteralKey":
+        m = _ChildMapper(fn)
+        values = tuple(m(v) for v in self.values)
+        return self.model_copy(update={"values": values}) if m.changed else self
+
+
 ValueKey = Union[
     ColumnKey,
     ColumnSqlKey,
     TimeTruncKey,
     StarKey,
     LiteralKey,
+    ArrayLiteralKey,
     AggregateKey,
     TransformKey,
     ArithmeticKey,
@@ -879,6 +907,8 @@ Grain.EMPTY = Grain(keys=frozenset())
 
 
 VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
+#: Key fields outside identity (never spelled into a name).
+NON_IDENTITY_KEY_FIELDS = frozenset({"builtin"})
 
 
 class KindPolicy(BaseModel):
@@ -901,6 +931,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     TimeTruncKey: KindPolicy(slottable=True),
     StarKey: KindPolicy(),
     LiteralKey: KindPolicy(),
+    ArrayLiteralKey: KindPolicy(),
     AggregateKey: KindPolicy(slottable=True, materialised_order=True),
     TransformKey: KindPolicy(slottable=True, materialised_order=True),
     ArithmeticKey: KindPolicy(slot_composite=True, materialised_order=True),
@@ -1262,6 +1293,8 @@ def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> O
     return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
 
 
+# Scalars whose result is always boolean.
+_BOOLEAN_RESULT_SCALARS = frozenset({"like", "contains", "contains_any", "contains_all"})
 # Aggregations whose value is one of their (boolean) inputs.
 _BOOLEAN_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their arguments, keyed to the returnable positions (None = all).
@@ -1283,7 +1316,7 @@ def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     if isinstance(key, TransformKey):
         return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, column_type=column_type)
     if isinstance(key, ScalarCallKey):
-        if key.name == "like":
+        if key.name in _BOOLEAN_RESULT_SCALARS:
             return True
         if key.name not in _BOOLEAN_BRANCH_SCALARS:
             return False
@@ -1421,6 +1454,140 @@ def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Opt
     return None
 
 
+# The element type of a list-typed column leaf (``None`` when the leaf is not a list or unknown).
+ColumnElementFn = Callable[[Any], Optional[DataType]]
+# Transforms whose value is one of their operand's values.
+_VALUE_PRESERVING_TRANSFORMS = frozenset({"lag", "lead", "time_shift", "first", "last"})
+_INTEGER_RESULT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
+_INT_RESULT_SCALARS = frozenset({"length", "instr"})
+# Scalars whose result is certainly text.
+TEXT_RESULT_SCALARS = frozenset({
+    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr", "substring", "concat",
+})
+
+
+def _returned_args(key: ScalarCallKey) -> List[object]:
+    """The non-NULL arguments a value-returning scalar may return."""
+    returned = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
+    if key.name == "nullif":
+        returned = returned[:1]
+    return [a for a in returned if not _is_null_arg(a)]
+
+
+def list_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly a list."""
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.ARRAY
+    if isinstance(key, ArrayLiteralKey):
+        return True
+    if isinstance(key, AggregateKey):
+        return key.builtin and key.agg.lower() in LIST_AGGREGATIONS
+    if isinstance(key, TransformKey):
+        return key.op in _VALUE_PRESERVING_TRANSFORMS and list_valued(key.input, column_type=column_type)
+    if isinstance(key, ScalarCallKey) and key.name in _VALUE_ARG_SCALARS:
+        returned = _returned_args(key)
+        return bool(returned) and all(list_valued(a, column_type=column_type) for a in returned)
+    return False
+
+
+def is_list_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+    """A list-function call over a list (``length`` over TEXT keeps its string meaning)."""
+    if key.name in LIST_ONLY_FUNCTIONS:
+        return True
+    return key.name in LIST_FUNCTIONS and bool(key.args) and list_valued(key.args[0], column_type=column_type)
+
+
+def literal_type(value: object) -> Optional[DataType]:
+    """The type of a scalar literal value (``None`` for NULL)."""
+    if isinstance(value, bool):
+        return DataType.BOOLEAN
+    if isinstance(value, Decimal):
+        return DataType.INT if value == value.to_integral_value() else DataType.DOUBLE
+    if isinstance(value, str):
+        return DataType.TEXT
+    if isinstance(value, datetime):
+        return DataType.TIMESTAMP
+    if isinstance(value, date):
+        return DataType.DATE
+    return None
+
+
+def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key``'s value is certainly an integer (booleans read as 0 / 1 count)."""
+    if _is_int_literal(key) or boolean_valued(key, column_type=column_type):
+        return True
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key) is DataType.INT
+    if isinstance(key, ArithmeticKey):
+        return key.op in _INT_OPS and all(integer_valued(o, column_type=column_type) for o in key.operands)
+    if isinstance(key, AggregateKey):
+        agg = key.agg.lower()
+        return agg in _INTEGER_RESULT_AGGS or (
+            agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, column_type=column_type)
+        )
+    if isinstance(key, ScalarCallKey):
+        return _scalar_integer_valued(key, column_type=column_type)
+    return False
+
+
+def _scalar_integer_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+    if key.name in _INT_RESULT_SCALARS:
+        return True
+    if key.name not in _INT_SCALARS and key.name not in _VALUE_ARG_SCALARS:
+        return False
+    if key.name == "round" and len(key.args) > 1:
+        return False
+    values = [a for a in key.args if not _is_null_arg(a)]
+    return bool(values) and all(integer_valued(a, column_type=column_type) for a in values)
+
+
+def value_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """``key``'s type where it is certain, else ``None``."""
+    if isinstance(key, LiteralKey):
+        return literal_type(key.value)
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_type(key)
+    if list_valued(key, column_type=column_type):
+        return DataType.ARRAY
+    if boolean_valued(key, column_type=column_type):
+        return DataType.BOOLEAN
+    temporal = temporal_type(key, column_type=column_type)
+    if temporal is not None:
+        return temporal
+    if integer_valued(key, column_type=column_type):
+        return DataType.INT
+    if numeric_valued(key, column_type=column_type):
+        return DataType.DOUBLE
+    if isinstance(key, ScalarCallKey):
+        if key.name in TEXT_RESULT_SCALARS:
+            return DataType.TEXT
+        types = {value_type(a, column_type=column_type) for a in _returned_args(key)}
+        return types.pop() if len(types) == 1 else None
+    if isinstance(key, AggregateKey) and key.agg.lower() in _TEMPORAL_PRESERVING_AGGS:
+        return value_type(key.source, column_type=column_type)
+    return None
+
+
+def list_element_type(
+    key: object, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
+) -> Optional[DataType]:
+    """The element type of a list-valued ``key`` (``None`` when unknown, e.g. ``[]``)."""
+    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+        return column_element(key)
+    if isinstance(key, ArrayLiteralKey):
+        types = {literal_type(v.value) for v in key.values}
+        return types.pop() if len(types) == 1 else None
+    if isinstance(key, AggregateKey):
+        return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
+    if isinstance(key, TransformKey):
+        return list_element_type(key.input, column_type=column_type, column_element=column_element)
+    if isinstance(key, ScalarCallKey):
+        types = {list_element_type(a, column_type=column_type, column_element=column_element)
+                 for a in _returned_args(key)} - {None}
+        return types.pop() if len(types) == 1 else None
+    return None
+
+
 def unit_word(arg: object) -> str:
     """The lower-cased unit/part word of a date scalar's unit argument."""
     value = arg.value if isinstance(arg, LiteralKey) else arg
@@ -1457,9 +1624,12 @@ def window_kwarg_of(key: ValueKey):
 
 def is_kernel_requiring(key: ValueKey) -> TypeGuard[AggregateKey]:
     """A ranked (``first``/``last``) or windowed aggregate — rendered only as its own kernel producer's answer."""
-    return isinstance(key, AggregateKey) and (
-        key.agg in RANKED_AGGREGATIONS or window_kwarg_of(key) is not None
-    )
+    return isinstance(key, AggregateKey) and (is_ranked(key) or window_kwarg_of(key) is not None)
+
+
+def is_ranked(key: AggregateKey) -> bool:
+    """A ``first`` / ``last`` pick with the built-in ranked semantics."""
+    return key.builtin and key.agg in RANKED_AGGREGATIONS
 
 
 def is_local_partitioned_agg(k: ValueKey) -> bool:

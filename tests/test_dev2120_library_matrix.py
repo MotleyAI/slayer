@@ -37,7 +37,7 @@ LIST_CASE_IDS = [c.case_id for c in LIST_CASES]
 PROBES = list_probes()
 PROBE_IDS = [p.name for p in PROBES]
 #: A semi-join beside a list child needs the ClickHouse server version, which a dry run cannot read.
-_CLICKHOUSE_VERSION_GATED = frozenset({"elements-filtered-across-another-to-many"})
+_CLICKHOUSE_VERSION_GATED = frozenset({"elements-filtered-across-another-to-many", "through-to-one"})
 
 
 class TestListRegistry:
@@ -94,8 +94,9 @@ LIST_CONSTRUCTS = [c for c in LIST_CASES if _is_list_construct(c)]
 
 @pytest.mark.parametrize("case", LIST_CONSTRUCTS, ids=[c.case_id for c in LIST_CONSTRUCTS])
 async def test_list_case_refused_on_sqlite(sqlite_lists, case: Case) -> None:
+    q = case.query()
     with pytest.raises(ListTypeError) as info:
-        await sqlite_lists.execute(case.query())
+        await sqlite_lists.execute(q)
     msg = str(info.value)
     assert "SQLite" in msg, msg
     assert any(name in msg for name in LIST_FUNCTIONS & set(case.covers)), msg
@@ -119,8 +120,9 @@ async def test_list_case_emits(case: Case, dialect: str) -> None:
     if dialect in NATIVE_LIST_DIALECTS or not _is_list_construct(case):
         await emit_contractors(case.query(), dialect=dialect)
         return
+    q = case.query()
     with pytest.raises(SlayerError) as info:
-        await emit_contractors(case.query(), dialect=dialect)
+        await emit_contractors(q, dialect=dialect)
     assert NO_LIST_DATABASES[dialect] in str(info.value), str(info.value)
 
 
@@ -132,8 +134,9 @@ async def test_list_probe_emits(probe: Probe, dialect: str) -> None:
     if dialect in NATIVE_LIST_DIALECTS:
         await emit(probe.query, dialect=dialect, models=all_models())
         return
+    models = all_models()
     with pytest.raises(SlayerError) as info:
-        await emit(probe.query, dialect=dialect, models=all_models())
+        await emit(probe.query, dialect=dialect, models=models)
     assert NO_LIST_DATABASES[dialect] in str(info.value), str(info.value)
 
 
