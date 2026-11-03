@@ -139,8 +139,12 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return exp.Command(this="EXEC", expression=f"sp_describe_first_result_set {argument.sql(dialect=self.sqlglot_name)}")
 
     def read_result_description(self, rows: list[dict[str, Any]]) -> dict[str, ResultColumnType]:
+        """A CLR user-defined type has no ``system_type_name``: unnamed TEXT, like an unknown Postgres OID."""
         return {
-            row["name"]: result_column_type_of_name(row["system_type_name"], overrides=_TYPE_NAME_OVERRIDES)
+            row["name"]: (
+                result_column_type_of_name(row["system_type_name"], overrides=_TYPE_NAME_OVERRIDES)
+                if row["system_type_name"] else ResultColumnType(type=DataType.TEXT)
+            )
             for row in rows if not row.get("is_hidden")
         }
 

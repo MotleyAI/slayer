@@ -31,7 +31,9 @@ from slayer.core.keys import (
     aggregation_source_type,
     source_anchor_path,
 )
+from slayer.core.models import Column
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.reflection import info_schema_type, is_exact_numeric_db_type
 from slayer.sql.render.aggregates import (
     DISPATCH_DISTINCT,
     DISPATCH_SIMPLE,
@@ -86,6 +88,15 @@ def _wrap_cast_for_type(
         ):
             return expr
     return exp.Cast(this=expr, to=target)
+
+
+def keeps_native_type(*, col: Column | None, dialect: SqlDialect) -> bool:
+    """Whether derived ``col`` skips its cast: an exact-numeric ``db_type`` the dialect stores exactly,
+    with the type that ``db_type`` implies (a different declared type is an explicit override)."""
+    return (
+        col is not None and dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type)
+        and info_schema_type(col.db_type or "")[0] == col.type
+    )
 
 
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
@@ -354,8 +365,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         resolved = scope.resolve(key, consumer=ctx.consumer)
         # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
         if ctx.filters is not None and ctx.filters.cast_column_sql:
-            col_type = scope.column_type(key)
-            resolved = _wrap_cast_for_type(resolved, _filter_cast_type(col_type), dialect=ctx.dialect)
+            if not keeps_native_type(col=scope.column(key), dialect=ctx.dialect):
+                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.column_type(key)), dialect=ctx.dialect)
         return resolved
 
     if isinstance(key, StarKey):

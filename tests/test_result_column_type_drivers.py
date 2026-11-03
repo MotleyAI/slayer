@@ -364,6 +364,14 @@ class TestSqlServerDescribe:
         assert "<> ''x''" in describe
         assert not any("TOP 0" in s and not _is_describe(s) for s in engines.log)
 
+    def test_a_clr_type_without_a_system_type_name_is_unnamed_text(self) -> None:
+        rows = [(False, 1, "g", True, 240, None, -1, 0, 0), (False, 2, "i", True, 56, "int", 4, 10, 0)]
+        engines = _Engines(lambda sql: _Result(keys=list(_DESCRIBE_COLUMNS), rows=rows if _is_describe(sql) else []))
+        assert _probe_sync(engines, "SELECT g, i FROM dbo.t", db_type="mssql") == {
+            "g": ResultColumnType(type=DataType.TEXT),
+            "i": ResultColumnType(type=DataType.INT, db_type="int"),
+        }
+
     @pytest.mark.parametrize("code", [11500, 11526, 11541])
     def test_falls_back_when_the_result_cannot_be_described(self, code: int) -> None:
         description = [

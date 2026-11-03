@@ -75,7 +75,6 @@ from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.base import is_stat_agg1, is_stat_agg2
-from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     AliasAllocator,
@@ -135,6 +134,7 @@ from slayer.sql.render.value_expr import (
     _ranked_value_cast_type,
     _wrap_cast_for_type,
     contains_aggregate,
+    keeps_native_type,
     render_value_key,
     rewrite_log_alias,
 )
@@ -911,8 +911,8 @@ class SQLGenerator:
         return self._dialect.declared_cast_type(dt)
 
     def _column_cast_type(self, col: Column) -> Optional[DataType]:
-        """The CAST target for derived column ``col``; none over an exact-numeric database type the dialect stores exactly."""
-        if self._dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type):
+        """The CAST target for derived column ``col``; none when it keeps its native type."""
+        if keeps_native_type(col=col, dialect=self._dialect):
             return None
         return self._dialect.declared_cast_type(col.type)
 
