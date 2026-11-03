@@ -327,10 +327,13 @@ def _first_line(exc: BaseException) -> str:
 
 def query_failure(*, storage: StorageBackend, query: Any) -> str | None:
     """Why ``query`` fails on the demo (error, or no rows); ``None`` when it returns rows."""
+    engine = SlayerQueryEngine(storage=storage)
     try:
-        rows = SlayerQueryEngine(storage=storage).execute_sync(query).data
+        rows = engine.execute_sync(query).data
     except Exception as exc:  # noqa: BLE001 — any failure is reported with its location
         return _first_line(exc)
+    finally:
+        engine.close()
     return None if rows else "returned no rows"
 
 

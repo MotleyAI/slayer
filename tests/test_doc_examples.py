@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from slayer.storage.yaml_storage import YAMLStorage
+from tests import _doc_examples
 from tests._doc_examples import (
     IN_SCOPE_GLOBS,
     REPO_ROOT,
@@ -263,6 +264,21 @@ class TestMarkersAndGuard:
 
     def test_datasource_word_does_not_trip_the_guard(self, doc_demo_storage: YAMLStorage) -> None:
         assert _failures(doc_demo_storage, "```", "ingest_datasource_models(datasource_name='mydb')", "```") == []
+
+    def test_query_check_closes_its_engine(
+        self, doc_demo_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        closed: list[bool] = []
+
+        class Recorder(_doc_examples.SlayerQueryEngine):
+            def close(self) -> None:
+                closed.append(True)
+                super().close()
+
+        monkeypatch.setattr(_doc_examples, "SlayerQueryEngine", Recorder)
+        assert query_failure(storage=doc_demo_storage, query=COUNT) is None
+        assert query_failure(storage=doc_demo_storage, query=json.loads(HYPOTHETICAL)) is not None
+        assert closed == [True, True]
 
     def test_dangling_demo_reference_fails(self, doc_demo_storage: YAMLStorage) -> None:
         failures = _failures(doc_demo_storage, "Run `slayer inspect jaffle_shop.orders.order_id`.")

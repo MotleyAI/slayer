@@ -55,7 +55,26 @@ def _sha256(path: str) -> str:
 
 
 def _rows(storage: YAMLStorage, query: dict) -> list[dict]:
-    return SlayerQueryEngine(storage=storage).execute_sync(query).data
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        return engine.execute_sync(query).data
+    finally:
+        engine.close()
+
+
+class _ClosingRecorder(SlayerQueryEngine):
+    """Records every instance and whether ``close()`` ran on it."""
+
+    instances: list[_ClosingRecorder] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.closed = False
+        _ClosingRecorder.instances.append(self)
+
+    def close(self) -> None:
+        self.closed = True
+        super().close()
 
 
 def _count_key(row: dict) -> str:
@@ -185,6 +204,16 @@ class TestDemoModels:
         assert stores is not None
         assert "status" in {c.name for c in orders.columns}
         assert "regions" in {j.target_model for j in stores.joins}
+
+    def test_setup_closes_every_engine_it_creates(
+        self, jaffle_generator, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_ClosingRecorder, "instances", [])
+        monkeypatch.setattr(jaffle_shop, "SlayerQueryEngine", _ClosingRecorder)
+        store_dir = str(tmp_path / "store")
+        jaffle_shop.ensure_demo_datasource(YAMLStorage(base_dir=store_dir), storage_path=store_dir, years=1)
+        assert _ClosingRecorder.instances
+        assert all(e.closed for e in _ClosingRecorder.instances)
 
 
 class TestTwoYearDemo:

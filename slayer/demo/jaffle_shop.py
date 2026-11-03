@@ -963,13 +963,18 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     reconciled in), so every user edit survives.
     """
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.run_sync(ingest_datasource_idempotent(
-        datasource=datasource, storage=engine.storage, client=engine.client_for(datasource),
-    ))
-    stored = {
-        m.name: m
-        for m in DocumentLoadFailures().skip(engine.run_sync(engine.storage.load_models(data_source=datasource.name)))
-    }
+    try:
+        result = engine.run_sync(ingest_datasource_idempotent(
+            datasource=datasource, storage=engine.storage, client=engine.client_for(datasource),
+        ))
+        stored = {
+            m.name: m
+            for m in DocumentLoadFailures().skip(
+                engine.run_sync(engine.storage.load_models(data_source=datasource.name))
+            )
+        }
+    finally:
+        engine.close()
     missing = [t for t in TABLE_NAMES if t not in stored]
     if missing:
         causes = "; ".join(f"{e.model_name}: {e.error}" for e in result.errors if e.model_name in missing)
