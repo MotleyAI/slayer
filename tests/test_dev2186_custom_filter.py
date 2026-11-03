@@ -153,6 +153,13 @@ class TestWindow:
         ]))
         assert _by_month(resp) == expected
 
+    async def test_attached_parameter_keeps_the_restriction(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(time_dimensions=MONTH, measures=[m(
+            "wsum(price, weight=avg(quantity, partition_by=region), window='2m') "
+            "FILTER (WHERE created_at >= '2024-02-01')",
+        )]))
+        assert _by_month(resp) == pytest.approx({"2024-01": None, "2024-02": 22.5, "2024-03": 26.5})
+
     async def test_condition_equal_to_a_query_frame_bound(self, engine: SlayerQueryEngine) -> None:
         bound = "created_at >= '2024-02-01'"
         resp = await engine.execute(q(time_dimensions=MONTH, filters=[bound], measures=[
