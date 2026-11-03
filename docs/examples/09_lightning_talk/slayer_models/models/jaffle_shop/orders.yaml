@@ -75,6 +75,15 @@ columns:
     type: currency
     precision: 2
     symbol: $
+- name: status
+  sql: status
+  type: TEXT
+  primary_key: false
+  unique: false
+  description: 'Order status: completed, refunded or cancelled. Refunded and cancelled
+    orders keep their order_total.'
+  label: Status
+  hidden: false
 measures:
 - formula: sum(order_total)
   name: total_revenue

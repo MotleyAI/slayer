@@ -101,11 +101,16 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "id": (DataType.TEXT, True, None),
         "name": (DataType.TEXT, False, None),
     },
+    "regions": {
+        "id": (DataType.TEXT, True, None),
+        "name": (DataType.TEXT, False, None),
+    },
     "stores": {
         "id": (DataType.TEXT, True, None),
         "name": (DataType.TEXT, False, None),
         "opened_at": (DataType.DATE, False, None),
         "tax_rate": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
+        "region_id": (DataType.TEXT, False, None),
     },
     "products": {
         "sku": (DataType.TEXT, True, None),
@@ -122,6 +127,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "subtotal": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "tax_paid": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "order_total": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
+        "status": (DataType.TEXT, False, None),
     },
     "items": {
         "id": (DataType.TEXT, True, None),
@@ -147,7 +153,10 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
 # Expected direct joins per model. Values are sets of (target_model, src_col, tgt_col).
 _EXPECTED_JOINS: dict[str, set] = {
     "customers": set(),
-    "stores": set(),
+    "regions": set(),
+    "stores": {
+        ("regions", "region_id", "id"),
+    },
     "products": set(),
     "orders": {
         ("customers", "customer_id", "id"),

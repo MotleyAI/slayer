@@ -4,12 +4,14 @@ import datetime
 import gc
 import io
 import os
+import shutil
 import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
@@ -48,6 +50,37 @@ def jaffle_generator(monkeypatch: pytest.MonkeyPatch, jafgen_dir: str) -> Jaffle
     spy = JaffleGeneratorSpy(jafgen_dir)
     monkeypatch.setattr(jaffle_shop, "generate_data", spy)
     return spy
+
+
+DOC_DEMO_YEARS = 2
+
+
+@pytest.fixture(scope="session")
+def shared_demo_duckdb(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> str:
+    """The 2-year demo DuckDB, built once per run and shared by every xdist worker."""
+    if worker_id == "master":
+        root = tmp_path_factory.mktemp("shared_demo")
+    else:
+        root = tmp_path_factory.getbasetemp().parent / "shared_demo"
+        root.mkdir(exist_ok=True)
+    db_path = jaffle_shop.resolve_demo_db_path(str(root))
+    with FileLock(f"{root}.lock"):
+        if not os.path.exists(db_path):
+            jaffle_shop.build_jaffle_shop(db_path=db_path, years=DOC_DEMO_YEARS, stream=io.StringIO())
+    return db_path
+
+
+@pytest.fixture(scope="session")
+def doc_demo_storage(tmp_path_factory: pytest.TempPathFactory, shared_demo_duckdb: str) -> YAMLStorage:
+    """This worker's own copy of the shared demo, set up through the reuse path."""
+    store_dir = str(tmp_path_factory.mktemp("doc_demo"))
+    shutil.copy2(shared_demo_duckdb, jaffle_shop.resolve_demo_db_path(store_dir))
+    storage = YAMLStorage(base_dir=store_dir)
+    _, _, built = jaffle_shop.ensure_demo_datasource(
+        storage, storage_path=store_dir, years=DOC_DEMO_YEARS, stream=io.StringIO(),
+    )
+    assert not built
+    return storage
 
 
 @pytest.fixture(scope="session", autouse=True)
