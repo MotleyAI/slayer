@@ -18,6 +18,7 @@ from typing import (
     Set,
     Tuple,
     cast,
+    overload,
 )
 
 from decimal import Decimal
@@ -144,6 +145,7 @@ from slayer.sql.render.value_expr import (
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.ir.bound import BoundExpr
+from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.sql.stage_wrapper import (
     build_flat_rename_wrapper,
     unmangle_dotted_table_refs,
@@ -6510,15 +6512,19 @@ def _finish_statement(
     dialect: "str | SqlDialect",
     aliases: Sequence[str] = (),
     exempt: frozenset[str] = frozenset(),
-    pretty: bool = True,
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
-    d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
-    sql = d.rewrite_emitted_sql(
-        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt,
-    )
-    maybe_validate_scopes(sql, dialect=d.sqlglot_name)
-    d.assert_no_overlimit_identifiers(sql, exempt=exempt)
+    d = _as_dialect(dialect)
+    return _render_rewritten(d.rewrite_statement(statement), dialect=d, aliases=aliases, exempt=exempt, pretty=True)
+
+
+def _render_rewritten(
+    statement: Expr, *, dialect: SqlDialect, aliases: Sequence[str], exempt: frozenset[str], pretty: bool,
+) -> str:
+    sql = dialect.rewrite_emitted_sql(
+        statement.sql(dialect=dialect.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt)
+    maybe_validate_scopes(sql, dialect=dialect.sqlglot_name)
+    dialect.assert_no_overlimit_identifiers(sql, exempt=exempt)
     return sql
 
 
@@ -6600,6 +6606,20 @@ def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
     return dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
 
 
+@overload
+def generate_planned_stages(
+    planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
+    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ..., type_probe: Literal[False] = ...,
+) -> str: ...
+
+
+@overload
+def generate_planned_stages(
+    planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
+    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ..., type_probe: Literal[True],
+) -> TypeProbe: ...
+
+
 def generate_planned_stages(
     planned_queries,
     *,
@@ -6609,10 +6629,11 @@ def generate_planned_stages(
     kept_stages: "Optional[Set[str]]" = None,
     read_set: "Optional[Set[str]]" = None,
     type_probe: bool = False,
-) -> str:
+) -> "str | TypeProbe":
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
     stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
-    the models the statement reads in ``read_set``. ``type_probe`` bounds it by the dialect's type probe."""
+    the models the statement reads in ``read_set``. ``type_probe`` bounds it by the dialect's type probe
+    and mints it as a :class:`TypeProbe`."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
@@ -6631,13 +6652,12 @@ def generate_planned_stages(
         _as_dialect(dialect).attach_correlated_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.
-    return _finish_statement(
-        statement,
-        dialect=dialect,
-        aliases=projection_aliases,
-        exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect),
-        pretty=not type_probe,
-    )
+    exempt = _user_authored_exemptions(bundle=bundle, dialect=dialect)
+    if type_probe:
+        d = _as_dialect(dialect)
+        return mint_type_probe(d.rewrite_statement(statement), dialect=d, render=lambda tree: _render_rewritten(
+            tree, dialect=d, aliases=projection_aliases, exempt=exempt, pretty=False))
+    return _finish_statement(statement, dialect=dialect, aliases=projection_aliases, exempt=exempt)
 
 
 def _build_planned_stages_ast(

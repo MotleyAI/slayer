@@ -11,8 +11,10 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
+from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
+from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
@@ -348,6 +350,6 @@ def test_sql_source_is_described_by_one_statement(live: Live) -> None:
 
 @pytest.mark.parametrize("sql", ["SELECT ((( not valid", 'DELETE FROM "order" RETURNING id'])
 def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Live, sql: str) -> None:
-    with pytest.raises(Exception):  # noqa: B017 — LiveDatasource.source turns any failure into a reason
+    with pytest.raises((NotReadOnlyQueryError, ParseError)):  # LiveDatasource.source turns either into a reason
         _source(live, sql=sql)
     assert live.statements == []

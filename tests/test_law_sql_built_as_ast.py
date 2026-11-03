@@ -17,7 +17,7 @@ _KEYWORDS = (
     "DETACH COPY GRANT REVOKE CALL EXEC EXECUTE SHOW VALUES BEGIN COMMIT ROLLBACK ANALYZE VACUUM REPLACE UPSERT"
 ).split()
 _STATEMENT = re.compile(rf"^[\s(]*(?:{'|'.join(_KEYWORDS)})(?:\s|$)")
-_LABEL = re.compile(rf"^[\s(]*(?:{'|'.join(_KEYWORDS)}) \w+:")
+_LABEL = re.compile(rf"^[\s(]*(?:{'|'.join(_KEYWORDS)}) \w+:(?!:)")
 _LOG_METHODS = frozenset({"debug", "info", "warning", "warn", "error", "exception", "critical", "log"})
 _LOGGERS = frozenset({"logger", "logging", "log", "_log", "_logger", "LOGGER"})
 _PARSERS = frozenset({"parse_one", "parse"})
@@ -68,8 +68,11 @@ def _composed(node: ast.AST) -> str | None:
     return None
 
 
-def _exempt_call(call: ast.Call, *, arg: ast.AST) -> bool:
+def _exempt_call(call: ast.Call, *, arg: ast.expr, raised: bool) -> bool:
+    """Whether ``call``, which takes the composed ``arg`` directly, never executes it."""
     func = call.func
+    if raised:
+        return True
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
         if func.attr in _LOG_METHODS and func.value.id in _LOGGERS:
             return True
@@ -78,7 +81,7 @@ def _exempt_call(call: ast.Call, *, arg: ast.AST) -> bool:
     is_parser = _name(func) in _PARSERS and (
         isinstance(func, ast.Name) or (isinstance(func, ast.Attribute) and _name(func.value) == "sqlglot"))
     text_arg = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "sql"), None)
-    return is_parser and text_arg is arg and isinstance(arg, ast.expr) and _holes(arg) == 1
+    return is_parser and text_arg is arg and _holes(arg) == 1
 
 
 def violations(source: str, *, path: str = "<src>") -> list[str]:
@@ -95,14 +98,12 @@ def violations(source: str, *, path: str = "<src>") -> list[str]:
         text = _composed(node)
         if text is None or not _STATEMENT.match(text) or _LABEL.match(text):
             continue
-        chain: list[ast.AST] = [node]
-        while chain[-1] in parents:
-            chain.append(parents[chain[-1]])
-        chain = [n for n in chain if not isinstance(n, ast.keyword)]
-        if any(isinstance(n, ast.Raise) for n in chain):
-            continue
-        if any(isinstance(n, ast.Call) and _exempt_call(n, arg=prev) for prev, n in zip(chain, chain[1:])):
-            continue
+        consumer = parents.get(node)
+        if isinstance(consumer, ast.keyword):
+            consumer = parents.get(consumer)
+        if isinstance(consumer, ast.Call) and isinstance(node, ast.expr) and _exempt_call(
+                consumer, arg=node, raised=isinstance(parents.get(consumer), ast.Raise)):
+            continue  # only the call taking the string directly may exempt it
         found.append(f"{path}:{getattr(node, 'lineno', 0)}")
     return found
 
@@ -141,6 +142,11 @@ def _flags(code: str) -> bool:
     "catalog.info(f'SELECT {a}')",
     "warning_service.warn(f'SELECT {a}')",
     "self.logger.helper(f'SELECT {a}')",
+    "q = f'SELECT id::int FROM {t}'",
+    "logger.info(conn.execute(f'SELECT * FROM {t}'))",
+    "warnings.warn(conn.execute(f'SELECT * FROM {t}'))",
+    "raise ValueError(conn.execute(f'SELECT * FROM {t}'))",
+    "sqlglot.parse_one(conn.execute(f'SELECT {a}'))",
 ])
 def test_planted_composition_is_flagged(code: str) -> None:
     assert _flags(code), code

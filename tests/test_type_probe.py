@@ -13,8 +13,10 @@ import sqlglot
 from pydantic import ValidationError
 from sqlalchemy import event
 from sqlglot import exp
+from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
+from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
@@ -25,8 +27,11 @@ from slayer.sql.client import (
     render_type_probe,
     sql_model_trial_query,
 )
-from slayer.sql.dialects import _ALL_DIALECTS, DuckdbDialect, PostgresDialect, SqlDialect, SqliteDialect, TsqlDialect
+from slayer.sql.dialects import (
+    _ALL_DIALECTS, DuckdbDialect, OracleDialect, PostgresDialect, SqlDialect, SqliteDialect, TsqlDialect,
+)
 from slayer.sql.render.parse import parse_query, parse_table
+from slayer.sql.type_probe import mint_type_probe
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
@@ -69,6 +74,37 @@ def test_tsql_type_probe_renders_top_without_limit() -> None:
     assert "LIMIT" not in sql
 
 
+@pytest.mark.parametrize("dialect", _ALL_DIALECTS, ids=lambda d: type(d).__name__)
+def test_every_dialect_type_probe_passes_its_own_check(dialect: SqlDialect) -> None:
+    query = exp.select(exp.column("Qty", quoted=True)).from_(exp.table_("order", db="Sales", quoted=True))
+    assert isinstance(render_type_probe(query, dialect=dialect), TypeProbe)
+
+
+def test_type_probe_is_never_constructed_directly() -> None:
+    with pytest.raises(ValidationError):
+        TypeProbe(sql="SELECT * FROM (SELECT a FROM t) AS _types LIMIT 0")
+
+
+def _never_rendered(_tree: object) -> str:
+    pytest.fail("a refused probe is never rendered")
+
+
+@pytest.mark.parametrize(("sql", "dialect"), [
+    ("DROP TABLE t", PostgresDialect()),
+    ("DELETE FROM t", PostgresDialect()),
+    ("WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x LIMIT 0", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 0; DROP TABLE t", PostgresDialect()),
+    ("SELECT a FROM t", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 5", PostgresDialect()),
+    ("SELECT a FROM t LIMIT 0", SqliteDialect()),
+    ("SELECT a FROM t FETCH FIRST 5 ROWS ONLY", OracleDialect()),
+])
+def test_mint_refuses_what_is_not_a_bounded_read(sql: str, dialect: SqlDialect) -> None:
+    tree = sqlglot.parse_one(sql, dialect=dialect.sqlglot_name)
+    with pytest.raises(ValueError, match="bounded to"):
+        mint_type_probe(tree, dialect=dialect, render=_never_rendered)
+
+
 def test_type_probe_is_frozen() -> None:
     probe = render_type_probe(_inner(), dialect=PostgresDialect())
     with pytest.raises(ValidationError):
@@ -92,7 +128,8 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     event.listen(sqlite_engine, "before_cursor_execute", lambda _c, _cur, statement, *_a: seen.append(statement))
     probe = render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect())
     assert get_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == {"a": "number", "b": "string"}
-    assert seen == [probe.sql]
+    (statement,) = seen
+    assert statement == probe.sql
 
 
 def test_sync_door_refuses_a_string(sqlite_engine: sa.Engine) -> None:
@@ -129,7 +166,7 @@ def test_trial_query_wraps_the_parsed_model_sql(sql: str) -> None:
 @pytest.mark.parametrize("sql", ["DELETE FROM t", "SELECT a INTO u FROM t",
                                  "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x", "SELECT ((( not valid"])
 def test_trial_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
-    with pytest.raises(Exception):  # noqa: B017 — parse or read-only refusal
+    with pytest.raises((NotReadOnlyQueryError, ParseError)):
         _trial(sql)
 
 
@@ -160,7 +197,7 @@ def test_parse_query_returns_the_read_only_query() -> None:
                                  "DROP TABLE t", "SELECT ((( not valid"])
 def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
     postgres = PostgresDialect()
-    with pytest.raises(Exception):  # noqa: B017 — parse or read-only refusal
+    with pytest.raises((NotReadOnlyQueryError, ParseError)):
         parse_query(sql=sql, target_dialect=postgres, parse_dialect=postgres)
 
 

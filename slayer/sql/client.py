@@ -30,6 +30,7 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
 from slayer.sql.render.parse import is_read_only_query, parse_query
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.core import timing
 
 logger = logging.getLogger(__name__)
@@ -263,15 +264,10 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         return await loop.run_in_executor(executor, call)
 
 
-class TypeProbe(BaseModel, frozen=True):
-    """A rendered, row-bounded type probe: the only statement the type door executes."""
-
-    sql: str
-
-
 def render_type_probe(query: Expr, *, dialect: SqlDialect) -> TypeProbe:
     """``query`` bounded by ``dialect.type_probe`` and rendered once."""
-    return TypeProbe(sql=dialect.type_probe(query).sql(dialect=dialect.sqlglot_name))
+    return mint_type_probe(dialect.type_probe(query), dialect=dialect,
+                           render=lambda tree: tree.sql(dialect=dialect.sqlglot_name))
 
 
 def sql_model_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:

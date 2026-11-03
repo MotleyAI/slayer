@@ -187,7 +187,7 @@ from slayer.sql.generator import (
     generate_planned_stages,
     read_models,
 )
-from slayer.sql.session_policy import ScopedTable, apply_session_policy
+from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, apply_session_policy_to_probe
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -797,13 +797,19 @@ class SlayerQueryEngine:
         if not self.policy:
             return sql
         return apply_session_policy(
-            sql,
-            dialect=dialect,
-            policy=self.policy,
-            has_column=lambda scoped, column: self._column_present(
-                datasource=datasource, scoped_table=scoped, column=column
-            ),
+            sql, dialect=dialect, policy=self.policy, has_column=self._has_column(datasource),
         )
+
+    def _apply_probe_policy(self, probe: TypeProbe, *, dialect: str, datasource: DatasourceConfig) -> TypeProbe:
+        """``probe`` under the forced-filter policy; unchanged when no policy."""
+        if not self.policy:
+            return probe
+        return apply_session_policy_to_probe(
+            probe, dialect=dialect, policy=self.policy, has_column=self._has_column(datasource),
+        )
+
+    def _has_column(self, datasource: DatasourceConfig) -> HasColumn:
+        return lambda scoped, column: self._column_present(datasource=datasource, scoped_table=scoped, column=column)
 
     async def _render_dialect(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list,
@@ -1959,13 +1965,13 @@ class SlayerQueryEngine:
             bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
-            sql = generate_planned_stages(
+            probe = generate_planned_stages(
                 planned, bundle=bundle, dialect=dialect,
                 projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            probe = TypeProbe(sql=self._apply_policy(sql=sql, dialect=dialect, datasource=datasource))
+            probe = self._apply_probe_policy(probe, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning(
                 "get_column_types plan/generate failed for model '%s'",
