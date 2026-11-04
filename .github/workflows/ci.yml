@@ -67,7 +67,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 20
@@ -106,7 +106,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
