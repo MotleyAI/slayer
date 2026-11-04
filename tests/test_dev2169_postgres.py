@@ -71,6 +71,7 @@ async def pg(postgresql, tmp_path):
     try:
         yield engine
     finally:
+        await engine.aclose()
         engine.close()
         engine_factory.invalidate_engine(ds)
 
