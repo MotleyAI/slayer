@@ -1624,8 +1624,8 @@ def _live_object_keys(*, ref: SchemaRef, obj_name: str, single: bool, dialect: S
     keys = [ref.qualify(obj_name, dialect=dialect)]
     if ref.is_default or single:
         keys.append(render_table_name(parts=[obj_name], dialect=dialect))
-        if ref.name:
-            keys.append(render_table_name(parts=[ref.name, obj_name], dialect=dialect))
+        if schema := ref.live_name:
+            keys.append(render_table_name(parts=[schema, obj_name], dialect=dialect))
     return keys
 
 
@@ -1657,7 +1657,7 @@ def _list_live_objects(
             )
             failed.append(str(ref.token))
             continue
-        listings.append((ref, [obj.name for obj in objs]))
+        listings.append((ref, [obj.live_name for obj in objs]))
     if failed:
         # Fail closed: a partial map would report every model in the unlisted
         # schema as a WholeModelDelete — data loss under --force-clean.

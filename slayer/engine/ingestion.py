@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, TextIO
 
 import sqlalchemy as sa
 import sqlalchemy.dialects.mssql as _sqla_mssql
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
@@ -49,6 +49,8 @@ from slayer.engine.schema_scope import (
     SkippedSchema,
     connection_default_schema,
     default_schema_ref,
+    is_quoted_name,
+    live_name,
     resolve_ingest_scope,
     schema_ref_from_token,
     split_sql_table,
@@ -541,11 +543,12 @@ def _inferred_elements(
         return column
     dialect = dialect_for_engine(sa_engine)
     table = exp.Table(
-        this=exp.to_identifier(table_name),
-        db=exp.to_identifier(ref.name) if ref and ref.name else None,
+        this=exp.to_identifier(table_name, quoted=is_quoted_name(table_name) or None),
+        db=exp.to_identifier(ref.name, quoted=ref.quoted or None) if ref and ref.name else None,
         catalog=exp.to_identifier(ref.catalog) if ref and ref.catalog else None,
     )
-    query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
+    query = dialect.list_element_types_query(table=table,
+                                             column=exp.to_identifier(column.name, quoted=column.quoted or None))
     if query is None:
         return column
     try:
@@ -848,6 +851,19 @@ class IngestableObject(BaseModel):
 
     name: str
     kind: ObjectKind
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
+
+    @model_validator(mode="before")
+    @classmethod
+    def _quoted_from_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "quoted" not in data:
+            return {**data, "quoted": is_quoted_name(data.get("name"))}
+        return data
+
+    @property
+    def live_name(self) -> str:
+        """``name`` in SQLAlchemy's spelling."""
+        return live_name(self.name, quoted=self.quoted)
 
 
 class SkippedTable(BaseModel):
@@ -1009,7 +1025,7 @@ def _resolve_scanned_collisions(
         win_ref, win_obj = ordered[0]
         winners[model_name] = (win_ref, win_obj)
         winner_label = (
-            win_ref.qualify(win_obj.name, dialect=dialect) if multi_schema else win_obj.name
+            win_ref.qualify(win_obj.live_name, dialect=dialect) if multi_schema else win_obj.name
         )
         for ref, obj in ordered[1:]:
             label = (
@@ -1050,11 +1066,12 @@ def _build_one_model(
     ``keys_by_table`` memoizes each table's keys across the schema's objects.
     """
     schema_token = ref.token
-    sql_table = ref.qualify(obj.name, dialect=dialect_for_engine(sa_engine))
+    table = obj.live_name
+    sql_table = ref.qualify(table, dialect=dialect_for_engine(sa_engine))
     keys_by_table = keys_by_table if keys_by_table is not None else {}
     model_joins = _generate_joins(
         inspector=inspector,
-        source_table=obj.name,
+        source_table=table,
         schema=schema_token,
         table_set=table_set,
         sa_engine=sa_engine,
@@ -1066,7 +1083,7 @@ def _build_one_model(
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
         inspector=inspector,
-        table_name=obj.name,
+        table_name=table,
         ref=ref,
         primary_key=keys.primary_key,
     )
@@ -1086,7 +1103,7 @@ def _build_one_model(
         source_kind=obj.kind,
         hidden=internal_tool is not None,
         meta=meta,
-        description=_safe_get_table_comment(inspector, obj.name, schema_token),
+        description=_safe_get_table_comment(inspector, table, schema_token),
     )
 
 

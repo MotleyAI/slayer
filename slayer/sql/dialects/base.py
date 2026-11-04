@@ -750,7 +750,7 @@ class SqlDialect(BaseModel):
     def unquoted_identifier(self, name: str) -> str:
         """The exact name the database resolves ``name``, written unquoted, to."""
         if self.identifier_folding == "upper":
-            return name.upper()
+            return str(name).upper()  # SQLAlchemy's ``quoted_name.upper()`` returns a quoted name unchanged
         return ascii_lower(name) if self.identifier_folding == "lower" else name
 
     @property

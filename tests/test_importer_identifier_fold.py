@@ -15,6 +15,7 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
@@ -23,8 +24,13 @@ from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
+from slayer.engine.ingestion import IntrospectedColumn
+from slayer.importers import column_types
+from slayer.importers.column_types import LiveSource
 from slayer.importers.physical import UndecidableIdentifierCaseError
+from slayer.osi import converter as osi_converter
 from slayer.sql import engine_factory
+from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
     column, cube_issues, cube_report_messages, run_cli, source_column, stored_model, typing_notes, write_yaml,
@@ -336,3 +342,34 @@ def test_osi_candidates_differing_in_case(osi_db: Path) -> None:
 def test_osi_field_matches_a_live_column_case_insensitively_on_duckdb(osi_db: Path) -> None:
     assert _osi_sql(osi_db, f("pick", "OrderAmount * 5"), target="duckdb") == "OrderAmount * 5"
     assert _osi_sql(osi_db, f("bare", "OrderAmount"), target="duckdb") is not None
+
+
+def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def record(**kwargs: Any) -> SlayerModel:
+        seen.append(kwargs)
+        raise RuntimeError("recorded")
+
+    monkeypatch.setattr(osi_converter, "introspect_table_to_model", record)
+    convert(db=osi_db, docs=documents(flat([ds("orders", source='"lower_schema"."lower_table"', fields=[f("id")])])),
+            target_dialect="snowflake")
+    (call,) = seen
+    assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'
+
+
+def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def record(**kwargs: Any) -> list[IntrospectedColumn]:
+        seen.append(kwargs)
+        return [IntrospectedColumn(name="x", type=DataType.INT)]
+
+    monkeypatch.setattr(column_types, "introspect_table_columns", record)
+    with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
+        LiveSource(engine=engine, data_source=DS, db_type="snowflake", dialect="snowflake",
+                   sql_table='"lower_schema"."lower_table"')
+    (call,) = seen
+    assert (getattr(call["table_name"], "quote", None), getattr(call["ref"].token, "quote", None)) == (True, True)
+    assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'

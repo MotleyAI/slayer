@@ -18,7 +18,6 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 import sqlglot
-from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
@@ -32,7 +31,7 @@ from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_targe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.sql.render.parse import fold_source_identifiers
 from slayer.engine.ingestion import introspect_table_to_model
-from slayer.engine.schema_scope import requested_schema_ref
+from slayer.engine.schema_scope import live_name, requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.importers.column_types import LiveSource
 from slayer.importers.aggregates import (
@@ -340,8 +339,10 @@ class OsiToSlayerConverter:
             else:
                 base = introspect_table_to_model(
                     sa_engine=self.sa_engine, inspector=inspector,
-                    table_name=quoted_name(parsed.table or "", True) if parsed.table_quoted else parsed.table or "",
-                    ref=requested_schema_ref(parsed.schema_name, sa_engine=self.sa_engine),
+                    table_name=live_name(parsed.table or "", quoted=parsed.table_quoted),
+                    ref=requested_schema_ref(parsed.schema_name and live_name(parsed.schema_name,
+                                                                              quoted=parsed.schema_quoted),
+                                             sa_engine=self.sa_engine),
                     data_source=self.data_source, model_name=ds.name,
                 )
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation

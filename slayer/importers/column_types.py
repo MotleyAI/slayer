@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import sqlalchemy as sa
-from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
 from slayer.engine.ingestion import introspect_table_columns
-from slayer.engine.schema_scope import table_schema_ref
+from slayer.engine.schema_scope import live_name, table_live_parts, table_schema_ref
 from slayer.importers.physical import PhysicalIndex, live_exact_name
 from slayer.sql.client import CATEGORY_DATA_TYPES, probe_columns_sync, render_type_probe
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
@@ -105,12 +104,14 @@ class LiveSource:
         self._by_exact = {live_exact_name(name, dialect=self._source): typed for name, typed in found}
 
     def _reflect(self, table: exp.Table) -> list[tuple[str, Typed]]:
-        ref = table_schema_ref(catalog=table.catalog, schema=table.db, sa_engine=self.engine)
+        *qualifiers, name = table_live_parts(table)
+        ref = table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
+                               schema=qualifiers[-1] if qualifiers else None, sa_engine=self.engine)
         columns = introspect_table_columns(sa_engine=self.engine, inspector=sa.inspect(self.engine),
-                                           table_name=table.name, ref=ref)
+                                           table_name=name, ref=ref)
         if not columns:
             raise ValueError(f"table {table.sql(dialect=self._source.sqlglot_name)} was not found")
-        return [(quoted_name(c.name, True) if c.quoted else c.name,
+        return [(live_name(c.name, quoted=c.quoted),
                  (c.type, (c.element_type or DataType.UNKNOWN) if c.type is DataType.ARRAY else None))
                 for c in columns]
 

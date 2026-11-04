@@ -5,17 +5,20 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
 import sqlglot
+from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.engine.ingestion import ingest_datasource_idempotent, list_ingestable_objects
+from slayer.engine.schema_drift import _list_live_objects
+from slayer.engine.schema_scope import SchemaRef, is_quoted_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.physical import PhysicalIndex
 from slayer.sql import engine_factory
@@ -89,6 +92,13 @@ def test_case_insensitive_dialect_matches_any_case() -> None:
 ])
 def test_render_table_name(parts: tuple[str, ...], expected: str) -> None:
     assert render_table_name(parts=parts, dialect=get_dialect("postgres")) == expected
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "oracle"])
+def test_render_table_name_quotes_a_reflected_lowercase_name(dialect: str) -> None:
+    """SQLAlchemy reflects ``"lower"`` on an upper-folding database as a quoted ``lower``."""
+    parts = [quoted_name("sales", True), quoted_name("orders", True)]
+    assert render_table_name(parts=parts, dialect=get_dialect(dialect)) == '"sales"."orders"'
 
 
 def _parts(name: str, *, dialect: str) -> list[str]:
@@ -179,3 +189,28 @@ async def test_stored_dotted_table_name_validates_on_sqlite(tmp_path: Path) -> N
         assert await _validate(storage) == []
     finally:
         engine_factory.invalidate_engine(ds)
+
+
+class _ReflectingInspector:
+    """Test double: an Inspector listing ``"lower_items"`` as SQLAlchemy reflects it on Snowflake."""
+
+    def get_table_names(self, schema: str | None = None) -> list[str]:
+        return [quoted_name("lower_items", True), "orders"]
+
+    def get_view_names(self, schema: str | None = None) -> list[str]:
+        return []
+
+    def get_materialized_view_names(self, schema: str | None = None) -> list[str]:
+        return []
+
+
+def test_listed_objects_keep_their_quoting() -> None:
+    inspector = cast(Inspector, _ReflectingInspector())
+    objects = list_ingestable_objects(inspector=inspector, ref=SchemaRef(name="s"))
+    assert [(o.name, o.quoted) for o in objects] == [("lower_items", True), ("orders", False)]
+    snowflake = get_dialect("snowflake")
+    assert [SchemaRef(name="s", requested="s").qualify(o.live_name, dialect=snowflake) for o in objects] == [
+        's."lower_items"', "s.orders"]
+    ((_, names),) = _list_live_objects([SchemaRef(name="s")], inspector=inspector,
+                                       datasource=DatasourceConfig(name=DS, type="snowflake"))
+    assert [is_quoted_name(n) for n in names] == [True, False]

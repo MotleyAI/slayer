@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from contextlib import ExitStack
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +17,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine import ingestion
+from slayer.engine.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import (
     DriftSnapshot,
@@ -89,8 +89,8 @@ def _live(engine: sa.Engine, layout: _Layout, *, schemas: list[str] | None) -> E
     def tables(ref: SchemaRef | None) -> dict[str, dict[str, DataType]]:
         return layout.get((ref.name if ref else None) or _URL_DATASET, {})
 
-    def listing(*, inspector: Any, ref: SchemaRef, include_views: bool = True) -> list[SimpleNamespace]:
-        return [SimpleNamespace(name=t) for t in tables(ref)]
+    def listing(*, inspector: Any, ref: SchemaRef, include_views: bool = True) -> list[IngestableObject]:
+        return [IngestableObject(name=t, kind="table") for t in tables(ref)]
 
     def introspect(*, inspector: Any, sa_engine: Any, table_name: str, ref: SchemaRef | None) -> LiveTable:
         return LiveTable(columns=tables(ref)[table_name])

@@ -1,4 +1,4 @@
-"""Pure-unit tests for the schema-identity value objects (DEV-1758).
+"""Pure-unit tests for the schema-identity value objects.
 
 No database: exercises ``SchemaRef`` (the one owner of schema identity), the
 single ``split_sql_table`` parser, the dialect-gated token constructor, the
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.sql.elements import quoted_name
 
 from slayer.engine.schema_scope import (
     IngestScope,
@@ -269,3 +270,26 @@ class TestPayloadTypes:
         s = SkippedSchema(token="aaa.main", reason="belongs to attached catalog")
         assert s.token == "aaa.main"
         assert "attached" in s.reason
+
+
+class TestQuotedSchemaName:
+    """SQLAlchemy's ``quoted_name`` (a lower-case Snowflake / Oracle schema) keeps its exact case."""
+
+    @pytest.mark.parametrize("requested", [True, False])
+    def test_quoted_lowercase_schema_qualifies_quoted(self, requested: bool) -> None:
+        schema = quoted_name("lower_schema", True)
+        ref = schema_ref_from_token(schema, dialect_name="snowflake", requested=schema if requested else None)
+        assert ref.qualify(quoted_name("lower_table", True), dialect=get_dialect("snowflake")) == (
+            '"lower_schema"."lower_table"')
+
+    def test_quoted_schema_token_keeps_its_quoting(self) -> None:
+        ref = schema_ref_from_token(quoted_name("lower_schema", True), dialect_name="snowflake")
+        assert getattr(ref.token, "quote", None) is True
+        assert ref != schema_ref_from_token("lower_schema", dialect_name="snowflake")
+
+    def test_stored_quoted_parts_read_back_flagged_quoted(self) -> None:
+        schema, table = split_sql_table('"lower_schema"."lower_table"', dialect=get_dialect("snowflake"))
+        assert (schema, getattr(schema, "quote", None), table, getattr(table, "quote", None)) == (
+            "lower_schema", True, "lower_table", True)
+        unquoted, _ = split_sql_table("lower_schema.lower_table", dialect=get_dialect("snowflake"))
+        assert getattr(unquoted, "quote", None) is not True

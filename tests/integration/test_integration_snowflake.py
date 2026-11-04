@@ -35,6 +35,7 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.importers.column_types import LiveSource
 from slayer.sql import client, engine_factory
 from slayer.sql.dialects import SnowflakeDialect
 from slayer.storage.yaml_storage import YAMLStorage
@@ -1019,3 +1020,31 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
     model = run_sync(storage.get_model("inferred", data_source="sf_test"))
     typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}
     assert typed == {"ints": DataType.INT, "empty": DataType.INT}
+
+
+def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engine, sf_transient_schema,
+                                                         tmp_path) -> None:
+    '''A quoted lower-case ``"lower_items"`` is not ``LOWER_ITEMS``: ingestion and import typing name it exactly.'''
+    with sf_engine.connect() as conn:
+        conn.execute(sa.text('CREATE TABLE "lower_items" (qty NUMBER(38,0), "tags" ARRAY)'))
+        conn.execute(sa.text('INSERT INTO "lower_items" SELECT 7, ARRAY_CONSTRUCT(1, 2)'))
+        conn.commit()
+    try:
+        assert LiveSource(engine=sf_engine, data_source="sf_test", db_type="snowflake", dialect="snowflake",
+                          sql_table=f'{sf_transient_schema}."lower_items"').column("qty") == (DataType.INT, None)
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(sf_datasource))
+        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema))
+        model = run_sync(storage.get_model("lower_items"))
+        assert model is not None
+        assert model.sql_table == f'{sf_transient_schema}."lower_items"'
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert tags.element_type is DataType.INT
+        engine = SlayerQueryEngine(storage=storage)
+        rows = run_sync(engine.execute({"source_model": "lower_items", "dimensions": ["qty"]})).data
+        assert [r["lower_items.qty"] for r in rows] == [7]
+    finally:
+        with sf_engine.connect() as conn:
+            conn.execute(sa.text('DROP TABLE IF EXISTS "lower_items"'))
+            conn.commit()
