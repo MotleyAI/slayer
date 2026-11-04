@@ -38,6 +38,9 @@ project, asserting comment import and idempotent re-ingest semantics, then
 deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
+[List columns](concepts/queries.md#list-columns), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
+On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version; a filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later.
+
 ## Tier 2 — code-covered
 
 Unit tests for SQL generation; no live-instance verification.
@@ -283,6 +286,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
+- **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0 and `IS NULL` is false where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
   `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
   explain=True)` returns the dry-run SQL unchanged rather than an execution

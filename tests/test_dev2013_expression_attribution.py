@@ -20,6 +20,7 @@ from slayer.core.keys import (
     KIND_POLICY,
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     Grain,
@@ -652,6 +653,7 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
      ["city", " in ", "'Alpha'", "'Beta'"]),
     (SqlFragmentKey(template="LENGTH({r0}) + {r1}", refs=(CITY, ColumnKey(leaf="quantity"))),
      ["LENGTH(city) + quantity"]),
+    (ArrayLiteralKey(values=(_lit("Alpha"), _lit("Beta"))), ["['Alpha', 'Beta']"]),
 ]
 _REPR_MARKERS = ("Key(", "path=", "leaf=", "operands=", "op=", "refs=", "template=")
 

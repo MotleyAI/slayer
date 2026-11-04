@@ -25,6 +25,7 @@ from slayer.core import keys as K
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -79,6 +80,7 @@ def _samples() -> dict:
         SqlFragmentKey: SqlFragmentKey(
             template="{r0} * 2", refs=(ColumnKey(path=(), leaf="spend"),),
         ),
+        ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     }
 
 

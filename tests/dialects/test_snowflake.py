@@ -413,7 +413,7 @@ def test_statement_timeout_sql_zero_seconds() -> None:
         (7, DataType.TIMESTAMP),   # TIMESTAMP_TZ
         (8, DataType.TIMESTAMP),   # TIMESTAMP_NTZ
         (9, DataType.TEXT),        # OBJECT
-        (10, DataType.TEXT),       # ARRAY
+        (10, DataType.ARRAY),      # ARRAY
         (11, DataType.TEXT),       # BINARY
         (12, DataType.TIMESTAMP),  # TIME
         (13, DataType.BOOLEAN),    # BOOLEAN

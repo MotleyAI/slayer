@@ -12,7 +12,7 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -72,6 +72,8 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "MySQL"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
@@ -233,6 +235,7 @@ class MariadbDialect(MysqlDialect):
     """MariaDB renders as MySQL; it names its statement timeout differently."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
+    database_name: ClassVar[str] = "MariaDB"
     sa_backend_names: frozenset[str] = frozenset({"mariadb"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:

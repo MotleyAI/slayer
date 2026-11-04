@@ -14,7 +14,9 @@ Key terms used throughout SLayer documentation and code.
 
 **Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
-**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
+**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at model level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
+
+**List column** — A column of type `ARRAY` whose values are lists of an `element_type`; its elements are reachable as the child `<column>.value` (filter, group and aggregate them without fan-out), and the list itself takes the list functions `contains`, `contains_any`, `contains_all` and `length`. See [List columns](queries.md#list-columns).
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 

@@ -539,7 +539,8 @@ only in the filter.
   undeterminable version
 - **THEN** the query fails with a clear error naming the version requirement instead of
   executing with different semantics; on 25.4+, when the user may enable it, the required
-  correlated-subquery setting is applied automatically and the query executes
+  correlated-subquery setting is applied automatically and the query executes — except that
+  before 25.8 a query that also reads a list's elements fails naming 25.8
 
 #### Scenario: ClickHouse readonly user who cannot enable correlated subqueries
 - **WHEN** a semi-join pushdown query (dry run, EXPLAIN, or execution) runs for a

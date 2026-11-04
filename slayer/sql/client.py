@@ -116,6 +116,8 @@ def _first_value_type(value: Any) -> ResultColumnType:
     """A column typed off one value; a number is uncertified, so DOUBLE."""
     if isinstance(value, bool):
         return ResultColumnType(type=DataType.BOOLEAN)
+    if isinstance(value, (list, tuple)):
+        return ResultColumnType(type=DataType.ARRAY)
     if isinstance(value, (int, float, Decimal)):
         return ResultColumnType(type=DataType.DOUBLE)
     if isinstance(value, datetime):
@@ -1156,7 +1158,7 @@ async def _execute_sql_async(
             timing.record("set_timeout", _t)
             _t = timing.start()
             result = await _exec_verbatim_async(conn, sql)
-            rows = _fetch_rows(result)
+            rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
             if not result.returns_rows:
                 await conn.commit()
             timing.record("query", _t)
@@ -1237,18 +1239,27 @@ def _execute_sql_sync(
         datasource_name=datasource_name or str(engine.url), timeout_seconds=timeout_seconds,
     ) as skipped:
         result = _exec_verbatim(conn=conn, sql=sql)
-        rows = _fetch_rows(result)
+        rows = _fetch_rows(result, dialect=dialect_for_ds_type(db_type))
         if not result.returns_rows:
             conn.commit()
     return ExecutionResult(rows=rows, warnings=skipped)
 
 
-def _fetch_rows(result) -> list[dict[str, Any]]:
-    """A row-returning result's rows; a statement returning none (DDL) yields ``[]``."""
+def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
+    """A row-returning result's rows, each cell read by its dialect reader and each driver tuple as a Python list;
+    a statement returning none (DDL) yields ``[]``."""
     if not result.returns_rows:
         return []
     columns = list(result.keys())
-    return [dict(zip(columns, row)) for row in result.fetchall()]
+    description = getattr(getattr(result, "cursor", None), "description", None)
+    readers = dialect.result_readers(description) if description else {}
+
+    def cell(i: int, v: Any) -> Any:
+        if v is not None and i in readers:
+            v = readers[i](v)
+        return list(v) if isinstance(v, tuple) else v
+
+    return [{c: cell(i, v) for i, (c, v) in enumerate(zip(columns, row))} for row in result.fetchall()]
 
 
 def _typed_failure(exc: BaseException) -> SqlClientError | None:

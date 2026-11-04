@@ -25,6 +25,7 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -347,6 +348,7 @@ class TestTotalityAndFailClosed:
             SqlFragmentKey: SqlFragmentKey(
                 template="{r0} * 2", refs=(ColumnKey(path=("customers",), leaf="spend"),),
             ),
+            ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

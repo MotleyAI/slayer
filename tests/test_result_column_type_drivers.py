@@ -175,7 +175,7 @@ class TestTypeNameCodes:
         ("duckdb", "DATE", DataType.DATE),
         ("duckdb", "TIMESTAMP WITH TIME ZONE", DataType.TIMESTAMP),
         ("duckdb", "INTERVAL", DataType.TEXT),
-        ("duckdb", "INTEGER[]", DataType.TEXT),
+        ("duckdb", "INTEGER[]", DataType.ARRAY),
         ("duckdb", "MAP(VARCHAR, INTEGER)", DataType.TEXT),
         ("duckdb", "JSON", DataType.TEXT),
         ("bigquery", "INTEGER", DataType.INT),
@@ -185,12 +185,12 @@ class TestTypeNameCodes:
         ("bigquery", "RECORD", DataType.TEXT),
         ("trino", "bigint", DataType.INT),
         ("trino", "decimal(10,2)", DataType.DOUBLE),
-        ("trino", "array(integer)", DataType.TEXT),
+        ("trino", "array(integer)", DataType.ARRAY),
         ("trino", "row(a integer)", DataType.TEXT),
         ("clickhouse", "Nullable(Int32)", DataType.INT),
         ("clickhouse", "UInt8", DataType.INT),
         ("clickhouse", "Date32", DataType.DATE),
-        ("clickhouse", "Array(Int32)", DataType.TEXT),
+        ("clickhouse", "Array(Int32)", DataType.ARRAY),
     ])
     def test_name(self, ds_type: str, name: str, expected: DataType) -> None:
         described = _describe(ds_type, _row("c", name))

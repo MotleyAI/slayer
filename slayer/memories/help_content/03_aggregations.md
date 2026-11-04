@@ -11,7 +11,8 @@ filters, order, and computed dimensions.
 `percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
-latest record's value in each group), plus the model's custom aggregations
+latest record's value in each group), `collect(x)` (the distinct sorted values in each
+group, as a list), plus the model's custom aggregations
 (`inspect` the model to list them).
 
 A sole primary-key column only takes `count`, `count_distinct`,
@@ -28,7 +29,7 @@ it a `name`.
 ## Empty input
 
 An aggregate over no rows (a parent without joined rows, an empty window) is 0 for the
-`count` family and NULL for everything else, `sum(iif(...))` included.
+`count` family, `[]` for `collect`, and NULL for everything else, `sum(iif(...))` included.
 
 ## Result names
 

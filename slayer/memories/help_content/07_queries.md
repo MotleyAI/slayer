@@ -30,6 +30,12 @@ A query with dimensions only returns distinct combinations; set
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 
+## Lists
+
+A list column `tags` takes `contains(tags, 'x')`, `contains_any(tags, ['x', 'y'])`,
+`contains_all(tags, ['x', 'y'])` and `length(tags)`; `collect(x)` aggregates the distinct
+sorted values per row into a list.
+
 ## Variables
 
 `{name}` placeholders in conditions, formulas and `date_range` bounds take values from

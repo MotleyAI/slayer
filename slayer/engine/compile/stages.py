@@ -28,10 +28,10 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, JoinType, RANKED_AGGREGATIONS
+from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, VALUE_KEY_TYPES
-from slayer.core.models import Column, SlayerModel, aggregation_definition, empty_value
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, Grain, ArithmeticKey, ColumnKey, ColumnSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, column_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_cross_model_agg, is_kernel_requiring, is_ranked, split_top_level_and, NON_IDENTITY_KEY_FIELDS, window_kwarg_of, is_row_attach_root, attached_inputs, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.models import Column, EmptyValue, SlayerModel, aggregation_definition, empty_value
 from slayer.core.refs import key_display
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
@@ -48,6 +48,7 @@ from slayer.core.join_walker import (
     aggregation_owner,
     canonical_token,
     follow,
+    model_column_type,
     physical_join_pairs,
     reverse_token,
     unique_key_sets,
@@ -151,6 +152,7 @@ from slayer.engine.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
+    key_element_type,
     measure_key_format_description,
     measure_key_preserves_native_type,
     measure_key_type,
@@ -249,7 +251,9 @@ def _windowed_slot_id_set(
 def _stable_text(obj: Any) -> str:
     """A process-independent spelling of a key (sets sorted, never hash order)."""
     if isinstance(obj, BaseModel):
-        fields = ",".join(_stable_text(getattr(obj, f)) for f in type(obj).model_fields)
+        fields = ",".join(
+            _stable_text(getattr(obj, f)) for f in type(obj).model_fields if f not in NON_IDENTITY_KEY_FIELDS
+        )
         return f"{type(obj).__name__}({fields})"
     if isinstance(obj, (set, frozenset)):
         return "{" + ",".join(sorted(_stable_text(x) for x in obj)) + "}"
@@ -326,6 +330,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             bound=BoundExpr(value_key=pk),
             declared_name=name, public_name=name,
             type=d_type, format=d_fmt, description=d_desc,
+            element_type=None if model is None else key_element_type(pk, scope=ModelScope(source_model=model), bundle=bundle),
             # A grain key is a dimension the producer GROUPS BY; marking a computed one makes its inner aggregate a ROW attach.
             is_dimension=True,
         ))
@@ -353,6 +358,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             bound=BoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
             type=explicit_types.get(agg, a_type), format=a_fmt, description=a_desc,
+            element_type=None if model is None else key_element_type(agg, scope=ModelScope(source_model=model), bundle=bundle),
             type_is_explicit=agg in explicit_types,
             preserve_native_type=(
                 model is not None
@@ -904,7 +910,7 @@ def _trailing_window_kernel(
             producer_plan=producer_plan, agg_key=agg_key, root_model=root_model,
             bundle=bundle, alias=alias, target_rooted=target_rooted,
         )
-        if agg_key.agg in RANKED_AGGREGATIONS else None
+        if is_ranked(agg_key) else None
     )
     # Reference-bearing parameters read per interval row, each key remapped through
     # the sub-plan's regroup substitutions so an attached-aggregate parameter reads
@@ -973,7 +979,7 @@ def _kernel_decision(
         return _KernelDecision(kind="association", answer=answer)
     if windowed and window_kwarg_of(answer) is not None:
         return _KernelDecision(kind="trailing_window", answer=answer)
-    if answer.agg in RANKED_AGGREGATIONS:
+    if is_ranked(answer):
         return _KernelDecision(kind="ranked", answer=answer)
     return None
 
@@ -998,14 +1004,19 @@ def _decided_kernel(
     )}
 
 
-def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> Optional[int]:
+def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> EmptyValue:
     """An attached aggregate's empty value, its definition read on the owning model."""
     if not isinstance(key, AggregateKey):
         return None
-    owner = aggregation_owner(
-        root=bundle.source_model, source=key.source, models_by_name=bundle.models_by_name,
+    models = bundle.models_by_name
+    owner = aggregation_owner(root=bundle.source_model, source=key.source, models_by_name=models)
+    root = bundle.source_model
+    element = None if root is None else value_type(
+        key.source, column_type=model_column_type(model=root, models_by_name=models),
     )
-    return empty_value(agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg))
+    return empty_value(
+        agg=key.agg, definition=aggregation_definition(owner=owner, agg=key.agg), element_type=element,
+    )
 
 
 def _synthesize_wrap_attach(
@@ -1413,13 +1424,14 @@ def _path_edges_exist(
 
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
-    target_model: str, pairs: List[Tuple[str, str]], declared_left: bool,
+    target_model: str, pairs: List[Tuple[str, str]], declared_left: bool, lateral: Optional[str] = None,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         target_model=target_model,
         join_pairs=tuple((s, t) for s, t in pairs),
         node_path=node_path,
         declared_left=declared_left,
+        lateral=lateral,
     ))
 
 
@@ -1446,14 +1458,32 @@ def _forward_hops(
         )
     node_path = base_node_path
     for edge in chain:
+        own_row = not node_path and _is_parent_hop(edge)
         node_path = (*node_path, canonical_token(edge))
+        if own_row:
+            continue  # the root list child's parent row is already in the producer's FROM
         _register_hop(
             nodes, node_path=node_path, target_model=edge.target_model,
             pairs=physical_join_pairs(edge=edge, source=models[edge.source_model],
                                       target=models[edge.target_model]),
             declared_left=edge.join_type == JoinType.LEFT,
+            lateral=_forward_lateral(edge),
         )
     return node_path
+
+
+def _is_parent_hop(edge) -> bool:
+    """A list child's hop back to its parent."""
+    return edge.lateral is not None and edge.cardinality is not JoinCardinality.ONE_TO_MANY
+
+
+def _forward_lateral(edge) -> Optional[str]:
+    """A list child hop's list column; a parent hop below the producer root cannot be correlated (fail closed)."""
+    if edge.lateral is None:
+        return None
+    if _is_parent_hop(edge):
+        raise _PushBlocked("a list child's hop back to its parent is its own row")
+    return edge.lateral
 
 
 def _reverse_hops(
@@ -1480,6 +1510,9 @@ def _reverse_hops(
         physical = physical_join_pairs(
             edge=edge, source=by_name[edge.source_model], target=by_name[edge.target_model],
         )
+        # A list child's parent is its own row, already in the producer's FROM: no hop.
+        if edge.lateral is not None:
+            continue
         # A reverse hop is the population correlation, not a declared join:
         # never null-extended.
         _register_hop(
@@ -2146,6 +2179,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
     entity_keys_root: List[ValueKey] = []
+    list_rows = False
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = []
 
@@ -2155,7 +2189,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, assoc_pairs = (
+        picked_params, entity_keys_root, assoc_pairs, list_rows = (
             _association_arm(
                 agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
                 target_path=target_path, unattributable=unattributable,
@@ -2308,7 +2342,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     )
     cm_attach_kwargs: Dict[str, Any] = (
         {"kernel": AssociationProducerKernel(
-            entity_keys=entity_keys_root, picked_params=picked_params,
+            entity_keys=entity_keys_root, picked_params=picked_params, list_rows=list_rows,
         )}
         if decision is not None and decision.kind == "association"
         else _decided_kernel(
@@ -2491,13 +2525,26 @@ def _check_attached_params_determined(
         )
 
 
+def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_name: Dict[str, SlayerModel]) -> bool:
+    """``key`` (root coordinates) reads only the root's own list children."""
+    paths = [tuple(k.path) for k in walk_value_keys(key) if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey))]
+    if not paths:
+        return False
+    for path in paths:
+        chain = follow(root=root_model, path=path, models_by_name=models_by_name) if path else None
+        if not chain or len(chain) != 1 or chain[0].lateral is None \
+                or chain[0].cardinality is not JoinCardinality.ONE_TO_MANY:
+            return False
+    return True
+
+
 def _association_arm(
     *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
     root_model: SlayerModel, target_path: Tuple[str, ...],
     unattributable: List[_UnattributableDim], host_model: SlayerModel,
     models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
 ) -> Tuple[
-    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]],
+    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]], bool,
 ]:
     """The home-rooted association arm: eligibility + mode-invariant
     input safety on the rerooted host-locus aggregate (compiled inline at its fanning
@@ -2510,8 +2557,20 @@ def _association_arm(
         windowed_or_ranked=is_kernel_requiring(agg),
     )
     key_sets = unique_key_sets(root_model)
+    assoc_pairs = [
+        (u.key, reroot_from_root(
+            key=u.key, target_path=target_path, root_model=root_model,
+            models_by_name=models_by_name, host_name=host_model.name,
+        ))
+        for u in unattributable
+    ]
+    # A list child's rows are its root row's own elements: association needs no key (design D6).
+    list_rows = bool(assoc_pairs) and all(
+        _reached_by_root_lists(rerooted, root_model=root_model, models_by_name=models_by_name)
+        for _key, rerooted in assoc_pairs
+    )
     check_association_root_unique_key(
-        alias=alias, root_name=root_model.name, has_unique_key=bool(key_sets),
+        alias=alias, root_name=root_model.name, has_unique_key=list_rows or bool(key_sets),
     )
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model,
@@ -2524,12 +2583,13 @@ def _association_arm(
     # one is judged by the shared home-determination rule. Lift every parameter,
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
+    entity_columns = [] if list_rows else key_sets[0]
     host_entity_keys: List[ValueKey] = [
         column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in key_sets[0]
+        for col in entity_columns
     ]
     entity_keys_root: List[ValueKey] = [
-        column_default_key(path=(), leaf=col, base=root_model) for col in key_sets[0]
+        column_default_key(path=(), leaf=col, base=root_model) for col in entity_columns
     ]
     entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
@@ -2549,14 +2609,7 @@ def _association_arm(
             key=value, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         )))
-    assoc_pairs = [
-        (u.key, reroot_from_root(
-            key=u.key, target_path=target_path, root_model=root_model,
-            models_by_name=models_by_name, host_name=host_model.name,
-        ))
-        for u in unattributable
-    ]
-    return picked_params, entity_keys_root, assoc_pairs
+    return picked_params, entity_keys_root, assoc_pairs, list_rows
 
 
 def _association_inline_filters(
@@ -4573,6 +4626,7 @@ def _stage_column(
         sql_alias=flat,
         public_alias=alias,
         type=slot.type,
+        element_type=slot.element_type or (row.element_type if row is not None and slot.type is DataType.ARRAY else None),
         granularity=upstream_gran,
         label=slot.label or (row.label if row is not None else None),
         hidden=False,

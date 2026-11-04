@@ -25,6 +25,12 @@ from tests._dev1737_fixtures import PARTS, UNITS, customers_model, orders_model
 DATE_NAMES = ("date_part", "date_diff", "date_add", "current_date", "now", "interval")
 
 
+def _bind_condition(text: str):
+    model = orders_model()
+    bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])
+    return bind_filter(parse_filter_expr(text), scope=ModelScope(source_model=model), bundle=bundle).value_key
+
+
 def _bind(text: str):
     model = orders_model()
     bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])
@@ -98,7 +104,7 @@ class TestUnitLiterals:
     ])
     def test_unknown_unit_rejected_listing_accepted(self, expr: str, listed: str) -> None:
         with pytest.raises(ValueError, match=listed):
-            parse_filter_expr(expr)
+            _bind_condition(expr)
 
     @pytest.mark.parametrize("expr", [
         "date_part(status, created_at) = 1",
@@ -110,7 +116,7 @@ class TestUnitLiterals:
     ])
     def test_non_literal_unit_rejected(self, expr: str) -> None:
         with pytest.raises(ValueError, match="string literal"):
-            parse_filter_expr(expr)
+            _bind_condition(expr)
 
     def test_bucket_form_is_not_a_date_function(self) -> None:
         assert not isinstance(parse_expr("month(created_at)"), ScalarCall)
@@ -139,7 +145,7 @@ class TestKeywordArgsRejected:
     ])
     def test_keywords(self, expr: str) -> None:
         with pytest.raises(ValueError, match="keyword"):
-            parse_expr(expr)
+            _bind(expr)
 
 
 class TestIntervalRewrite:

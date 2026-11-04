@@ -9,7 +9,7 @@ the Postgres catalog queries duckdb-engine inherits.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar, Optional
 
 import sqlglot
 from sqlglot import exp
@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.sql.dialects.base import SqlDialect, describe_type_name_code
+from slayer.sql.dialects.base import LIST_ELEMENT, SqlDialect, anon, describe_type_name_code, is_not_null
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
@@ -34,6 +34,14 @@ from slayer.sql.dialects.reflection import (
     table_function,
     without_primary_key,
 )
+
+
+def _compact(values: Expression) -> Expression:
+    """``[e FOR e IN values IF e IS NOT NULL]``: DuckDB 2 rejects the ``->`` lambda, 1.1–1.2 lack ``lambda e:``."""
+    element = exp.column(LIST_ELEMENT)
+    return exp.Array(expressions=[exp.Comprehension(
+        this=element, expression=element.copy(), iterator=values.copy(), condition=is_not_null(element.copy()),
+    )])
 
 
 # DuckDB's JSON is VARCHAR-backed and comparable, unlike Postgres ``json``.
@@ -81,6 +89,23 @@ class DuckdbDialect(SqlDialect):
     approx_count_distinct_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
+    database_name: ClassVar[str] = "DuckDB"
+    native_lists: ClassVar[bool] = True
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("LEN", _compact(values))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("LIST_CONTAINS", _compact(values), value)
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ANY", _compact(values), _compact(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        return anon("LIST_HAS_ALL", _compact(values), _compact(other))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        return self.filtered_collect(value)
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Table(

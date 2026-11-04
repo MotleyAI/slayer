@@ -106,7 +106,7 @@ claude mcp list
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run the database's EXPLAIN and return the query plan |
-| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) and field attributes stay machine-safe: a trailing `Warnings:` block (attributes footer just before it) in markdown, leading `#` comment lines in csv, and inside the json payload — which becomes `{"data", "warnings"?, "attributes"?}` instead of a bare array once either is present |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive. Warnings (including the truncation notice) and field attributes stay machine-safe: a trailing `Warnings:` block (attributes footer just before it) in markdown, leading `#` comment lines in csv, and inside the json payload — which becomes `{"data", "warnings"?, "attributes"?}` instead of a bare array once either is present; a list value is a JSON array in json and JSON array text in markdown and csv |
 
 **Query object fields** (the shape of `query`, and of each stage in the list form):
 
