@@ -1,6 +1,6 @@
 ## 0. Prerequisite
 
-- [ ] 0.1 Merge `origin/main` once PR #543 (DEV-2163) has landed on it (merge message names `'origin/main'`); verify `openspec validate dev-2197-a-postgres-url-keeps-its-ssl-setting-when-slayer-switches-it --strict` passes (the REMOVED "An async-only driver URL still gets a synchronous engine" and the MODIFIED client-contract probe requirement need #543's corpus), and re-check the tripwire's pinned set in `openspec/specs/compatibility/removal-tripwire/spec.md` for any site #543 added — update this change's delta to match before writing tests.
+- [x] 0.1 Merge `origin/main` once PR #543 (DEV-2163) has landed on it (merge message names `'origin/main'`); verify `openspec validate dev-2197-a-postgres-url-keeps-its-ssl-setting-when-slayer-switches-it --strict` passes (the REMOVED "An async-only driver URL still gets a synchronous engine" and the MODIFIED client-contract probe requirement need #543's corpus), and re-check the tripwire's pinned set in `openspec/specs/compatibility/removal-tripwire/spec.md` for any site #543 added — update this change's delta to match before writing tests.
 
 ## 1. Tests (pr-tests stage; all fail before implementation)
 
