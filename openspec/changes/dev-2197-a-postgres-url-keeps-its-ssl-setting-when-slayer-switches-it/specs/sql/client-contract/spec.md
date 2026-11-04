@@ -9,7 +9,7 @@ A client's column-type probe SHALL return, for every result column of a statemen
 - **THEN** every column is INT, and on DuckDB and Postgres each carries the database's integer type name
 
 #### Scenario: Exact numerics are typed by scale
-- **WHEN** a statement selecting a `NUMERIC(10,0)` and a `NUMERIC(10,2)` column is probed on DuckDB and on Postgres
+- **WHEN** a statement selecting a `NUMERIC(10,0)` and a `NUMERIC(10,2)` column is probed on DuckDB and on Postgres through its default driver
 - **THEN** the first is INT and the second DOUBLE, and each type name carries its precision and scale
 
 #### Scenario: Floats stay DOUBLE
