@@ -46,8 +46,8 @@ declaration order, so `percentile(price, 0.9)` means `p=0.9`:
   "source_model": "orders",
   "measures": [
     {"formula": "sum(order_total - tax_paid)", "name": "net_revenue"},
-    "count_distinct(upper(email))",
-    "percentile(subtotal * quantity, p=0.5)"
+    "count_distinct(concat(customer_id, store_id))",
+    "percentile(tax_paid / subtotal, p=0.5)"
   ]
 }
 ```
@@ -261,19 +261,19 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
 ```json
 {
   "source_model": "orders",
-  "dimensions": ["region", "city"],
+  "dimensions": ["stores.regions.name", "stores.name"],
   "measures": [
-    {"formula": "sum(revenue) / sum(revenue, partition_by=region)", "name": "share_of_region"},
-    {"formula": "sum(revenue) / sum(revenue, partition_by=[])", "name": "share_of_total"}
+    {"formula": "sum(order_total) / sum(order_total, partition_by=stores.regions.name)", "name": "share_of_region"},
+    {"formula": "sum(order_total) / sum(order_total, partition_by=[])", "name": "share_of_total"}
   ]
 }
 ```
 
-`partition_by=region` is the region total on every city row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[region, channel]`) or dotted path also work. The total is computed over rows passing row-level filters — filters on the measure (`having`) and pagination never change it.
+`partition_by=stores.regions.name` is the region total on every store row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[stores.regions.name, status]`) also works. The total is computed over rows passing row-level filters — filters on the measure (`having`) and pagination never change it.
 
-A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(sum(revenue, partition_by=region))`), and referenced in a filter or `order` target (`sum(revenue, partition_by=region) > 5000`) — for filters and `order` targets, cross-model included (`sum(customers.spend, partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a measure (e.g. a partitioned aggregate OR-ed with a raw row column that isn't a query dimension) raises a typing error naming both failures. Cross-model `partition_by` composes the same way — with `window=` when the query's active time dimension is attributable from the aggregate's root, on `first`/`last` (`last(customers.spend, partition_by=customers.tier)`), and nested inside a transform.
+A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(sum(order_total, partition_by=stores.regions.name))`), and referenced in a filter or `order` target (`sum(order_total, partition_by=stores.regions.name) > 5000`) — for filters and `order` targets, cross-model included (`sum(customers.spend, partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a measure (e.g. a partitioned aggregate OR-ed with a raw row column that isn't a query dimension) raises a typing error naming both failures. Cross-model `partition_by` composes the same way — with `window=` when the query's active time dimension is attributable from the aggregate's root, on `first`/`last` (`last(customers.spend, partition_by=customers.tier)`), and nested inside a transform.
 
-A partitioned aggregate can itself be re-aggregated — `{"formula": "avg(sum(revenue, partition_by=[city, region]))", "name": "avg_city_total"}` grouped by `region` averages each region's **city totals** (one input per city cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(revenue, partition_by=[city, region]), weight=count(id, partition_by=[city, region]))` weights each city total by its row count; see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
+A partitioned aggregate can itself be re-aggregated — `{"formula": "avg(sum(order_total, partition_by=[stores.name, stores.regions.name]))", "name": "avg_store_total"}` grouped by `stores.regions.name` averages each region's **store totals** (one input per store cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(order_total, partition_by=[stores.name, stores.regions.name]), weight=count(id, partition_by=[stores.name, stores.regions.name]))` weights each store total by its row count; see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
 
 ## Result column naming
 

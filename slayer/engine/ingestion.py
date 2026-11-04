@@ -1,20 +1,19 @@
 """Auto-ingestion: introspect a database and generate SlayerModels with FK joins."""
 
-import asyncio
 import logging
 import sys
 from collections import defaultdict
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TextIO
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
-import sqlalchemy as sa
-import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.schema import MappingSchema
 
+from slayer.async_utils import marked_coroutine_function, run_sync
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -29,25 +28,20 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.core.query import extract_variable_refs
+from slayer.engine import query_engine, schema_drift
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
-from slayer.engine.introspect_utils import dialect_for_engine, reflect_columns, reflect_table_keys
-from slayer.sql import engine_factory, sqlite_introspect
-from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, render_type_probe, sql_model_trial_query
-from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.reflection import (
-    CLICKHOUSE_WRAPPER_MAX_DEPTH,
-    CLICKHOUSE_WRAPPER_NAMES,
-    ReflectedColumn,
-    TableKeys,
-    clean_comment,
-    is_exact_numeric_db_type,
-)
+from slayer.engine.introspect_utils import dialect_of, reflect_columns, reflect_table_keys, table_location
+from slayer.sql import sqlite_introspect
+from slayer.sql.client import ObjectNotFound, SqlClient, render_type_probe, sql_model_trial_query
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
+from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys
 from slayer.engine.schema_scope import (
+    IngestScopeArgs,
     SchemaRef,
+    UNREACHABLE,
     SkippedSchema,
-    connection_default_schema,
     default_schema_ref,
     resolve_ingest_scope,
     schema_ref_from_token,
@@ -70,6 +64,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 class IntrospectedColumn(BaseModel):
     """One column as read from the live database during introspection."""
@@ -83,100 +79,8 @@ class IntrospectedColumn(BaseModel):
     comment: str | None = None
 
 
-# Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
-_logged_unmapped_sa_types: set[str] = set()
-
-# Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
-# A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
-_OPAQUE_SA_TYPE_NAMES = frozenset({
-    "JSON",  # ``jsonb`` is groupable and deliberately absent
-    "XML",
-    "TXID_SNAPSHOT",
-    # Geometric / spatial — none have a default btree/hash opclass
-    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
-    "GEOMETRY", "GEOGRAPHY", "RASTER",
-    # Range types
-    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
-})
-
-_SA_TYPE_MAP = {
-    "INTEGER": DataType.INT,
-    "BIGINT": DataType.INT,
-    "SMALLINT": DataType.INT,
-    "SERIAL": DataType.INT,
-    "BIGSERIAL": DataType.INT,
-    "FLOAT": DataType.DOUBLE,
-    "REAL": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE,
-    "DOUBLE_PRECISION": DataType.DOUBLE,
-    # Refined by scale in _sa_type_to_data_type; DOUBLE when scale is unknown.
-    "NUMERIC": DataType.DOUBLE,
-    "DECIMAL": DataType.DOUBLE,
-    "VARCHAR": DataType.TEXT,
-    "CHAR": DataType.TEXT,
-    "TEXT": DataType.TEXT,
-    "STRING": DataType.TEXT,
-    "BOOLEAN": DataType.BOOLEAN,
-    "BOOL": DataType.BOOLEAN,
-    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
-    "TIMESTAMP": DataType.TIMESTAMP,
-    "DATETIME": DataType.TIMESTAMP,
-    "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_TZ": DataType.TIMESTAMP,
-    "DATE": DataType.DATE,
-    "TIME": DataType.TIMESTAMP,
-    # ClickHouse
-    "INT8": DataType.INT,
-    "INT16": DataType.INT,
-    "INT32": DataType.INT,
-    "INT64": DataType.INT,
-    "INT128": DataType.INT,
-    "INT256": DataType.INT,
-    "UINT8": DataType.INT,
-    "UINT16": DataType.INT,
-    "UINT32": DataType.INT,
-    "UINT64": DataType.INT,
-    "UINT128": DataType.INT,
-    "UINT256": DataType.INT,
-    "FLOAT32": DataType.DOUBLE,
-    "FLOAT64": DataType.DOUBLE,
-    "DATETIME64": DataType.TIMESTAMP,
-    "DATE32": DataType.DATE,
-    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
-    "TINYINT": DataType.INT,
-    "DATETIME2": DataType.TIMESTAMP,
-    "SMALLDATETIME": DataType.TIMESTAMP,
-    "DATETIMEOFFSET": DataType.TIMESTAMP,
-    "NVARCHAR": DataType.TEXT,
-    "NCHAR": DataType.TEXT,
-    "NTEXT": DataType.TEXT,
-    "UUID": DataType.TEXT,  # ClickHouse (not an sa.Uuid)
-    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
-    "MONEY": DataType.DOUBLE,
-    "SMALLMONEY": DataType.DOUBLE,
-    # SQL Server rowversion — 8-byte binary counter, not temporal
-    "ROWVERSION": DataType.TEXT,
-}
-
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
-
-# NUMERIC/DECIMAL are float-like only by scale (see _sa_type_is_float).
-_FLOAT_LIKE_SA_TYPES = frozenset(
-    {
-        "FLOAT",
-        "REAL",
-        "DOUBLE",
-        "DOUBLE_PRECISION",
-        "FLOAT32",
-        "FLOAT64",
-        "MONEY",
-        "SMALLMONEY",
-    }
-)
 
 
 def _is_id_column(name: str) -> bool:
@@ -185,143 +89,11 @@ def _is_id_column(name: str) -> bool:
     return lower == "id" or lower.endswith(_ID_SUFFIXES)
 
 
-def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
-    """Peel nested ClickHouse Nullable/LowCardinality wrappers (as-is if no ``nested_type``)."""
-    current = sa_type
-    for _ in range(CLICKHOUSE_WRAPPER_MAX_DEPTH):
-        if type(current).__name__.upper() not in CLICKHOUSE_WRAPPER_NAMES:
-            return current
-        inner = getattr(current, "nested_type", None)
-        if inner is None:
-            return current
-        current = inner
-    return current
-
-
-#: Element types that are records or containers: a list of them has opaque elements.
-_OPAQUE_ELEMENT_TYPE_NAMES = frozenset({"STRUCT", "RECORD", "TUPLE", "MAP", "OBJECT", "VARIANT", "ROW", "JSON"})
-
-
-def _sa_list_item(sa_type: sa.types.TypeEngine) -> tuple[bool, sa.types.TypeEngine | None]:
-    """``(is a list, its item type)``; the item is ``None`` for an untyped (Snowflake semi-structured) list."""
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    if isinstance(sa_type, sa.ARRAY):
-        dimensions = getattr(sa_type, "dimensions", None)
-        return True, None if dimensions is not None and dimensions > 1 else sa_type.item_type
-    if type(sa_type).__name__.upper() != "ARRAY":
-        return False, None
-    item = getattr(sa_type, "item_type", None)
-    if item is not None:  # ClickHouse Array(T)
-        return True, item
-    return True, getattr(sa_type, "value_type", None)  # Snowflake ARRAY / ARRAY(T)
-
-
-def _sa_element_type(item: sa.types.TypeEngine | None) -> DataType:
-    """A list item's SLayer type: a scalar's own, ``UNKNOWN`` for a nested list, a record or no item type."""
-    if item is None or _sa_list_item(item)[0]:
-        return DataType.UNKNOWN
-    if type(_unwrap_clickhouse_wrappers(item)).__name__.upper() in _OPAQUE_ELEMENT_TYPE_NAMES:
-        return DataType.UNKNOWN
-    return _sa_type_to_data_type(item)
-
-
-def sa_data_types(sa_type: sa.types.TypeEngine) -> tuple[DataType, DataType | None]:
-    """``(type, element type)`` of a SQLAlchemy type; the element type is set only for a list."""
-    is_list, item = _sa_list_item(sa_type)
-    if is_list:
-        return DataType.ARRAY, _sa_element_type(item)
-    return _sa_type_to_data_type(sa_type), None
-
-
-def list_db_type(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str:
-    """A list's raw database type with its element (``INTEGER[]``, ``ARRAY<STRING>``)."""
-    unwrapped = _unwrap_clickhouse_wrappers(sa_type)
-    if sa_dialect is not None:
-        try:
-            return unwrapped.compile(dialect=sa_dialect)
-        except Exception:  # noqa: BLE001 — a type its dialect cannot spell keeps the generic form
-            logger.debug("list type %r does not compile on %s", unwrapped, sa_dialect.name)
-    item = _sa_list_item(unwrapped)[1]
-    if item is None:
-        return _raw_db_type_str(unwrapped) or "ARRAY"
-    return f"{type(_unwrap_clickhouse_wrappers(item)).__name__.upper()}[]"
-
-
-def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    if _sa_list_item(sa_type)[0]:
-        return DataType.ARRAY
-    # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
-    if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
-        return DataType.TEXT
-    # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
-    if isinstance(sa_type, sa.Uuid):
-        return DataType.TEXT
-    type_name = type(sa_type).__name__.upper()
-    type_str = str(sa_type).split("(")[0].upper().strip()
-    if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
-        return DataType.UNKNOWN
-    if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
-        return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
-    if type_name in _SA_TYPE_MAP:
-        return _SA_TYPE_MAP[type_name]
-    if type_str in _SA_TYPE_MAP:
-        return _SA_TYPE_MAP[type_str]
-    if type_name not in _logged_unmapped_sa_types:
-        _logged_unmapped_sa_types.add(type_name)
-        logger.warning(
-            "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Add a non-comparable type to _OPAQUE_SA_TYPE_NAMES "
-            "and a mappable one to _SA_TYPE_MAP.",
-            type_name,
-            str(sa_type),
-        )
-    return DataType.TEXT
-
-
-def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type`` (never raises)."""
-    try:
-        text = str(sa_type).strip()
-    except Exception:
-        text = ""
-    if text:
-        return text
-    name = type(sa_type).__name__
-    return name or None
-
-
-def _sa_type_is_exact_numeric(sa_type: sa.types.TypeEngine) -> bool:
-    """Whether ``sa_type`` is an exact NUMERIC/DECIMAL database type."""
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    return is_exact_numeric_db_type(type(sa_type).__name__) or is_exact_numeric_db_type(
-        str(sa_type)
-    )
-
-
-def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
-    """Whether the type is float-like; NUMERIC/DECIMAL only when scale > 0 or unknown."""
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    type_name = type(sa_type).__name__.upper()
-    if type_name in _FLOAT_LIKE_SA_TYPES:
-        return True
-    if is_exact_numeric_db_type(type_name):
-        scale = getattr(sa_type, "scale", None)
-        return scale is None or scale > 0
-    type_str = str(sa_type).split("(")[0].upper().strip()
-    if type_str in _FLOAT_LIKE_SA_TYPES:
-        return True
-    if is_exact_numeric_db_type(type_str):
-        scale = getattr(sa_type, "scale", None)
-        return scale is None or scale > 0
-    return False
-
-
 # --- Join generation from FK relationships ---
 
 
 def _is_cross_schema_fk(
-    fk: dict, schema: str | None, default_schema: str | None = None, dialect: Any = None,
+    fk: dict, schema: str | None, default_schema: str | None = None, dialect: SqlDialect | None = None,
 ) -> bool:
     """Does this FK point outside the ingested schema (it would mis-bind by bare name)?"""
     referred_schema = fk.get("referred_schema")
@@ -334,11 +106,9 @@ def _is_cross_schema_fk(
     return _schema_key(referred_schema, dialect) != _schema_key(effective_schema, dialect)
 
 
-def _schema_key(name: str, dialect: Any) -> str:
-    """A case-folding dialect (Snowflake, Oracle) reports schema names normalised; compare them so."""
-    if dialect is not None and getattr(dialect, "requires_name_normalize", False):
-        return dialect.normalize_name(name)
-    return name
+def _schema_key(name: str, dialect: SqlDialect | None) -> str:
+    """A case-folding dialect (Snowflake) reports schema names normalised; compare them so."""
+    return dialect.normalize_reflected_name(name) if dialect is not None else name
 
 
 def _fk_groups(
@@ -348,7 +118,7 @@ def _fk_groups(
     table_set: set[str],
     schema: str | None,
     default_schema: str | None,
-    dialect: Any = None,
+    dialect: SqlDialect | None = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
     """``[(referred_table, [(src_col, tgt_col), ...])]``, one entry per in-scope FK constraint."""
     result: list[tuple[str, list[tuple[str, str]]]] = []
@@ -363,12 +133,11 @@ def _fk_groups(
     return result
 
 
-def _ref_from_token(sa_engine: sa.Engine | None, token: str | None) -> SchemaRef | None:
+def _ref_from_token(client: SqlClient, token: str | None) -> SchemaRef | None:
     """Rebuild a ``SchemaRef`` from a (possibly catalog-qualified) schema token."""
     if token is None:
         return None
-    dialect_name = getattr(getattr(sa_engine, "dialect", None), "name", None)
-    return schema_ref_from_token(token, dialect_name=dialect_name)
+    return schema_ref_from_token(token, dialect_name=client.datasource.type)
 
 
 def _key_sets(keys: TableKeys) -> list[list[str]]:
@@ -386,38 +155,46 @@ def _logical_column_name(live_name: str) -> str:
     return "count_col" if live_name == "_count" else live_name
 
 
-def _generate_joins(
-    inspector: sa.engine.Inspector,
+class _Unread:
+    """Marks a ``default_schema`` the callee reads itself (``None`` is a real value)."""
+
+
+_UNREAD = _Unread()
+
+
+async def _generate_joins(
+    *,
+    client: SqlClient,
     source_table: str,
     schema: str | None,
     table_set: set[str],
-    sa_engine: sa.Engine | None = None,
     model_name_by_table: dict[str, str] | None = None,
     schema_name: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
+    default_schema: str | None | _Unread = _UNREAD,
 ) -> list[ModelJoin]:
     """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
 
     Joins name the MODEL (via ``model_name_by_table``); a target with no model is dropped.
-    ``keys_by_table`` memoizes each table's keys across calls.
+    ``keys_by_table`` memoizes each table's keys across calls; ``default_schema`` is read when not given.
     """
-    engine = sa_engine if sa_engine is not None else getattr(inspector, "bind", None)
-    ref = _ref_from_token(engine, schema)
+    resolved_default = await client.default_schema() if isinstance(default_schema, _Unread) else default_schema
+    ref = _ref_from_token(client, schema)
     cache = keys_by_table if keys_by_table is not None else {}
 
-    def keys_of(table: str) -> TableKeys:
+    async def keys_of(table: str) -> TableKeys:
         if table not in cache:
-            cache[table] = reflect_table_keys(sa_engine=engine, inspector=inspector, table_name=table, ref=ref)
+            cache[table] = await reflect_table_keys(client=client, table_name=table, ref=ref)
         return cache[table]
 
-    source_keys = keys_of(source_table)
+    source_keys = await keys_of(source_table)
     groups = _fk_groups(
         source_keys,
         table_name=source_table,
         table_set=table_set,
         schema=schema_name if schema_name is not None else schema,
-        default_schema=connection_default_schema(inspector, engine),
-        dialect=getattr(inspector, "dialect", None),
+        default_schema=resolved_default,
+        dialect=dialect_of(client),
     )
     joins = []
     seen_signatures: set[tuple] = set()
@@ -441,7 +218,7 @@ def _generate_joins(
                 key_columns=source_cols, unique_key_sets=_key_sets(source_keys)
             ),
             target_verified_unique=is_key_set_unique(
-                key_columns=target_cols, unique_key_sets=_key_sets(keys_of(ref_table))
+                key_columns=target_cols, unique_key_sets=_key_sets(await keys_of(ref_table))
             ),
         )
         joins.append(
@@ -456,89 +233,50 @@ def _generate_joins(
     return joins
 
 
-def _safe_get_table_comment(
-    inspector: sa.engine.Inspector,
-    table_name: str,
-    schema: str | None,
-) -> str | None:
-    """Table comment via Inspector; None when unsupported or failing."""
+async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: SchemaRef | None) -> str | None:
+    """Table comment; None when unsupported or failing."""
     try:
-        return clean_comment(
-            inspector.get_table_comment(table_name, schema=schema).get("text")
-        )
-    except Exception:
+        return await client.table_comment(table_location(table_name, ref))
+    except Exception:  # noqa: BLE001 — a comment is optional
         return None
 
 
-def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]) -> bool:
-    """A type in the dialect's ``json_types`` (``json_value`` reads it natively)."""
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
-    return any(n.split("(")[0].strip().upper() in json_types for n in (type(sa_type).__name__, str(sa_type)))
-
-
-def _introspected_column(
-    col: ReflectedColumn, *, name: str, primary_key: bool,
-    zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(), sa_dialect: Any = None,
-) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL,
-    a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
-    col_type = col.type
-    db_type: str | None = None
-    element_type: DataType | None = None
-    if isinstance(col_type, DataType):
-        data_type = col_type
-        element_type = col.element_type
-        is_float = col.is_float
-        db_type = col.db_type
-    else:
-        data_type, element_type = sa_data_types(col_type)
-        is_float = _sa_type_is_float(col_type)
-        if data_type is DataType.ARRAY:
-            db_type = list_db_type(col_type, sa_dialect=sa_dialect)
-        elif data_type.is_opaque or _sa_type_is_exact_numeric(col_type) or _sa_type_is_json(col_type, json_types=json_types) or (
-            type(col_type).__name__.upper() in zoned_types
-        ):
-            db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
+def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL, JSON
+    or a zoned timestamp)."""
     return IntrospectedColumn(
-        name=name, type=data_type, element_type=element_type, primary_key=primary_key, is_float=is_float,
-        db_type=db_type, comment=col.comment,
+        name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
+        db_type=col.db_type, comment=col.comment,
     )
 
 
-def _introspect_query_columns_via_inspector(
-    sa_engine: sa.Engine,
-    inspector: sa.engine.Inspector,
+async def _introspect_table_columns(
+    *,
+    client: SqlClient,
     table_name: str,
     ref: SchemaRef | None,
     primary_key: list[str] | None = None,
 ) -> list[IntrospectedColumn]:
     """Introspect the table's own columns; ``primary_key`` defaults to the table's reflected one."""
     if primary_key is None:
-        primary_key = reflect_table_keys(
-            sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref,
-        ).primary_key
+        primary_key = (await reflect_table_keys(client=client, table_name=table_name, ref=ref)).primary_key
     pk_columns = set(primary_key)
-    dialect = dialect_for_engine(sa_engine)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
     columns = [
-        _introspected_column(
-            col, name=col.name, primary_key=col.name in pk_columns,
-            zoned_types=dialect.zoned_timestamp_db_types, json_types=dialect.json_db_types,
-            sa_dialect=getattr(sa_engine, "dialect", None),
-        )
-        for col in reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
+        _introspected_column(col, name=col.name, primary_key=col.name in pk_columns)
+        for col in await reflect_columns(client=client, table_name=table_name, ref=ref)
         if "." not in col.name
     ]
-    return [_inferred_elements(c, sa_engine=sa_engine, table_name=table_name, ref=ref) for c in columns]
+    return [await _inferred_elements(c, client=client, table_name=table_name, ref=ref) for c in columns]
 
 
-def _inferred_elements(
-    column: IntrospectedColumn, *, sa_engine: sa.Engine, table_name: str, ref: SchemaRef | None,
+async def _inferred_elements(
+    column: IntrospectedColumn, *, client: SqlClient, table_name: str, ref: SchemaRef | None,
 ) -> IntrospectedColumn:
     """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
     if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
         return column
-    dialect = dialect_for_engine(sa_engine)
+    dialect = dialect_of(client)
     table = exp.Table(
         this=exp.to_identifier(table_name),
         db=exp.to_identifier(ref.name) if ref and ref.name else None,
@@ -548,11 +286,13 @@ def _inferred_elements(
     if query is None:
         return column
     try:
-        with sa_engine.connect() as conn:
-            names = [row[0] for row in conn.exec_driver_sql(query.sql(dialect=dialect.sqlglot_name)).fetchall()]
+        rows = (await client.execute(query.sql(dialect=dialect.sqlglot_name))).rows
+    except UNREACHABLE:
+        raise
     except Exception:  # noqa: BLE001 — an unreadable table keeps its elements opaque
         logger.warning("Could not infer the element type of %s.%s", table_name, column.name, exc_info=True)
         return column
+    names = [next(iter(row.values()), None) for row in rows]
     return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
@@ -589,20 +329,16 @@ def _sqlglot_type(data_type: DataType, element: DataType | None) -> exp.DataType
     return exp.DataType(this=_SQLGLOT_TYPES.get(data_type, exp.DataType.Type.UNKNOWN))
 
 
-def _reflected_data_types(column: ReflectedColumn) -> tuple[DataType, DataType | None]:
-    if isinstance(column.type, DataType):
-        return column.type, column.element_type
-    return sa_data_types(column.type)
-
-
-def _typed_result_lists(*, sql: str, sa_engine: sa.Engine) -> dict[str, ResultList]:
+async def _typed_result_lists(*, sql: str, client: SqlClient) -> dict[str, ResultList]:
     """The result columns of ``sql`` that sqlglot types as lists over the reflected tables it reads; ``{}`` when the
     text or a table cannot be typed."""
-    dialect = dialect_for_engine(sa_engine).sqlglot_name
+    dialect = dialect_of(client).sqlglot_name
     try:
         parsed = parse_one(sql, read=dialect)
-        schema = _live_schema(parsed, sa_engine=sa_engine, dialect=dialect)
+        schema = await _live_schema(parsed, client=client, dialect=dialect)
         typed = annotate_types(qualify(parsed, schema=schema, dialect=dialect), schema=schema, dialect=dialect)
+    except UNREACHABLE:
+        raise
     except Exception:  # noqa: BLE001 — untypeable text keeps the database's result types
         logger.debug("sqlglot cannot type the result of %r", sql, exc_info=True)
         return {}
@@ -616,19 +352,18 @@ def _typed_result_lists(*, sql: str, sa_engine: sa.Engine) -> dict[str, ResultLi
     return out
 
 
-def _live_schema(parsed: exp.Expr, *, sa_engine: sa.Engine, dialect: str) -> MappingSchema:
+async def _live_schema(parsed: exp.Expr, *, client: SqlClient, dialect: str) -> MappingSchema:
     """The reflected live columns of every table ``parsed`` reads (CTEs excluded), in SLayer types."""
     ctes = {cte.alias_or_name.casefold() for cte in parsed.find_all(exp.CTE)}
     schema = MappingSchema(dialect=dialect)
-    inspector = sa.inspect(sa_engine)
     for table in parsed.find_all(exp.Table):
         if not table.db and table.name.casefold() in ctes:
             continue
         ref = SchemaRef(catalog=table.catalog or None, name=table.db) if table.db else None
-        columns = reflect_columns(sa_engine=sa_engine, inspector=inspector, table_name=table.name, ref=ref)
+        columns = await reflect_columns(client=client, table_name=table.name, ref=ref)
         schema.add_table(
             exp.table_(table.name, db=table.db or None, catalog=table.catalog or None),
-            {c.name: _sqlglot_type(*_reflected_data_types(c)) for c in columns if "." not in c.name},
+            {c.name: _sqlglot_type(c.type, c.element_type) for c in columns if "." not in c.name},
             dialect=dialect,
         )
     return schema
@@ -648,14 +383,13 @@ def _list_projections(query: exp.Query) -> dict[str, exp.DataType]:
     return {**{mine: right[theirs] for mine, theirs in names if theirs in right}, **left}
 
 
-async def sql_result_types(*, sql: str, client: SlayerSQLClient) -> SqlResultTypes:
+async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
     """The result column types of an ``sql``-mode query (raises when the query fails)."""
-    dialect = dialect_for_ds_type(client.datasource.type)
-    categories = await client.get_column_types(
+    dialect = dialect_of(client)
+    probed = await client.get_result_column_types(
         render_type_probe(sql_model_trial_query(sql, dialect=dialect), dialect=dialect))
-    columns = {name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT) for name, cat in categories.items()}
-    sa_engine = engine_factory.get_engine(client.datasource.resolve_env_vars())
-    typed = await asyncio.to_thread(_typed_result_lists, sql=sql, sa_engine=sa_engine)
+    columns = {name: found.type for name, found in probed.items()}
+    typed = await _typed_result_lists(sql=sql, client=client)
     by_name = {name.casefold(): found for name, found in typed.items()}
     lists: dict[str, ResultList] = {}
     for name, data_type in columns.items():
@@ -742,9 +476,9 @@ def _columns_to_model(
     )
 
 
-def _sqlite_probe_integer_columns(
+async def _sqlite_probe_integer_columns(
     *,
-    sa_engine: sa.Engine,
+    client: SqlClient,
     sql_table: str,
     columns: list[IntrospectedColumn],
 ) -> list[IntrospectedColumn]:
@@ -752,38 +486,39 @@ def _sqlite_probe_integer_columns(
 
     A ``None`` probe verdict keeps the declared INT.
     """
-    if not dialect_for_engine(sa_engine).probes_integer_affinity:
+    if not dialect_of(client).probes_integer_affinity:
         return columns
 
     schema, table = _parse_qualified_sql_table(sql_table)
     out: list[IntrospectedColumn] = []
-    with sa_engine.connect() as conn:
-        for col in columns:
-            if col.type is not DataType.INT or "." in col.name:
-                out.append(col)
-                continue
-            try:
-                verdict = sqlite_introspect.probe_sqlite_integer_column(
-                    conn=conn,
-                    table=table,
-                    column=col.name,
-                    schema=schema,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "probe call raised for %s.%s; keeping declared INT: %s",
-                    sql_table,
-                    col.name,
-                    exc,
-                )
-                verdict = None
-            if verdict is None or verdict is DataType.INT:
-                out.append(col)
-                continue
-            out.append(col.model_copy(update={
-                "type": verdict,
-                "is_float": verdict is DataType.DOUBLE,
-            }))
+    for col in columns:
+        if col.type is not DataType.INT or "." in col.name:
+            out.append(col)
+            continue
+        try:
+            verdict = await sqlite_introspect.probe_sqlite_integer_column(
+                client=client,
+                table=table,
+                column=col.name,
+                schema=schema,
+            )
+        except UNREACHABLE:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "probe call raised for %s.%s; keeping declared INT: %s",
+                sql_table,
+                col.name,
+                exc,
+            )
+            verdict = None
+        if verdict is None or verdict is DataType.INT:
+            out.append(col)
+            continue
+        out.append(col.model_copy(update={
+            "type": verdict,
+            "is_float": verdict is DataType.DOUBLE,
+        }))
     return out
 
 
@@ -795,10 +530,9 @@ def _parse_qualified_sql_table(sql_table: str) -> tuple[str | None, str]:
     return None, sql_table
 
 
-def introspect_table_to_model(
+async def introspect_table_to_model(
     *,
-    sa_engine: sa.Engine,
-    inspector: sa.engine.Inspector,
+    client: SqlClient,
     table_name: str,
     ref: SchemaRef | None,
     data_source: str,
@@ -810,21 +544,13 @@ def introspect_table_to_model(
     ``ref=None`` probes the catalog-qualified default (a bare token lets DuckDB
     sweep an attached twin) while ``sql_table`` stays bare.
     """
-    ref = ref or default_schema_ref(inspector, sa_engine)
-    keys = reflect_table_keys(sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
-    columns = _introspect_query_columns_via_inspector(
-        sa_engine=sa_engine,
-        inspector=inspector,
-        table_name=table_name,
-        ref=ref,
-        primary_key=keys.primary_key,
+    ref = ref or await default_schema_ref(client)
+    keys = await reflect_table_keys(client=client, table_name=table_name, ref=ref)
+    columns = await _introspect_table_columns(
+        client=client, table_name=table_name, ref=ref, primary_key=keys.primary_key,
     )
     sql_table = ref.qualify(table_name)
-    columns = _sqlite_probe_integer_columns(
-        sa_engine=sa_engine,
-        sql_table=sql_table,
-        columns=columns,
-    )
+    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
@@ -832,7 +558,7 @@ def introspect_table_to_model(
         sql_table=sql_table,
         unique_columns=_solo_unique_columns(keys),
         source_kind=source_kind,
-        description=_safe_get_table_comment(inspector, table_name, ref.token),
+        description=await _safe_get_table_comment(client, table_name, ref),
     )
 
 
@@ -899,58 +625,23 @@ class IngestionScanReport(BaseModel):
         return [t for t in self.internal_tables if t.hidden]
 
 
-def _safe_object_names(
+async def list_ingestable_objects(
     *,
-    accessor_name: str,
-    inspector: sa.engine.Inspector,
-    schema: str | None,
-) -> list[str]:
-    """Call an ``Inspector.get_*_names`` accessor; ``[]`` if missing, unimplemented or failing."""
-    accessor = getattr(inspector, accessor_name, None)
-    if accessor is None:
-        return []
-    try:
-        return list(accessor(schema=schema) or [])
-    except NotImplementedError:
-        logger.debug("%s not implemented for this dialect", accessor_name)
-        return []
-    except Exception as exc:  # noqa: BLE001 — discovery is best-effort
-        logger.debug("%s failed: %s", accessor_name, exc)
-        return []
-
-
-def list_ingestable_objects(
-    *,
-    inspector: sa.engine.Inspector,
+    client: SqlClient,
     ref: SchemaRef | None = None,
     schema: str | None = None,
     include_views: bool = True,
 ) -> list[IngestableObject]:
     """Discover every ingestable object in ``ref``'s schema (default: connection default).
 
-    Deduped across accessors, the most specific kind winning (matview > view > table).
+    Deduped across kinds, the most specific kind winning (matview > view > table).
     """
     if ref is None and schema is not None:
-        bind = getattr(inspector, "bind", None)
-        dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
-        ref = schema_ref_from_token(
-            schema, dialect_name=dialect_name, requested=schema
-        )
-    if ref is None:
-        ref = default_schema_ref(inspector)
-    token = ref.token
+        ref = schema_ref_from_token(schema, dialect_name=client.datasource.type, requested=schema)
+    listing = await client.list_objects(ref.token if ref is not None else None)
 
-    view_list: list[str] = []
-    matview_list: list[str] = []
-    if include_views:
-        view_list = _safe_object_names(
-            accessor_name="get_view_names", inspector=inspector, schema=token
-        )
-        matview_list = _safe_object_names(
-            accessor_name="get_materialized_view_names",
-            inspector=inspector,
-            schema=token,
-        )
+    view_list = listing.views if include_views else []
+    matview_list = listing.materialized_views if include_views else []
     view_names, matview_names = set(view_list), set(matview_list)
 
     def _resolve_kind(name: str, default: ObjectKind) -> ObjectKind:
@@ -972,7 +663,7 @@ def list_ingestable_objects(
                 IngestableObject(name=name, kind=_resolve_kind(name, kind))
             )
 
-    _add(list(inspector.get_table_names(schema=token) or []), "table")
+    _add(listing.tables, "table")
     if include_views:
         _add(view_list, "view")
         _add(matview_list, "materialized_view")
@@ -1026,10 +717,9 @@ def _resolve_scanned_collisions(
 # --- Main ingestion ---
 
 
-def _build_one_model(
+async def _build_one_model(
     *,
-    sa_engine: sa.Engine,
-    inspector: sa.engine.Inspector,
+    client: SqlClient,
     obj: IngestableObject,
     model_name: str,
     ref: SchemaRef,
@@ -1038,38 +728,30 @@ def _build_one_model(
     model_name_by_table: dict[str, str] | None = None,
     internal_tool: str | None = None,
     keys_by_table: dict[str, TableKeys] | None = None,
+    default_schema: str | None | _Unread = _UNREAD,
 ) -> SlayerModel:
     """Introspect one live object into a model; raises on failure.
 
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     ``keys_by_table`` memoizes each table's keys across the schema's objects.
     """
-    schema_token = ref.token
     sql_table = ref.qualify(obj.name)
     keys_by_table = keys_by_table if keys_by_table is not None else {}
-    model_joins = _generate_joins(
-        inspector=inspector,
+    model_joins = await _generate_joins(
+        client=client,
         source_table=obj.name,
-        schema=schema_token,
+        schema=ref.token,
         table_set=table_set,
-        sa_engine=sa_engine,
         model_name_by_table=model_name_by_table,
         schema_name=ref.name,
         keys_by_table=keys_by_table,
+        default_schema=default_schema,
     )
     keys = keys_by_table[obj.name]
-    columns = _introspect_query_columns_via_inspector(
-        sa_engine=sa_engine,
-        inspector=inspector,
-        table_name=obj.name,
-        ref=ref,
-        primary_key=keys.primary_key,
+    columns = await _introspect_table_columns(
+        client=client, table_name=obj.name, ref=ref, primary_key=keys.primary_key,
     )
-    columns = _sqlite_probe_integer_columns(
-        sa_engine=sa_engine,
-        sql_table=sql_table,
-        columns=columns,
-    )
+    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     meta = {"internal_table": internal_tool} if internal_tool else None
     return _columns_to_model(
         name=model_name,
@@ -1081,21 +763,19 @@ def _build_one_model(
         source_kind=obj.kind,
         hidden=internal_tool is not None,
         meta=meta,
-        description=_safe_get_table_comment(inspector, obj.name, schema_token),
+        description=await _safe_get_table_comment(client, obj.name, ref),
     )
 
 
-def _fetch_bigquery_dataset_description(
+async def _fetch_schema_description(
     *,
-    sa_engine: sa.Engine,
+    client: SqlClient,
     datasource: DatasourceConfig,
     schema: str | None,
 ) -> str | None:
     """The schema's own description (a BigQuery dataset's), or None."""
     try:
-        return dialect_for_engine(sa_engine).reflect_schema_description(
-            sa_engine=sa_engine, schema=schema, configured_schema=datasource.schema_name,
-        )
+        return await client.schema_description(schema=schema, configured_schema=datasource.schema_name)
     except Exception:  # noqa: BLE001 — a description is optional
         return None
 
@@ -1111,10 +791,17 @@ def _requested_list(
     return None
 
 
-def _scan_one_schema(
+async def _scan_listing(*, client: SqlClient, ref: SchemaRef, include_views: bool) -> list[IngestableObject]:
+    """A scope schema's objects; a missing schema scans empty, so callers name the schemas that exist."""
+    try:
+        return await list_ingestable_objects(client=client, ref=ref, include_views=include_views)
+    except ObjectNotFound:
+        return []
+
+
+async def _scan_one_schema(
     *,
-    sa_engine: sa.Engine,
-    inspector: sa.engine.Inspector,
+    client: SqlClient,
     ref: SchemaRef,
     entries: list[tuple[str, IngestableObject]],
     data_source: str,
@@ -1128,14 +815,18 @@ def _scan_one_schema(
     skipped: list[SkippedTable] = []
     internal_tables: list[InternalTable] = []
     keys_by_table: dict[str, TableKeys] = {}
+    default_schema: str | None | _Unread = _UNREAD
+    try:
+        default_schema = await client.default_schema() if entries else None
+    except Exception:  # noqa: BLE001 — each object then reads it inside its own isolated build
+        logger.debug("default-schema read failed; reading it per object", exc_info=True)
     for model_name, obj in entries:
         # Classified on the live name; still recorded under ``surface_internals``.
         tool = internal_table_rule(obj.name)
         try:
             models.append(
-                _build_one_model(
-                    sa_engine=sa_engine,
-                    inspector=inspector,
+                await _build_one_model(
+                    client=client,
                     obj=obj,
                     model_name=model_name,
                     ref=ref,
@@ -1144,6 +835,7 @@ def _scan_one_schema(
                     model_name_by_table=name_by_object,
                     internal_tool=None if surface_internals else tool,
                     keys_by_table=keys_by_table,
+                    default_schema=default_schema,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — per-object isolation
@@ -1178,8 +870,10 @@ def _plan_scanned_edges(models: list[SlayerModel]) -> list[SlayerModel]:
     return [plan.models[m.name] for m in models]
 
 
-def ingest_datasource_report(
+async def ingest_datasource_report_async(
     datasource: DatasourceConfig,
+    *,
+    client: SqlClient,
     include_tables: list[str] | None = None,
     exclude_tables: list[str] | None = None,
     schema: str | None = None,
@@ -1196,76 +890,138 @@ def ingest_datasource_report(
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
     requested = _requested_list(schema, schemas)
 
-    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
-    try:
-        inspector = sa.inspect(sa_engine)
-        scope = resolve_ingest_scope(
-            inspector=inspector,
-            sa_engine=sa_engine,
-            requested=requested,
-            all_schemas=all_schemas,
-            datasource_schema=datasource.schema_name,
+    scope = await resolve_ingest_scope(
+        client=client,
+        requested=requested,
+        all_schemas=all_schemas,
+        datasource_schema=datasource.schema_name,
+    )
+    multi_schema = len(scope.schemas) > 1
+
+    scanned: list[tuple[SchemaRef, IngestableObject]] = []
+    for ref in scope.schemas:
+        objs = await _scan_listing(client=client, ref=ref, include_views=include_views)
+        if include_tables:
+            objs = [o for o in objs if o.name in include_tables]
+        if exclude_tables:
+            objs = [o for o in objs if o.name not in exclude_tables]
+        for o in objs:
+            scanned.append((ref, o))
+
+    all_objects = [obj for _, obj in scanned]
+    winners, skipped = _resolve_scanned_collisions(
+        scanned, multi_schema=multi_schema
+    )
+
+    by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
+    for model_name, (ref, obj) in winners.items():
+        key = ref.token
+        if key not in by_schema:
+            by_schema[key] = (ref, [])
+        by_schema[key][1].append((model_name, obj))
+
+    models: list[SlayerModel] = []
+    internal_tables: list[InternalTable] = []
+    for ref, entries in by_schema.values():
+        m, s, i = await _scan_one_schema(
+            client=client,
+            ref=ref,
+            entries=entries,
+            data_source=datasource.name,
+            surface_internals=surface_internals,
         )
-        multi_schema = len(scope.schemas) > 1
+        models.extend(m)
+        skipped.extend(s)
+        internal_tables.extend(i)
 
-        scanned: list[tuple[SchemaRef, IngestableObject]] = []
-        for ref in scope.schemas:
-            objs = list_ingestable_objects(
-                inspector=inspector, ref=ref, include_views=include_views
-            )
-            if include_tables:
-                objs = [o for o in objs if o.name in include_tables]
-            if exclude_tables:
-                objs = [o for o in objs if o.name not in exclude_tables]
-            for o in objs:
-                scanned.append((ref, o))
-
-        all_objects = [obj for _, obj in scanned]
-        winners, skipped = _resolve_scanned_collisions(
-            scanned, multi_schema=multi_schema
+    schema_description = None
+    if not datasource.description:
+        first_schema = scope.schemas[0].name if scope.schemas else None
+        schema_description = await _fetch_schema_description(
+            client=client, datasource=datasource, schema=first_schema,
         )
 
-        by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
-        for model_name, (ref, obj) in winners.items():
-            key = ref.token
-            if key not in by_schema:
-                by_schema[key] = (ref, [])
-            by_schema[key][1].append((model_name, obj))
+    return IngestionScanReport(
+        models=_plan_scanned_edges(models),
+        skipped=skipped,
+        objects=all_objects,
+        internal_tables=internal_tables,
+        schema_description=schema_description,
+        other_schemas=scope.other_schemas,
+        skipped_schemas=scope.skipped,
+    )
 
-        models: list[SlayerModel] = []
-        internal_tables: list[InternalTable] = []
-        for ref, entries in by_schema.values():
-            m, s, i = _scan_one_schema(
-                sa_engine=sa_engine,
-                inspector=inspector,
-                ref=ref,
-                entries=entries,
-                data_source=datasource.name,
-                surface_internals=surface_internals,
-            )
-            models.extend(m)
-            skipped.extend(s)
-            internal_tables.extend(i)
 
-        schema_description = None
-        if not datasource.description:
-            first_schema = scope.schemas[0].name if scope.schemas else None
-            schema_description = _fetch_bigquery_dataset_description(
-                sa_engine=sa_engine, datasource=datasource, schema=first_schema,
-            )
+async def ingest_datasource_async(
+    datasource: DatasourceConfig,
+    *,
+    client: SqlClient,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+) -> list[SlayerModel]:
+    """Models only, for callers that don't need the skip report."""
+    return (await ingest_datasource_report_async(
+        datasource=datasource,
+        client=client,
+        include_tables=include_tables,
+        exclude_tables=exclude_tables,
+        schema=schema,
+        schemas=schemas,
+        all_schemas=all_schemas,
+        include_views=include_views,
+        surface_internals=surface_internals,
+    )).models
 
-        return IngestionScanReport(
-            models=_plan_scanned_edges(models),
-            skipped=skipped,
-            objects=all_objects,
-            internal_tables=internal_tables,
-            schema_description=schema_description,
-            other_schemas=scope.other_schemas,
-            skipped_schemas=scope.skipped,
+
+def _run_through(
+    datasource: DatasourceConfig, *, client: SqlClient | None, work: Callable[[SqlClient], Awaitable[_T]],
+) -> _T:
+    """Run ``work`` synchronously over ``client`` (released after), else over a short-lived engine's client."""
+
+    async def _run() -> _T:
+        if client is None:
+            async with query_engine.short_lived_engine() as engine:
+                return await work(engine.client_for(datasource))
+        try:
+            return await work(client)
+        finally:
+            await client.aclose()
+
+    return run_sync(_run())
+
+
+def ingest_datasource_report(
+    datasource: DatasourceConfig,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+    *,
+    client: SqlClient | None = None,
+) -> IngestionScanReport:
+    """Synchronous ``ingest_datasource_report_async``; omitting ``client`` is deprecated."""
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is None:
+        warn_deprecated(
+            "ingest_datasource_report() without client= is deprecated; pass client=engine.client_for(datasource), "
+            "or await ingest_datasource_report_async(datasource, client=...). The no-client form works until "
+            "SLayer 2.0.",
+            removal="2.0",
         )
-    finally:
-        # Releases DuckDB file handles; the factory keeps owning the engine.
-        engine_factory.release_idle(sa_engine)
+    return _run_through(
+        datasource, client=client, work=lambda c: ingest_datasource_report_async(datasource, client=c, **scope),
+    )
 
 
 def ingest_datasource(
@@ -1277,18 +1033,23 @@ def ingest_datasource(
     all_schemas: bool = False,
     include_views: bool = True,
     surface_internals: bool = False,
+    *,
+    client: SqlClient | None = None,
 ) -> list[SlayerModel]:
-    """Models only, for callers that don't need the skip report."""
-    return ingest_datasource_report(
-        datasource=datasource,
-        include_tables=include_tables,
-        exclude_tables=exclude_tables,
-        schema=schema,
-        schemas=schemas,
-        all_schemas=all_schemas,
-        include_views=include_views,
-        surface_internals=surface_internals,
-    ).models
+    """Synchronous ``ingest_datasource_async``; omitting ``client`` is deprecated."""
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is None:
+        warn_deprecated(
+            "ingest_datasource() without client= is deprecated; use engine.ingest_sync(datasource, ...) or pass "
+            "client=engine.client_for(datasource). The no-client form works until SLayer 2.0.",
+            removal="2.0",
+        )
+    return _run_through(
+        datasource, client=client, work=lambda c: ingest_datasource_async(datasource, client=c, **scope),
+    )
 
 
 # --- Idempotent re-ingestion ---
@@ -1796,7 +1557,7 @@ async def _adopt_stored_sanitized_names(
 
 
 async def _retype_sql_models(
-    *, datasource: DatasourceConfig, storage: StorageBackend, failures: DocumentLoadFailures,
+    *, datasource: DatasourceConfig, storage: StorageBackend, client: SqlClient, failures: DocumentLoadFailures,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
     """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (system P20):
     ``({model: re-typed columns}, {model: error})``."""
@@ -1809,23 +1570,19 @@ async def _retype_sql_models(
     ]
     if not sql_models:
         return retyped, errors
-    client = SlayerSQLClient(datasource=datasource)
-    try:
-        for model in sql_models:
-            try:
-                types = await sql_result_types(sql=model.sql or "", client=client)
-                # Re-read after the slow trial so a concurrent edit is not reverted.
-                current = await storage.get_model(model.name, data_source=datasource.name)
-                if current is None or current.sql != model.sql:
-                    continue
-                updated, columns = retyped_sql_columns(current, lists=types.lists)
-                if columns:
-                    await storage.save_model(updated)
-                    retyped[model.name] = columns
-            except Exception as exc:  # noqa: BLE001 — one model's failure must not abort the pass
-                errors[model.name] = f"sql-mode re-type: {exc}"
-    finally:
-        await client.aclose()
+    for model in sql_models:
+        try:
+            types = await sql_result_types(sql=model.sql or "", client=client)
+            # Re-read after the slow trial so a concurrent edit is not reverted.
+            current = await storage.get_model(model.name, data_source=datasource.name)
+            if current is None or current.sql != model.sql:
+                continue
+            updated, columns = retyped_sql_columns(current, lists=types.lists)
+            if columns:
+                await storage.save_model(updated)
+                retyped[model.name] = columns
+        except Exception as exc:  # noqa: BLE001 — one model's failure must not abort the pass
+            errors[model.name] = f"sql-mode re-type: {exc}"
     return retyped, errors
 
 
@@ -1870,24 +1627,15 @@ async def _effective_hidden_internals(
     return effective
 
 
-def _default_schema_membership(
-    datasource: DatasourceConfig,
-) -> tuple[str | None, set[str] | None]:
+async def _default_schema_membership(client: SqlClient) -> tuple[str | None, set[str] | None]:
     """The default schema's name and its object names (``None`` if listing failed)."""
-    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+    ref = await default_schema_ref(client)
     try:
-        inspector = sa.inspect(sa_engine)
-        ref = default_schema_ref(inspector, sa_engine)
-        try:
-            objs = list_ingestable_objects(
-                inspector=inspector, ref=ref, include_views=True
-            )
-            names: set[str] | None = {o.name for o in objs}
-        except Exception:  # noqa: BLE001 — unknown membership → fail closed
-            names = None
-        return ref.name, names
-    finally:
-        engine_factory.release_idle(sa_engine)
+        objs = await list_ingestable_objects(client=client, ref=ref, include_views=True)
+        names: set[str] | None = {o.name for o in objs}
+    except Exception:  # noqa: BLE001 — unknown membership → fail closed
+        names = None
+    return ref.name, names
 
 
 def _schema_hint_message(other_schemas: list[str]) -> str | None:
@@ -1982,8 +1730,6 @@ async def _run_additive_pass(
 
     Every name is computed before the first save, and name-only updates save first.
     """
-    from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
-
     loaded, unloaded = await storage.load_models(data_source=datasource.name)
     stored = {m.name: m for m in failures.skip((loaded, unloaded))}
     merges, merge_skipped = _merge_fresh_tables(
@@ -1997,29 +1743,33 @@ async def _run_additive_pass(
 
     name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
     rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
-    errors: list[IngestionError] = []
+    errors: list[schema_drift.IngestionError] = []
     for name in [*name_only, *rest]:
         try:
             await storage.save_model(plan.models[name], failures=failures)
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
-            errors.append(IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
+            errors.append(schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.model_name for e in errors}
 
     additions = [
-        ModelAddition(data_source=datasource.name, **_addition_fields(merge=m, final=plan.models[n], plan=plan))
+        schema_drift.ModelAddition(
+            data_source=datasource.name, **_addition_fields(merge=m, final=plan.models[n], plan=plan),
+        )
         for n, m in merges.items() if n not in failed
     ]
     additions.extend(
-        ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
+        schema_drift.ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
         for n in name_only if n not in merges and n not in failed
     )
     return additions, errors, merge_skipped
 
 
-async def ingest_datasource_idempotent(
+@marked_coroutine_function
+def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
     storage: StorageBackend,
+    client: SqlClient | None = None,
     include_tables: list[str] | None = None,
     exclude_tables: list[str] | None = None,
     schema: str | None = None,
@@ -2027,24 +1777,55 @@ async def ingest_datasource_idempotent(
     all_schemas: bool = False,
     include_views: bool = True,
     surface_internals: bool = False,
-):
+) -> Coroutine[Any, Any, "schema_drift.IdempotentIngestResult"]:
     """Idempotent re-ingestion: create missing models, additively merge existing ones.
 
     User-authored sql/query-backed models are skipped. Then validates the same
-    scope so drift and dropped tables show up in ``to_delete``.
+    scope so drift and dropped tables show up in ``to_delete``. Omitting ``client``
+    is deprecated. A plain function returning the coroutine, so a deprecation names the caller's line.
     """
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is not None:
+        return _ingest_idempotent(datasource=datasource, storage=storage, client=client, **scope)
+    warn_deprecated(
+        "ingest_datasource_idempotent() without client= is deprecated; use engine.ingest_idempotent(datasource) "
+        "(or engine.ingest_idempotent_sync) or pass client=engine.client_for(datasource). The no-client form "
+        "works until SLayer 2.0.",
+        removal="2.0",
+    )
+    return _ingest_idempotent_short_lived(datasource=datasource, storage=storage, scope=scope)
+
+
+async def _ingest_idempotent_short_lived(
+    *, datasource: DatasourceConfig, storage: StorageBackend, scope: IngestScopeArgs,
+) -> "schema_drift.IdempotentIngestResult":
+    async with query_engine.short_lived_engine(storage) as engine:
+        return await _ingest_idempotent(
+            datasource=datasource, storage=engine.storage, client=engine.client_for(datasource), **scope,
+        )
+
+
+async def _ingest_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
-    from slayer.engine.schema_drift import (  # ALLOW(import-not-top): circular — schema_drift imports ingestion
-        IdempotentIngestResult,
-        IngestionError,
-        ModelAddition,
-        validate_datasource,
-    )
-
-    scan = await asyncio.to_thread(
-        ingest_datasource_report,
+    scan = await ingest_datasource_report_async(
         datasource=datasource,
+        client=client,
         include_tables=include_tables,
         exclude_tables=exclude_tables,
         schema=schema,
@@ -2053,9 +1834,7 @@ async def ingest_datasource_idempotent(
         include_views=include_views,
         surface_internals=surface_internals,
     )
-    default_schema_name, default_objects = await asyncio.to_thread(
-        _default_schema_membership, datasource
-    )
+    default_schema_name, default_objects = await _default_schema_membership(client)
     failures = DocumentLoadFailures()
     fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
@@ -2087,13 +1866,16 @@ async def ingest_datasource_idempotent(
         default_objects=default_objects,
         failures=failures,
     )
-    sql_retyped, sql_errors = await _retype_sql_models(datasource=datasource, storage=storage, failures=failures)
+    sql_retyped, sql_errors = await _retype_sql_models(
+        datasource=datasource, storage=storage, client=client, failures=failures,
+    )
     additions.extend(
-        ModelAddition(model_name=name, data_source=datasource.name, widened_columns=columns)
+        schema_drift.ModelAddition(model_name=name, data_source=datasource.name, widened_columns=columns)
         for name, columns in sql_retyped.items()
     )
     errors.extend(
-        IngestionError(model_name=name, data_source=datasource.name, error=error) for name, error in sql_errors.items()
+        schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=error)
+        for name, error in sql_errors.items()
     )
 
     # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.
@@ -2107,7 +1889,7 @@ async def ingest_datasource_idempotent(
                 )
                 datasource_described = True
         except Exception as exc:  # noqa: BLE001 — best-effort isolation
-            errors.append(IngestionError(
+            errors.append(schema_drift.IngestionError(
                 model_name="",
                 data_source=datasource.name,
                 error=f"datasource description save: {exc}",
@@ -2119,8 +1901,8 @@ async def ingest_datasource_idempotent(
         in_scope_table_names=in_scope_table_names,
         failures=failures,
     )
-    to_delete = await validate_datasource(
-        datasource=datasource, models=scoped_models
+    to_delete = await schema_drift.validate_datasource(
+        datasource=datasource, models=scoped_models, client=client,
     )
 
     # No sample profiling here (a full scan per column); read paths refresh on cache miss.
@@ -2129,7 +1911,7 @@ async def ingest_datasource_idempotent(
         datasource_name=datasource.name, storage=storage, failures=failures,
     )
     for model_name, err in embedding_errors:
-        errors.append(IngestionError(
+        errors.append(schema_drift.IngestionError(
             model_name=model_name,
             data_source=datasource.name,
             error=f"embedding refresh: {err}",
@@ -2143,11 +1925,11 @@ async def ingest_datasource_idempotent(
         failures=failures,
     )
     errors.extend(
-        IngestionError(model_name=e.name, data_source=e.data_source, error=str(e))
+        schema_drift.IngestionError(model_name=e.name, data_source=e.data_source, error=str(e))
         for e in failures.errors if e.data_source is not None
     )
 
-    return IdempotentIngestResult(
+    return schema_drift.IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
@@ -2191,26 +1973,24 @@ def _friendly_db_error(exc: Exception) -> str:
 # --- Renderers (shared by `slayer ingest` and the boot-time orchestrator) ---
 
 
-def _get_schemas(ds: DatasourceConfig) -> list[str]:
+async def _get_schemas(client: SqlClient) -> list[str]:
     """List a datasource's schemas. Best-effort; empty means no hint."""
     try:
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        inspector = sa.inspect(engine)
-        return inspector.get_schema_names()
+        return await client.list_schemas()
     except Exception:  # noqa: BLE001 — hint-only and never fatal
         return []
 
 
-def _empty_ingest_message(
+async def _empty_ingest_message(
     *,
     schema_name: str,
-    ds: DatasourceConfig,
+    client: SqlClient,
     retry_hint: str | None = None,
 ) -> str:
     """Explain an empty ingest and point at the likely fix."""
     schema_label = f" in schema '{schema_name}'" if schema_name else ""
     lines = [f"No tables or views found{schema_label}."]
-    schemas = _get_schemas(ds)
+    schemas = await _get_schemas(client)
     if schemas:
         lines.append(f"Available schemas: {', '.join(schemas)}")
         if retry_hint:
@@ -2383,6 +2163,7 @@ class StartupIngestSummary(BaseModel):
 async def ingest_all_datasources_idempotent(
     *,
     storage: StorageBackend,
+    client_for: Callable[[DatasourceConfig], SqlClient],
     stream: TextIO | None = None,
 ) -> StartupIngestSummary:
     """Run idempotent auto-ingestion across every configured datasource.
@@ -2416,6 +2197,7 @@ async def ingest_all_datasources_idempotent(
             result = await ingest_datasource_idempotent(
                 datasource=ds,
                 storage=storage,
+                client=client_for(ds),
                 schema=None,
                 include_tables=None,
                 exclude_tables=None,

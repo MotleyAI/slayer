@@ -1,4 +1,4 @@
-"""DEV-1943 L2 — one disposing owner per engine.
+"""One disposing owner per engine.
 
 ``SlayerSQLClient.close()`` disposes the client's *private* in-memory engine
 (and never a factory-owned one), a finalizer disposes it if the client is
@@ -29,7 +29,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.engine_factory import _sql_client_cache_key
+from slayer.sql.engine_factory import client_cache_key
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -95,7 +95,7 @@ def _seeded_in_memory_engine(
             "INSERT INTO t (v) VALUES " + ", ".join(f"({i})" for i in range(rows))
         )
         conn.commit()
-    engine._sql_clients[_sql_client_cache_key(ds)] = client
+    engine._sql_clients[client_cache_key(ds)] = client
     return engine, client
 
 
@@ -234,7 +234,7 @@ class TestQueryEngineClose:
     def test_close_closes_every_client_and_clears(self, workspace: Path) -> None:
         engine = self._engine(workspace)
         c1, c2 = MagicMock(), MagicMock()
-        engine._sql_clients = {("a", "x", ""): c1, ("b", "y", ""): c2}
+        engine._sql_clients = {("a", ("x", "", "")): c1, ("b", ("y", "", "")): c2}
         engine.close()
         c1.close.assert_called_once()
         c2.close.assert_called_once()
@@ -244,14 +244,14 @@ class TestQueryEngineClose:
         engine = self._engine(workspace)
         bad, good = MagicMock(), MagicMock()
         bad.close.side_effect = RuntimeError("boom")
-        engine._sql_clients = {("a", "x", ""): bad, ("b", "y", ""): good}
+        engine._sql_clients = {("a", ("x", "", "")): bad, ("b", ("y", "", "")): good}
         engine.close()  # must not raise
         good.close.assert_called_once()
         assert engine._sql_clients == {}
 
     def test_close_is_idempotent(self, workspace: Path) -> None:
         engine = self._engine(workspace)
-        engine._sql_clients = {("a", "x", ""): MagicMock()}
+        engine._sql_clients = {("a", ("x", "", "")): MagicMock()}
         engine.close()
         engine.close()  # no error the second time
         assert engine._sql_clients == {}
@@ -271,7 +271,7 @@ class TestQueryEngineClose:
             file_client = SlayerSQLClient(datasource=file_ds)
             file_engine = file_client._get_sync_engine_for_client()
             assert file_engine is engine_factory.get_engine(file_ds)
-            engine._sql_clients[_sql_client_cache_key(file_ds)] = file_client
+            engine._sql_clients[client_cache_key(file_ds)] = file_client
             engine.close()
             engine.close()  # second close is a no-op
             assert _count_disposed(spy, mem_engine) == 1
@@ -313,7 +313,7 @@ class TestQueryEngineClose:
             conn.exec_driver_sql("CREATE TABLE t (v INTEGER)")
             conn.exec_driver_sql("INSERT INTO t (v) VALUES (5)")
             conn.commit()
-        engine._sql_clients[_sql_client_cache_key(ds)] = fresh
+        engine._sql_clients[client_cache_key(ds)] = fresh
         reused = asyncio.run(engine.execute(SlayerQuery(source_model="t", measures=["*:count"])))  # type: ignore[arg-type]
         assert reused.data[0]["t._count"] == 1
         engine_factory.reset_cache()
@@ -345,7 +345,7 @@ class TestQueryEngineClose:
         client = SlayerSQLClient(datasource=ds)
         sync_engine = client._get_sync_engine_for_client()
         assert sync_engine is not None
-        engine._sql_clients[_sql_client_cache_key(ds)] = client
+        engine._sql_clients[client_cache_key(ds)] = client
         with patch.object(sync_engine, "dispose") as disposed:
             await engine.aclose()
         disposed.assert_not_called()

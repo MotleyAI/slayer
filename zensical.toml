@@ -124,6 +124,7 @@ nav = [
   { "Configuration" = [
     { "Datasources" = "configuration/datasources.md" },
     { "Storage Backends" = "configuration/storage.md" },
+    { "SQL Clients" = "configuration/sql-clients.md" },
   ]},
   { "Development" = "development.md" },
 ]

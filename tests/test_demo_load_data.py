@@ -12,7 +12,7 @@ from slayer.demo import jaffle_shop
 
 CSVS = {
     "customers": "id,name\nc1,Ann\nc2,O'Brien\n",
-    "stores": "id,name,opened_at,tax_rate\ns1,Main,2018-01-01,0.05\n",
+    "stores": "id,name,opened_at,tax_rate\ns1,Brooklyn,2018-01-01,0.05\n",
     "orders": "id,customer,ordered_at,store_id,subtotal,tax_paid,order_total\n"
               "o1,c1,2018-08-31,s1,1000,50,1050\no2,c2,2018-09-01,s1,250,13,263\n",
 }

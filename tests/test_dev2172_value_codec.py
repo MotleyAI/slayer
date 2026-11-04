@@ -226,8 +226,9 @@ def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerModel:
 
 def flight_cell(value: Any, *, column_type: DataType = DataType.TEXT) -> Any:
     handlers = FlightHandlers(
-        engine=_FlightEngine(response=_response(value)),  # type: ignore[arg-type]
-        storage=_FlightStorage({DS: [_vals_model(column_type)]}),  # type: ignore[arg-type]
+        engine=_FlightEngine(  # type: ignore[arg-type]
+            response=_response(value), storage=_FlightStorage({DS: [_vals_model(column_type)]}),
+        ),
     )
     result = handlers._translate("SELECT v FROM vals")
     assert isinstance(result, QueryResult), result

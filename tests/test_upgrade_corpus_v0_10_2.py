@@ -139,7 +139,14 @@ class TestOnline:
     async def test_datasource_reingests(self, online_store, data_source):
         datasource = await online_store.get_datasource(data_source)
         assert datasource is not None
-        result = await ingest_datasource_idempotent(datasource=datasource, storage=online_store)
+        engine = SlayerQueryEngine(storage=online_store)
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=datasource, storage=online_store, client=engine.client_for(datasource),
+            )
+        finally:
+            await engine.aclose()
+            engine.close()
         assert result.errors == []
         await _load_all(online_store)
 
@@ -147,5 +154,14 @@ class TestOnline:
 class TestOffline:
     async def test_every_document_loads_without_a_connection(self, offline_store):
         models, memories = await _load_all(offline_store)
+        assert models
+        assert len(memories) == len(MEMORY_IDS)
+
+    async def test_every_document_loads_through_an_engine_without_a_connection(self, offline_store):
+        engine = SlayerQueryEngine(storage=offline_store)
+        try:
+            models, memories = await _load_all(engine.storage)
+        finally:
+            engine.close()
         assert models
         assert len(memories) == len(MEMORY_IDS)

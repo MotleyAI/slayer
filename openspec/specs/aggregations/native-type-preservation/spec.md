@@ -14,8 +14,10 @@ type token contains `DECIMAL` or `NUMERIC`, case-insensitive — covering
 `DECIMAL`, `NUMERIC`, ClickHouse `Decimal32/64/128/256`, BigQuery
 `BIGNUMERIC`), an aggregate over it whose result type was inferred (not
 explicitly declared in the query or model) SHALL NOT be cast to the inferred
-logical type. The generated SQL SHALL carry no lossy cast around the aggregate
-and result values SHALL retain the database's exact-numeric representation.
+logical type, and neither SHALL a row-level derived column whose own physical
+database type is an exact numeric. The generated SQL SHALL carry no lossy cast
+around the aggregate or derived column, and result values SHALL retain the
+database's exact-numeric representation.
 Database-specific nullability/cardinality wrappers around the physical type
 (e.g. ClickHouse `Nullable(...)`, `LowCardinality(...)`, arbitrarily nested)
 SHALL be transparent to this behaviour. An explicitly declared result type
@@ -67,6 +69,14 @@ result type.
   a query requests `sum(amount)` with no explicit type
 - THEN the generated SQL keeps the inferred float cast and the result value is
   a float even when every stored value is integral
+
+#### Scenario: A wide exact integer derived column keeps its value
+
+- WHEN a Postgres model's derived column of type INT with physical type
+  `NUMERIC(38,0)` computes a value above 2⁶³ and a query selects it with no
+  explicit type
+- THEN the generated SQL carries no cast around the column and the exact
+  value is returned
 
 ### Requirement: Declared temporal casts are suppressed on dialects without native temporal storage
 

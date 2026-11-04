@@ -1,6 +1,6 @@
 """dbt / OSI / facade producers set and carry join cardinality."""
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -8,7 +8,7 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.join_walker import edges_between
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtEntity, DbtProject, DbtSemanticModel
@@ -16,6 +16,7 @@ from slayer.facade.catalog import FacadeJoin, build_catalog, _facade_join_from
 from slayer.facade.translator import translate
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
+from slayer.sql.client import SlayerSQLClient
 
 from tests._engine_helpers import disposable_engine
 
@@ -152,21 +153,27 @@ class TestDbtConverterMirror:
 
 
 @pytest.fixture
-def osi_engine(tmp_path: Path) -> Iterator[sa.Engine]:
-    with disposable_engine(f"sqlite:///{tmp_path}/shop.db") as engine:
+async def osi_client(tmp_path: Path) -> AsyncIterator[SlayerSQLClient]:
+    db_path = tmp_path / "shop.db"
+    with disposable_engine(f"sqlite:///{db_path}") as engine:
         with engine.connect() as conn:
             for ddl in _OSI_SCHEMA:
                 conn.execute(sa.text(ddl))
             conn.commit()
-        yield engine
+    client = SlayerSQLClient(datasource=DatasourceConfig(name="testds", type="sqlite", database=str(db_path)))
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
 
 
 class TestOsi:
-    def test_relationship_is_many_to_one(self, osi_engine: sa.Engine) -> None:
+    async def test_relationship_is_many_to_one(self, osi_client: SlayerSQLClient) -> None:
         doc = parse_osi_path(FIXTURES / "shop.yaml")[0]
-        result = OsiToSlayerConverter(
-            documents=[doc], data_source="testds", sa_engine=osi_engine
-        ).convert()
+        converter = OsiToSlayerConverter(documents=[doc], data_source="testds")
+        await converter.collect_metadata(client=osi_client)
+        result = converter.convert()
         orders = {m.name: m for m in result.models}["orders"]
         cust_join = next(j for j in orders.joins if j.target_model == "customers")
         assert cust_join.cardinality is JoinCardinality.MANY_TO_ONE

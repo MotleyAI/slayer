@@ -37,12 +37,12 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "source_model": "monthly_store_revenue",
     "measures": ["avg(order_total_sum)"],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
 
 If you'd rather not type `order_total_sum` everywhere, give the inner measure an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform formulas, and downstream stages reference it directly:
 
@@ -58,7 +58,7 @@ If you'd rather not type `order_total_sum` everywhere, give the inner measure an
   {
     "source_model": "monthly_store_revenue",
     "measures": [{"formula": "avg(rev)"}],
-    "dimensions": ["stores.name"]
+    "dimensions": ["stores__name"]
   }
 ]
 ```

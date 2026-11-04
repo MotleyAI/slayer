@@ -14,11 +14,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlglot import exp
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import (
-    IntrospectedColumn, _inferred_elements, _introspected_column, _retyped_list, ingest_datasource,
+    IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource,
     ingest_datasource_idempotent,
 )
 from slayer.engine.schema_scope import SchemaRef
@@ -27,8 +28,9 @@ from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.search.render import render_column_text
 from slayer.sql import engine_factory
-from slayer.sql.dialects import ReflectedColumn, get_dialect
-from slayer.sql.dialects.reflection import column_from_type_string
+from slayer.sql.dialects import get_dialect
+from slayer.sql.client import ExecutionResult
+from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
@@ -81,7 +83,7 @@ class TestTheType:
 # Ingestion
 # --------------------------------------------------------------------------- #
 def _mapped(sa_type: sa.types.TypeEngine) -> tuple[DataType, Optional[DataType], Optional[str]]:
-    col = _introspected_column(ReflectedColumn(name="xs", type=sa_type), name="xs", primary_key=False)
+    col = column_from_sa_type(name="xs", sa_type=sa_type)
     return col.type, col.element_type, col.db_type
 
 
@@ -479,34 +481,21 @@ class TestCatalogFallbackLists:
         assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.UNKNOWN, "ARRAY")
 
     def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
-        assert get_dialect("snowflake").map_cursor_type_code(10) == "list"
+        described = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
+        assert described is not None and described.type is DataType.ARRAY
 
     def test_snowflake_element_inference_reads_the_table_in_its_own_database(self) -> None:
         statements: list[str] = []
 
-        class _Rows:
-            def fetchall(self) -> list[tuple[str]]:
-                return [("INTEGER",)]
+        class _Client:
+            datasource = DatasourceConfig(name="sf", type="snowflake")
 
-        class _Conn:
-            def __enter__(self) -> "_Conn":
-                return self
-
-            def __exit__(self, *exc: object) -> None:
-                return None
-
-            def exec_driver_sql(self, sql: str) -> _Rows:
+            async def execute(self, sql: str) -> ExecutionResult:
                 statements.append(sql)
-                return _Rows()
-
-        class _Engine:
-            dialect = type("D", (), {"name": "snowflake"})()
-
-            def connect(self) -> _Conn:
-                return _Conn()
+                return ExecutionResult(rows=[{"t": "INTEGER"}])
 
         column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
-        typed = _inferred_elements(column, sa_engine=_Engine(), table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal engine double
-                                   ref=SchemaRef(catalog="OTHER_DB", name="RAW"))
+        typed = run_sync(_inferred_elements(column, client=_Client(), table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
+                                            ref=SchemaRef(catalog="OTHER_DB", name="RAW")))
         assert typed.element_type is DataType.INT
         assert "OTHER_DB.RAW.kinds" in statements[0], statements

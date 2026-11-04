@@ -10,10 +10,9 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine import ingestion
 from slayer.sql.dialects import base as dialects_base
-from slayer.sql.dialects import get_dialect
-from slayer.sql.dialects.reflection import ReflectedColumn
+from slayer.sql.dialects import dialect_for_sa_backend, get_dialect
+from slayer.sql.dialects.reflection import TableLocation, column_from_sa_type
 from tests._dev1840_fixtures import dev1840_models, signup_month_td
 from tests._dev1919_fixtures import WINDOWED_PARAM
 from tests._dev2015_fixtures import JAN_MAR, TWO_FACTS, spine_models, spine_td
@@ -207,17 +206,14 @@ class TestIngestionRecordsZonedType:
         (sa.TIMESTAMP(), frozenset(), None),
     ])
     def test_inspector_column(self, sa_type: sa.types.TypeEngine, zoned: frozenset[str], db_type: str | None) -> None:
-        col = ingestion._introspected_column(
-            ReflectedColumn(name="ts", type=sa_type), name="ts", primary_key=False, zoned_types=zoned)
+        col = column_from_sa_type(name="ts", sa_type=sa_type, zoned_types=zoned)
         assert col.type is DataType.TIMESTAMP
         assert col.db_type == db_type
 
     @pytest.mark.parametrize(("dialect", "db_type"), [("bigquery", "TIMESTAMP"), ("postgresql", None)])
     def test_inspector_path_reads_the_engine_dialect(self, dialect: str, db_type: str | None) -> None:
-        engine = MagicMock()
-        engine.dialect.name = dialect
-        with patch.object(ingestion, "reflect_columns", return_value=[ReflectedColumn(name="ts", type=sa.TIMESTAMP())]):
-            cols = ingestion._introspect_query_columns_via_inspector(engine, MagicMock(), "t", None, primary_key=[])
+        cols = dialect_for_sa_backend(dialect).columns_from_inspector(
+            [{"name": "ts", "type": sa.TIMESTAMP()}], sa_engine=None, location=TableLocation(name="t"))
         assert [c.db_type for c in cols] == [db_type]
 
     @pytest.mark.parametrize(("dialect", "expected"), [

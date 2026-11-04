@@ -6,8 +6,10 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, TypeVar
 
 import duckdb
 import pytest
@@ -19,9 +21,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.demo import jaffle_shop
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 MONEY_COLUMNS = {
@@ -37,6 +40,7 @@ EXPECTED_EDGES = {
     ("items", "products"),
     ("orders", "customers"),
     ("orders", "stores"),
+    ("stores", "regions"),
     ("supplies", "products"),
     ("tweets", "customers"),
 }
@@ -106,6 +110,18 @@ def sa_without_generic_key_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(Inspector, name, _raise)
 
 
+_T = TypeVar("_T")
+
+
+async def _with_client(fn: Callable[..., Awaitable[_T]], /, *, datasource: DatasourceConfig, **kwargs: Any) -> _T:
+    client = SlayerSQLClient(datasource=datasource)
+    try:
+        return await fn(datasource=datasource, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 def _setup(storage: YAMLStorage, store_dir: str) -> tuple:
     return jaffle_shop.ensure_demo_datasource(storage, storage_path=store_dir, years=1)
 
@@ -166,7 +182,7 @@ def _register_demo_ds(*, storage: YAMLStorage, store_dir: str) -> DatasourceConf
 def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
     """Persist demo models as an affected release left them: no joins, no money ``db_type``."""
     ds = _register_demo_ds(storage=storage, store_dir=store_dir)
-    for model in ingest_datasource(datasource=ds):
+    for model in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds)):
         jaffle_shop.apply_demo_enrichment(model)
         model.joins = []
         for column in model.columns:
@@ -177,6 +193,7 @@ def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
 
 EXPECTED_KEYS = {
     "customers": {"id"},
+    "regions": {"id"},
     "stores": {"id"},
     "products": {"sku"},
     "orders": {"id"},
@@ -393,14 +410,14 @@ class TestDemoSetupHealsModels:
     def test_a_demo_model_that_is_not_stored_fails_setup(
         self, jaffle_generator, storage, store_dir, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        save_model = storage.save_model
+        save_model_impl = storage._save_model_impl
 
-        async def refuse_tweets(model: SlayerModel, **kwargs):
+        async def refuse_tweets(model: SlayerModel):
             if model.name == "tweets":
                 raise RuntimeError("disk full")
-            return await save_model(model, **kwargs)
+            return await save_model_impl(model)
 
-        monkeypatch.setattr(storage, "save_model", refuse_tweets)
+        monkeypatch.setattr(storage, "_save_model_impl", refuse_tweets)
         with pytest.raises(SlayerError, match=r"tweets.*disk full"):
             _setup(storage, store_dir)
 

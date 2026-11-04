@@ -18,7 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.join_edges import JoinEdgeRef
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.engine import query_engine
+from slayer.engine import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, WholeModelDelete
 from slayer.sql import engine_factory
@@ -197,7 +197,7 @@ def _instrumented_orders() -> SlayerModel:
 
 def _inject(remove: RemoveSpec) -> Any:
     """Append an ``orders`` removal to the read-set drift entries the query-time path validates."""
-    real = query_engine.validate_datasource
+    real = schema_drift.validate_datasource
 
     async def _with_entry(**kwargs: Any) -> list[Any]:
         entries = await real(**kwargs)
@@ -206,7 +206,7 @@ def _inject(remove: RemoveSpec) -> Any:
                                                  reasons=[DeleteReason(target="injected", reason="injected")])]
         return entries
 
-    return patch.object(query_engine, "validate_datasource", side_effect=_with_entry)
+    return patch.object(schema_drift, "validate_datasource", side_effect=_with_entry)
 
 
 def _join_removal() -> RemoveSpec:

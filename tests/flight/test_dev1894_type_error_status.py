@@ -46,7 +46,7 @@ async def flight_client() -> AsyncIterator[fl.FlightClient]:  # pyright: ignore[
     async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=[_orders()]) as (engine, _):
         server = build_server(
             host="127.0.0.1", port=0,
-            handlers=FlightHandlers(engine=engine, storage=engine.storage),
+            handlers=FlightHandlers(engine=engine),
         )
         thread = threading.Thread(target=server.serve, daemon=True)
         thread.start()

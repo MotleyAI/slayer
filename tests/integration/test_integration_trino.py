@@ -26,7 +26,8 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.engine import ingestion
+from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient, get_column_types_sync, render_type_probe
@@ -970,8 +971,17 @@ def trino_ingest_ds(trino_container):
         yield _ds_config(trino_container, schema)
 
 
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
+
+
 def _ingested(ds: DatasourceConfig, name: str) -> SlayerModel:
-    return next(m for m in ingest_datasource(datasource=ds) if m.name == name)
+    return next(m for m in run_sync(_ingest(ds)) if m.name == name)
 
 
 async def _stored_dumps(storage: YAMLStorage, *names: str) -> dict[str, dict[str, Any]]:
@@ -1011,10 +1021,16 @@ class TestTrinoIngestion:
     async def test_reingest_is_idempotent(self, trino_ingest_ds, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(trino_ingest_ds)
-        await ingest_datasource_idempotent(datasource=trino_ingest_ds, storage=storage)
-        first = await _stored_dumps(storage, "orders", "customers")
-        await ingest_datasource_idempotent(datasource=trino_ingest_ds, storage=storage)
-        assert await _stored_dumps(storage, "orders", "customers") == first
+        engine = SlayerQueryEngine(storage=storage)
+        client = engine.client_for(trino_ingest_ds)
+        try:
+            await ingest_datasource_idempotent(datasource=trino_ingest_ds, storage=storage, client=client)
+            first = await _stored_dumps(storage, "orders", "customers")
+            await ingest_datasource_idempotent(datasource=trino_ingest_ds, storage=storage, client=client)
+            assert await _stored_dumps(storage, "orders", "customers") == first
+        finally:
+            await engine.aclose()
+            engine.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1330,6 +1346,6 @@ class TestTrinoLists:
         await check_lists(SlayerQueryEngine(storage=_trino_lists[0]), dialect="trino")
 
     def test_list_columns_ingested(self, _trino_lists) -> None:
-        model = next(m for m in ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
+        model = next(m for m in ingestion.ingest_datasource(datasource=_trino_lists[1]) if m.name == "contractors")
         typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
         assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

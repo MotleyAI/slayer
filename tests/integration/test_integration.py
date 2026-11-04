@@ -30,7 +30,8 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.engine import ingestion
+from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -171,7 +172,7 @@ async def test_sum_measure(integration_env):
 
 
 async def test_functional_aggregation_parity(integration_env):
-    """sum(total_amount) returns the same rows as total_amount:sum (DEV-1826)."""
+    """sum(total_amount) returns the same rows as total_amount:sum."""
     engine = integration_env
 
     colon = await engine.execute(SlayerQuery(
@@ -189,7 +190,7 @@ async def test_functional_aggregation_parity(integration_env):
 
 
 async def test_functional_star_count_parity(integration_env):
-    """count(*) returns the same rows as *:count (DEV-1826)."""
+    """count(*) returns the same rows as *:count."""
     engine = integration_env
 
     colon = await engine.execute(SlayerQuery(
@@ -206,7 +207,7 @@ async def test_functional_star_count_parity(integration_env):
 
 
 async def test_expression_aggregation_executes(integration_env):
-    """sum(amount + amount) aggregates the row-level expression (DEV-1826)."""
+    """sum(amount + amount) aggregates the row-level expression."""
     engine = integration_env
 
     response = await engine.execute(SlayerQuery(
@@ -268,7 +269,7 @@ async def test_filter_gt(integration_env):
 
 
 async def test_filter_in_tuple(integration_env):
-    """DEV-1475: ``IN`` filter with literal-tuple RHS.
+    """``IN`` filter with literal-tuple RHS.
 
     Smoke test for the typed-pipeline ``InKey`` render path against a
     real SQLite engine. Orders with status in ('completed', 'pending')
@@ -288,7 +289,7 @@ async def test_filter_in_tuple(integration_env):
 
 
 async def test_filter_not_in_tuple(integration_env):
-    """DEV-1475: ``NOT IN`` filter with literal-tuple RHS.
+    """``NOT IN`` filter with literal-tuple RHS.
 
     Inverse smoke test: status NOT IN ('cancelled') matches the same 5
     rows.
@@ -641,7 +642,7 @@ async def test_time_shift_calendar_based(integration_env):
 
 
 async def test_multiple_time_shifts_in_one_query(integration_env):
-    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+    """Two arithmetic-wrapped time_shifts in one query.
 
     Used to fail outright with a duplicate-CTE error; the offsets are kept
     distinct here (-1 vs -2) so a regression that re-collapses them onto one
@@ -1319,7 +1320,7 @@ async def test_cross_model_measure_monthly(cross_model_env):
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
-    """An unreachable cross-model measure target is route-aware-rejected (DEV-1856):
+    """An unreachable cross-model measure target is route-aware-rejected:
     ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
     engine = cross_model_env
 
@@ -1590,7 +1591,7 @@ async def test_query_list_with_joins(cross_model_env):
 async def test_sibling_stage_joins_dag(cross_model_env):
     """3-stage DAG: a non-final named stage joins a prior named stage.
 
-    Regression for DEV-1340. ``kpis`` aggregates per customer; ``tagged``
+    ``kpis`` aggregates per customer; ``tagged``
     is a non-final named stage whose source is ``customers`` extended with
     a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
     dimension; the final stage re-aggregates ``tagged`` across the
@@ -1710,7 +1711,7 @@ async def test_formula_dimension_via_query_list(integration_env):
 
 
 async def test_multistage_renamed_measure_returns_non_null(integration_env):
-    """DEV-1335 canary. A 2-stage query-backed model where the inner stage
+    """A 2-stage query-backed model where the inner stage
     renames its aggregated measure via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
 
@@ -1761,7 +1762,7 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 async def test_circular_query_reference_raises(integration_env):
     """Mutually-referential named queries should error clearly. The
-    runtime list path auto-sorts via Kahn's algorithm (DEV-1340 follow-up);
+    runtime list path auto-sorts via Kahn's algorithm;
     when two stages reference each other neither can ever drop to in-degree
     zero, so the cycle surfaces as a ``ValueError`` naming both stages and
     explaining the rule rather than a generic "Circular reference" trace.
@@ -1819,7 +1820,7 @@ def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
 
 
 async def test_unnamed_parallel_edges_fail_closed(tmp_path):
-    """Two unnamed edges between the same pair make the hop ambiguous (DEV-1853)."""
+    """Two unnamed edges between the same pair make the hop ambiguous."""
     engine = await _mutual_join_engine(tmp_path)
     query = _b_a_unique_field_query("b", "a")
     with pytest.raises(AmbiguousJoinPathError, match="2 edges"):
@@ -1933,11 +1934,11 @@ async def diamond_env(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    models = ingest_datasource(datasource=ds)
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingestion.ingest_datasource_async(ds, client=engine.client_for(ds))
     for m in models:
         await storage.save_model(m)
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -2293,7 +2294,7 @@ async def test_sqlite_udf_pool_reuse(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1317 — math/stat UDFs end-to-end on SQLite
+# Math/stat UDFs end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
@@ -2578,7 +2579,7 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1336 — window functions in filters (single-stage)
+# Window functions in filters (single-stage)
 # ---------------------------------------------------------------------------
 
 
@@ -2640,8 +2641,8 @@ async def planets_env(tmp_path):
 
 async def test_filter_on_windowed_column_sqlite_raises(planets_env):
     """End-to-end: filtering on a `Column.sql` with a window function used to
-    auto-promote to a post-aggregation outer WHERE (DEV-1336). DEV-1369
-    removes that escape hatch — users must use rank-family transforms
+    auto-promote to a post-aggregation outer WHERE. That escape
+    hatch is removed — users must use rank-family transforms
     (`rank(<measure>, direction='desc') <= 3`) or factor the windowed column into a
     multi-stage `source_queries` model instead. The engine raises a
     clear error with that suggestion."""
@@ -2656,9 +2657,7 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
-    """DEV-1331 reproduction.
-
-    A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
+    """A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
     must return the expected aggregate. Pre-fix the SQLite emitter rewrites
     ``json_extract(...)`` to ``col -> '$.path'``, which returns the
     JSON-quoted form (``'"Owned"'``); CASE WHEN against the bare-string
@@ -2716,7 +2715,7 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1333: cross-model and local derived ``Column.sql`` chaining (SQLite)
+# Cross-model and local derived ``Column.sql`` chaining (SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -2796,7 +2795,7 @@ async def derived_chain_env(tmp_path):
 
 
 async def test_integration_cross_model_derived_columnsql(derived_chain_env):
-    """The original DEV-1333 repro must execute and produce the expected ratios."""
+    """The original repro must execute and produce the expected ratios."""
     engine = derived_chain_env
     response = await engine.execute(
         SlayerQuery(
@@ -2830,7 +2829,7 @@ async def test_integration_local_derived_chain(derived_chain_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1334: filter-only references to derived columns whose sql crosses a
+# Filter-only references to derived columns whose sql crosses a
 # join must auto-add the join (no need to also list the column in
 # ``dimensions``).
 # ---------------------------------------------------------------------------
@@ -2908,12 +2907,12 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1337: log10 / log2 round-trip preservation (SQLite)
+# log10 / log2 round-trip preservation (SQLite)
 # ---------------------------------------------------------------------------
 
 
 async def test_log10_round_trip_sqlite(tmp_path):
-    """DEV-1337: a user-written `log10(x)` formula must (a) execute correctly
+    """A user-written `log10(x)` formula must (a) execute correctly
     end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
     verbatim as `log10(...)` in the emitted SQL — not the canonicalised
     `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
@@ -2989,7 +2988,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
 
 async def test_dev1341_count_over_nullif_max_executes(integration_env):
-    """DEV-1341: a multistage final stage combining ``*:count`` with another
+    """A multistage final stage combining ``*:count`` with another
     aggregation inside a ``nullif`` wrapper must emit clean SQL — no
     ``__aggN__`` placeholder leak — and execute successfully.
     """
@@ -3028,7 +3027,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1361: type-aware CAST emission — json_extract over JSON-stored numeric
+# Type-aware CAST emission — json_extract over JSON-stored numeric
 # data must produce REAL result tuples (matching a hand-written gold using
 # CAST AS REAL), not the TEXT that SQLite's json_extract returns by default.
 # ---------------------------------------------------------------------------
@@ -3037,7 +3036,7 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     """A ``Column(sql="json_extract(...)", type=DataType.DOUBLE)`` over JSON-
     encoded numeric data must produce native float result tuples on SQLite.
-    Without the DEV-1361 cast emission, json_extract returns TEXT and the
+    Without the cast emission, json_extract returns TEXT and the
     benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
     """
     db_path = tmp_path / "blobs.db"
@@ -3094,7 +3093,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     # generator must produce a CAST(... AS REAL). SQLite's json_extract
     # already returns numerics on this fixture, so the runtime assertions
     # above pass with or without the CAST — the dry-run check is what
-    # actually fails if DEV-1361 emission regresses.
+    # actually fails if the CAST emission regresses.
     dry = await engine.execute(query, dry_run=True)
     sql_lower = dry.sql.lower() if dry.sql else ""
     assert "cast(" in sql_lower
@@ -3109,7 +3108,7 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
 
 
 async def test_dense_rank_partition_by_customer_executes(integration_env):
-    """DEV-1353: dense_rank with partition_by= must execute on SQLite and produce
+    """dense_rank with partition_by= must execute on SQLite and produce
     per-partition ranks.
 
     The integration_env has 6 orders across 3 customers and 3 months. We rank
@@ -3155,7 +3154,7 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1375 — semantic search end-to-end on SQLite
+# Semantic search end-to-end on SQLite
 # ---------------------------------------------------------------------------
 
 
@@ -3217,16 +3216,16 @@ async def search_env(tmp_path):
     )
     await storage.save_datasource(datasource)
 
+    engine = SlayerQueryEngine(storage=storage)
     # Live ingest — populates Column.sampled on every non-pk column via the
     # production code path.
-    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=engine.client_for(datasource))
 
     await storage.save_memory(
         learning="orders.amount is gross of refunds.",
         entities=["test_sqlite.orders"],
     )
 
-    engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
@@ -3292,7 +3291,7 @@ async def test_search_entity_filter_finds_memory(search_env):
     """``search(entities=["test_sqlite.orders"])`` returns the seeded
     memory with ``matched_entities`` listing the orders canonical id."""
     _engine, storage = search_env
-    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # Opt out of compact-by-default — this test pins the full
     # learning body in ``hit.text``.
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
@@ -3346,13 +3345,13 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1378 — Mode A SQL filter end-to-end via parse_sql_predicate
+# Mode A SQL filter end-to-end via parse_sql_predicate
 # ---------------------------------------------------------------------------
 
 
 async def _setup_items_db(tmp_path) -> YAMLStorage:
     """Build the shared SQLite ``items`` table + storage used by the
-    DEV-1378 ``lower(...)`` filter tests below."""
+    ``lower(...)`` filter tests below."""
     db_path = tmp_path / "ds.db"
     with transaction(str(db_path)) as conn:
         cur = conn.cursor()
@@ -3371,8 +3370,8 @@ async def _setup_items_db(tmp_path) -> YAMLStorage:
 
 async def test_model_filter_with_lower_function_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
-    (``lower(...)``) must execute end-to-end against SQLite. Before
-    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    (``lower(...)``) must execute end-to-end against SQLite. Previously
+    the engine raised ``Unknown filter function 'lower'`` at
     enrichment time."""
     storage = await _setup_items_db(tmp_path)
 
@@ -3502,7 +3501,7 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
 
 async def test_model_filter_with_json_extract_runs(tmp_path):
     """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
-    built-in function) executes end-to-end. Pre-DEV-1378 this raised
+    built-in function) executes end-to-end. Previously this raised
     ``Unknown filter function 'json_extract'`` at enrichment time."""
     db_path = tmp_path / "ds.db"
     with transaction(str(db_path)) as conn:
@@ -3565,7 +3564,7 @@ async def test_query_filter_with_lower_function_runs(integration_env):
 
 
 async def test_query_filter_with_replace_runs(integration_env):
-    """DEV-1378: ``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    """``replace(...)`` in a ``SlayerQuery.filters`` predicate
     runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
     to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
     malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
@@ -3584,7 +3583,7 @@ async def test_query_filter_with_replace_runs(integration_env):
 
 
 async def test_filter_renamed_measure_colon_syntax(integration_env):
-    """DEV-1443: filter on the raw colon-syntax formula must resolve to the
+    """Filter on the raw colon-syntax formula must resolve to the
     user alias when the measure is renamed on the same node. Without the
     fix the query fails at execution time (column-not-found on the inner
     SELECT). With the fix it executes correctly as HAVING on the aggregate.
@@ -3611,7 +3610,7 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
 
 
 async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
-    """DEV-1501 integration: ORDER BY two ``last()`` aggregates over
+    """ORDER BY two ``last()`` aggregates over
     different explicit time columns must execute end-to-end against real
     SQLite and return rows ordered by the correct distinct rank keys
     (no dangling ``_last_rn``, no collapsed ranks). Uses a tied primary
@@ -3636,8 +3635,7 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
         # secondary ORDER BY last(updated_at) ASC must break the tie with
         # B (10) before A (99). The expected order intentionally CONTRADICTS
         # natural alphabetical status ordering so a silently-dropped secondary
-        # ORDER BY would surface as a test failure (CR PR #153 thread
-        # r3350000263).
+        # ORDER BY would surface as a test failure.
         rows = [
             # Status A: last(created_at)=50, last(updated_at)=99.
             (1, "A", 50.0, "2025-03-01", "2025-01-01"),
@@ -3695,7 +3693,7 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# DEV-1502: measure-source Column.sql with __-delimited path alias must
+# Measure-source Column.sql with __-delimited path alias must
 # (a) execute end-to-end on SQLite (no `no such column` error from a
 # missing JOIN) and (b) return the right cardinality.
 # ---------------------------------------------------------------------------
@@ -3783,9 +3781,9 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     )
     engine_factory.reset_cache()
 # ---------------------------------------------------------------------------
-# DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
+# End-to-end SQLite affinity probe — vaccine-style fixture.
 #
-# Reproduces the Linear issue's vaccine_3 failure mode: a column declared
+# Reproduces the vaccine_3 failure mode: a column declared
 # ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
 # Column.type=INT propagates through downstream SQL generation and produces
 # AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
@@ -3820,8 +3818,8 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
-    await ingest_datasource_idempotent(datasource=ds, storage=storage)
     engine = SlayerQueryEngine(storage=storage)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
     # Persisted model carries Column.type=DOUBLE for tempstabidx.
     persisted = await storage.get_model("sensordata", data_source="vac")
@@ -3847,7 +3845,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 @pytest.fixture
 async def composite_score_env(tmp_path):
-    """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
+    """A model whose ``Column.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
     """
@@ -3898,7 +3896,7 @@ async def composite_score_env(tmp_path):
 
 
 async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
-    """DEV-1539: the SQL emitted for a filter on a multi-term Column.sql
+    """The SQL emitted for a filter on a multi-term Column.sql
     must wrap the inlined arithmetic expression in outer parens.
 
     Asserts both:
@@ -3948,7 +3946,7 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
 
 
 async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
-    """DEV-1539 HAVING-side: when a custom multi-term aggregation is
+    """HAVING-side: when a custom multi-term aggregation is
     referenced by name in a HAVING filter, the substituted SQL must be
     wrapped in outer parens before the comparator.
     """
@@ -4015,7 +4013,7 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
 
 
 # ---------------------------------------------------------------------------
-# DEV-1576 — round()/abs() execution + aggregation-alias healing (SQLite)
+# round()/abs() execution + aggregation-alias healing (SQLite)
 # ---------------------------------------------------------------------------
 
 

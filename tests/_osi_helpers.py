@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 import sqlalchemy as sa
 import yaml
 
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql import engine_factory
+from slayer.sql.client import SqlClient
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
@@ -60,6 +64,26 @@ def seed_db(*, directory: Path, dialect: str = "duckdb", statements: Sequence[st
 def disable_type_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every derived-expression type probe report nothing, as on a database that cannot report one."""
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
+
+
+class MetadataConverter(Protocol):
+    """An importer that reads the database in ``collect_metadata`` and converts purely."""
+
+    async def collect_metadata(self, *, client: SqlClient) -> None: ...
+
+    def convert(self) -> ConversionResult: ...
+
+
+def run_converter(converter: MetadataConverter, *, datasource: DatasourceConfig) -> ConversionResult:
+    """Collect ``converter``'s metadata through an engine-owned client for ``datasource``, then convert."""
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmp))
+        try:
+            engine.run_sync(converter.collect_metadata(client=engine.client_for(datasource)))
+        finally:
+            engine.close()
+            engine_factory.invalidate_engine(datasource)
+    return converter.convert()
 
 
 def db_url(*, path: Path, dialect: str) -> str:
@@ -125,10 +149,10 @@ def documents(*mappings: dict[str, Any]) -> list[OSIDocument]:
 def convert(*, db: Path, docs: list[OSIDocument], db_dialect: str = "duckdb", **kwargs: Any) -> ConversionResult:
     """Run the converter over ``docs`` against the seeded ``db`` (target defaults to its dialect)."""
     kwargs.setdefault("target_dialect", db_dialect)
-    with disposable_engine(db_url(path=db, dialect=db_dialect)) as engine:
-        return OsiToSlayerConverter(
-            documents=docs, data_source=DATASOURCE, sa_engine=engine, **kwargs,
-        ).convert()
+    return run_converter(
+        OsiToSlayerConverter(documents=docs, data_source=DATASOURCE, **kwargs),
+        datasource=DatasourceConfig(name=DATASOURCE, type=db_dialect, database=str(db)),
+    )
 
 
 def by_name(result: ConversionResult) -> dict[str, SlayerModel]:

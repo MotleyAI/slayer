@@ -6,6 +6,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
@@ -78,14 +79,34 @@ class EntityResolutionError(SlayerError):
     """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
 
 
+class ModelNotFoundError(SlayerError):
+    """A query names a model that does not exist in storage."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"Model '{name}' not found")
+
+
 class MemoryNotFoundError(SlayerError):
     """A memory id does not exist in storage."""
 
     def __init__(self, memory_id: str) -> None:
         self.memory_id = str(memory_id)
-        # Back-compat alias for callers that still use ``.identifier``.
-        self.identifier = self.memory_id
+        self._identifier = self.memory_id
         super().__init__(f"No memory with id '{self.memory_id}'.")
+
+    @property
+    def identifier(self) -> str:
+        warn_deprecated(
+            "MemoryNotFoundError.identifier is deprecated; read .memory_id instead. "
+            "The alias works until SLayer 2.0.",
+            removal="2.0",
+        )
+        return self._identifier
+
+    @identifier.setter
+    def identifier(self, value: str) -> None:
+        self._identifier = value
 
 
 class SchemaDriftError(SlayerError):

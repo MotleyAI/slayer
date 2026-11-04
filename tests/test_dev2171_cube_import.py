@@ -14,6 +14,7 @@ from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
 from slayer.sql import engine_factory
 from tests._dev2171_fixtures import (
+    collect_over_engine,
     DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_column,
     has_measure,
     import_cube, models_of, run_cli, save_datasource, seed, source_column, stored_model, typing_notes,
@@ -445,7 +446,9 @@ class TestTyping:
         total = [meas("total", "sum", "{CUBE}.amount")]
         project = CubeProject.model_validate({"cubes": [cube(measures=total), cube("orders_b", measures=total)]})
         with unreachable_engine(tmp_path) as (engine, attempts):
-            result = CubeToSlayerConverter(project=project, data_source=DS, sa_engine=engine).convert()
+            converter = CubeToSlayerConverter(project=project, data_source=DS)
+            collect_over_engine(lambda client: converter.collect_metadata(client=client), engine)
+            result = converter.convert()
         assert len(attempts) == 1
         (note,) = typing_notes(i.message for i in result.report.issues if i.severity == "info")
         assert "could not be reached" in note

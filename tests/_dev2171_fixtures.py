@@ -7,7 +7,8 @@ import contextlib
 import json
 import os
 import sys
-from collections.abc import Generator, Iterable, Sequence
+import tempfile
+from collections.abc import Callable, Coroutine, Generator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,11 @@ from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeConversionIssue, CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
+from slayer.sql.client import SqlClient
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
@@ -77,14 +79,38 @@ def unreachable_engine(directory: Path) -> Generator[tuple[sa.Engine, list[objec
 
 # ── importers ─────────────────────────────────────────────────────────────
 
+def _datasource(db: Path) -> DatasourceConfig:
+    return DatasourceConfig(name=DS, type="duckdb", database=str(db))
+
+
+Collect = Callable[[SqlClient], Coroutine[Any, Any, None]]
+
+
+def collect_over_db(collect: Collect, *, db: Path) -> None:
+    """Run an importer's ``collect_metadata`` through an engine-owned client for ``db``."""
+    datasource = _datasource(db)
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmp))
+        try:
+            engine.run_sync(collect(engine.client_for(datasource)))
+        finally:
+            engine.close()
+            engine_factory.invalidate_engine(datasource)
+
+
+def collect_over_engine(collect: Collect, engine: sa.Engine) -> None:
+    """Run an importer's ``collect_metadata`` over the caller's ``engine``."""
+    run_over_caller_engine(engine, data_source=DS, work=collect)
+
+
 def import_cube(cubes: Iterable[dict[str, Any]], *, views: Iterable[dict[str, Any]] = (),
                 db: Path | None = None) -> CubeConversionResult:
     """Convert Cube ``cubes``/``views`` mappings, typing against ``db`` when given."""
     project = CubeProject.model_validate({"cubes": list(cubes), "views": list(views)})
-    if db is None:
-        return CubeToSlayerConverter(project=project, data_source=DS).convert()
-    with sa_engine(db) as engine:
-        return CubeToSlayerConverter(project=project, data_source=DS, sa_engine=engine).convert()
+    converter = CubeToSlayerConverter(project=project, data_source=DS)
+    if db is not None:
+        collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
+    return converter.convert()
 
 
 def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_models: Iterable[dict[str, Any]] = (),
@@ -96,23 +122,20 @@ def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_models: Ite
     })
     if db is None:
         return DbtToSlayerConverter(project=project, data_source=DS, target_dialect=target_dialect).convert()
-    with sa_engine(db) as engine:
-        return DbtToSlayerConverter(project=project, data_source=DS, sa_engine=engine,
-                                    target_dialect=target_dialect or "duckdb").convert()
+    converter = DbtToSlayerConverter(project=project, data_source=DS, target_dialect=target_dialect or "duckdb")
+    collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
+    return converter.convert()
 
 
 def import_osi(*documents: dict[str, Any], db: Path, target_dialect: str = "duckdb") -> ConversionResult:
     """Convert current-spec OSI document mappings against ``db``."""
-    docs = [OSIDocument.model_validate(d) for d in documents]
-    with sa_engine(db) as engine:
-        return OsiToSlayerConverter(documents=docs, data_source=DS, sa_engine=engine,
-                                    target_dialect=target_dialect).convert()
+    return convert_osi([OSIDocument.model_validate(d) for d in documents], db=db, target_dialect=target_dialect)
 
 
 def convert_osi(docs: list[OSIDocument], *, db: Path, target_dialect: str = "duckdb") -> ConversionResult:
-    with sa_engine(db) as engine:
-        return OsiToSlayerConverter(documents=docs, data_source=DS, sa_engine=engine,
-                                    target_dialect=target_dialect).convert()
+    converter = OsiToSlayerConverter(documents=docs, data_source=DS, target_dialect=target_dialect)
+    collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
+    return converter.convert()
 
 
 # ── model inspection ──────────────────────────────────────────────────────

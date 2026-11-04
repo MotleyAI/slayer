@@ -106,8 +106,9 @@ class TestPgWireValues:
 
 def _flight_text(value: Any) -> Any:
     handlers = FlightHandlers(
-        engine=_FlightEngine(response=SlayerResponse(data=[{"contractors.cities": value}])),  # type: ignore[arg-type]
-        storage=_FlightStorage({DS: [_model()]}),  # type: ignore[arg-type]
+        engine=_FlightEngine(  # type: ignore[arg-type]
+            response=SlayerResponse(data=[{"contractors.cities": value}]), storage=_FlightStorage({DS: [_model()]}),
+        ),
     )
     result = handlers._translate("SELECT cities FROM contractors")
     assert isinstance(result, QueryResult), result

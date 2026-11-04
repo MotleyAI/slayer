@@ -1884,14 +1884,14 @@ files = [
 
 [[package]]
 name = "filelock"
-version = "3.28.0"
+version = "3.32.7"
 description = "A platform independent file lock."
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "dev"]
 files = [
-    {file = "filelock-3.28.0-py3-none-any.whl", hash = "sha256:de9af6712788e7171df1b28b15eba2446c69721433fa427a9bee07b17820a9db"},
-    {file = "filelock-3.28.0.tar.gz", hash = "sha256:4ed1010aae813c4ee8d9c660e4792475ee60c4a0ba76073ceaf862bd317e3ca6"},
+    {file = "filelock-3.32.7-py3-none-any.whl", hash = "sha256:65ff0d0190ea42038b32bda4b77834fb05be2cad4c5b9b01aa4dfb3614536e52"},
+    {file = "filelock-3.32.7.tar.gz", hash = "sha256:37b8a3d9811b0f9aef7e5ec5c71bb320de52df51e6ca9bcd6f5ad81187660da7"},
 ]
 markers = {main = "extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"all\" or extra == \"snowflake\""}
 
@@ -8297,4 +8297,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "29ac726c015ca8d83039a9656746325972adfa49a6c7bb740d062a12f6537a68"
+content-hash = "9d39ef55586aa4a48e4c10fdaec5417354daa77f58a87f4f56be1a8ac10a9150"

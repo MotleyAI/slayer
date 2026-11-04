@@ -17,6 +17,8 @@ class _Cursor:
 
 
 class _Result:
+    returns_rows = True
+
     def __init__(self, columns: list[str], types: list[Any], rows: list[tuple[Any, ...]]) -> None:
         self.cursor = _Cursor([(c, t, None, None, None, None, True) for c, t in zip(columns, types)])
         self._columns = columns

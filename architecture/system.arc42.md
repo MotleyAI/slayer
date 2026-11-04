@@ -176,6 +176,9 @@ All code, old and new, MUST obey these.
     [enforced: test:tests/test_dev2171_importers_preserve_meaning.py]
 22. **One typing**: a value's type is derived from its key in one place; every
     check, coercion and metadata lift reads that derivation. [target: DEV-2180]
+23. **One database door**: every live database access — statement or metadata —
+    goes through a client owned by a query engine.
+    [enforced: test:tests/test_law_database_door.py]
 
 ## 4. Enforcement
 

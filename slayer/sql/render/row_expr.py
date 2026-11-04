@@ -476,6 +476,11 @@ def _operand_type(key: ScalarCallKey, pos: int, *, column_type: ColumnTypeFn) ->
     return dt
 
 
+def data_type_target(dt: DataType) -> exp.DataType:
+    """The CAST target for SLayer type ``dt``; INT is 64-bit."""
+    return exp.DataType(this=exp.DataType.Type.BIGINT if dt is DataType.INT else exp.DataType.Type(dt.value))
+
+
 def int_value(value: Expression) -> Expression:
     """``value`` read as an integer — a boolean's 1 / 0, NULL kept."""
     return exp.Cast(this=value, to=exp.DataType.build("INT"))

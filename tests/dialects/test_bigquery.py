@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -14,7 +15,8 @@ from sqlglot import exp
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.engine_factory import client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -23,7 +25,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import ExecutionResult, TypeProbe
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
@@ -319,8 +321,8 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(
-            rows=[{"orders.status": "paid"}]
+        engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(
+            rows=[{"orders.status": "paid"}], datasource=ds,
         )
         with patch.object(
             PostgresDialect,
@@ -344,13 +346,14 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
 # Engine-level integration: SlayerResponse round-trip for the BigQuery dialect
 
 
-class _FakeBigQueryClient:
+class _FakeBigQueryClient(DelegatingSqlClient):
     """Stub SQL client that returns BigQuery-mangled row keys."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
         return ExecutionResult(rows=[dict(row) for row in self._rows])
 
 
@@ -375,7 +378,7 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -512,7 +515,7 @@ async def _build_labeled_bigquery_engine(
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
+    engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
 
 
@@ -532,18 +535,21 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
         tmp.cleanup()
 
 
-class _EchoTypesClient:
+class _EchoTypesClient(DelegatingSqlClient):
     """Stub client echoing the probe SQL's mangled column names as types."""
 
-    async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
+    def __init__(self, *, datasource: DatasourceConfig) -> None:
+        super().__init__(inner=SlayerSQLClient(datasource=datasource))
+
+    async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
         return ExecutionResult(rows=[])
 
-    async def get_column_types(self, probe: TypeProbe) -> dict:
-        probed = sqlglot.parse_one(probe.sql, dialect="bigquery").args["from_"].this.this
-        return {name: "DOUBLE" for name in probed.named_selects}
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        probed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery").args["from_"].this.this)
+        return {name: ResultColumnType(type=DataType.DOUBLE) for name in probed.named_selects}
 
 
-async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> None:
     """The mangled type-probe keys are decoded back."""
     tmp = tempfile.TemporaryDirectory()
     try:
@@ -561,8 +567,8 @@ async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[_sql_client_cache_key(ds)] = _EchoTypesClient()
-        types = await engine.get_column_types("orders")
+        engine._sql_clients[client_cache_key(ds)] = _EchoTypesClient(datasource=ds)
+        types = await engine.get_result_column_types("orders")
         # Without the decode fix, the mangled probe keys never match the dotted
         # ``full`` lookups and this is empty for BigQuery.
         assert types, f"expected a non-empty type map, got {types!r}"

@@ -1,4 +1,4 @@
-"""Exact NUMERIC/DECIMAL aggregates must not inherit a lossy DOUBLE cast (#364)."""
+"""Exact NUMERIC/DECIMAL aggregates must not inherit a lossy DOUBLE cast."""
 
 from decimal import Decimal
 
@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, ModelJoin
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -25,19 +25,21 @@ async def decimal_engine(tmp_path):
         )
 
     datasource = DatasourceConfig(name="test", type="duckdb", database=database)
-    model = next(model for model in ingest_datasource(datasource=datasource) if model.name == "orders")
+    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
+    engine = SlayerQueryEngine(storage=storage)
+    models = await ingestion.ingest_datasource_async(datasource, client=engine.client_for(datasource))
+    model = next(model for model in models if model.name == "orders")
     amount = model.get_column("amount")
     assert amount is not None
     assert amount.type is DataType.DOUBLE
     assert amount.db_type == "DECIMAL(18,2)"
 
-    storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     await storage.save_datasource(datasource)
     customers = model.model_copy(update={"name": "customers", "joins": []})
     model.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
     await storage.save_model(model)
     await storage.save_model(customers)
-    return SlayerQueryEngine(storage=storage)
+    return engine
 
 
 @pytest.mark.parametrize(

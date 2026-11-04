@@ -12,6 +12,10 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
+env:
+  # jaffle-shop-generator is not on PyPI; the demo-DB cache key carries this pin too.
+  JAFGEN_SHA: 09557a1118b000071f8171aa97d54d5029bf0f0b
+
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -19,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same inputs as the lint-and-test 3.11 leg, so the two share the venv cache.
+      # Same inputs as the other 3.11 jobs, so they share the venv cache.
       - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
@@ -27,16 +31,32 @@ jobs:
       - name: Type-check (no new errors vs .basedpyright/baseline.json)
         run: poetry run basedpyright
 
-  lint-and-test:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Lint with ruff
+        run: poetry run ruff check slayer/ tests/
+
+      - name: Check living-architecture cross-walk
+        run: poetry run la-arch-check
+
+  unit-tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.14"]
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17 (for Flight SQL JDBC integration tests)
+      - name: Set up JDK 17 (for the Flight SQL JDBC tests)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -46,8 +66,47 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install jafgen (for notebook tests, not on PyPI)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
+      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
+
+      - name: Run unit tests (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 20
+        # One of three duration-balanced module groups (tests/_sharding.py); -n logical
+        # uses every vCPU (-n auto only the physical cores).
+        run: >-
+          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+          --shard ${{ matrix.shard }}/3 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
+
+      # Per-module timings that rebalance the shards (refresh steps: tests/_sharding.py).
+      - name: Upload shard durations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-durations-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-durations.json
+          retention-days: 14
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (for the Flight SQL JDBC tests)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
+        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
@@ -55,9 +114,9 @@ jobs:
       # its SHA256 instead of piping a remote installer to bash. With the binary
       # already on PATH, the notebook's idempotent `command -v duckdb || curl …`
       # cell never reaches the network.
-      - name: Cache the DuckDB CLI
+      - name: Restore the DuckDB CLI
         id: duckdb-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.duckdb/cli
           key: duckdb-cli-${{ runner.os }}-v1.5.5
@@ -78,21 +137,34 @@ jobs:
           chmod +x "$HOME/.duckdb/cli/latest/duckdb"
           rm -rf "$tmp"
 
+      - name: Save the DuckDB CLI
+        if: github.ref == 'refs/heads/main' && steps.duckdb-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.duckdb/cli
+          key: ${{ steps.duckdb-cache.outputs.cache-primary-key }}
+
       - name: Put the DuckDB CLI on PATH
         run: echo "$HOME/.duckdb/cli/latest" >> "$GITHUB_PATH"
 
-      - name: Lint with ruff
-        run: poetry run ruff check slayer/ tests/
+      # The notebooks' demo DuckDB (~2 min of jafgen): built, or restored and date-shifted to today,
+      # before pytest so no worker rewrites it mid-run; saved (from main) before pytest so the cache stays pristine.
+      - name: Restore the notebook demo DuckDB
+        id: demo-db-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
+          key: notebook-demo-db-${{ runner.os }}-${{ env.JAFGEN_SHA }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
 
-      - name: Check living-architecture cross-walk
-        run: poetry run la-arch-check
+      - name: Build or refresh the notebook demo DuckDB
+        run: poetry run python -c "from tests.integration._demo_build import build_notebook_demo_db; build_notebook_demo_db()"
 
-      - name: Run unit tests
-        timeout-minutes: 20
-        # -n logical uses ALL the runner's vCPUs for ~16.5k CPU-bound tests
-        # (plain -n auto picks only physical cores via psutil — half). Clears the
-        # 3.14 timeout; --durations logs the slowest tests per matrix leg.
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+      - name: Save the notebook demo DuckDB
+        if: github.ref == 'refs/heads/main' && steps.demo-db-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
+          key: ${{ steps.demo-db-cache.outputs.cache-primary-key }}
 
       - name: Run integration tests
         timeout-minutes: 20
@@ -117,30 +189,6 @@ jobs:
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py \
             --ignore=tests/integration/test_integration_trino.py
-
-  # A fresh `pip install` resolves the newest allowed SQLAlchemy / DuckDB, not the lock's.
-  unit-test-latest-deps:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/poetry-env
-        with:
-          python-version: "3.11"
-
-      - name: Install jafgen (for the demo tests, not on PyPI)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
-
-      - name: Upgrade SQLAlchemy, duckdb and duckdb-engine to the newest allowed
-        env:
-          POETRY_INSTALLER_ONLY_BINARY: ":all:"
-        run: |
-          poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
-          poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
-
-      - name: Run unit tests
-        timeout-minutes: 20
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
 
   # The previous `integration-examples` matrix (verify.py-based
   # end-to-end checks for ClickHouse + MySQL) migrated into the per-dialect

@@ -12,7 +12,7 @@ from typing import Any
 
 from slayer.core.syntax import parse_expr
 
-from tests._doc_examples import SKIP_MARKER, extract_markdown, extract_yaml_file, mode_b_values
+from tests._doc_mode_b_examples import SKIP_MARKER, extract_markdown, extract_yaml_file, mode_b_values
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DOCS = _ROOT / "docs"

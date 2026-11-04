@@ -124,7 +124,7 @@ class TestEngineCheck:
         executed: list[TypeProbe] = []
         saved: list[str] = []
 
-        async def _spy_exec(self, probe: TypeProbe) -> dict[str, str]:  # noqa: ANN001
+        async def _spy_exec(self, probe: TypeProbe) -> dict[str, object]:  # noqa: ANN001
             executed.append(probe)
             return {}
 
@@ -134,7 +134,7 @@ class TestEngineCheck:
             saved.append(model.name)
             return await original_save(self, model, *args, **kwargs)
 
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy_exec)
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy_exec)
         monkeypatch.setattr(YAMLStorage, "save_model", _spy_save)
         model = _model(_BROKEN, sql="SELECT id, amount FROM orders")
         with pytest.raises(SlayerError):

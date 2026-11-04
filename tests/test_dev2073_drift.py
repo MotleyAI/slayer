@@ -48,7 +48,7 @@ async def drifted() -> AsyncIterator[Live]:
 
 async def _orders_entry(lv: Live) -> EditModelDelete:
     models = list((await lv.models()).values())
-    entries = [e for e in await validate_datasource(datasource=lv.ds, models=models) if e.model_name == "orders"]
+    entries = [e for e in await validate_datasource(datasource=lv.ds, models=models, client=lv.client()) if e.model_name == "orders"]
     assert len(entries) == 1
     entry = entries[0]
     assert isinstance(entry, EditModelDelete)
@@ -96,7 +96,7 @@ class TestQueryBackedCascadeFollowsTheEdge:
             )
             await drifted.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
         models = list((await drifted.models()).values())
-        whole = [e for e in await validate_datasource(datasource=drifted.ds, models=models)
+        whole = [e for e in await validate_datasource(datasource=drifted.ds, models=models, client=drifted.client())
                  if isinstance(e, WholeModelDelete)]
         assert [e.model_name for e in whole] == ["by_billing"]
         assert "'billing_address' via 'orders'" in whole[0].reasons[0].reason
@@ -151,7 +151,7 @@ class TestEveryHopOfTheRouteCounts:
                 )
                 await lv.storage.save_model(SlayerModel(name=name, data_source=DS, source_queries=[stage]))
             models = list((await lv.models()).values())
-            entries = await validate_datasource(datasource=lv.ds, models=models)
+            entries = await validate_datasource(datasource=lv.ds, models=models, client=lv.client())
             assert {e.model_name for e in entries if isinstance(e, WholeModelDelete)} == removed
 
 

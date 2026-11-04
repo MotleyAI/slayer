@@ -618,9 +618,14 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
                 "measures": [{"name": "revenue", "sql": "amount"}],
             }, f)
 
-        storage = YAMLStorage(base_dir=tmpdir)
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=tmpdir))
+        storage = engine.storage
 
-        loaded = await storage.get_model("orders")
+        try:
+            loaded = await storage.get_model("orders")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
@@ -684,8 +689,12 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
 
         # Open SQLiteStorage *after* the legacy data is in place so the
         # schema migrator runs the v3 → v4 PK rebuild on real legacy rows.
-        storage = SQLiteStorage(db_path=db_path)
-        loaded = await storage.get_model("orders")
+        engine = SlayerQueryEngine(storage=SQLiteStorage(db_path=db_path))
+        try:
+            loaded = await engine.storage.get_model("orders")
+        finally:
+            await engine.aclose()
+            engine.close()
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]

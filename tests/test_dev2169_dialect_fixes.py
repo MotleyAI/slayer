@@ -14,8 +14,8 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ScalarArgumentError
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.sql.client import _map_type_code
 from slayer.sql.dialects._clickhouse_cells import array_reader
+from slayer.sql.dialects.postgres import describe_pg_cursor_column
 from slayer.sql.dialects.sqlite import register_sqlite_udfs
 from slayer.storage.sqlite_conn import open_connection
 from tests._dev2120_fixtures import (
@@ -113,7 +113,8 @@ async def test_postgres_list_operands_share_one_array_type(expr: str, array_type
     (1001, "bytea[]"),
 ])
 def test_postgres_array_type_codes_are_lists(oid: int, pg_type: str) -> None:
-    assert _map_type_code(oid, "postgresql") == "list", pg_type
+    described = describe_pg_cursor_column(("c", oid, None, None, None, None, None))
+    assert described is not None and described.type is DataType.ARRAY, pg_type
 
 
 # --------------------------------------------------------------------------- #

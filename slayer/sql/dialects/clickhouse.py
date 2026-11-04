@@ -413,21 +413,20 @@ class ClickhouseDialect(SqlDialect):
             .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
         )
 
-    def reflect_columns(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any, table: str, schema: str | None, catalog: str | None,
+    def columns_from_inspector(
+        self, raw: list[dict[str, Any]], *, sa_engine: CatalogEngine | None, location: TableLocation,
     ) -> list[ReflectedColumn]:
         """A column the driver cannot type (``JSON``) is read from its ``system.columns`` type."""
-        columns = super().reflect_columns(
-            sa_engine=sa_engine, inspector=inspector, table=table, schema=schema, catalog=catalog)
-        if not any(isinstance(c.type, NullType) for c in columns):
+        columns = super().columns_from_inspector(raw, sa_engine=sa_engine, location=location)
+        untyped = {c["name"] for c in raw if isinstance(c["type"], NullType)}
+        if not untyped:
             return columns
-        location = TableLocation(name=table, schema_name=schema, catalog=catalog)
         declared = dict(fetch(sa_engine, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
         return [
             column_from_type_string(
                 name=c.name, data_type=declared.get(c.name), comment=c.comment,
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
-            ) if isinstance(c.type, NullType) else c
+            ) if c.name in untyped else c
             for c in columns
         ]
 

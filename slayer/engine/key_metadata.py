@@ -32,7 +32,7 @@ from slayer.core.keys import (
     temporal_type,
     value_type,
 )
-from slayer.core.join_walker import LIST_ELEMENT_COLUMN, model_column_element, model_column_lookup, model_column_type
+from slayer.core.join_walker import LIST_ELEMENT_COLUMN, model_column, model_column_element, model_column_type
 from slayer.core.models import SlayerModel
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
@@ -178,8 +178,9 @@ def scope_zoned_timestamp(*, scope: ModelScope | StageSchema, bundle) -> Callabl
     dialect = bundle_dialect(bundle)
     if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.source_model is None:
         return lambda _key: False
-    lookup = model_column_lookup(model=scope.source_model, models_by_name=bundle.models_by_name)
-    return lambda key: dialect.is_zoned_db_type(getattr(lookup(key), "db_type", None))
+    model, models_by_name = scope.source_model, bundle.models_by_name
+    return lambda key: dialect.is_zoned_db_type(
+        getattr(model_column(model=model, models_by_name=models_by_name, key=key), "db_type", None))
 
 
 def date_scalar_type(key: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
