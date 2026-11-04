@@ -55,6 +55,7 @@ from tests._dev2120_fixtures import (
     server_table_statements as dev2120_table_statements,
 )
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -1001,7 +1002,7 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
     try:
         cur.execute(f"USE SCHEMA {sf_transient_schema}")
         for stmt in [*contractors_statements(dialect="snowflake"), *assignments_statements(dialect="snowflake"),
-                     *_INFERRED]:
+                     *mixed_numbers_statements(dialect="snowflake"), *_INFERRED]:
             cur.execute(stmt)
         conn.commit()
         storage = YAMLStorage(base_dir=str(tmp_path))
@@ -1009,10 +1010,11 @@ def sf_lists(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path
         for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
             run_sync(storage.save_model(base.model_copy(update={
                 "columns": [c.model_copy(update={"sql": c.name}) for c in base.columns]})))
+        run_sync(storage.save_model(mixed_numbers_model(data_source="sf_test", explicit_sql=True)))
         yield storage, cur
     finally:
         try:
-            for table in ("contractors", "assignments", "inferred", "structured"):
+            for table in ("contractors", "assignments", "mixed", "inferred", "structured"):
                 cur.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
         finally:
@@ -1027,6 +1029,10 @@ def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataT
 
 def test_lists(sf_lists) -> None:
     run_sync(check_lists(SlayerQueryEngine(storage=sf_lists[0]), dialect="snowflake"))
+
+
+def test_mixed_numeric_lists(sf_lists) -> None:
+    run_sync(check_mixed_numbers(SlayerQueryEngine(storage=sf_lists[0])))
 
 
 def test_untyped_array_elements_inferred(sf_lists, sf_datasource: DatasourceConfig) -> None:

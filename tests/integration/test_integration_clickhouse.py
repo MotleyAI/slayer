@@ -92,6 +92,7 @@ from tests._dev2120_fixtures import (
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 
 pytest.importorskip("testcontainers.clickhouse")
@@ -1987,13 +1988,15 @@ def _seeded_lists(container, base_dir: str):
         with disposable_engine(_ds_url_for_db(container, db_name)) as engine:
             with engine.begin() as conn:
                 for stmt in [*contractors_statements(dialect="clickhouse"),
-                             *assignments_statements(dialect="clickhouse"), _TAGGED]:
+                             *assignments_statements(dialect="clickhouse"),
+                             *mixed_numbers_statements(dialect="clickhouse"), _TAGGED]:
                     conn.execute(sa.text(stmt))
         ds = _ds_config(container, db_name)
         storage = YAMLStorage(base_dir=base_dir)
         run_sync(storage.save_datasource(ds))
         run_sync(storage.save_model(contractors_model(data_source=ds.name)))
         run_sync(storage.save_model(assignments_model(data_source=ds.name)))
+        run_sync(storage.save_model(mixed_numbers_model(data_source=ds.name)))
         yield storage, ds
     finally:
         _drop_module_db(container, db_name)
@@ -2024,6 +2027,9 @@ class TestClickHouseLists:
         refused = {"elements-filtered-across-another-to-many": "25.8"} if versioned_clickhouse[0] == "25.4" else None
         await check_lists(SlayerQueryEngine(storage=_versioned_clickhouse_lists[0]), dialect="clickhouse",
                           refused=refused)
+
+    async def test_mixed_numeric_lists(self, _clickhouse_lists) -> None:
+        await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
 
     def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
         (model,) = ingestion.ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])

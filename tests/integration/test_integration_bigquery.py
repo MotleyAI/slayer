@@ -47,6 +47,7 @@ from tests._dev2120_fixtures import (
     server_table_statements as dev2120_table_statements,
 )
 from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
@@ -440,19 +441,24 @@ def bq_lists(bq_dataset, tmp_path_factory):
     client, dataset_id = bq_dataset
     prefix = f"{dataset_id}."
     for stmt in [*contractors_statements(dialect="bigquery", prefix=prefix),
-                 *assignments_statements(dialect="bigquery", prefix=prefix)]:
+                 *assignments_statements(dialect="bigquery", prefix=prefix),
+                 *mixed_numbers_statements(dialect="bigquery", prefix=prefix)]:
         client.query(stmt).result()
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
     run_sync(storage.save_datasource(ds))
     for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
-                  _stale_contractors(ds.name)):
+                  mixed_numbers_model(data_source=ds.name), _stale_contractors(ds.name)):
         run_sync(storage.save_model(model))
     return storage, ds
 
 
 async def test_lists(bq_lists) -> None:
     await check_lists(SlayerQueryEngine(storage=bq_lists[0]), dialect="bigquery")
+
+
+async def test_mixed_numeric_lists(bq_lists) -> None:
+    await check_mixed_numbers(SlayerQueryEngine(storage=bq_lists[0]))
 
 
 def test_repeated_field_ingested(bq_lists) -> None:

@@ -197,8 +197,8 @@ def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
 
 
 def is_exact_numeric_db_type(db_type: str | None) -> bool:
-    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers excluded)."""
-    if not db_type:
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers and lists excluded)."""
+    if not db_type or info_schema_list_element(db_type) is not None:
         return False
     token = db_type.split("(")[0].upper().strip()
     return "DECIMAL" in token or "NUMERIC" in token

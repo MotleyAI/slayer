@@ -83,8 +83,10 @@ class TestNamespacedSaveLoad:
 
         loaded_a = await storage.get_model("users", data_source="db_a")
         loaded_b = await storage.get_model("users", data_source="db_b")
-        assert loaded_a is not None and loaded_a.data_source == "db_a"
-        assert loaded_b is not None and loaded_b.data_source == "db_b"
+        assert loaded_a is not None
+        assert loaded_a.data_source == "db_a"
+        assert loaded_b is not None
+        assert loaded_b.data_source == "db_b"
 
     async def test_get_model_with_data_source_filters_to_exact_match(self, storage) -> None:
         await storage.save_datasource(_ds("db_a"))
@@ -141,7 +143,8 @@ class TestBareNameResolution:
         # whichever surface (REST/MCP/CLI/Python) catches the error so it
         # can use the right invocation idiom — the bare exception text
         # stays surface-neutral. See PR #92 thread #4.
-        assert "db_a" in msg and "db_b" in msg
+        assert "db_a" in msg
+        assert "db_b" in msg
         assert "data_source" in msg or "datasource" in msg.lower()
 
     async def test_priority_picks_first_match(self, storage) -> None:
@@ -308,6 +311,17 @@ class TestListModels:
             await storage.delete_model(bad, data_source="db_a")
         with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
             await storage.delete_model("orders", data_source=bad)
+
+    @pytest.mark.parametrize("bad", ["../escape", "..", "a/b", "a\\b", "a.b", ""])
+    async def test_raw_writes_reject_path_traversal(self, tmp_path, bad) -> None:
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        with pytest.raises(ValueError, match="Invalid"):
+            await storage._write_raw_datasource_dict(name=bad, data={"name": "x"})
+        with pytest.raises(ValueError, match="Invalid"):
+            await storage._write_raw_model_dict(name="orders", data_source=bad, data={"name": "orders"})
+        with pytest.raises(ValueError, match="Invalid"):
+            await storage._write_raw_model_dict(name=bad, data_source="db_a", data={"name": "orders"})
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["store"]
 
     async def test_ambiguous_error_message_is_surface_neutral(self, storage) -> None:
         """``AmbiguousModelError.__str__`` must list candidates without

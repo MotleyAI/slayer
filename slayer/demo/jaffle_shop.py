@@ -118,6 +118,18 @@ DATE_COLUMNS = {
     "tweets": ["tweeted_at"],
 }
 
+# List columns computed on insert from a sibling CSV (table ``source``), per table: column → (source CSV, per-row list).
+_LIST_SOURCE = "source"
+LIST_COLUMNS = {
+    "products": {"ingredients": (
+        "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM source AS s WHERE s.sku = _products_raw.sku",
+    )},
+    "orders": {"item_skus": (
+        "items", "SELECT list(i.sku ORDER BY i.id) FROM source AS i WHERE i.order_id = _orders_raw.id",
+    )},
+}
+
+
 JAFFLE_SCHEMA_SQL = """\
 CREATE TABLE regions (
     id VARCHAR PRIMARY KEY,
@@ -142,7 +154,8 @@ CREATE TABLE products (
     name VARCHAR NOT NULL,
     type VARCHAR NOT NULL,
     price DECIMAL(12,2) NOT NULL,
-    description VARCHAR NOT NULL
+    description VARCHAR NOT NULL,
+    ingredients VARCHAR[]
 );
 
 CREATE TABLE orders (
@@ -153,7 +166,8 @@ CREATE TABLE orders (
     subtotal DECIMAL(12,2) NOT NULL,
     tax_paid DECIMAL(12,2) NOT NULL,
     order_total DECIMAL(12,2) NOT NULL,
-    status VARCHAR NOT NULL
+    status VARCHAR NOT NULL,
+    item_skus VARCHAR[]
 );
 
 CREATE TABLE items (
@@ -266,6 +280,10 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                         "Order status: completed, refunded or cancelled. Refunded and "
                         "cancelled orders keep their order_total."
                     ),
+                ),
+                "item_skus": _ColumnEnrichment(
+                    label="Item SKUs",
+                    description="The SKU of each item on the order, one entry per unit (repeats kept).",
                 ),
             },
             measures=[
@@ -399,6 +417,10 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 ),
                 "description": _ColumnEnrichment(
                     label="Description", description="Product description."
+                ),
+                "ingredients": _ColumnEnrichment(
+                    label="Ingredients",
+                    description="The supplies the product is made from, a list sorted by name.",
                 ),
             },
             measures=[
@@ -809,10 +831,14 @@ def load_data(
                     value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
                 select_parts.append(exp.alias_(value, target_col))
             declared = _declared_columns(conn, table)
-            derived = {c: e for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared}
-            for target_col, derived_sql in derived.items():
+            derived: dict[str, Expr] = {
+                c: sqlglot.parse_one(e, dialect="duckdb")
+                for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared
+            }
+            derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
+            for target_col, derived_expr in derived.items():
                 target_columns.append(target_col)
-                select_parts.append(exp.alias_(sqlglot.parse_one(derived_sql, dialect="duckdb"), target_col))
+                select_parts.append(exp.alias_(derived_expr, target_col))
             if csv_name == "stores" and "region_id" in derived:
                 _require_store_regions(conn, view=view)
             insert = exp.insert(
@@ -824,6 +850,21 @@ def load_data(
             conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
+
+
+def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, Expr]:
+    """The declared ``LIST_COLUMNS`` of ``csv_name`` whose source CSV exists, as insert expressions (``[]`` for a
+    row with none)."""
+    out: dict[str, Expr] = {}
+    for column, (source, values) in LIST_COLUMNS.get(csv_name, {}).items():
+        path = os.path.join(data_dir, f"{prefix}_{source}.csv")
+        if column not in declared or not os.path.exists(path):
+            continue
+        rows = sqlglot.parse_one(values, dialect="duckdb")
+        table = next(t for t in rows.find_all(exp.Table) if t.name == _LIST_SOURCE)
+        table.set("this", exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(path)]))
+        out[column] = exp.Coalesce(this=exp.Subquery(this=rows), expressions=[exp.Array(expressions=[])])
+    return out
 
 
 def verify(conn: "duckdb.DuckDBPyConnection") -> dict:

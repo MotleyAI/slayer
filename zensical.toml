@@ -119,6 +119,10 @@ nav = [
       { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
       { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
     ]},
+    { "List Columns" = [
+      "examples/16_list_columns/list_columns.md",
+      { "Notebook" = "examples/16_list_columns/list_columns_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [

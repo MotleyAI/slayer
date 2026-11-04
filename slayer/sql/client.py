@@ -128,6 +128,8 @@ def _first_value_type(value: Any) -> ResultColumnType:
     """A column typed off one value; a number is uncertified, so DOUBLE."""
     if isinstance(value, bool):
         return ResultColumnType(type=DataType.BOOLEAN)
+    if isinstance(value, (list, tuple)):
+        return ResultColumnType(type=DataType.ARRAY)
     if isinstance(value, (int, float, Decimal)):
         return ResultColumnType(type=DataType.DOUBLE)
     if isinstance(value, datetime):
