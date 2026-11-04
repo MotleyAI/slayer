@@ -32,4 +32,4 @@
 
 - [x] 4.1 Docs, one sentence each: `docs/cube/cube_import.md` (identifier folding, offline refusal), `docs/dbt/dbt_import.md` (folding, quoting policy, `sources:`), `docs/osi/osi_import.md` (folding); grep `docs/` for statements that importers store SQL verbatim
 - [x] 4.2 Full unit suite (`poetry run pytest -m "not integration"`), CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all green
-- [ ] 4.3 On the tracker: note that this PR closes DEV-1679 (comment on DEV-1679)
+- [x] 4.3 On the tracker: note that this PR closes DEV-1679 (comment on DEV-1679)
