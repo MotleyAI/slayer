@@ -13,7 +13,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import NoSuchModuleError
 
-from slayer.core.errors import MissingDriverError
+from slayer.core.errors import MissingDriverError, UnsupportedDriverError
 from slayer.sql.dialects.base import DriverFacts, SqlDialect
 
 if TYPE_CHECKING:
@@ -99,6 +99,12 @@ def load_driver(
     parsed = make_url(url)
     with plugin_errors(datasource, url, dialect=dialect):
         sa_dialect = parsed.get_dialect(_is_async=is_async)
+    if sa_dialect.is_async and dialect.needs_sync_connections:
+        raise UnsupportedDriverError(
+            datasource_name=datasource.name, ds_type=datasource.type, driver=sa_dialect.driver,
+            reason="SLayer sets up every connection of this type in a way an asynchronous driver cannot take",
+            hint=f"use a {dialect.url_scheme}:// URL",
+        )
     try:
         _dbapi_importer(sa_dialect)()
     except ImportError as exc:

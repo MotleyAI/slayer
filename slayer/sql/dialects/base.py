@@ -1150,6 +1150,15 @@ class SqlDialect(BaseModel):
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
+    @property
+    def needs_sync_connections(self) -> bool:
+        """Whether a per-connection hook (UDFs, session overrides) runs, which an async driver's connections cannot take."""
+        cls = type(self)
+        return (
+            cls.register_udfs is not SqlDialect.register_udfs
+            or cls.apply_session_overrides is not SqlDialect.apply_session_overrides
+        )
+
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
@@ -1342,7 +1351,7 @@ class SqlDialect(BaseModel):
             .where(all_of(where))
         )
 
-    def url_default_schema(self, *, sa_dialect: sa.engine.Dialect) -> str | None:  # NOSONAR(S1172) — no-op hook default
+    def url_default_schema(self, *, url: URL) -> str | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: the default schema the connection URL fixes, known without a request; ``None`` when it fixes none."""
         return None
 

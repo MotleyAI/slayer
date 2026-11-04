@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.engine.url import make_url
 
+from slayer.core.errors import UnsupportedDriverError
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as client_module
 from slayer.sql import engine_factory
@@ -369,3 +370,52 @@ def test_no_url_is_moved_to_another_driver() -> None:
 def test_sqlalchemy_async_capability_pin(url, is_async) -> None:
     """Pins the underscore ``get_dialect(_is_async=...)`` keyword the one-driver rule relies on."""
     assert make_url(url).get_dialect(_is_async=True).is_async is is_async
+
+
+# ---------------------------------------------------------------------------
+# An async SQLite driver is refused
+# ---------------------------------------------------------------------------
+
+
+class _NoEngine:
+    """Fails the test on any engine construction."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(client_module, "create_async_engine", self._built)
+        monkeypatch.setattr(engine_factory.sa, "create_engine", self._built)
+
+    def _built(self, *_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("an engine was built")
+
+
+_AIOSQLITE_URLS = ["sqlite+aiosqlite:///{tmp}/x.db", "sqlite+aiosqlite://"]
+
+
+@pytest.mark.parametrize("url", _AIOSQLITE_URLS)
+async def test_an_async_sqlite_driver_is_refused(monkeypatch, tmp_path, url) -> None:
+    _NoEngine(monkeypatch)
+    ds = DatasourceConfig(name="lite", type="sqlite", connection_string=url.format(tmp=tmp_path))
+    client = SlayerSQLClient(datasource=ds)
+    with pytest.raises(UnsupportedDriverError, match=r"sqlite://") as exc:
+        await client.execute("SELECT 1")
+    assert exc.value.driver == "aiosqlite"
+    with pytest.raises(UnsupportedDriverError):
+        await client.list_schemas()
+    client.close()
+
+
+@pytest.mark.parametrize("url", _AIOSQLITE_URLS)
+def test_an_async_sqlite_driver_is_refused_synchronously(monkeypatch, tmp_path, url) -> None:
+    _NoEngine(monkeypatch)
+    ds = DatasourceConfig(name="lite", type="sqlite", connection_string=url.format(tmp=tmp_path))
+    client = SlayerSQLClient(datasource=ds)
+    with pytest.raises(UnsupportedDriverError, match=r"sqlite://"):
+        client.execute_sync("SELECT 1")
+    with pytest.raises(UnsupportedDriverError, match=r"sqlite://"):
+        engine_factory.get_engine(ds)
+
+
+@pytest.mark.parametrize(("ds_type", "needs_sync"), [("sqlite", True), ("snowflake", True), ("postgres", False),
+                                                       ("mysql", False), ("duckdb", False)])
+def test_per_connection_hooks_need_sync_connections(ds_type, needs_sync) -> None:
+    assert dialect_for_ds_type(ds_type).needs_sync_connections is needs_sync

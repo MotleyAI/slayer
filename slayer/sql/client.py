@@ -851,11 +851,10 @@ class SlayerSQLClient:
 
     async def default_schema(self) -> str | None:
         try:
-            engine = self._async_engine_here() or self._get_sync_engine_for_client()
-            fixed = self._dialect.url_default_schema(sa_dialect=engine.dialect)
-        except Exception as exc:
-            await self._typed(exc)
-            raise
+            url = make_url(self._connection_datasource().get_connection_string())
+        except ArgumentError:
+            url = None
+        fixed = None if url is None else self._dialect.url_default_schema(url=url)
         return fixed if fixed is not None else await self._metadata(self._default_schema_sync)
 
     async def current_catalog(self) -> str | None:

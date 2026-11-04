@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.engine.url import make_url
 
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
@@ -74,8 +75,7 @@ class TestBaseHook:
         assert SqlDialect().reflect_default_schema(connection=None, inspector=_Inspector(None)) is None
 
     def test_no_url_default_schema(self) -> None:
-        with disposable_engine("sqlite://") as engine:
-            assert SqlDialect().url_default_schema(sa_dialect=engine.dialect) is None
+        assert SqlDialect().url_default_schema(url=make_url("postgresql://h/db")) is None
 
 
 @pytest.fixture
@@ -108,12 +108,14 @@ class TestBigqueryHook:
         conn.exec_driver_sql.assert_not_called()
         conn.execute.assert_not_called()
 
-    def test_the_url_default_schema_is_the_url_dataset(self, bq_engine: sa.Engine) -> None:
-        assert BigqueryDialect().url_default_schema(sa_dialect=bq_engine.dialect) == "ds_a"
+    @pytest.mark.parametrize("url", [_BQ_URL, _BQ_URL_NO_DATASET])
+    def test_the_url_default_schema_is_the_drivers_dataset(self, url: str) -> None:
+        with disposable_engine(url) as engine:
+            expected = getattr(engine.dialect, "dataset_id")
+        assert BigqueryDialect().url_default_schema(url=make_url(url)) == expected
 
-    def test_a_url_without_a_dataset_fixes_no_default_schema(self) -> None:
-        with disposable_engine(_BQ_URL_NO_DATASET) as engine:
-            assert BigqueryDialect().url_default_schema(sa_dialect=engine.dialect) is None
+    def test_the_url_default_schema_is_the_url_dataset(self) -> None:
+        assert BigqueryDialect().url_default_schema(url=make_url(_BQ_URL)) == "ds_a"
 
     def test_schema_description_resolves_the_dataset_via_the_hook(self, bq_engine: sa.Engine) -> None:
         client = MagicMock()

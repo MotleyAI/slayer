@@ -54,6 +54,10 @@ use the same driver synchronously, from the same URL, without blocking the event
 - **WHEN** a client wraps an engine its caller supplied and runs statements and metadata reads
 - **THEN** every one runs on that engine, and no other engine is built
 
+#### Scenario: An async SQLite driver is refused
+- **WHEN** a SQLite datasource's URL names `aiosqlite`
+- **THEN** connecting raises an error naming the built-in `sqlite://` driver, and no engine is built
+
 ### Requirement: Async engines are held per event loop
 A client's asynchronous engine SHALL belong to the event loop that built it: a client used from
 several event loops SHALL hold one engine per loop and SHALL never use an engine or its connections

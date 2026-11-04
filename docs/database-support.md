@@ -111,7 +111,8 @@ there (every other Tier 1 database's comments are imported — see
 SQLite has a much smaller built-in math/stat catalog than the other supported
 engines. SLayer registers Python aggregate and scalar UDFs on every new SQLite
 connection via SQLAlchemy's `connect` event (see
-`slayer/sql/dialects/sqlite.py`).
+`slayer/sql/dialects/sqlite.py`). An asynchronous SQLite driver cannot take them, so a
+`sqlite+aiosqlite://` URL is refused with an `UnsupportedDriverError`; use `sqlite://`.
 
 **Aggregate UDFs:**
 
