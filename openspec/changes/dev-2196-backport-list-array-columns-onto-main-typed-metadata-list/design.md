@@ -58,6 +58,7 @@ Constraints on `main` the branch does not have:
 18. **sql-mode element contract** (Codex #9): sql-mode drift compares only the top-level list type; an sql-mode list column's `element_type` is the declared one, else `UNKNOWN`; nothing infers it. (codex)
 19. **Refusal and storage-parity coverage** (Codex #10): plan-time refusal tests for all eight non-list dialects; YAML + SQLite parity for the granularity rename (repeated load, interrupted rename, `<name>_granularity` taken, cross-document rewrite). (codex)
 20. **No DatasourceConfig version bump for the rename** (Codex #1 rejected): the branch's rename is driven by names on every load (`_with_library_granularities_renamed`), and its v2→v3 step is a no-op, so a current-version store is renamed without a bump. (rejected (codex))
+21. **Facades hide list columns as dimensions on main.** Facade catalogs leave list columns out of the dimension list (their `count` metric stays), so `SELECT *` and BI table previews of a model with a list column work. DEV-2172's per-record facade projection is the stack's answer and replaces this at merge. Option "project" (port DEV-2172 item 1) rejected: it changes how every plain facade `SELECT` is served. (user)
 
 ## Risks / Trade-offs
 

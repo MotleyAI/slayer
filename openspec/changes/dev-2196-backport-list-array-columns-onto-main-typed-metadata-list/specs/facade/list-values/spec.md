@@ -6,11 +6,15 @@ Defines how list-typed columns and list results appear in the BI wire facades (P
 
 ### Requirement: Facade catalogs keep models with list columns
 
-A model with list columns SHALL stay in every facade catalog, with each list column typed as the facade's text type.
+A model with list columns SHALL stay in every facade catalog. Its list columns SHALL NOT be advertised as dimensions, because a list cannot be a group key; their `count` metrics SHALL be.
 
 #### Scenario: Catalog listing
 - **WHEN** a BI client lists the tables and columns of a datasource whose `contractors` model has a list column `skills`
-- **THEN** `contractors` is listed, and `skills` is typed as text
+- **THEN** `contractors` is listed with `skills_count` among its metrics, and `skills` is not among its dimensions
+
+#### Scenario: Table preview
+- **WHEN** a BI client runs `SELECT * FROM contractors` in browse mode
+- **THEN** the query succeeds and returns every non-list column
 
 ### Requirement: List values travel as JSON text
 

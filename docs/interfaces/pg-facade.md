@@ -263,8 +263,8 @@ is required.
   returned rows.)
 * `version()` reports `PostgreSQL 14.0 (SLayer Postgres facade <version>) on
   slayer-semantic-layer`.
-* A list column is a `TEXT` dimension whose values are JSON array text (`["go","sql"]`), with
-  `count` its only metric.
+* A list column is not advertised as a dimension (a list cannot be grouped on), so `SELECT *` skips it;
+  its `count` metric is, and list results such as `collect` arrive as `TEXT` JSON array text (`["go","sql"]`).
 
 ## Parameterised queries
 

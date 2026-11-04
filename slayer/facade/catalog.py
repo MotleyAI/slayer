@@ -569,11 +569,16 @@ def _local_metrics_for(*, model: SlayerModel) -> list[FacadeMetric]:
     ]
 
 
+def _is_dimension_column(col: Column) -> bool:
+    """Whether ``col`` is advertised as a dimension: not hidden, and not a list (grouping on a list is refused)."""
+    return not col.hidden and not col.type.is_list
+
+
 def _local_dimensions_for(*, model: SlayerModel) -> list[FacadeDimension]:
     """Bare-column dims for a single model in isolation (no join walk)."""
     out: list[FacadeDimension] = []
     for col in model.columns:
-        if col.hidden:
+        if not _is_dimension_column(col):
             continue
         out.append(FacadeDimension(
             name=col.name,
@@ -611,7 +616,7 @@ def _dimension_expansion(
 ) -> list[FacadeDimension]:
     out: list[FacadeDimension] = []
     for col in model.columns:
-        if col.hidden:
+        if not _is_dimension_column(col):
             continue
         out.append(
             FacadeDimension(
@@ -626,7 +631,7 @@ def _dimension_expansion(
     for path, joined_model, row_preserving in reachable:
         prefix = _path_dotted(path)
         for col in joined_model.columns:
-            if col.hidden:
+            if not _is_dimension_column(col):
                 continue
             ref = f"{prefix}.{col.name}"
             out.append(

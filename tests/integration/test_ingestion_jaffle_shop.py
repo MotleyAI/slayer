@@ -118,6 +118,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "type": (DataType.TEXT, False, None),
         "price": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "description": (DataType.TEXT, False, None),
+        "ingredients": (DataType.ARRAY, False, None),
     },
     "orders": {
         "id": (DataType.TEXT, True, None),
@@ -128,6 +129,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "tax_paid": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "order_total": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
         "status": (DataType.TEXT, False, None),
+        "item_skus": (DataType.ARRAY, False, None),
     },
     "items": {
         "id": (DataType.TEXT, True, None),

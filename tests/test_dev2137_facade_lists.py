@@ -17,12 +17,13 @@ from slayer.core.models import Aggregation, ModelMeasure, SlayerModel
 from slayer.engine.query_engine import SlayerResponse
 from slayer.facade.catalog import build_catalog, build_catalog_grouped_by_schema
 from slayer.facade.datatypes import datatype_to_jdbc
-from slayer.facade.translator import QueryResult
+from slayer.facade.translator import QueryResult, translate
 from slayer.flight.handlers import FlightHandlers
 from slayer.flight.types import datatype_to_arrow
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.types import datatype_to_oid, value_to_binary, value_to_text
 from tests._dev2120_fixtures import contractors_model
+from tests._dev2137_fixtures import assignments_model
 from tests.flight.test_handlers import _FakeEngine as _FlightEngine
 from tests.flight.test_handlers import _FakeStorage as _FlightStorage
 from tests.pg_facade.test_connection import _FakeEngine as _PgEngine
@@ -42,8 +43,8 @@ class TestCatalogs:
         catalog = build_catalog(models_by_datasource={DS: [_model()]})
         (schema,) = catalog.schemas
         table = next(t for t in schema.tables if t.name == "contractors")
-        skills = next(d for d in table.dimensions if d.name == "skills")
-        assert datatype_to_jdbc(skills.data_type) == "VARCHAR"
+        assert "skills" not in {d.name for d in table.dimensions}
+        assert "skills_count" in {m.name for m in table.metrics}
 
     def test_list_columns_offer_only_count(self) -> None:
         model = _model().model_copy(update={"aggregations": [Aggregation(name="my_agg", formula="SUM({value})")]})
@@ -55,6 +56,22 @@ class TestCatalogs:
         catalog = build_catalog_grouped_by_schema(models_by_datasource={DS: [_model()]})
         tables = {t.name for s in catalog.schemas for t in s.tables}
         assert "contractors" in tables
+
+    def test_joined_list_columns_are_not_dimensions(self) -> None:
+        models = [_model(), assignments_model(data_source=DS)]
+        (schema,) = build_catalog(models_by_datasource={DS: models}).schemas
+        table = next(t for t in schema.tables if t.name == "assignments")
+        names = {d.name for d in table.dimensions}
+        assert "contractors.name" in names
+        assert "contractors.skills" not in names
+
+    def test_browse_mode_star_skips_list_columns(self) -> None:
+        catalog = build_catalog(models_by_datasource={DS: [_model()]})
+        result = translate("SELECT * FROM contractors", catalog, expand_star_in_browse_mode=True)
+        assert isinstance(result, QueryResult), result
+        projected = {flat for flat, _ in result.column_name_mapping}
+        assert "contractors.name" in projected
+        assert "contractors.skills" not in projected
 
     def test_lists_are_text_on_every_wire(self) -> None:
         assert datatype_to_jdbc(DataType.ARRAY) == "VARCHAR"
