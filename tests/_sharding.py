@@ -128,14 +128,28 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    plan = config.stash.get(_PLAN, None)
-    if plan is None or not _is_test_module(collection_path, config):
-        return None
+def _owned(path: Path, config: pytest.Config) -> bool:
+    plan = config.stash[_PLAN]
     index, count = config.stash[_SHARD]
-    key = _key(collection_path, config)
-    shard = plan[key] if key in plan else zlib.crc32(key.encode()) % count
-    return True if shard != index else None  # None, not False: --ignore etc. still apply
+    key = _key(path, config)
+    return (plan[key] if key in plan else zlib.crc32(key.encode()) % count) == index
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Skip importing other shards' modules (pytest bypasses this hook for explicitly given paths)."""
+    if _PLAN not in config.stash or not _is_test_module(collection_path, config):
+        return None
+    return None if _owned(collection_path, config) else True  # None, not False: --ignore etc. still apply
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Deselect items of other shards' modules, which explicit path arguments still collect."""
+    if _PLAN not in config.stash:
+        return
+    foreign = [item for item in items if not _owned(item.path, config)]
+    if foreign:
+        config.hook.pytest_deselected(items=foreign)
+        items[:] = [item for item in items if _owned(item.path, config)]
 
 
 def main(argv: list[str] | None = None) -> None:

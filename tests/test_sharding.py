@@ -109,6 +109,19 @@ class TestShardedCollection:
         assert not [nodeid for nodeid in flat if nodeid.startswith("test_d.py")]
         assert len(flat) == sum(_MODULES.values()) + 2 - _MODULES["test_d.py"]
 
+    @pytest.mark.parametrize("selection", [
+        ("test_a.py", "test_d.py", "sub/test_e.py"),
+        ("test_d.py::test_1", "sub/test_e.py::test_0", "test_b.py"),
+    ])
+    def test_explicit_path_and_node_selections_are_partitioned(
+        self, pytester: pytest.Pytester, selection: tuple[str, ...],
+    ) -> None:
+        _make_project(pytester)
+        everything = _collected(pytester, *selection)
+        flat = [nodeid for k in (1, 2, 3) for nodeid in _collected(pytester, "--shard", f"{k}/3", *selection)]
+        assert everything
+        assert sorted(flat) == sorted(everything)
+
     def test_marker_filter_partitions_the_filtered_collection(self, pytester: pytest.Pytester) -> None:
         _make_project(pytester)
         everything = _collected(pytester, "-m", "not slow")
