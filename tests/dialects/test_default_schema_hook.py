@@ -73,6 +73,10 @@ class TestBaseHook:
     def test_no_connection_means_no_probe(self) -> None:
         assert SqlDialect().reflect_default_schema(connection=None, inspector=_Inspector(None)) is None
 
+    def test_no_url_default_schema(self) -> None:
+        with disposable_engine("sqlite://") as engine:
+            assert SqlDialect().url_default_schema(sa_dialect=engine.dialect) is None
+
 
 @pytest.fixture
 def bq_engine() -> Iterator[sa.Engine]:
@@ -103,6 +107,13 @@ class TestBigqueryHook:
         assert got is None
         conn.exec_driver_sql.assert_not_called()
         conn.execute.assert_not_called()
+
+    def test_the_url_default_schema_is_the_url_dataset(self, bq_engine: sa.Engine) -> None:
+        assert BigqueryDialect().url_default_schema(sa_dialect=bq_engine.dialect) == "ds_a"
+
+    def test_a_url_without_a_dataset_fixes_no_default_schema(self) -> None:
+        with disposable_engine(_BQ_URL_NO_DATASET) as engine:
+            assert BigqueryDialect().url_default_schema(sa_dialect=engine.dialect) is None
 
     def test_schema_description_resolves_the_dataset_via_the_hook(self, bq_engine: sa.Engine) -> None:
         client = MagicMock()

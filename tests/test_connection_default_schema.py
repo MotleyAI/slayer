@@ -26,6 +26,7 @@ from slayer.engine.schema_scope import (
 )
 from slayer.sql.client import DelegatingSqlClient, ObjectListing, ObjectNotFound, SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql import engine_factory
 from slayer.sql.dialects.reflection import ReflectedColumn, ReflectedForeignKey, TableKeys, TableLocation
 from slayer.sql.engine_factory import client_cache_key
 from slayer.storage.yaml_storage import YAMLStorage
@@ -283,3 +284,23 @@ async def test_a_same_dataset_foreign_key_becomes_a_join(bq_connection: MagicMoc
             table_set={"orders", "customers"},
         )
     assert [j.target_model for j in joins] == ["customers"]
+
+
+async def test_the_client_reads_the_url_dataset_without_connecting(monkeypatch: pytest.MonkeyPatch) -> None:
+    ds = DatasourceConfig(
+        name="bq_no_request", type="bigquery",
+        connection_string=f"bigquery://p/{_URL_DATASET}?user_supplied_client=true",
+    )
+
+    def _no_request(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("a connection was opened to resolve the default schema")
+
+    engine = engine_factory.get_engine(ds)
+    monkeypatch.setattr(engine, "connect", _no_request)
+    monkeypatch.setattr(engine, "raw_connection", _no_request)
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        assert await client.default_schema() == _URL_DATASET
+    finally:
+        client.close()
+        engine_factory.invalidate_engine(ds)

@@ -1152,6 +1152,10 @@ class SqlDialect(BaseModel):
             .where(all_of(where))
         )
 
+    def url_default_schema(self, *, sa_dialect: sa.engine.Dialect) -> str | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: the default schema the connection URL fixes, known without a request; ``None`` when it fixes none."""
+        return None
+
     def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:
         """The connection's default schema: the Inspector's, else ``current_schema()``; ``None`` when unknown."""
         try:

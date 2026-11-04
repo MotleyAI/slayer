@@ -21,6 +21,7 @@ from slayer.engine.ingestion import (
 )
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
+from sqlalchemy.dialects.sqlite.pysqlite import SQLiteDialect_pysqlite
 from sqlalchemy.pool import QueuePool
 
 
@@ -378,6 +379,7 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            dialect = SQLiteDialect_pysqlite()
 
             def connect(self) -> nullcontext[MagicMock]:
                 return nullcontext(MagicMock())
@@ -443,6 +445,7 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+            dialect = SQLiteDialect_pysqlite()
 
         with caplog.at_level(logging.WARNING, logger="slayer.sql.engine_factory"):
             engine_factory.release_idle(_ExplodingEngine())  # pyright: ignore[reportArgumentType]  # deliberate fake

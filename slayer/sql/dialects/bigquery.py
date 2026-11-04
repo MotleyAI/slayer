@@ -124,10 +124,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             .order_by(col("ordinal_position"))
         )
 
-    def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:  # NOSONAR(S1172) — hook signature
-        """The connection URL's dataset (the driver reports no ``default_schema_name``); no SQL runs."""
-        dataset = getattr(getattr(connection, "dialect", None), "dataset_id", None)
+    def url_default_schema(self, *, sa_dialect: sa.engine.Dialect) -> str | None:
+        """The connection URL's dataset (the driver reports no ``default_schema_name``)."""
+        dataset = getattr(sa_dialect, "dataset_id", None)
         return dataset if isinstance(dataset, str) and dataset else None
+
+    def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:  # NOSONAR(S1172) — hook signature
+        """The URL's dataset; no SQL runs."""
+        return None if connection is None else self.url_default_schema(sa_dialect=connection.dialect)
 
     def reflect_schema_description(
         self, *, connection: sa.Connection, schema: str | None, configured_schema: str | None,

@@ -60,7 +60,8 @@ def test_every_registered_type_is_covered() -> None:
 @pytest.mark.parametrize("ds_type", sorted(_EXPECTED))
 def test_dialect_declares_driver_facts(ds_type) -> None:
     d = dialect_for_ds_type(ds_type)
-    assert (d.url_scheme, d.default_driver, d.install_extra) == _EXPECTED[ds_type]
+    declared = (d.url_scheme, d.default_driver, d.install_extra)
+    assert declared == _EXPECTED[ds_type]
     assert d.extra_drivers == _EXTRA_DRIVERS.get(ds_type, {})
 
 
