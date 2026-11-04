@@ -1,6 +1,7 @@
 """Number formatting for SLayer query results."""
 
 import decimal
+import json
 import math
 import numbers
 from enum import Enum
@@ -174,3 +175,35 @@ def format_number(value: float | decimal.Decimal, format_spec: NumberFormat) -> 
             value=value, default_precision=3, explicit_precision=precision
         )
         return f"{formatted_value:.{calc_precision}f}{suffix}"
+
+
+def _json_number(value: numbers.Number) -> str:
+    if isinstance(value, decimal.Decimal):
+        return str(value) if value.is_finite() else "null"
+    if isinstance(value, numbers.Integral):
+        return str(int(value))
+    as_float = float(value)  # pyright: ignore[reportArgumentType]
+    return repr(as_float) if math.isfinite(as_float) else "null"
+
+
+def _json_element(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, numbers.Number):
+        return _json_number(value)
+    if isinstance(value, (list, tuple)):
+        return list_json_text(value)
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return json.dumps(str(isoformat()), ensure_ascii=False)
+    raise TypeError(f"Cannot write {type(value).__name__} as a JSON list element.")
+
+
+def list_json_text(values: list | tuple) -> str:
+    """A list value as JSON array text: strings escaped, booleans ``true`` / ``false``, dates ISO,
+    decimals exact, non-finite numbers ``null``."""
+    return "[" + ", ".join(_json_element(v) for v in values) + "]"

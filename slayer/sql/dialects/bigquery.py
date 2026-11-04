@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -18,11 +18,17 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
+    LIST_ELEMENT,
+    LIST_VALUE,
     DottedAliasManglingMixin,
+    ListRelation,
     SqlDialect,
     TemporalComparisonOp,
     _digest,
+    anon,
+    is_not_null,
     iso_text,
+    operand_copy,
 )
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
@@ -34,6 +40,16 @@ if TYPE_CHECKING:
 # Caveat: a single-backticked word-only path like `ds.tbl` false-positive mangles; quote segments singly.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
+
+
+_ELEMENT, _WANTED = LIST_ELEMENT, "__slayer_w"
+
+
+def _over_elements(values: Expression, name: str) -> exp.Select:
+    """``SELECT name FROM UNNEST(values) AS name``."""
+    return exp.select(exp.column(name)).from_(exp.Unnest(
+        expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(name)]),
+    ))
 
 
 def _date_part_unit(unit: TimeGranularity) -> Expression:
@@ -109,6 +125,44 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "`"
     alias_quote_close: ClassVar[str] = "`"
+    database_name: ClassVar[str] = "BigQuery"
+    native_lists: ClassVar[bool] = True
+
+    def list_length(self, values: Expression) -> Expression:
+        kept = _over_elements(values, _ELEMENT).where(is_not_null(exp.column(_ELEMENT)))
+        return anon("ARRAY_LENGTH", exp.Array(expressions=[kept]))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return exp.Exists(this=_over_elements(values, _ELEMENT).where(
+            exp.EQ(this=exp.column(_ELEMENT), expression=operand_copy(value))))
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        # ``=``, not ``IN UNNEST``: only ``=`` coerces INT64 with FLOAT64.
+        return exp.Exists(this=_over_elements(values, _WANTED).where(
+            self.list_contains(other, exp.column(_WANTED))))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        missing = _over_elements(other, _WANTED).where(exp.and_(
+            is_not_null(exp.column(_WANTED)), exp.Not(this=self.list_contains(values, exp.column(_WANTED)))))
+        return exp.Not(this=exp.Exists(this=missing))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        """``UNNEST`` of a ``STRUCT<value>`` array, so the element reads as ``alias.value``."""
+        element_ref = exp.column(_ELEMENT)
+        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(exp.Unnest(
+            expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(_ELEMENT)]),
+        )).where(is_not_null(element_ref))
+        rows = rows.distinct() if distinct else rows
+        return ListRelation(relation=exp.Unnest(
+            expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),
+        ))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        ordered = self.distinct_sorted(value)
+        return exp.Coalesce(this=exp.IgnoreNulls(this=exp.ArrayAgg(this=ordered)), expressions=[self.empty_list()])
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""

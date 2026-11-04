@@ -141,6 +141,12 @@ in-scope live table:
   `allowed_aggregations` on existing entries.
 * Existing `sql`-mode or `source_queries`-mode model with the matching
   name → skipped silently.
+* A stored non-list column whose live column is a native list → re-typed
+  to that list in place (description, label and meta kept, only `count`
+  kept among its aggregations, `format` and granularity dropped); until
+  then `validate_models` reports it as a `RE-TYPE` finding instead of a
+  deletion, and a query failure it explains raises `SchemaDriftError`
+  carrying that finding.
 
 After the additive pass, `validate_models` runs against the in-scope
 models and the result is merged into `IdempotentIngestResult.to_delete`.

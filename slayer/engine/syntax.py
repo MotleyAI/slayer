@@ -71,6 +71,12 @@ class TupleLit(_BaseNode):
     elements: Tuple[Literal, ...]
 
 
+class ArrayLit(_BaseNode):
+    """A bracketed literal list ``['a', 'b']`` (``[]`` empty)."""
+
+    elements: Tuple[Any, ...] = ()
+
+
 class AggCall(_BaseNode):
     # source may also be an aggregation-free scalar expression (``sum(a - b)``),
     # or — for a re-aggregation — a nested AggCall or a grained
@@ -82,6 +88,8 @@ class AggCall(_BaseNode):
     agg: str
     args: Tuple[Any, ...] = ()
     kwargs: Tuple[Tuple[str, Any], ...] = ()
+    # A library-named call ill-formed as the library function: its error, raised unless the owner defines ``agg``.
+    library_error: Optional[str] = None
 
 
 class TransformCall(_BaseNode):
@@ -94,6 +102,15 @@ class TransformCall(_BaseNode):
 class ScalarCall(_BaseNode):
     name: str
     args: Tuple[Any, ...] = ()
+    # The callee and arguments as written (a function an owning model's aggregation may shadow); not part of identity.
+    written: Optional[str] = None
+    written_args: Optional[Tuple[Any, ...]] = None
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ScalarCall) and (self.name, self.args) == (other.name, other.args)
+
+    def __hash__(self) -> int:
+        return hash(("ScalarCall", self.name, self.args))
 
 
 class Arith(_BaseNode):
@@ -119,7 +136,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, Placeholder, TupleLit,
+    Ref, DottedRef, StarSource, Literal, Placeholder, TupleLit, ArrayLit,
     AggCall, TransformCall, ScalarCall,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -606,12 +623,27 @@ def parse_expr(text: str) -> ParsedExpr:
 
     parsed = _convert(py_ast, agg_map=agg_map, original=text)
     if any(_is_interval(n) for n in _walk_parsed(parsed)):
-        raise ValueError(
+        return _deferred_intervals(parsed, message=(
             f"Invalid Mode-B expression {text!r}: interval(n, unit) is only valid as "
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
-        )
+        ))
     return parsed
+
+
+def _deferred_intervals(node: Any, *, message: str) -> Any:
+    """``node`` with each standalone ``interval(…)`` a deferred aggregation candidate; raises ``message`` for one
+    that cannot be."""
+    if isinstance(node, tuple):
+        return tuple(_deferred_intervals(item, message=message) for item in node)
+    if not isinstance(node, _BaseNode):
+        return node
+    if isinstance(node, ScalarCall) and _is_interval(node):
+        deferred = _aggregation_candidate(node.written or "interval", args=node.args, kwargs=(), error=message)
+        if deferred is None:
+            raise ValueError(message)
+        return deferred
+    return node.model_copy(update={f: _deferred_intervals(getattr(node, f), message=message) for f in type(node).model_fields})
 
 
 def parse_filter_expr(text: str) -> ParsedExpr:
@@ -871,6 +903,9 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
+    if isinstance(parsed, ArrayLit):
+        for e in parsed.elements:
+            yield from walk_parsed_refs(e)
     # Literal / Placeholder / StarSource / TupleLit → no references (TupleLit
     # holds only Literals by construction).
 
@@ -1141,6 +1176,9 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
     placeholder = _placeholder_of(node)
     if placeholder is not None:
         return placeholder
+
+    if isinstance(node, ast.List):
+        return ArrayLit(elements=tuple(_convert(e, agg_map=agg_map, original=original) for e in node.elts))
 
     if isinstance(node, ast.IfExp):
         raise ValueError(
@@ -1437,18 +1475,45 @@ def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tupl
 
 
 def _convert_method_call(node: ast.Call, *, func: ast.Attribute, agg_map: Dict, original: str) -> ParsedExpr:
-    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``."""
+    """``<path>.<agg>(<source>, <literals>)`` as its functional twin ``<agg>(<path>.<source>, …)``; a library name is
+    a deferred aggregation candidate."""
     *path_parts, name = _flatten_attribute(func, original=original)
     path = tuple(path_parts)
     args, kwargs = _call_arguments(node, call=name, agg_map=agg_map, original=original)
     twin_args = (_onto_path(args[0], path=path), *args[1:]) if args else ()
     reason = _method_call_refusal(name, args=args, kwargs=kwargs)
+    message = (
+        f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
+        f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
+    )
+    if reason is not None and twin_args and name.lower() in SCALAR_FUNCTIONS and (
+        _method_call_refusal("_", args=args, kwargs=kwargs) is None
+    ):
+        source, *rest = twin_args
+        return AggCall(source=source, agg=name, args=tuple(rest), kwargs=kwargs, library_error=message)
     if reason is not None:
-        raise ValueError(
-            f"Invalid Mode-B expression {original!r}: the method call {'.'.join(path)}.{name}(...) "
-            f"{reason}; write the functional form, e.g. {name}{_canonical_call_params(twin_args, kwargs)}."
-        )
+        raise ValueError(message)
     return _dispatch_call(name, args=twin_args, kwargs=kwargs, original=original)
+
+
+def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
+    """The aggregation call ``call`` reads as when its owning model defines ``call.written``; ``None`` when it has no
+    column-bearing value argument."""
+    if call.written is None:
+        return None
+    args = call.written_args if call.written_args is not None else call.args
+    return _aggregation_candidate(call.written, args=args, kwargs=(), error=None)
+
+
+def _aggregation_candidate(
+    func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], error: Optional[str],
+) -> Optional[AggCall]:
+    """``func_name(args)`` as an aggregation call over a column-bearing value, else ``None``."""
+    if not args or not isinstance(args[0], _AGG_SOURCE_KINDS) or _contains_agg_or_transform(args[0]):
+        return None
+    if not any(isinstance(leaf, (Ref, DottedRef)) for leaf in _source_leaves(args[0])):
+        return None
+    return AggCall(source=args[0], agg=func_name, args=args[1:], kwargs=kwargs, library_error=error)
 
 
 def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin functional aggregation → transform → scalar → date-part alias → unknown-name AggCall deferral); each rung IS the documented dispatch order and splitting them hides it. first/last carry no grain decision here — they dispatch at bind.
@@ -1490,14 +1555,25 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     # ``ScalarCall`` so ``COALESCE`` / ``coalesce`` intern to one key.
     if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
-            raise ValueError(
+            message = (
                 f"Invalid Mode-B expression {original!r}: scalar function "
                 f"{func_name!r} does not accept keyword arguments. Pass "
                 f"values positionally."
             )
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
+            if deferred is None:
+                raise ValueError(message)
+            return deferred
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
         name = func_name.lower()
-        return ScalarCall(name=name, args=_date_args(name=name, args=args, original=original))
+        try:
+            date_args = _date_args(name=name, args=args, original=original)
+        except ValueError as error:
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=str(error))
+            if deferred is None:
+                raise
+            return deferred
+        return ScalarCall(name=name, args=date_args, written=func_name)
 
     part = DATE_PART_ALIASES.get(func_name.lower())
     if part is not None:
@@ -1612,7 +1688,9 @@ def _walk_parsed(node: Any) -> Iterator[Any]:
         return
     yield node
     for field in type(node).model_fields:
-        yield from _walk_parsed(getattr(node, field))
+        # ``written_args`` records the call as written; ``args`` is the tree.
+        if field != "written_args":
+            yield from _walk_parsed(getattr(node, field))
 
 
 # ---------------------------------------------------------------------------
@@ -1664,6 +1742,8 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
+    if isinstance(parsed, ArrayLit):
+        return f"[{', '.join(canonical_measure_text(e) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
         source = canonical_measure_text(parsed.source)
         if isinstance(parsed.source, (Ref, DottedRef, StarSource)):

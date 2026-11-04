@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field
+from sqlglot import exp
 
 from slayer.async_utils import marked_coroutine_function, run_sync
 from slayer.core.deprecation import warn_deprecated
@@ -65,6 +66,7 @@ class IntrospectedColumn(BaseModel):
 
     name: str
     type: DataType
+    element_type: DataType | None = None
     primary_key: bool = False
     is_float: bool = False
     db_type: str | None = None
@@ -234,9 +236,9 @@ async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: Schem
 
 
 def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL)."""
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL)."""
     return IntrospectedColumn(
-        name=name, type=col.type, primary_key=primary_key, is_float=col.is_float,
+        name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
         db_type=col.db_type, comment=col.comment,
     )
 
@@ -253,11 +255,36 @@ async def _introspect_table_columns(
         primary_key = (await reflect_table_keys(client=client, table_name=table_name, ref=ref)).primary_key
     pk_columns = set(primary_key)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
-    return [
+    columns = [
         _introspected_column(col, name=col.name, primary_key=col.name in pk_columns)
         for col in await reflect_columns(client=client, table_name=table_name, ref=ref)
         if "." not in col.name
     ]
+    return [await _inferred_elements(c, client=client, table_name=table_name, ref=ref) for c in columns]
+
+
+async def _inferred_elements(
+    column: IntrospectedColumn, *, client: SqlClient, table_name: str, ref: SchemaRef | None,
+) -> IntrospectedColumn:
+    """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
+    if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
+        return column
+    dialect = dialect_of(client)
+    table = exp.Table(
+        this=exp.to_identifier(table_name),
+        db=exp.to_identifier(ref.name) if ref and ref.name else None,
+        catalog=exp.to_identifier(ref.catalog) if ref and ref.catalog else None,
+    )
+    query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
+    if query is None:
+        return column
+    try:
+        result = await client.execute(query.sql(dialect=dialect.sqlglot_name))
+    except Exception:  # noqa: BLE001 — an unreadable table keeps its elements opaque
+        logger.warning("Could not infer the element type of %s.%s", table_name, column.name, exc_info=True)
+        return column
+    names = [next(iter(row.values()), None) for row in result.rows]
+    return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
 # --- Model generation from introspected columns ---
@@ -297,6 +324,7 @@ def _columns_to_model(
                 name=column_name,
                 sql=col.name,
                 type=col.type,
+                element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
                 primary_key=col.primary_key,
                 unique=(col.name in unique_set),
@@ -1023,6 +1051,26 @@ class AdditiveMergeResult(BaseModel):
         )
 
 
+def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
+    """A stored non-list column whose live column is a list, re-typed to it (system P14's exception); a stored list's
+    UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
+    if fresh.type is not DataType.ARRAY:
+        return None
+    if persisted.type is not DataType.ARRAY:
+        return persisted.model_copy(update={
+            "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
+            # Scalar-only settings; a temporal granularity would fail the list's validation.
+            "granularity": None, "format": None,
+            # A list's only aggregation is count.
+            "allowed_aggregations": [a for a in persisted.allowed_aggregations or () if a == "count"] or None,
+        })
+    inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
+    known = fresh.element_type is not None and not fresh.element_type.is_opaque
+    if persisted.type is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and inferred and known:
+        return persisted.model_copy(update={"element_type": fresh.element_type})
+    return None
+
+
 def _merge_one_column(
     *,
     persisted_col: Column,
@@ -1040,6 +1088,9 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
+        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        if retyped is not None:
+            merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
@@ -1116,8 +1167,8 @@ def _additive_merge_existing(
 ) -> AdditiveMergeResult:
     """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
-    non-None ``source_kind`` refresh.
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, a non-list column re-typed to its live list, empty-field
+    gap-fills, and a non-None ``source_kind`` refresh.
     """
     persisted_names = {c.name for c in persisted.columns}
     # A live column is the persisted column it is the physical spelling of, else the one named like it.

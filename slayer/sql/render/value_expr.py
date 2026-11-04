@@ -15,6 +15,7 @@ from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    ArrayLiteralKey,
     ColumnKey,
     ColumnSqlKey,
     ColumnTypeFn,
@@ -56,10 +57,12 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     iif_case_chain,
     numeric_parts,
     render_arithmetic,
+    render_array_literal,
     render_in_predicate,
     render_date_call,
     render_temporal_comparison,
     render_scalar_call,
+    render_scalar_key,
     temporal_comparison,
 )
 from slayer.sql.scope import ScopeFrame
@@ -385,6 +388,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=ctx.dialect)
 
+    if isinstance(key, ArrayLiteralKey):
+        return render_array_literal(key=key, dialect=ctx.dialect)
+
     if isinstance(key, TimeTruncKey):
         column = _require_scope(ctx, key).resolve(
             key.column, consumer=ctx.consumer,
@@ -428,8 +434,9 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
             )
-        return render_scalar_call(
-            name=key.name, args=args, dialect=ctx.dialect,
+        return render_scalar_key(
+            key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+            column_element=ctx.scope.column_element if ctx.scope is not None else None,
         )
 
     if isinstance(key, InKey):

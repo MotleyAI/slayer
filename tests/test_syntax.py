@@ -772,6 +772,7 @@ class TestFilterOperatorNormalization:
         result = parse_filter_expr(
             "change(price:weighted_avg(col1, weight=quantity)) > 0"
         )
+        assert isinstance(result, Cmp)
         inner = result.left
         assert isinstance(inner, TransformCall)
         agg = inner.input

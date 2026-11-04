@@ -52,6 +52,7 @@ rather than editing the stored model; persist reusable shapes with `create_model
 |---|---|
 | "not found" on a measure/column | `inspect` the model — spelling, or on a joined model? |
 | "not allowed on" | the column's `allowed_aggregations` whitelist |
+| "is a list" | group, compare or aggregate its elements (`tags.value`), or test `contains(tags, x)` |
 | "Unresolvable" / "ambiguous" path | missing join edge, or write the full path |
 | "Time dimension required" | add `time_dimensions` or set `main_time_dimension` |
 | "matches a source column" | rename the measure as the suggestion says |

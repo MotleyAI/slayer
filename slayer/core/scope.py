@@ -59,6 +59,7 @@ class StageColumn(BaseModel):
     sql_alias: str
     public_alias: Optional[str] = None
     type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
     # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.
     granularity: CustomGranularity | GranularitySpec | None = None
@@ -96,7 +97,8 @@ class StageSchema(BaseModel):
 
     Downstream stages bind against this as a flat namespace (P5). They
     never re-walk the upstream join graph through a StageSchema — the
-    only legal refs are entries in ``columns``.
+    only legal refs are entries in ``columns`` and a list column's
+    elements (``L.value`` / ``L.*``).
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).
