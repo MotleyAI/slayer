@@ -243,7 +243,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
                 ],
             ),
         ])
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         apr = next(m for m in result.models if m.name == "agreement_party_role")
         policy = next(m for m in result.models if m.name == "policy")
 
@@ -956,7 +956,7 @@ DbtMeasure(name="total", agg="sum", expr="amount")
                 ],
             ),
         ])
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         pa = next(m for m in result.models if m.name == "policy_amount")
         targets = {j.target_model for j in pa.joins}
         assert "policy" in targets, f"Missing direct join to policy. Joins: {targets}"
@@ -1024,7 +1024,7 @@ DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
                 ),
             ],
         )
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert()
         ca = next(m for m in result.models if m.name == "claim_amount")
         # The filtered metric becomes a (Column with .filter) + (ModelMeasure
         # pointing at it). Find the Column carrying the filter.

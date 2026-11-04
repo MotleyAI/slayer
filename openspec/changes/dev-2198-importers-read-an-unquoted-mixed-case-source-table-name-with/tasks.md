@@ -16,20 +16,20 @@
 
 ## 2. Building blocks
 
-- [ ] 2.1 `denoted_name` in `slayer/sql/naming.py`, reading each dialect's identifier-folding attribute (declared per dialect in `slayer/sql/dialects/`); `PhysicalIndex` and `LiveSource.column` match through it, live names keep SQLAlchemy's quote flag; verify 1.2 and the existing physical / ambiguity tests
-- [ ] 2.2 Offset-mapped prequote + `fold_source_identifiers` in `slayer/sql/render/parse.py` (spans from `exp.Identifier` meta, right-to-left edits, masks as equal-length quoted identifiers, typed result: folded text / undecidable identifiers / unparseable-with-uppercase-word); verify 1.1
-- [ ] 2.3 `render_table_name` in `slayer/sql/naming.py`; `split_sql_table`, `_parse_qualified_sql_table`, `schema_drift` splitting and `SchemaRef.qualify` move onto `parse_table` / `render_table_name`; verify 1.3 and 1.12
-- [ ] 2.4 `UndecidableIdentifierCaseError` (importers) and the CLI catches in `_run_import_cube` / `_run_import_dbt`; verify 1.6
+- [x] 2.1 `denoted_name` in `slayer/sql/naming.py`, reading each dialect's identifier-folding attribute (declared per dialect in `slayer/sql/dialects/`); `PhysicalIndex` and `LiveSource.column` match through it, live names keep SQLAlchemy's quote flag; verify 1.2 and the existing physical / ambiguity tests
+- [x] 2.2 Offset-mapped prequote + `fold_source_identifiers` in `slayer/sql/render/parse.py` (spans from `exp.Identifier` meta, right-to-left edits, masks as equal-length quoted identifiers, typed result: folded text / undecidable identifiers / unparseable-with-uppercase-word); verify 1.1
+- [x] 2.3 `render_table_name` in `slayer/sql/naming.py`; `split_sql_table`, `_parse_qualified_sql_table`, `schema_drift` splitting and `SchemaRef.qualify` move onto `parse_table` / `render_table_name`; verify 1.3 and 1.12
+- [x] 2.4 `UndecidableIdentifierCaseError` (importers) and the CLI catches in `_run_import_cube` / `_run_import_dbt`; verify 1.6
 
 ## 3. Importers
 
-- [ ] 3.1 Cube: fold pass at the start of `convert()` in the decision-19 order over every physical field of design D3 (`sql_table`, `sql`, dimension / case / measure / measure-filter / segment / join SQL, FILTER_PARAMS bodies); unparseable-with-uppercase drops (decision 20); refusal when the dialect is unknown; verify 1.4–1.8
-- [ ] 3.2 dbt parser: `dbt_project.yml` `quoting:`, `sources:` blocks, per-model `config(quoting=…)` detection; models in `slayer/dbt/models.py`; verify 1.9 / 1.10 parse cases
-- [ ] 3.3 dbt converter: quoting policy, one relation renderer for `model:` without SQL, `ref()` to a table, `source()` and hidden regular models; `resolve_refs` takes the relation callback; fold dimension / measure / entity `expr` and `raw_code` (not filters, decision 12); member without `expr` reads its folded name; refusal when the dialect is unknown; verify 1.4, 1.6, 1.9, 1.10
-- [ ] 3.4 OSI: dataset `source` table form through `parse_table` + fold (replace `_split_identifier`), query form folded; each selected field candidate folded with its read dialect before target rendering, cross-dataset references untouched; field-column lookups (`_bare_field_column`, `_missing_expr_columns`) match through `denoted_name` (decision 9); verify 1.4, 1.11
+- [x] 3.1 Cube: fold pass at the start of `convert()` in the decision-19 order over every physical field of design D3 (`sql_table`, `sql`, dimension / case / measure / measure-filter / segment / join SQL, FILTER_PARAMS bodies); unparseable-with-uppercase drops (decision 20); refusal when the dialect is unknown; verify 1.4–1.8
+- [x] 3.2 dbt parser: `dbt_project.yml` `quoting:`, `sources:` blocks, per-model `config(quoting=…)` detection; models in `slayer/dbt/models.py`; verify 1.9 / 1.10 parse cases
+- [x] 3.3 dbt converter: quoting policy, one relation renderer for `model:` without SQL, `ref()` to a table, `source()` and hidden regular models; `resolve_refs` takes the relation callback; fold dimension / measure / entity `expr` and `raw_code` (not filters, decision 12); member without `expr` reads its folded name; refusal when the dialect is unknown; verify 1.4, 1.6, 1.9, 1.10
+- [x] 3.4 OSI: dataset `source` table form through `parse_table` + fold (replace `_split_identifier`), query form folded; each selected field candidate folded with its read dialect before target rendering, cross-dataset references untouched; field-column lookups (`_bare_field_column`, `_missing_expr_columns`) match through `denoted_name` (decision 9); verify 1.4, 1.11
 
 ## 4. Close-out
 
-- [ ] 4.1 Docs, one sentence each: `docs/cube/cube_import.md` (identifier folding, offline refusal), `docs/dbt/dbt_import.md` (folding, quoting policy, `sources:`), `docs/osi/osi_import.md` (folding); grep `docs/` for statements that importers store SQL verbatim
-- [ ] 4.2 Full unit suite (`poetry run pytest -m "not integration"`), CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all green
+- [x] 4.1 Docs, one sentence each: `docs/cube/cube_import.md` (identifier folding, offline refusal), `docs/dbt/dbt_import.md` (folding, quoting policy, `sources:`), `docs/osi/osi_import.md` (folding); grep `docs/` for statements that importers store SQL verbatim
+- [x] 4.2 Full unit suite (`poetry run pytest -m "not integration"`), CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all green
 - [ ] 4.3 On the tracker: note that this PR closes DEV-1679 (comment on DEV-1679)

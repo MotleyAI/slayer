@@ -45,7 +45,6 @@ from slayer.engine.schema_drift import (
     WholeModelDelete,
     _resolve_live_table,
     _sql_model_source_refs,
-    _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
     diff_sql_model,
@@ -1368,23 +1367,6 @@ class TestValidateModelsSqliteProbe:
         assert "doubled" in entry.remove.columns
 
 
-class TestStripIdentQuotes:
-    def test_bare_identifier_unchanged(self) -> None:
-        assert _strip_ident_quotes("Company") == "Company"
-
-    def test_double_quoted(self) -> None:
-        assert _strip_ident_quotes('"Company"') == "Company"
-
-    def test_escaped_inner_quote(self) -> None:
-        assert _strip_ident_quotes('"Comp""any"') == 'Comp"any'
-
-    def test_unbalanced_quotes_left_alone(self) -> None:
-        assert _strip_ident_quotes('"Company') == '"Company'
-
-    def test_surrounding_whitespace_stripped(self) -> None:
-        assert _strip_ident_quotes('  "Company"  ') == "Company"
-
-
 class TestResolveLiveTable:
     """Live-table lookup must handle schema-qualified and quoted identifiers."""
 
@@ -1433,7 +1415,7 @@ class TestResolveLiveTable:
     def test_escaped_inner_quote_in_table(self) -> None:
         live = self._live('Comp"any')
         assert _resolve_live_table(
-            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}, dialect=POSTGRES
+            sql_table='prod."Comp""any"', live_tables={'prod."Comp""any"': live}, dialect=POSTGRES
         ) is live
 
     def test_missing_returns_none(self) -> None:

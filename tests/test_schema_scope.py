@@ -125,10 +125,9 @@ class TestSplitSqlTable:
     def test_splits_on_the_final_dot(self, sql_table, expected) -> None:
         assert split_sql_table(sql_table, dialect=DUCKDB) == expected
 
-    def test_preserves_quoted_identifiers(self) -> None:
-        """A quoted case-sensitive object keeps its quotes; only the schema
-        token is peeled off."""
-        assert split_sql_table('prod."Company"', dialect=DUCKDB) == ("prod", '"Company"')
+    def test_reads_quoted_identifiers(self) -> None:
+        """A quoted part reads as the live name it denotes."""
+        assert split_sql_table('prod."Company"', dialect=DUCKDB) == ("prod", "Company")
 
 
 # ---------------------------------------------------------------------------

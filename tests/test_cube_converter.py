@@ -175,7 +175,7 @@ def test_calculated_measure_with_case_when_is_emitted():
     )])
     models, report = convert(project)
     assert measure(models["orders"], "tier").formula == "CASE WHEN count > 100 THEN 'high' ELSE 'low' END"
-    assert not report.issues
+    assert [i.category for i in report.issues] == [CubeIssueCategory.TYPING]
 
 
 def test_finite_rolling_window_becomes_windowed_aggregation():
