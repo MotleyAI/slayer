@@ -179,6 +179,10 @@ def test_a_closed_loops_engine_is_dropped(
     finally:
         client.close()
     assert len({id(engine) for engine in builds}) == 3
+    # The abandoned connections warn in this test, not a later leak-gated one.
+    monkeypatch.undo()
+    del closed_pool
+    gc.collect()
 
 
 @_NO_LEAKS

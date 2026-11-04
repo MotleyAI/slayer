@@ -11,7 +11,7 @@ import argparse
 import io
 import re
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NoReturn
@@ -53,12 +53,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _mock_engine(dialect_name: str = "postgresql") -> MagicMock:
-    # No spec: sa.Engine sets ``dialect`` in __init__, so a spec'd mock
+def _mock_connection(dialect_name: str = "postgresql") -> MagicMock:
+    # No spec: sa.Connection sets ``dialect`` in __init__, so a spec'd mock
     # rejects it.
-    engine = MagicMock()
-    engine.dialect.name = dialect_name
-    return engine
+    conn = MagicMock()
+    conn.dialect.name = dialect_name
+    return conn
 
 
 class _Rows:
@@ -75,7 +75,7 @@ class _Rows:
         return iter(self._rows)
 
 
-class _CommentEngine:
+class _CommentConnection:
     """Answers the INFORMATION_SCHEMA columns query with ``columns``, every other query with ``comments``."""
 
     def __init__(
@@ -93,15 +93,14 @@ class _CommentEngine:
             raise self._comments
         return self._comments
 
-    @contextmanager
-    def connect(self) -> Iterator[SimpleNamespace]:
-        def _exec(statement: str, *args: Any, **kwargs: Any) -> _Rows:
-            assert not args, "catalog queries carry no bind parameters"
-            assert not kwargs, "catalog queries carry no bind parameters"
-            self.statements.append(statement)
-            return _Rows(self._respond(statement))
+    def exec_driver_sql(self, statement: str, *args: Any, **kwargs: Any) -> _Rows:
+        assert not args, "catalog queries carry no bind parameters"
+        assert not kwargs, "catalog queries carry no bind parameters"
+        self.statements.append(statement)
+        return _Rows(self._respond(statement))
 
-        yield SimpleNamespace(exec_driver_sql=_exec)
+    def rollback(self) -> None:
+        pass
 
     def comment_queries(self) -> list[str]:
         return [s for s in self.statements if "data_type" not in s.lower()]
@@ -120,14 +119,14 @@ _ID_X = [("id", "INTEGER"), ("x", "VARCHAR")]
 def _fallback_comments(
     *, backend: str, comments: list[tuple] | Exception, columns: list[tuple] = _ID_X,
     table: str = "orders", schema: str | None = None,
-) -> tuple[dict[str, str | None], _CommentEngine]:
+) -> tuple[dict[str, str | None], _CommentConnection]:
     """Column name → comment from the dialect's ``reflect_columns`` with the Inspector failing."""
-    engine = _CommentEngine(backend=backend, columns=columns, comments=comments)
+    conn = _CommentConnection(backend=backend, columns=columns, comments=comments)
     cols = dialect_for_sa_backend(backend).reflect_columns(
-        sa_engine=engine, inspector=_ColumnsRaisingInspector(),
+        connection=conn, inspector=_ColumnsRaisingInspector(),
         table=table, schema=schema, catalog=None,
     )
-    return {c.name: c.comment for c in cols}, engine
+    return {c.name: c.comment for c in cols}, conn
 
 
 _BIND = re.compile(r"(?<![:\w]):[A-Za-z_]\w*")
@@ -152,9 +151,9 @@ def _mock_inspector(
 class _HookClient(DelegatingSqlClient):
     """Serves metadata reads through the datasource dialect's hooks over a mocked engine and Inspector."""
 
-    def __init__(self, *, datasource: DatasourceConfig, sa_engine: Any, inspector: Any = None) -> None:
+    def __init__(self, *, datasource: DatasourceConfig, connection: Any, inspector: Any = None) -> None:
         super().__init__(inner=SlayerSQLClient(datasource=datasource))
-        self._sa_engine = sa_engine
+        self._connection = connection
         self._inspector = inspector
 
     @property
@@ -162,20 +161,20 @@ class _HookClient(DelegatingSqlClient):
         return dialect_for_ds_type(self.datasource.type)
 
     async def default_schema(self) -> str | None:
-        return self._dialect.reflect_default_schema(sa_engine=self._sa_engine, inspector=self._inspector)
+        return self._dialect.reflect_default_schema(connection=self._connection, inspector=self._inspector)
 
     async def current_catalog(self) -> str | None:
         return None
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
         return self._dialect.reflect_columns(
-            sa_engine=self._sa_engine, inspector=self._inspector, table=location.name,
+            connection=self._connection, inspector=self._inspector, table=location.name,
             schema=location.schema_name, catalog=location.catalog,
         )
 
     async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
         return self._dialect.reflect_table_keys(
-            sa_engine=self._sa_engine, inspector=self._inspector, table=location.name,
+            connection=self._connection, inspector=self._inspector, table=location.name,
             schema=location.schema_name, catalog=location.catalog,
         )
 
@@ -188,13 +187,13 @@ class _HookClient(DelegatingSqlClient):
 
     async def schema_description(self, schema: str | None, configured_schema: str | None) -> str | None:
         return self._dialect.reflect_schema_description(
-            sa_engine=self._sa_engine, schema=schema, configured_schema=configured_schema,
+            connection=self._connection, schema=schema, configured_schema=configured_schema,
         )
 
 
 def _inspector_client(inspector: Any, *, ds_type: str = "postgres", backend: str = "postgresql") -> _HookClient:
     return _HookClient(
-        datasource=DatasourceConfig(name="ds", type=ds_type), sa_engine=_mock_engine(backend), inspector=inspector,
+        datasource=DatasourceConfig(name="ds", type=ds_type), connection=_mock_connection(backend), inspector=inspector,
     )
 
 
@@ -615,21 +614,18 @@ class TestAdditiveMergeDescriptions:
 # ---------------------------------------------------------------------------
 
 
-def _bq_engine(dataset_id: str | None, description: str | None = "ds desc"):
-    """Mock BigQuery engine exposing the client the way sqlalchemy-bigquery does."""
-    engine = _mock_engine("bigquery")
-    engine.dialect.dataset_id = dataset_id
+def _bq_connection(dataset_id: str | None, description: str | None = "ds desc"):
+    """Mock BigQuery connection exposing the client the way sqlalchemy-bigquery does."""
+    conn = _mock_connection("bigquery")
+    conn.dialect.dataset_id = dataset_id
     client = MagicMock()
     client.get_dataset.return_value = SimpleNamespace(description=description)
-    conn = MagicMock()
     conn.connection._client = client
-    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    return engine, client
+    return conn, client
 
 
-async def _describe(*, engine: Any, datasource: DatasourceConfig, schema: str | None) -> str | None:
-    client = _HookClient(datasource=datasource, sa_engine=engine)
+async def _describe(*, connection: Any, datasource: DatasourceConfig, schema: str | None) -> str | None:
+    client = _HookClient(datasource=datasource, connection=connection)
     return await _fetch_schema_description(client=client, datasource=datasource, schema=schema)
 
 
@@ -637,52 +633,52 @@ class TestFetchBigQueryDatasetDescription:
     async def test_non_bigquery_dialect_returns_none(self) -> None:
         ds = DatasourceConfig(name="d", type="duckdb", database="x.db")
         assert (
-            await _describe(engine=_mock_engine("duckdb"), datasource=ds, schema=None)
+            await _describe(connection=_mock_connection("duckdb"), datasource=ds, schema=None)
             is None
         )
 
     async def test_explicit_schema_wins(self) -> None:
-        engine, client = _bq_engine(dataset_id="dialect_ds")
+        conn, client = _bq_connection(dataset_id="dialect_ds")
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        out = await _describe(engine=engine, datasource=ds, schema="explicit_ds")
+        out = await _describe(connection=conn, datasource=ds, schema="explicit_ds")
         assert out == "ds desc"
         assert client.get_dataset.call_args[0][0] == "explicit_ds"
 
     async def test_dialect_default_beats_schema_name(self) -> None:
-        engine, client = _bq_engine(dataset_id="dialect_ds")
+        conn, client = _bq_connection(dataset_id="dialect_ds")
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        await _describe(engine=engine, datasource=ds, schema=None)
+        await _describe(connection=conn, datasource=ds, schema=None)
         assert client.get_dataset.call_args[0][0] == "dialect_ds"
 
     async def test_schema_name_is_last_resort(self) -> None:
-        engine, client = _bq_engine(dataset_id=None)
+        conn, client = _bq_connection(dataset_id=None)
         ds = DatasourceConfig(name="d", type="bigquery", schema_name="cfg_ds")
-        await _describe(engine=engine, datasource=ds, schema=None)
+        await _describe(connection=conn, datasource=ds, schema=None)
         assert client.get_dataset.call_args[0][0] == "cfg_ds"
 
     async def test_unresolvable_dataset_returns_none(self) -> None:
-        engine, client = _bq_engine(dataset_id=None)
+        conn, client = _bq_connection(dataset_id=None)
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            await _describe(engine=engine, datasource=ds, schema=None)
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
         client.get_dataset.assert_not_called()
 
     async def test_client_error_returns_none(self) -> None:
-        engine, client = _bq_engine(dataset_id="d1")
+        conn, client = _bq_connection(dataset_id="d1")
         client.get_dataset.side_effect = RuntimeError("403")
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            await _describe(engine=engine, datasource=ds, schema=None)
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
 
     async def test_whitespace_description_is_none(self) -> None:
-        engine, _ = _bq_engine(dataset_id="d1", description="   ")
+        conn, _ = _bq_connection(dataset_id="d1", description="   ")
         ds = DatasourceConfig(name="d", type="bigquery")
         assert (
-            await _describe(engine=engine, datasource=ds, schema=None)
+            await _describe(connection=conn, datasource=ds, schema=None)
             is None
         )
 

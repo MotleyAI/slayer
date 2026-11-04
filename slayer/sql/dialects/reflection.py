@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager
 from typing import Any, Protocol, TypeVar
 
 import sqlalchemy as sa
@@ -21,10 +20,12 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-class CatalogEngine(Protocol):
-    """What a catalog read needs from an engine: connections that run statements verbatim."""
+class CatalogConnection(Protocol):
+    """What a catalog read needs: one open connection that runs statements verbatim."""
 
-    def connect(self) -> AbstractContextManager[Any]: ...
+    def exec_driver_sql(self, statement: str) -> Any: ...
+
+    def rollback(self) -> None: ...
 
 
 class TableLocation(BaseModel):
@@ -426,16 +427,27 @@ def info_schema_comments_query(
     )
 
 
-def fetch(sa_engine: CatalogEngine | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
-    """Run one catalog query verbatim (no bind parameters) and return its rows."""
-    if sa_engine is None:
-        raise ValueError("no engine to read the catalog with")
+def fetch(connection: CatalogConnection | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
+    """Run one catalog query verbatim (no bind parameters) on ``connection`` and return its rows."""
+    if connection is None:
+        raise ValueError("no connection to read the catalog with")
     sql = statement.sql(dialect=dialect, normalize_functions=False)
-    with sa_engine.connect() as conn:
-        return [tuple(row) for row in conn.exec_driver_sql(sql).fetchall()]
+    return [tuple(row) for row in connection.exec_driver_sql(sql).fetchall()]
 
 
-def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -> _T:
+def recover(connection: CatalogConnection | None) -> None:
+    """End a failed read's transaction so the next read on ``connection`` runs (Postgres and DuckDB abort it)."""
+    if connection is None:
+        return
+    try:
+        connection.rollback()
+    except Exception:  # noqa: BLE001 — the next read reports a dead connection itself
+        logger.debug("Rolling back after a failed catalog read failed", exc_info=True)
+
+
+def best_effort(
+    read: Callable[[], _T], *, connection: CatalogConnection | None, default: _T, table: str, what: str,
+) -> _T:
     """One key read; a failure is logged at WARNING and yields ``default`` (unsupported reads stay quiet)."""
     try:
         return read()
@@ -444,6 +456,7 @@ def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -
         return default
     except Exception as exc:  # noqa: BLE001 — a key read never sinks the table
         logger.warning("Reading the %s of table %r failed: %s", what, table, exc)
+        recover(connection)
         return default
 
 

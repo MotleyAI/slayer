@@ -83,22 +83,6 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
     return evicted
 
 
-def _sync_connection_string(datasource: DatasourceConfig) -> str:
-    """The datasource's URL with an async-only driver moved to the type's default sync driver."""
-    connection_string = datasource.get_connection_string()
-    facts = dialect_for_ds_type(datasource.type).driver_facts(datasource.type)
-    if facts.async_driver is None or facts.sync_driver is None:
-        return connection_string
-    try:
-        url = make_url(connection_string)
-    except ArgumentError:
-        return connection_string
-    backend = url.get_backend_name()
-    if backend not in facts.url_backends or url.get_driver_name() != facts.async_driver:
-        return connection_string
-    return url.set(drivername=f"{backend}+{facts.sync_driver}").render_as_string(hide_password=False)
-
-
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
     """Cache identity: URL + runtime fields + credentials (shared with ``_sql_client_cache_key``)."""
     return (
@@ -246,7 +230,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     """Return a cached engine, building on a miss. The cap is re-applied on hits too, so a lowered ``SLAYER_MAX_CACHED_ENGINES`` takes effect next call."""
     # Snapshot first: a credential rotation mid-build would cache an engine under a wrong fingerprint.
     snapshot = datasource.model_copy()
-    connection_string = _sync_connection_string(snapshot)
+    connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         cached = _engine_cache.get(cache_key)
@@ -296,7 +280,7 @@ def release_idle(engine: sa.Engine) -> None:
 def invalidate_engine(datasource: DatasourceConfig) -> bool:
     """Drop and dispose the cached engine (returns whether one was cached) — creds are baked in at construction, so only eviction lets ``get_engine`` rebuild after a rotation/revocation."""
     snapshot = datasource.model_copy()
-    connection_string = _sync_connection_string(snapshot)
+    connection_string = snapshot.get_connection_string()
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         evicted = _engine_cache.pop(cache_key, None)

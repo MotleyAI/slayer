@@ -19,7 +19,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.sql.dialects.base import SqlDialect, describe_type_name_code
 from slayer.sql.dialects.reflection import (
-    CatalogEngine,
+    CatalogConnection,
     ReflectedColumn,
     ReflectedForeignKey,
     ResultColumnType,
@@ -92,7 +92,7 @@ class DuckdbDialect(SqlDialect):
         return "SELECT current_database()"
 
     def reflect_columns(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,
     ) -> list[ReflectedColumn]:
         query = (
@@ -103,14 +103,14 @@ class DuckdbDialect(SqlDialect):
         )
         return [
             column_from_type_string(name=name, data_type=dtype, comment=comment, overrides=_TYPE_NAME_OVERRIDES)
-            for name, dtype, comment in fetch(sa_engine, query, dialect=self.sqlglot_name)
+            for name, dtype, comment in fetch(connection, query, dialect=self.sqlglot_name)
         ]
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_type_name_code(description_row, overrides=_TYPE_NAME_OVERRIDES)
 
     def reflect_table_keys(
-        self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
+        self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,
     ) -> TableKeys:
         scope = _scope(table=table, schema=schema, catalog=catalog)
@@ -122,7 +122,7 @@ class DuckdbDialect(SqlDialect):
                 .where(all_of([*(c.copy() for c in scope), eq_literal(col("constraint_type"), kind)]))
                 .order_by(col("constraint_index"))
             )
-            return fetch(sa_engine, query, dialect=self.sqlglot_name)
+            return fetch(connection, query, dialect=self.sqlglot_name)
 
         def unique_indexes() -> list[list[str]]:
             query = (
@@ -130,12 +130,12 @@ class DuckdbDialect(SqlDialect):
                 .from_(table_function("duckdb_indexes"))
                 .where(all_of([*(c.copy() for c in scope), col("is_unique")]))
             )
-            sets = (_plain_index_columns(sql) for (sql,) in fetch(sa_engine, query, dialect=self.sqlglot_name))
+            sets = (_plain_index_columns(sql) for (sql,) in fetch(connection, query, dialect=self.sqlglot_name))
             return [s for s in sets if s]
 
         pk_rows = best_effort(
             lambda: constraints("PRIMARY KEY", "constraint_column_names"),
-            default=[], table=table, what="primary key",
+            connection=connection, default=[], table=table, what="primary key",
         )
         pk = list(pk_rows[0][0]) if pk_rows else []
         fks = best_effort(
@@ -148,13 +148,15 @@ class DuckdbDialect(SqlDialect):
                     "FOREIGN KEY", "constraint_column_names", "referenced_table", "referenced_column_names",
                 )
             ],
-            default=[], table=table, what="foreign keys",
+            connection=connection, default=[], table=table, what="foreign keys",
         )
         uniques = best_effort(
             lambda: [list(cols) for (cols,) in constraints("UNIQUE", "constraint_column_names")],
-            default=[], table=table, what="unique constraints",
+            connection=connection, default=[], table=table, what="unique constraints",
         )
-        indexes = best_effort(unique_indexes, default=[], table=table, what="unique indexes")
+        indexes = best_effort(
+            unique_indexes, connection=connection, default=[], table=table, what="unique indexes",
+        )
         return TableKeys(
             primary_key=pk, foreign_keys=fks, unique_key_sets=without_primary_key(pk, uniques + indexes),
         )

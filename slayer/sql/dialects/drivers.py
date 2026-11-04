@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 _DATASOURCE_DOCS = "https://docs.motley.ai/slayer/configuration/datasources/"
 
 
-def _hint(facts: DriverFacts, *, missing: str, default: bool) -> str:
-    if not default:
+def _hint(facts: DriverFacts, *, missing: str, bundled: bool) -> str:
+    if not bundled:
         return (
             "install the driver named in your connection_string; "
-            "SLayer's extras only install its default drivers."
+            "SLayer's extras only install the drivers they bundle."
         )
     if facts.install_extra:
         return f"pip install 'motley-slayer[{facts.install_extra}]'"
@@ -34,21 +34,28 @@ def _hint(facts: DriverFacts, *, missing: str, default: bool) -> str:
 
 
 def _missing_driver(
-    datasource: DatasourceConfig, *, facts: DriverFacts, missing: str, default: bool, exc: Exception,
+    datasource: DatasourceConfig, *, facts: DriverFacts, missing: str, bundled: bool, exc: Exception,
 ) -> MissingDriverError:
     return MissingDriverError(
         datasource_name=datasource.name, ds_type=datasource.type, missing=missing,
-        hint=_hint(facts, missing=missing, default=default), detail=str(exc),
+        hint=_hint(facts, missing=missing, bundled=bundled), detail=str(exc),
     )
 
 
 def _is_default_driver(facts: DriverFacts, *, url: URL, driver: str | None) -> bool:
-    """Whether ``url`` selects SLayer's default driver; ``driver=None`` (none named) judges the backend alone."""
+    """Whether ``url`` selects the type's default driver; ``driver=None`` (none named) judges the backend alone."""
     if url.get_backend_name() not in facts.url_backends:
         return False
-    if driver is None or ("+" not in url.drivername and not facts.sync_driver):
+    if driver is None or ("+" not in url.drivername and not facts.default_driver):
         return True
-    return driver in {facts.sync_driver, facts.async_driver}
+    return driver == facts.default_driver
+
+
+def _bundled(facts: DriverFacts, *, url: URL, driver: str | None) -> bool:
+    """Whether a SLayer extra installs ``url``'s driver: the default, or another driver it bundles."""
+    if _is_default_driver(facts, url=url, driver=driver):
+        return True
+    return url.get_backend_name() in facts.url_backends and driver in facts.extra_drivers
 
 
 @contextlib.contextmanager
@@ -62,7 +69,7 @@ def plugin_errors(datasource: DatasourceConfig, url: str, *, dialect: SqlDialect
         missing = (isinstance(exc, ImportError) and exc.name) or parsed.drivername
         raise _missing_driver(
             datasource, facts=facts, missing=missing, exc=exc,
-            default=_is_default_driver(facts, url=parsed, driver=parsed.drivername.partition("+")[2] or None),
+            bundled=_bundled(facts, url=parsed, driver=parsed.drivername.partition("+")[2] or None),
         ) from exc
 
 
@@ -73,7 +80,7 @@ def import_driver(module: str, *, datasource: DatasourceConfig, dialect: SqlDial
     except ImportError as exc:
         raise _missing_driver(
             datasource, facts=dialect.driver_facts(datasource.type), missing=exc.name or module,
-            default=True, exc=exc,
+            bundled=True, exc=exc,
         ) from exc
 
 
@@ -98,7 +105,7 @@ def load_driver(
         facts = dialect.driver_facts(datasource.type)
         raise _missing_driver(
             datasource, facts=facts, missing=exc.name or sa_dialect.driver, exc=exc,
-            default=_is_default_driver(facts, url=parsed, driver=sa_dialect.driver),
+            bundled=_bundled(facts, url=parsed, driver=sa_dialect.driver),
         ) from exc
     for module in dialect.deferred_driver_modules(url):
         import_driver(module, datasource=datasource, dialect=dialect)

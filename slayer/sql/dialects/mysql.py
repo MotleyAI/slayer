@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import Field
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -82,8 +83,8 @@ class MysqlDialect(SqlDialect):
     max_identifier_bytes: int | None = 64
     url_scheme: str | None = "mysql+pymysql"
     url_backend_aliases: frozenset[str] = frozenset({"mariadb"})
-    async_driver: str | None = "aiomysql"
     install_extra: str | None = "mysql"
+    extra_drivers: dict[str, str] = Field(default_factory=lambda: {"pymysql": "pymysql", "aiomysql": "aiomysql"})
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_execution_time = {timeout_seconds * 1000}"

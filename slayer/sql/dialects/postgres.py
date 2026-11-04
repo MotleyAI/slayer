@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import Field
 from sqlglot import exp
 
 from slayer.core.enums import DataType
@@ -86,11 +87,14 @@ class PostgresDialect(SqlDialect):
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
-    url_scheme: str | None = "postgresql+psycopg2"
-    async_driver: str | None = "asyncpg"
+    url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
-    # asyncpg reports no NUMERIC typmod.
-    type_probe_uses_sync_driver: bool = True
+    extra_drivers: dict[str, str] = Field(
+        default_factory=lambda: {"psycopg": "psycopg", "psycopg2": "psycopg2-binary", "asyncpg": "asyncpg"},
+    )
+    refused_loops: dict[str, frozenset[str]] = Field(
+        default_factory=lambda: {"psycopg": frozenset({"ProactorEventLoop"})},
+    )
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)
