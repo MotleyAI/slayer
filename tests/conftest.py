@@ -19,6 +19,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _emitted_reparse_law as emitted_reparse_law
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
@@ -182,6 +183,18 @@ def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_statement_render_during_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     """python.sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
     statement_render_law.install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _no_emitted_statement_reparse(
+    monkeypatch: pytest.MonkeyPatch, _no_statement_render_during_composition: None,
+) -> Iterator[None]:
+    """python.sql.arc42.md §3.1: an execution parsing a statement it rendered fails the test."""
+    emitted_reparse_law.install(monkeypatch)
+    yield
+    found = emitted_reparse_law.take_violations()
+    if found:
+        pytest.fail("\n\n".join(found), pytrace=False)
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, model_validator
 from sqlglot import exp
@@ -11,6 +11,8 @@ from sqlglot.expressions.core import Expr
 
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.parse import is_read_only_query
+
+_Tree = TypeVar("_Tree", bound=Expr)
 
 
 class TypeProbe(BaseModel, frozen=True):
@@ -31,7 +33,7 @@ def _row_bound(statement: Expr) -> Expr | None:
     return limit.args.get("count") if isinstance(limit, exp.Fetch) else None
 
 
-def mint_type_probe(statement: Expr, *, dialect: SqlDialect, render: Callable[[Expr], str]) -> TypeProbe:
+def mint_type_probe(statement: _Tree, *, dialect: SqlDialect, render: Callable[[_Tree], str]) -> TypeProbe:
     """``statement``, proven read-only and bounded to ``dialect.type_probe_rows``, rendered once by ``render``."""
     bound = _row_bound(statement)
     rows = dialect.type_probe_rows

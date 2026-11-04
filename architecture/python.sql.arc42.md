@@ -62,6 +62,7 @@ flowchart TD
    hook returning AST takes only typed, non-`str`, non-callable operands.
    [review] [enforced: test:tests/test_law_ast_dialect_hooks.py]
    [enforced: test:tests/test_law_no_statement_reparse.py]
+   [enforced: test:tests/test_law_no_emitted_reparse.py]
 2. **Dialect quirks live only in `dialects/`** — one file per Tier-1 dialect,
    data-shaped Tier-2 table; everything not explicitly overridden goes through
    sqlglot transpilation. No `if dialect == …` outside `dialects/`. [review]

@@ -26,6 +26,7 @@ from slayer.sql.dialects import (
 from slayer.sql.client import ExecutionResult, TypeProbe
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
 from tests._engine_helpers import _engine_generate
 
@@ -539,7 +540,8 @@ class _EchoTypesClient:
         return ExecutionResult(rows=[])
 
     async def get_column_types(self, probe: TypeProbe) -> dict:
-        probed = sqlglot.parse_one(probe.sql, dialect="bigquery").args["from_"].this.this
+        with emitted_reparse_law.as_database():
+            probed = sqlglot.parse_one(probe.sql, dialect="bigquery").args["from_"].this.this
         return {name: "DOUBLE" for name in probed.named_selects}
 
 

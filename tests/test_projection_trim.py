@@ -23,7 +23,6 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.sql.type_probe import TypeProbe
 
 from tests._engine_helpers import _engine_generate
 
@@ -1209,8 +1208,8 @@ class TestCallSitesAndContractPins:
     async def test_get_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """``get_column_types`` renders its type-probe
-        SQL through the typed ``generate_planned_stages`` entry point.
+        """``get_column_types`` builds its type-probe
+        statement through the typed ``build_planned_statement`` entry point.
 
         (Was ``test_get_column_types_does_not_call_legacy_generate``, which
         spied on ``SQLGenerator.generate`` and asserted it was never called
@@ -1226,23 +1225,22 @@ class TestCallSitesAndContractPins:
         engine = SlayerQueryEngine(storage=storage)
 
         planned_calls: List[str] = []
-        original_generate = query_engine_module.generate_planned_stages
+        original_generate = query_engine_module.build_planned_statement
 
         def _wrapper(*args, **kwargs):
-            probe = original_generate(*args, **kwargs)
-            assert isinstance(probe, TypeProbe)
-            planned_calls.append(probe.sql)
-            return probe
+            built = original_generate(*args, **kwargs)
+            planned_calls.append(built.statement.sql())
+            return built
 
         monkeypatch.setattr(
-            query_engine_module, "generate_planned_stages", _wrapper,
+            query_engine_module, "build_planned_statement", _wrapper,
         )
 
         await engine.get_column_types(model_name="orders")
 
         assert len(planned_calls) == 1, (
-            f"get_column_types must render the probe through "
-            f"generate_planned_stages exactly once; got {len(planned_calls)} "
+            f"get_column_types must build the probe through "
+            f"build_planned_statement exactly once; got {len(planned_calls)} "
             f"call(s)"
         )
         assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
