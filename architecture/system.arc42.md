@@ -108,7 +108,7 @@ All code, old and new, MUST obey these.
    architecture is changing: do it deliberately, with explicit user OK.
    [enforced: arch_check:baseline-ratchet]
 6. **SQL is built as sqlglot AST**, never by string concatenation of fragments.
-   [review]
+   [review] [enforced: test:tests/test_law_sql_built_as_ast.py]
 7. **Async-first**: engine and storage methods are async; sync entry points
    bridge via `execute_sync` / `run_sync`. [review]
 8. **The query algebra** lives in `semantics.arc42.md`; its observable face:
@@ -119,10 +119,12 @@ All code, old and new, MUST obey these.
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
    A resolved path is **canonical**: each hop spelled by its edge name, else its
    target model — a query stage by its name in its own query list, which precedes
-   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); keys,
-   join aliases and result names carry only canonical paths.
+   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
+   **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
+   root `r`); keys, join aliases and result names carry only canonical paths.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
+   [enforced: test:tests/test_dev2187_root_qualifier.py]
 10. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
     vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
     canonical function library, extended never forked. [review]
@@ -160,6 +162,7 @@ All code, old and new, MUST obey these.
     selectable as advertised. [enforced: test:tests/test_dev2172_honest_catalogs.py]
 18. **One reader of Mode B**: Mode B text is parsed only by `core.syntax`; no
     consumer re-tokenises it. [enforced: test:tests/test_dev2172_one_mode_b_reader.py]
+    [enforced: test:tests/test_dev2187_one_reader_law.py]
 19. **One writer of result values**: every output path encodes result values
     with one codec in `core.format`; none encodes a value itself.
     [enforced: test:tests/test_dev2172_value_codec.py]

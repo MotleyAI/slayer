@@ -26,7 +26,7 @@ from slayer.core.policy import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
@@ -325,9 +325,9 @@ class ClientSpy:
             self.executed.append(str(kwargs.get("sql", args[0] if args else "")))
             return await execute(client, *args, **kwargs)
 
-        async def _probe(client: SlayerSQLClient, *args: Any, **kwargs: Any) -> Any:
-            self.probed.append(str(kwargs.get("sql", args[0] if args else "")))
-            return await probe(client, *args, **kwargs)
+        async def _probe(client: SlayerSQLClient, type_probe: TypeProbe) -> Any:
+            self.probed.append(type_probe.sql)
+            return await probe(client, type_probe)
 
         monkeypatch.setattr(SlayerSQLClient, "execute", _execute)
         monkeypatch.setattr(SlayerSQLClient, "get_column_types", _probe)

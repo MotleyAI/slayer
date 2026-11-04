@@ -28,8 +28,9 @@ from slayer.core.errors import (
 )
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
+from slayer.core.keys import CastTypeParts, cast_type_parts
 from slayer.core.like_pattern import LikePattern
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
 from slayer.sql._identifier_fit import (
     SqlLexis,
@@ -169,6 +170,19 @@ def text_try_cast(value: Expression, to: exp.DataType) -> Expression:
     return exp.TryCast(this=as_text(value), to=to)
 
 
+def setting(*, name: str, value: int) -> exp.SetItem:
+    """``name = value`` as a session-setting item."""
+    return exp.SetItem(this=exp.EQ(this=exp.column(name), expression=exp.Literal.number(value)))
+
+
+def set_statement(*, name: str, value: int, kind: str | None = None) -> exp.Set:
+    """``SET [kind] name = value``."""
+    item = setting(name=name, value=value)
+    if kind is not None:
+        item.set("kind", kind)
+    return exp.Set(expressions=[item])
+
+
 def anon(name: str, *args: Expression) -> exp.Anonymous:
     """``NAME(args)`` emitted as written on every dialect (no transpilation)."""
     return exp.Anonymous(this=name, expressions=[a.copy() for a in args])
@@ -271,12 +285,28 @@ COMPARISON_NODES: dict[str, Any] = {
 #: The validity grammar where a database cannot check a cast itself: a signed decimal with an optional
 #: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
 NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
+INTEGER_TEXT_PATTERN = r"^ *[+-]?[0-9]+ *$"
+#: The ranges of the integer types narrower than INT, checked where a database only has them as aliases.
+NARROW_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.TINYINT: (-(2 ** 7), 2 ** 7 - 1), exp.DataType.Type.SMALLINT: (-(2 ** 15), 2 ** 15 - 1),
+    exp.DataType.Type.MEDIUMINT: (-(2 ** 23), 2 ** 23 - 1), exp.DataType.Type.UTINYINT: (0, 2 ** 8 - 1),
+    exp.DataType.Type.USMALLINT: (0, 2 ** 16 - 1), exp.DataType.Type.UMEDIUMINT: (0, 2 ** 24 - 1),
+}
+INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
+#: The half-open ranges of the integer types wider than BIGINT.
+WIDE_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.UBIGINT: (0, 2 ** 64), exp.DataType.Type.INT128: (-(2 ** 127), 2 ** 127),
+    exp.DataType.Type.UINT128: (0, 2 ** 128), exp.DataType.Type.INT256: (-(2 ** 255), 2 ** 255),
+    exp.DataType.Type.UINT256: (0, 2 ** 256),
+}
 TRUE_WORDS = ("true", "t", "yes", "1")
 FALSE_WORDS = ("false", "f", "no", "0")
 
 
 #: ``meta`` tag on the cast ``read_column`` wraps around a zoned column.
 ZONED_READ = "slayer_zoned_read"
+#: ``meta`` tag on every ``TRY_CAST`` input: whether it reads no rows (a constant).
+CONSTANT_INPUT = "slayer_constant_input"
 
 
 def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Expression]:
@@ -294,29 +324,151 @@ def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Ex
     return new_left, new_right
 
 
+def _exact_bound(bound: int) -> Expression:
+    """A power-of-two bound as an exact float literal (``9223372036854775808e0``)."""
+    literal = exp.Literal.number(f"{abs(bound)}e0")
+    return exp.Neg(this=literal) if bound < 0 else literal
+
+
 def as_text(value: Expression) -> Expression:
     """``CAST(value AS TEXT)`` — the input a validity check reads."""
     return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
 
 
 def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
-    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it."""
+    """The author's cast type as ``dialect``'s ``DataType``; ``ValueError`` when it cannot express it, or would
+    render it losing a part (family, parameters, time zone, signedness, array)."""
     sqlglot_name = dialect.sqlglot_name
-    built: Optional[exp.DataType] = None
-    for reader in (sqlglot_name, "postgres"):
-        try:
-            built = exp.DataType.build(type_text, dialect=reader)
-            break
-        except (SqlglotError, ValueError):
-            continue
-    if built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built):
+    parts = cast_type_parts(type_text)
+    if parts.array_rank > 1:
+        raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}: there is no array of arrays.")
+    built = _read_type(type_text, readers=(sqlglot_name, "postgres"))
+    if (built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built)
+            or not _keeps_author_parts(parts, built) or not _renders_losslessly(built, dialect=dialect)):
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
     return built
 
 
+def cast_type_of(type_text: str, *, dialect: "SqlDialect") -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a cast to ``type_text``, read as Postgres (the reference) spells it, else as ``dialect`` does."""
+    for reader in ("postgres", dialect.sqlglot_name):
+        built = _read_type(type_text, readers=(reader,))
+        if built is not None and not built.is_type(exp.DataType.Type.USERDEFINED):
+            return slayer_type_of(built)
+    return DataType.UNKNOWN, None
+
+
+def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
+    for reader in readers:
+        try:
+            return exp.DataType.build(text, dialect=reader)
+        except (SqlglotError, ValueError):
+            continue
+    return None
+
+
+_ZONED_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ, exp.DataType.Type.TIMETZ,
+})
+UNSIGNED_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
+    exp.DataType.Type.UBIGINT, exp.DataType.Type.UINT128, exp.DataType.Type.UINT256, exp.DataType.Type.UDECIMAL,
+    exp.DataType.Type.UDOUBLE,
+})
+_DATE_TYPES: frozenset[DType] = frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32})
+_TIMESTAMP_TYPES: frozenset[DType] = frozenset(
+    exp.DataType.TEMPORAL_TYPES - _DATE_TYPES - {exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
+#: Type groups a dialect's spelling may move within (DOUBLE → FLOAT, TEXT → VARCHAR(MAX), BOOLEAN → INTEGER).
+_CAST_FAMILIES: tuple[frozenset[DType], ...] = (
+    frozenset(exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES | {exp.DataType.Type.BOOLEAN}),
+    frozenset(exp.DataType.TEXT_TYPES),
+    _DATE_TYPES,
+    _TIMESTAMP_TYPES,
+    frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
+)
+_SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
+    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INT),
+    (frozenset(exp.DataType.REAL_TYPES), DataType.DOUBLE),
+    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.TEXT),
+    (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
+    (_DATE_TYPES, DataType.DATE),
+    (_TIMESTAMP_TYPES, DataType.TIMESTAMP),
+)
+
+
+def _scalar_slayer_type(data_type: exp.DataType) -> DataType:
+    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.UNKNOWN)
+
+
+def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType]]:
+    """SLayer's type of a SQL type, with its elements' for an array; UNKNOWN where unmapped."""
+    if not data_type.is_type(exp.DataType.Type.ARRAY):
+        return _scalar_slayer_type(data_type), None
+    element = _element(data_type)
+    return DataType.ARRAY, DataType.UNKNOWN if element is None else _scalar_slayer_type(element)
+
+
+class _CastSignature(BaseModel):
+    """What a rendering must keep of a cast type; ``sizes`` (its parameters) only where the source has them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    family: int | DType
+    sizes: tuple[str, ...]
+    zoned: bool
+    unsigned: bool
+    element: Optional["_CastSignature"] = None
+
+    def kept_by(self, other: "_CastSignature") -> bool:
+        return (
+            (self.family, self.zoned, self.unsigned) == (other.family, other.zoned, other.unsigned)
+            and (not self.sizes or self.sizes == other.sizes)
+            and (self.element is None) == (other.element is None)
+            and (self.element is None or other.element is None or self.element.kept_by(other.element))
+        )
+
+
+def _type_params(data_type: exp.DataType) -> tuple[str, ...]:
+    return tuple(p.sql() for p in data_type.expressions if isinstance(p, exp.DataTypeParam))
+
+
+def _element(data_type: exp.DataType) -> Optional[exp.DataType]:
+    if not data_type.is_type(exp.DataType.Type.ARRAY):
+        return None
+    return next((e for e in data_type.expressions if isinstance(e, exp.DataType)), None)
+
+
+def _cast_signature(data_type: exp.DataType) -> _CastSignature:
+    t = data_type.this
+    element = _element(data_type)
+    return _CastSignature(
+        family=next((i for i, family in enumerate(_CAST_FAMILIES) if t in family), t),
+        sizes=_type_params(data_type), zoned=t in _ZONED_TYPES, unsigned=t in UNSIGNED_CAST_TYPES,
+        element=_cast_signature(element) if element is not None else None,
+    )
+
+
+def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
+    """Whether ``built`` as ``dialect`` spells it reads back with its signature kept."""
+    rendered = _read_type(built.sql(dialect=dialect.sqlglot_name), readers=(dialect.sqlglot_name,))
+    return rendered is not None and _cast_signature(built).kept_by(_cast_signature(rendered))
+
+
+def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
+    """Whether reading the author's type kept what they wrote: parameters, time zone, signedness, array."""
+    base = _element(built) if parts.array_rank else built
+    if base is None:
+        return False
+    if parts.sizes and _type_params(base) != parts.sizes:
+        return False
+    if parts.zone is not None and parts.zone != (base.this in _ZONED_TYPES):
+        return False
+    return not parts.unsigned or base.this in UNSIGNED_CAST_TYPES
+
+
 #: Types only some databases have; a dialect without one rejects a CAST to it at plan time.
 VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
-    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+    exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY, exp.DataType.Type.INT128, exp.DataType.Type.INT256,
 })
 
 
@@ -617,10 +769,20 @@ class SqlDialect(BaseModel):
 
     # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()
+    #: The unsigned types this database has.
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset()
+    #: Whether this database has typed arrays (``CAST(x AS INT[])``).
+    array_cast_types: ClassVar[bool] = False
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """Whether this dialect can express a CAST to ``data_type``."""
-        return data_type.this not in VENDOR_ONLY_CAST_TYPES or data_type.this in self.vendor_cast_types
+        t = data_type.this
+        if t is exp.DataType.Type.ARRAY:
+            return self.array_cast_types and all(
+                self.cast_type_supported(e) for e in data_type.expressions if isinstance(e, exp.DataType))
+        if t in UNSIGNED_CAST_TYPES:
+            return t in self.unsigned_cast_types
+        return t not in VENDOR_ONLY_CAST_TYPES or t in self.vendor_cast_types
 
     #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
@@ -640,6 +802,39 @@ class SqlDialect(BaseModel):
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:  # NOSONAR(S1172) — hook signature
         """``TRY_CAST``: NULL for an input the cast cannot convert; the input is read as text first."""
         self.refuse("try_cast")
+
+    #: Integer types narrower than INT this database only has as aliases of a wider one.
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset()
+
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
+        """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
+        ``source``: ``CastKey.numeric_source``."""
+        if source is not DataType.DOUBLE:
+            return self.build_integer_text_try_cast(as_text(value), to)
+        wide = to.this in WIDE_INTEGER_BOUNDS
+        low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
+        in_range = exp.And(
+            this=exp.GTE(this=operand_copy(value), expression=_exact_bound(low)),
+            expression=exp.LT(this=operand_copy(value), expression=_exact_bound(high)),
+        )
+        integral = exp.And(
+            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))), expression=in_range,
+        )
+        # The guard sits inside the cast: a database folding a constant cast never sees an out-of-range one.
+        whole = exp.Cast(this=case((integral, operand_copy(value))), to=to.copy() if wide else exp.DataType.build("BIGINT"))
+        return self.build_integer_text_try_cast(as_text(whole), to)
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """Integer text (surrounding spaces ignored) through the database's ``TRY_CAST``, else NULL."""
+        integer = self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
+        return case((integer, self.within_integer_range(self.build_try_cast(exp.Trim(this=text.copy()), to), to)))
+
+    def within_integer_range(self, value: Expression, to: exp.DataType) -> Expression:
+        """``value`` where it fits ``to``; checked only for a type this database has as an alias."""
+        if to.this not in self.aliased_integer_types:
+            return value
+        low, high = NARROW_INTEGER_BOUNDS[to.this]
+        return case((exp.Between(this=operand_copy(value), low=lit(low), high=lit(high)), value))
 
     def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """The author's ``CAST``; NULL stays NULL."""
@@ -946,12 +1141,17 @@ class SqlDialect(BaseModel):
         self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,  # NOSONAR(S1172) — hook parameter read by dialect overrides
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
-        return self.build_try_cast(self.build_json_value(value, path, native), to)
+        text = self.build_json_value(value, path, native)
+        if target is DataType.INT:
+            return self.build_integer_try_cast(text, to, source=None)
+        return self.build_try_cast(text, to)
 
     # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.
 
     #: Whether the database has native lists; elsewhere every list construct is refused at plan time.
     native_lists: ClassVar[bool] = False
+    # Rows a type probe reads; a driver that reports no cursor types needs one.
+    type_probe_rows: ClassVar[int] = 0
     #: The database's name in a refusal.
     database_name: ClassVar[str] = "this database"
 
@@ -1652,7 +1852,7 @@ class SqlDialect(BaseModel):
         """Hook: session setup on every new pooled connection (e.g. ``USE WAREHOUSE``)."""
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: statement that sets the timeout before the query, or ``None``."""
         return None
 
@@ -1668,9 +1868,14 @@ class SqlDialect(BaseModel):
         """Hook: probe whose one row ``parse_server_profile`` reads as ``base_row``, or ``None``."""
         return None
 
-    def correlated_setting_sql(self, profile: ServerProfile) -> str | None:  # NOSONAR(S1172) — no-op hook default
+    def correlated_setting_probe(self, profile: ServerProfile) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
         return None
+
+    def type_probe(self, query: Expr) -> exp.Select:
+        """Hook: ``query`` bounded to ``type_probe_rows`` rows, for typing its columns."""
+        source = exp.Subquery(this=query.copy(), alias=exp.TableAlias(this=exp.to_identifier("_types")))
+        return exp.select("*").from_(source).limit(self.type_probe_rows)
 
     def parse_server_profile(
         self,

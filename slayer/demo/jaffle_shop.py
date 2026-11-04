@@ -25,6 +25,8 @@ from typing import IO
 
 import duckdb
 from pydantic import BaseModel, Field
+from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -669,11 +671,12 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
     delta_days = (dt.date.today() - max_date).days
     if delta_days == 0:
         return
+    shift = exp.Interval(this=exp.Literal.string(str(delta_days)), unit=exp.Var(this="DAY"))
     for table, cols in DATE_COLUMNS.items():
         for col in cols:
-            conn.execute(
-                f"UPDATE {table} SET {col} = {col} + INTERVAL '{delta_days} days'"
-            )
+            shifted = exp.Add(this=exp.column(col), expression=shift.copy())
+            update = exp.Update(this=exp.table_(table), expressions=[exp.column(col).eq(shifted)])
+            conn.execute(update.sql(dialect="duckdb"))
 
 
 def load_data(
@@ -693,36 +696,36 @@ def load_data(
         if not os.path.exists(csv_path):
             continue
 
-        # read_csv_auto takes a SQL string literal, not a bound parameter, so
-        # escape any single quotes in the path by doubling them before
-        # interpolation. (The path itself is trusted in normal demo flows —
-        # this is defence-in-depth for callers who pass arbitrary data_dirs.)
-        quoted_csv_path = csv_path.replace("'", "''")
-
         cents_cols = CENTS_COLUMNS.get(csv_name, [])
         renames = COLUMN_RENAMES.get(csv_name, {})
-        conn.execute(
-            f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
+        view = f"_{table}_raw"
+        # read_csv_auto takes a SQL string literal, not a bound parameter.
+        csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
+        create = exp.Create(
+            this=exp.table_(view), kind="VIEW", expression=exp.select("*").from_(csv_source),
+            properties=exp.Properties(expressions=[exp.TemporaryProperty()]),
         )
+        conn.execute(create.sql(dialect="duckdb"))
         try:
-            csv_columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
+            describe = exp.Describe(this=exp.table_(view))
+            csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
             select_parts = []
             target_columns = []
             for col in csv_columns:
                 target_col = renames.get(col, col)
                 target_columns.append(target_col)
+                value: Expr = exp.column(col)
                 if col in cents_cols:
-                    select_parts.append(
-                        f"CAST(CAST({col} AS DECIMAL(18,0)) * 0.01 AS {MONEY_DB_TYPE}) AS {target_col}"
-                    )
-                else:
-                    select_parts.append(f"{col} AS {target_col}")
-            conn.execute(
-                f"INSERT INTO {table} ({', '.join(target_columns)}) "
-                f"SELECT {', '.join(select_parts)} FROM _{table}_raw"
+                    cents = exp.cast(value, to="DECIMAL(18,0)")
+                    value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
+                select_parts.append(exp.alias_(value, target_col))
+            insert = exp.insert(
+                expression=exp.select(*select_parts).from_(exp.table_(view)), into=exp.table_(table),
+                columns=[exp.to_identifier(c) for c in target_columns],
             )
+            conn.execute(insert.sql(dialect="duckdb"))
         finally:
-            conn.execute(f"DROP VIEW _{table}_raw")
+            conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
 
@@ -736,7 +739,10 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
 
     counts = {}
     for table in TABLE_NAMES.values():
-        counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        count = exp.select(exp.Count(this=exp.Star())).from_(exp.table_(table))
+        row = conn.execute(count.sql(dialect="duckdb")).fetchone()
+        assert row is not None
+        counts[table] = row[0]
     results["row_counts"] = counts
 
     fk_checks = {

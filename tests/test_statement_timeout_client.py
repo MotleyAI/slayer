@@ -10,14 +10,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import sqlalchemy.exc
+import sqlglot
 
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import client as sql_client
-from slayer.sql.client import ExecutionResult, SlayerSQLClient, get_column_types_sync
+from slayer.sql.client import ExecutionResult, SlayerSQLClient, get_column_types_sync, render_type_probe
+from slayer.sql.dialects import PostgresDialect
 from tests._ch_fake_http import route_engine
 
 SQL = "SELECT 1 AS x"
+PROBE = render_type_probe(sqlglot.parse_one(SQL), dialect=PostgresDialect())
 ROLLBACK = "<rollback>"
 
 _CONN_STRINGS = {
@@ -202,7 +205,7 @@ def test_fail_closed_rejected_timeout_raises(monkeypatch, run: Runner, ds_type: 
 def _probe(client: SlayerSQLClient) -> tuple[dict[str, str], list[warnings.WarningMessage]]:
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        types = asyncio.run(client.get_column_types(SQL))
+        types = asyncio.run(client.get_column_types(PROBE))
     return types, record
 
 
@@ -251,7 +254,7 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
         reject_exc=sqlalchemy.exc.OperationalError("SET", {}, Exception("(1193, \"Unknown system variable\")")),
     )
     rec.install(monkeypatch)
-    probe = _client("mysql").get_column_types(SQL)
+    probe = _client("mysql").get_column_types(PROBE)
     with pytest.raises(sqlalchemy.exc.OperationalError):
         asyncio.run(probe)
     assert not any(SQL in s for s in rec.log)
@@ -268,7 +271,7 @@ def test_probe_fail_closed_rejected_timeout_raises(monkeypatch) -> None:
 )
 def test_sync_probe_timeout_before_read_only_guard(ds_type: str, prelude: list[str]) -> None:
     rec = Recorder()
-    types = get_column_types_sync(SQL, engine=rec.sync_engine(), db_type=ds_type)  # pyright: ignore[reportArgumentType]
+    types = get_column_types_sync(PROBE, engine=rec.sync_engine(), db_type=ds_type)  # pyright: ignore[reportArgumentType]
     statements = rec.statements()
     assert statements[:-1] == prelude
     assert SQL in statements[-1]
@@ -282,5 +285,5 @@ def test_sync_probe_fail_closed_rejected_timeout_raises() -> None:
     )
     engine = rec.sync_engine()
     with pytest.raises(sqlalchemy.exc.OperationalError):
-        get_column_types_sync(SQL, engine=engine, db_type="mysql")  # pyright: ignore[reportArgumentType]
+        get_column_types_sync(PROBE, engine=engine, db_type="mysql")  # pyright: ignore[reportArgumentType]
     assert not any(SQL in s for s in rec.log)

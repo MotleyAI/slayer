@@ -121,7 +121,7 @@ class AliasAllocator(BaseModel):
         else:
             parent = self.alias_for(root=root, path=path[:-1], limit=limit)
             base = f"{parent}__{path[-1]}"
-        used = self._join_alias_used.setdefault(root, set())
+        used = self._join_alias_used.setdefault(root, {self._fold(root)})
         candidate = fit_identifier(name=base, limit=limit)
         suffix = 2
         while self._fold(candidate) in used:

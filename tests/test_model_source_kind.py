@@ -83,7 +83,7 @@ class TestClassification:
                 sa_engine=engine,
                 inspector=sa.inspect(engine),
                 table_name="orders",
-                schema=None,
+                ref=None,
                 data_source="ds",
             )
             assert model.source_kind is None

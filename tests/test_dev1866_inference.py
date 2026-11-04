@@ -57,12 +57,6 @@ class TestSourceModelOptional:
     def test_explicit_source_model_still_accepted(self) -> None:
         assert SlayerQuery(source_model="orders").source_model == "orders"
 
-    def test_strip_prefix_is_noop_when_rootless(self) -> None:
-        q = SlayerQuery(dimensions=["customers.region"])
-        stripped = q.strip_source_model_prefix()
-        assert stripped.source_model is None
-        assert stripped.dimensions == q.dimensions
-
 
 # --------------------------------------------------------------------------- #
 # Selection: infer_population chooses the fewest-hops viable determiner.

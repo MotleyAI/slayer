@@ -152,6 +152,24 @@ def schema_ref_from_token(
     )
 
 
+def requested_schema_ref(token: Optional[str], *, sa_engine: sa.Engine) -> Optional[SchemaRef]:
+    """The ref a user's schema token names, or ``None`` (the connection default) when absent."""
+    if not token:
+        return None
+    return schema_ref_from_token(token, dialect_name=_dialect_name(sa_engine), requested=token)
+
+
+def table_schema_ref(*, catalog: Optional[str], schema: Optional[str], sa_engine: sa.Engine) -> Optional[SchemaRef]:
+    """The ref locating a parsed table's schema; a catalog the connection cannot reach raises."""
+    if catalog and not engine_qualifies_tokens(sa_engine):
+        if catalog != _current_catalog(sa_engine):
+            raise ValueError(f"catalog {catalog!r} is not reachable over this connection")
+        catalog = None
+    if not schema:
+        return None
+    return SchemaRef(catalog=catalog or None, name=schema, requested=schema)
+
+
 def is_system_schema(token: str, *, qualifies: bool = False) -> bool:
     """True for catalog/bookkeeping schemas that are never ingested.
 

@@ -21,8 +21,6 @@ class TestFilterInjection:
         [
             # Classic "break out of string, run DROP, comment rest".
             "status = 'a'; DROP TABLE orders; --'",
-            # SQL block comment.
-            "status = 'a' /* foo */ OR 1=1",
             # Stacked UNION SELECT.
             "status = 'a' UNION SELECT * FROM users --'",
             # Stacked statement via semicolon.

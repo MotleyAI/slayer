@@ -12,6 +12,7 @@ import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
@@ -19,7 +20,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
-    element_lambda, lit, operand_copy, text_try_cast,
+    element_lambda, lit, operand_copy, setting, text_try_cast,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -153,6 +154,8 @@ class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
 
     sqlglot_name: str = "snowflake"
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
@@ -428,20 +431,18 @@ class SnowflakeDialect(SqlDialect):
         cur = dbapi_connection.cursor()
         try:
             # Role first: it gates warehouse access; database before schema for bare names.
-            if role:
-                cur.execute(f"USE ROLE {role}")
-            if warehouse:
-                cur.execute(f"USE WAREHOUSE {warehouse}")
-            if database:
-                cur.execute(f"USE DATABASE {database}")
-            if schema_name:
-                cur.execute(f"USE SCHEMA {schema_name}")
+            uses = (("ROLE", role), ("WAREHOUSE", warehouse), ("DATABASE", database), ("SCHEMA", schema_name))
+            for kind, name in uses:
+                if name:
+                    target = exp.Table(this=exp.Identifier(this=name, quoted=False))
+                    cur.execute(exp.Use(kind=exp.Var(this=kind), this=target).sql(dialect="snowflake"))
         finally:
             cur.close()
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""
-        return f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout_seconds}"
+        return exp.Alter(kind="SESSION", actions=[exp.AlterSession(
+            expressions=[setting(name="STATEMENT_TIMEOUT_IN_SECONDS", value=timeout_seconds)])])
 
     def map_cursor_type_code(self, type_code: int) -> str | None:
         """Map a connector ``FieldType`` code to a SLayer category; None if unknown."""

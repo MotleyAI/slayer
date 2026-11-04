@@ -127,7 +127,7 @@ from slayer.sql.render.aggregates import (
     is_builtin_agg,
     resolve_agg_entry,
 )
-from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate, parse_table
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
 from slayer.sql.render.row_expr import _literal
 from slayer.sql.render.value_expr import (
@@ -144,6 +144,7 @@ from slayer.sql.render.value_expr import (
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.ir.bound import BoundExpr
+from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.sql.stage_wrapper import (
     build_flat_rename_wrapper,
     unmangle_dotted_table_refs,
@@ -1045,8 +1046,8 @@ class SQLGenerator:
         return ident
 
     def _to_table(self, name: str, alias: Optional[str] = None) -> Expression:
-        """Build a (possibly schema-qualified) table reference with mixed-case"""
-        table = exp.to_table(name).transform(self._quote_mixed_case_identifiers)
+        """A (possibly qualified) table reference read with this dialect's identifier rules."""
+        table = parse_table(name=name, dialect=self._dialect)
         if alias is not None:
             table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return table
@@ -5521,6 +5522,7 @@ class SQLGenerator:
                     column_name=time_column.column_name,
                     bundle=bundle,
                     owner_path=tuple(time_column.path),
+                    root_relation=source_relation,
                     cast=False,
                 )
                 owner = joined_model
@@ -6515,11 +6517,12 @@ def _finish_statement(
     aliases: Sequence[str] = (),
     exempt: frozenset[str] = frozenset(),
     policy_scoped: bool = False,
+    pretty: bool = True,
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
-    d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
+    d = _as_dialect(dialect)
     sql = d.rewrite_emitted_sql(
-        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=True), aliases=aliases, exempt=exempt,
+        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt,
     )
     maybe_validate_scopes(sql, dialect=d.sqlglot_name, allow_rls_correlation=policy_scoped)
     d.assert_no_overlimit_identifiers(sql, exempt=exempt)
@@ -6622,6 +6625,13 @@ class PlannedStatement(BaseModel):
             policy_scoped=policy_scoped,
         )
 
+    def mint_probe(self, *, policy_scoped: bool = False) -> TypeProbe:
+        """The statement (built with ``type_probe``) as a :class:`TypeProbe`, minted at its one render."""
+        return mint_type_probe(self.statement, dialect=_as_dialect(self.dialect), render=lambda tree: _finish_statement(
+            tree, dialect=self.dialect, aliases=self.aliases, exempt=self.exempt, policy_scoped=policy_scoped,
+            pretty=False,
+        ))
+
 
 def build_planned_statement(
     planned_queries,
@@ -6629,13 +6639,16 @@ def build_planned_statement(
     bundle,
     dialect: "str | SqlDialect" = "postgres",
     projection_aliases: "Sequence[str]" = (),
+    type_probe: bool = False,
 ) -> PlannedStatement:
     """Compose a multi-stage DAG (``plan_stages`` output) as one statement, its settings attached;
-    spliced stages nothing reaches are pruned."""
+    spliced stages nothing reaches are pruned. ``type_probe`` bounds it by the dialect's type probe."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     )
+    if type_probe:
+        statement = _as_dialect(dialect).type_probe(statement)
     spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
     if spine_sizes:
         _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))

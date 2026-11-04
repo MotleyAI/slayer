@@ -140,7 +140,7 @@ A string literal SHALL be single-quoted, with `''` standing for one `'`; a backs
 
 ### Requirement: Legacy spellings keep their meaning
 
-`==`, `!=`, `is None`, `is not None`, `True`, `False`, `None`, `[…]` lists after `in`, the method-call aggregation form (`customers.sum(revenue)`) and the colon aggregation form (`revenue:sum`) SHALL keep their meaning, result keys and SQL. Every expression that parsed before this change and contains none of the forms this change removes SHALL bind to the same value with byte-identical generated SQL.
+`==`, `!=`, `is None`, `is not None`, `True`, `False`, `None`, `[…]` lists after `in`, the method-call aggregation form (`customers.sum(revenue)`) and the colon aggregation form (`revenue:sum`) SHALL keep their meaning, result keys and SQL. Every expression that parsed before this change and contains none of the forms this change removes, and no `--` (which starts a SQL comment), SHALL bind to the same value with byte-identical generated SQL.
 
 #### Scenario: Python spellings
 
@@ -189,3 +189,84 @@ The following SHALL fail at parse time with an error naming the form and the rem
 
 - **WHEN** a filter is `amount > > 5`
 - **THEN** the error names the position of the second `>`
+
+### Requirement: SQL comments
+
+Mode-B text SHALL accept SQL comments in every position: `--` starts a comment that runs to the end of the line, and `/* … */` is a comment that may span lines and nests (`/* a /* b */ c */` is one comment). Comment markers inside a string literal or a quoted identifier SHALL be ordinary characters. A comment SHALL mean nothing: a `{variable}` placeholder inside it is neither bound nor required, and text that is only comments is an empty expression. An unterminated `/*` SHALL be a syntax error reporting the position where the comment starts. A syntax error elsewhere SHALL report its position in the text as written, comments included.
+
+#### Scenario: Double dash starts a comment
+
+- **WHEN** a measure is `sum(amount) --discount` and another is `sum(amount)`
+- **THEN** both render identical SQL
+
+#### Scenario: Comments inside a multi-line formula
+
+- **WHEN** a stored measure formula is `sum(amount) /* gross */ - sum(refund) -- net of refunds` followed by a newline and `+ 0`
+- **THEN** it means `sum(amount) - sum(refund) + 0`
+
+#### Scenario: Nested block comment
+
+- **WHEN** a filter is `status = 'paid' /* old: /* status = 'open' */ */ AND amount > 0`
+- **THEN** it means `status = 'paid' AND amount > 0`
+
+#### Scenario: Comment markers inside a literal
+
+- **WHEN** a filter is `note = 'a -- b /* c */'` and a measure is `sum("x--y")` over a column named `x--y`
+- **THEN** the filter compares against the text `a -- b /* c */` and the measure sums that column
+
+#### Scenario: Placeholder inside a comment
+
+- **WHEN** a filter is `status = 'paid' -- region = {region}` and no variable `region` is supplied
+- **THEN** it runs without a missing-variable error
+
+#### Scenario: Unterminated block comment
+
+- **WHEN** a filter is `status = 'paid' /* open`
+- **THEN** it fails with a syntax error reporting the position of `/*`
+
+### Requirement: Canonical expression text keeps its grouping
+
+The expression text SLayer derives from a parsed Mode-B expression — shown in messages and used to tell expressions apart — SHALL parse back to the same expression: it SHALL parenthesise an operand wherever precedence or associativity requires it, so expressions differing only in grouping never derive the same text, and a negated negation SHALL never read as a comment.
+
+#### Scenario: Grouping is kept
+
+- **WHEN** the canonical texts of `(a + b) * c`, `a + b * c`, `a - (b - c)` and `a - b - c` are derived
+- **THEN** they are four different texts, each parsing back to its own expression
+
+#### Scenario: Double negation
+
+- **WHEN** the canonical text of `-(-b)` is derived
+- **THEN** it parses back to `-(-b)` and contains no `--`
+
+### Requirement: Quoted text is never a reference
+Reference-shaped text inside a string literal, or inside one double-quoted identifier, SHALL never be
+read as a dotted reference by any part of query processing, on every Mode-B surface (measures, filters,
+dimensions, time dimensions, order, `main_time_dimension`): a string literal's value SHALL reach the
+database exactly as written, a quoted identifier SHALL name exactly the one identifier written, and
+such text SHALL never change which models a query reads, whether it is a spine query, or which
+query-backed models it splices. Reference-shaped text written outside quotes keeps its meaning.
+
+#### Scenario: A literal naming the root keeps its text
+- **WHEN** a query rooted at `orders` filters on `note = 'see orders.x'`
+- **THEN** it returns exactly the rows whose `note` is `see orders.x`
+
+#### Scenario: A quoted identifier naming the root keeps its text
+- **WHEN** a query rooted at `orders` filters on `"orders.x" = 1`
+- **THEN** it resolves the single identifier `orders.x`, failing as an unknown reference when no column
+  of that name exists, never reading a column `x`
+
+#### Scenario: A literal naming the spine is not a spine query
+- **WHEN** a query rooted at `orders` with a month time dimension filters on `note = 'time_spine.x'`
+- **THEN** it is not a spine query: its population is `orders`, it needs no spine lower bound, and it
+  returns only the months that have matching orders
+
+#### Scenario: A literal naming a query-backed model does not splice it
+- **WHEN** a query grouping by `time_spine.timestamp` by month counts `orders.id` and filters on
+  `orders.note <> 'qb.x'`, where `qb` is a query-backed model the query does not otherwise read
+- **THEN** `qb` is not spliced into the statement
+
+#### Scenario: Unchanged parsing of time dimensions and order with quoted text
+- **WHEN** a time dimension is `month(iif(note = 'a)b', created_at, created_at))`, or an order entry is
+  `status || 'a:b'` or `iif(note = 'x:y', 1, 0)`
+- **THEN** the time dimension buckets that whole expression by month, and each order entry sorts by its
+  whole expression, the quoted text intact

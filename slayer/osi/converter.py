@@ -30,13 +30,14 @@ from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.schema_scope import requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
+from slayer.importers.column_types import LiveSource
 from slayer.importers.aggregates import (
     MaterializedColumn, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
 )
 from slayer.importers.physical import unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import CATEGORY_DATA_TYPES, get_column_types_sync
 from slayer.osi.dialects import Selection, is_native, read, render, select_expression
 from slayer.osi.models import (
     OSIAIContext,
@@ -225,6 +226,7 @@ class OsiToSlayerConverter:
         self._models: dict[str, SlayerModel] = {}
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
+        self._live: dict[str, LiveSource | None] = {}
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
         # (model, column) -> the introspected Column a legacy derived overlay replaced,
@@ -328,7 +330,7 @@ class OsiToSlayerConverter:
             else:
                 base = introspect_table_to_model(
                     sa_engine=self.sa_engine, inspector=inspector,
-                    table_name=parsed.table, schema=parsed.schema_name,
+                    table_name=parsed.table, ref=requested_schema_ref(parsed.schema_name, sa_engine=self.sa_engine),
                     data_source=self.data_source, model_name=ds.name,
                 )
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation
@@ -349,14 +351,15 @@ class OsiToSlayerConverter:
         self._models[ds.name] = base
 
     def _build_sql_mode_model(self, ds: OSIDataset, query: str) -> SlayerModel:
-        # Introspect the query's output columns live, with the datasource's probe shape.
-        types = get_column_types_sync(
-            sql=query, engine=self.sa_engine, db_type=self.target_dialect,
-            datasource_name=self.data_source,
-        )
-        columns = [_typed_column(name=name, data_type=CATEGORY_DATA_TYPES[category]) for name, category in types.items()]
+        live = self._source(sql=query)
+        columns = [_typed_column(name=name, data_type=typed[0]) for name, typed in live.columns.items()]
+        self._live[ds.name] = live
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
+
+    def _source(self, *, sql_table: str | None = None, sql: str | None = None) -> LiveSource:
+        return LiveSource(engine=self.sa_engine, data_source=self.data_source, db_type=self.target_dialect,
+                          dialect=self._target, sql_table=sql_table, sql=sql)
 
     def _declare_fields(self, model: SlayerModel, ds: OSIDataset) -> None:
         """Current spec: the model's columns are exactly the declared fields."""
@@ -554,23 +557,16 @@ class OsiToSlayerConverter:
             col.meta = {**(col.meta or {}), **meta}
 
     def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
-        """A derived expression's type from a LIMIT-0 probe of the model's source, or ``None``."""
-        if model.sql_table:
-            from_clause = model.sql_table
-        elif model.sql:
-            from_clause = f"({model.sql}) AS _osi_sub"
-        else:
-            return None
-        probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
-        try:
-            types = get_column_types_sync(
-                sql=probe, engine=self.sa_engine, db_type=self.target_dialect,
-                datasource_name=self.data_source,
-            )
-        except Exception:  # noqa: BLE001 — probe is best-effort; fall back
-            return None
-        category = next(iter(types.values()), None)
-        return None if category is None else CATEGORY_DATA_TYPES[category]
+        """A derived expression's type from a zero-row probe of the model's source, or ``None``."""
+        if model.name not in self._live:
+            try:
+                self._live[model.name] = self._source(sql_table=model.sql_table, sql=model.sql) \
+                    if model.sql_table or model.sql else None
+            except Exception:  # noqa: BLE001 — probe is best-effort; fall back
+                self._live[model.name] = None
+        live = self._live[model.name]
+        typed = live.probe(expr) if live is not None else None
+        return None if typed is None else typed[0]
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset, doc: OSIDocument) -> None:
         model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \

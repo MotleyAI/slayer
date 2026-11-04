@@ -176,13 +176,18 @@ class ModelScope(BaseModel):
     source_model: Optional[SlayerModel] = None
 
 
-def host_model_name(scope) -> str:
-    """The host relation's display name for alias-collision reporting."""
+def root_spelling(scope) -> Optional[str]:
+    """The name a reference writes for the scope's root: a model's spelling, a stage's display name."""
     if isinstance(scope, ModelScope) and scope.source_model is not None:
         return scope.source_model.spelling
     if isinstance(scope, StageSchema):
         return scope.display_name
-    return "(stage)"
+    return None
+
+
+def host_model_name(scope) -> str:
+    """The host relation's display name for alias-collision reporting."""
+    return root_spelling(scope) or "(stage)"
 
 
 def resolve_generated_column(

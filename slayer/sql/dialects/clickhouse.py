@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Optional
 
 from sqlalchemy.types import NullType
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -198,6 +199,12 @@ _CH_ADD_FUNCTIONS = {
 
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
+    array_cast_types: ClassVar[bool] = True
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
+        exp.DataType.Type.UINT128, exp.DataType.Type.UINT256,
+    })
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128, exp.DataType.Type.INT256})
     ilike_native: ClassVar[bool] = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})
@@ -445,11 +452,11 @@ class ClickhouseDialect(SqlDialect):
     def server_profile_sql(self) -> str | None:
         return "SELECT version(), getSetting('readonly')"
 
-    def correlated_setting_sql(self, profile: ServerProfile) -> str | None:
+    def correlated_setting_probe(self, profile: ServerProfile) -> Expression | None:
         """``getSetting`` of a setting the server lacks errors, so ask only where it exists."""
         if profile.version is None or profile.version < _CORRELATED_MIN_VERSION:
             return None
-        return f"SELECT getSetting('{_CH_CORRELATED_SETTING}')"
+        return exp.select(anon("getSetting", exp.Literal.string(_CH_CORRELATED_SETTING)))
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,

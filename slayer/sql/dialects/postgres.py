@@ -14,7 +14,9 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    CONSTANT_INPUT,
     PORTABLE_LIBRARY,
+    set_statement,
     NativeFn,
     ListFn,
     ServerProfile,
@@ -90,8 +92,14 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _constant(value: Expression) -> bool:
+    """The outermost ``TRY_CAST`` input's own tag (``walk`` is breadth-first), so a nested cast's never counts."""
+    return next((bool(node.meta[CONSTANT_INPUT]) for node in value.walk() if CONSTANT_INPUT in node.meta), False)
+
+
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
+    array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ilike_native: ClassVar[bool] = True
@@ -161,7 +169,13 @@ class PostgresDialect(SqlDialect):
         check = exp.Anonymous(this="pg_input_is_valid", expressions=[
             as_text(value), exp.Literal.string(to.sql(dialect=self.sqlglot_name)),
         ])
-        return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=value.copy(), to=to))])
+        # A constant input is read through a subquery: Postgres folds a constant cast at plan time, invalid or not.
+        read = exp.Subquery(this=exp.select(value.copy())) if _constant(value) else value.copy()
+        return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """``pg_input_is_valid`` already accepts only integer text in range."""
+        return self.build_try_cast(text, to)
 
     def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
         node = exp.RegexpILike if case_insensitive else exp.RegexpLike
@@ -257,9 +271,9 @@ class PostgresDialect(SqlDialect):
             alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
         ))
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
         """Transaction-local, so it never outlives the call on a pooled connection."""
-        return f"SET LOCAL statement_timeout = {timeout_seconds * 1000}"
+        return set_statement(name="statement_timeout", value=timeout_seconds * 1000, kind="LOCAL")
 
     def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
         """Numeric-cast every 2-arg ROUND's and based LOG's value: their only overloads take ``numeric``."""

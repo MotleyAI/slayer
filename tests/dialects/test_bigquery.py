@@ -23,7 +23,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import ExecutionResult
+from slayer.sql.client import ExecutionResult, TypeProbe
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
@@ -539,10 +539,10 @@ class _EchoTypesClient:
     async def execute(self, *, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
         return ExecutionResult(rows=[])
 
-    async def get_column_types(self, *, sql: str) -> dict:
+    async def get_column_types(self, probe: TypeProbe) -> dict:
         with emitted_reparse_law.as_database():
-            parsed = sqlglot.parse_one(sql, dialect="bigquery")
-        return {name: "DOUBLE" for name in parsed.named_selects}
+            probed = sqlglot.parse_one(probe.sql, dialect="bigquery").args["from_"].this.this
+        return {name: "DOUBLE" for name in probed.named_selects}
 
 
 async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:

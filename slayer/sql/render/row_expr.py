@@ -49,8 +49,10 @@ from slayer.core.keys import (
     numeric_boolean_positions,
     temporal_type,
     unit_word,
+    reads_no_rows,
 )
 from slayer.sql.dialects.base import (
+    CONSTANT_INPUT,
     SqlDialect,
     TemporalComparisonOp,
     bare_comparands,
@@ -287,7 +289,12 @@ def render_cast(
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)
-    return dialect.build_try_cast(value, to) if key.try_ else dialect.build_cast(value, to)
+    if not key.try_:
+        return dialect.build_cast(value, to)
+    value.meta[CONSTANT_INPUT] = reads_no_rows(source)
+    if key.data_type is DataType.INT:
+        return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
+    return dialect.build_try_cast(value, to)
 
 
 def render_temporal_comparison(

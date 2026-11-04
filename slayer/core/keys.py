@@ -6,6 +6,7 @@ the same slot. Keys carry only what's needed to decide "are these the same slot?
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from enum import IntEnum
@@ -732,34 +733,56 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
-# A cast target's SLayer type, by the type's leading word.
-_CAST_TYPE_WORDS: Mapping[str, DataType] = MappingProxyType({
-    **{w: DataType.INT for w in ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT", "HUGEINT",
-                                 "INT2", "INT4", "INT8", "INT64", "LONG")},
-    **{w: DataType.DOUBLE for w in ("FLOAT", "FLOAT4", "FLOAT8", "FLOAT64", "DOUBLE", "REAL", "DECIMAL",
-                                    "NUMERIC", "NUMBER", "BIGNUMERIC", "DEC")},
-    **{w: DataType.TEXT for w in ("TEXT", "VARCHAR", "CHAR", "CHARACTER", "NVARCHAR", "NCHAR", "STRING",
-                                  "CLOB", "NTEXT", "BPCHAR")},
-    **{w: DataType.BOOLEAN for w in ("BOOLEAN", "BOOL")},
-    "DATE": DataType.DATE,
-    **{w: DataType.TIMESTAMP for w in ("TIMESTAMP", "DATETIME", "DATETIME2", "TIMESTAMPTZ", "SMALLDATETIME")},
-})
+_CAST_TYPE_TOKEN_RE = re.compile(r"\[\]|\(([^()]*)\)|[A-Z_][A-Z0-9_]*")
 
 
-def cast_data_type(type_text: str) -> DataType:
-    """SLayer's type for a cast to ``type_text`` (UNKNOWN for any unmapped type)."""
-    word = type_text.split("(")[0].split()[0].upper() if type_text.strip() else ""
-    return _CAST_TYPE_WORDS.get(word, DataType.UNKNOWN)
+class CastTypeParts(BaseModel):
+    """The parts of a canonical cast type text (``TIMESTAMP(6) WITH TIME ZONE``, ``DECIMAL(10,2)[]``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    words: Tuple[str, ...]
+    sizes: Tuple[str, ...] = ()
+    array_rank: int = 0
+
+    @property
+    def unsigned(self) -> bool:
+        return "UNSIGNED" in self.words
+
+    @property
+    def zone(self) -> Optional[bool]:
+        """``True`` for a zoned type (``WITH [LOCAL] TIME ZONE``), ``False`` for ``WITHOUT TIME ZONE``, else ``None``."""
+        if "ZONE" not in self.words:
+            return None
+        return "WITHOUT" not in self.words
+
+
+def cast_type_parts(type_text: str) -> CastTypeParts:
+    words: list[str] = []
+    sizes: Tuple[str, ...] = ()
+    array_rank = 0
+    for token in _CAST_TYPE_TOKEN_RE.finditer(type_text.upper()):
+        if token[0] == "[]":
+            array_rank += 1
+        elif token[1] is not None:
+            sizes = tuple(p.strip() for p in token[1].split(",") if p.strip())
+        else:
+            words.append(token[0])
+    return CastTypeParts(words=tuple(words), sizes=sizes, array_rank=array_rank)
 
 
 class CastKey(_FrozenKey, frozen=True):
     """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the database's
-    own cast of the author's type; ``data_type`` is SLayer's type for the target."""
+    own cast of the author's type; ``data_type`` is SLayer's type for the target, ``element_type``
+    its elements' for an array target; ``numeric_source``: what a ``TRY_CAST`` reads its source as — ``INT``
+    (integer text), ``DOUBLE`` (another number), else ``None`` (text)."""
 
     source: "ValueKey"
     type_text: str
     data_type: DataType
     try_: bool = False
+    element_type: Optional[DataType] = None
+    numeric_source: Optional[DataType] = None
 
     @property
     def phase(self) -> Phase:
@@ -1516,6 +1539,34 @@ def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     return False
 
 
+def reads_no_rows(key: ValueKey) -> bool:
+    """A constant: every leaf a literal or a call on literals only (``pi()``), no aggregate or transform."""
+    return all(
+        not isinstance(k, (AggregateKey, TransformKey))
+        and (bool(k.children()) or isinstance(k, (LiteralKey, ScalarCallKey)))
+        for k in walk_value_keys(key)
+    )
+
+
+def integer_text_valued(key: ValueKey, *, column_type: ColumnTypeFn) -> bool:
+    """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with every literal plain digits."""
+    if not integer_valued(key, column_type=column_type) or boolean_valued(key, column_type=column_type):
+        return False
+    return not any(_not_plain_digits(a) for k in walk_value_keys(key) for a in _literals_of(k))
+
+
+def _literals_of(key: ValueKey) -> Iterator[object]:
+    if isinstance(key, LiteralKey):
+        yield key.value
+    elif isinstance(key, ScalarCallKey):
+        yield from (a for a in key.args if not isinstance(a, _FrozenKey))
+
+
+def _not_plain_digits(value: object) -> bool:
+    """A number literal written with a fraction or an exponent (``2.0``, ``1e3``)."""
+    return isinstance(value, Decimal) and value.as_tuple().exponent != 0
+
+
 def _aggregate_integer_valued(key: AggregateKey, *, column_type: ColumnTypeFn) -> bool:
     agg = key.agg.lower()
     return agg in _INTEGER_RESULT_AGGS or (
@@ -1757,6 +1808,8 @@ def list_element_type(
         return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
     if isinstance(key, TransformKey):
         return list_element_type(key.input, column_type=column_type, column_element=column_element)
+    if isinstance(key, CastKey):
+        return key.element_type
     if isinstance(key, ScalarCallKey):
         types = {list_element_type(a, column_type=column_type, column_element=column_element)
                  for a in _returned_args(key)} - {None}

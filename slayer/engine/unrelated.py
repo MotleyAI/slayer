@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Iterator, Optional, Tuple
+from typing import Iterable, Iterator, Optional, Tuple
 
-from pydantic import BaseModel
 
 from slayer.core.join_search import count_routes
 from slayer.core.join_walker import matching_edges, neighbors
@@ -18,56 +17,41 @@ from slayer.core.keys import (
     ValueKey,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery, render_probe_text
+from slayer.core.query import ColumnRef, ComputedDimension, SlayerQuery
 from slayer.core.time_spine import is_spine
 from slayer.engine.reference_closure import key_closure
-from slayer.core.syntax import DottedRef, parse_expr
+from slayer.core.syntax import drop_root_qualifier, text_paths
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = ["ProductSides", "first_hop_names", "stamp_unrelated", "unrelated_targets"]
 
 
-def _dotted_heads(node: Any) -> Iterator[str]:
-    """The first token of every dotted reference anywhere in a parsed tree."""
-    if isinstance(node, DottedRef):
-        if len(node.parts) > 1:
-            yield node.parts[0]
-        return
-    if isinstance(node, BaseModel):
-        for name in type(node).model_fields:
-            yield from _dotted_heads(getattr(node, name))
-    elif isinstance(node, (tuple, list)):
-        for item in node:
-            yield from _dotted_heads(item)
+def _parsed_heads(text: str, *, root: Optional[str]) -> Iterator[str]:
+    """The first hop of every dotted reference ``text`` makes from ``root``."""
+    return (path[0] for path in text_paths(text, root=root) if len(path) > 1)
 
 
-def _parsed_heads(text: str, *, as_filter: bool) -> Iterator[str]:
-    try:
-        parsed = parse_expr(render_probe_text(text) if as_filter else text)
-    except Exception:  # noqa: BLE001 — the binder reports a malformed expression
-        return
-    yield from _dotted_heads(parsed)
-
-
-def _path_head(full_name: str) -> Iterator[str]:
-    if "." in full_name:
-        yield full_name.split(".", 1)[0]
+def _path_head(ref: ColumnRef, *, root: Optional[str]) -> Iterator[str]:
+    parts = drop_root_qualifier(ref.parts, root)
+    if len(parts) > 1:
+        yield parts[0]
 
 
 def first_hop_names(query: SlayerQuery) -> set[str]:
     """The first hop of every dotted reference in ``query``'s own fields."""
+    root = query.source_model_name
     out: set[str] = set()
     for m in query.measures or []:
-        out.update(_parsed_heads(m.formula, as_filter=False))
+        out.update(_parsed_heads(m.formula, root=root))
     for d in query.dimensions or []:
-        out.update(_parsed_heads(d.expression, as_filter=False) if isinstance(d, ComputedDimension)
-                   else _path_head(d.full_name))
+        out.update(_parsed_heads(d.expression, root=root) if isinstance(d, ComputedDimension)
+                   else _path_head(d, root=root))
     for td in query.time_dimensions or []:
-        out.update(_parsed_heads(td.dimension, as_filter=False))
+        out.update(_parsed_heads(td.dimension, root=root))
     for f in query.filters or []:
-        out.update(_parsed_heads(f, as_filter=True))
+        out.update(_parsed_heads(f, root=root))
     for o in query.order or []:
-        out.update(_parsed_heads(o.raw_formula, as_filter=False) if o.raw_formula else _path_head(o.column.full_name))
+        out.update(_parsed_heads(o.raw_formula, root=root) if o.raw_formula else _path_head(o.column, root=root))
     return out
 
 
@@ -87,7 +71,7 @@ def unrelated_targets(
     incident = neighbors(model=host, models_by_name=universe)
     out: set[str] = set()
     for token in names:
-        if token in (host.name, host.spelling) or matching_edges(incident, token):
+        if token == host.spelling or matching_edges(incident, token):
             continue
         target = _named(token, universe.values())
         if target is None or is_spine(target) or target.name == host.name:

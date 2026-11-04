@@ -42,6 +42,7 @@ from slayer.engine.ingestion import (
     introspect_table_to_model,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.engine.schema_scope import SchemaRef
 from slayer.mcp.server import _render_ingest_result
 from slayer.sql.dialects import dialect_for_sa_backend
 from slayer.sql.dialects.reflection import clean_comment
@@ -220,7 +221,7 @@ class TestInspectorPathComments:
             sa_engine=_mock_engine(),
             inspector=inspector,
             table_name="orders",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description == "Orders table"
@@ -237,7 +238,7 @@ class TestInspectorPathComments:
             sa_engine=_mock_engine(),
             inspector=inspector,
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description is None
@@ -251,7 +252,7 @@ class TestInspectorPathComments:
             sa_engine=_mock_engine(),
             inspector=inspector,
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert _col(model, "count_col").description == "collides"
@@ -935,7 +936,7 @@ class TestBigQueryDriverContract:
             sa_engine=_mock_engine("bigquery"),
             inspector=inspector,
             table_name="orders",
-            schema="dset",
+            ref=SchemaRef(name="dset", requested="dset"),
             data_source="bq",
         )
         assert model.description == "All orders"

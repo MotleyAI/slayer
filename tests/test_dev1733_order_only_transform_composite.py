@@ -260,18 +260,19 @@ class TestOrderItemEntryPoint:
         agg = OrderItem(column="amount:sum").column
         assert agg.name == "amount_sum"
 
-    def test_placeholder_survives_strip_source_model_prefix(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="orders.amount:sum / orders.id:count", direction="desc")],
-        )
-        stripped = query.strip_source_model_prefix()
-        item = stripped.order[0]
-        assert item.column.name == "_expr_pending", item.column
-        assert item.raw_formula is not None
-        assert "orders." not in item.raw_formula, item.raw_formula
+    async def test_root_qualified_composite_order_equals_bare(self, exec_engine) -> None:
+        def query(order: str) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:sum")],
+                order=[OrderItem.model_validate({"column": order, "direction": "desc"})],
+            )
+
+        qualified = await exec_engine.execute(query("orders.amount:sum / orders.id:count"))
+        bare = await exec_engine.execute(query("amount:sum / id:count"))
+        assert qualified.sql == bare.sql
+        assert qualified.data == bare.data
 
     async def test_real_column_named_like_placeholder_is_not_hijacked(
         self, tmp_path,

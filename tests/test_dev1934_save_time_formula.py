@@ -23,7 +23,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import SlayerSQLClient, TypeProbe
 from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -121,11 +121,11 @@ class TestEngineCheck:
         self, seeded, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
-        executed: list[str] = []
+        executed: list[TypeProbe] = []
         saved: list[str] = []
 
-        async def _spy_exec(self, sql: str) -> dict[str, str]:  # noqa: ANN001
-            executed.append(sql)
+        async def _spy_exec(self, probe: TypeProbe) -> dict[str, str]:  # noqa: ANN001
+            executed.append(probe)
             return {}
 
         original_save = YAMLStorage.save_model

@@ -20,6 +20,7 @@ from typing import NoReturn
 
 import pytest
 import sqlalchemy as sa
+import sqlglot
 from sqlalchemy import event
 
 from slayer.async_utils import run_sync
@@ -35,7 +36,9 @@ from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimens
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
+from slayer.sql.dialects import SnowflakeDialect
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -336,6 +339,10 @@ def test_basic_query(sf_storage_with_models) -> None:
     assert int(val) == 16
 
 
+def test_try_cast_integer_targets(sf_storage_with_models) -> None:
+    run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
+
+
 def test_functional_aggregation_parity(sf_storage_with_models) -> None:
     """sum(quantity) returns the same value as quantity:sum."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
@@ -605,7 +612,7 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
-    ``_get_column_types_sync`` and produce the expected SLayer categories."""
+    the type-probe door and produce the expected SLayer categories."""
     sql = """
         SELECT
             CAST(1 AS NUMBER) AS as_number,
@@ -615,8 +622,8 @@ def test_column_types_round_trip(sf_engine) -> None:
             CAST('2024-01-01' AS DATE) AS as_date,
             CAST('2024-01-01 10:00' AS TIMESTAMP_NTZ) AS as_ts
     """
-    types = client._get_column_types_sync(
-        sql=sql,
+    types = client.get_column_types_sync(
+        client.render_type_probe(sqlglot.parse_one(sql, dialect="snowflake"), dialect=SnowflakeDialect()),
         db_type="snowflake",
         engine=sf_engine,
     )
