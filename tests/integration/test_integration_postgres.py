@@ -12,7 +12,7 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -562,7 +562,7 @@ class TestCrossModelAndMultistage:
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     client = SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
     finally:
         await client.aclose()
         client.close()

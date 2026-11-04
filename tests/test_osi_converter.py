@@ -615,7 +615,7 @@ def test_brand_new_derived_field_type_is_probed(shop_engine):
     result = _convert(shop_engine, doc, target_dialect="sqlite")
     cols = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}
     assert cols["status_up"].type == DataType.TEXT
-    assert cols["line"].type in (DataType.DOUBLE, DataType.INT)
+    assert cols["line"].type == DataType.DOUBLE
 
 
 def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):

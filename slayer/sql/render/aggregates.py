@@ -21,7 +21,7 @@ from slayer.core.enums import (
     DataType,
 )
 from slayer.sql.dialects.base import SqlDialect
-from slayer.sql.render.row_expr import int_value
+from slayer.sql.render.row_expr import cast_target, int_value
 
 # Which mechanism renders an aggregation. Retained as data so the generator's
 # dispatch is a table lookup rather than five stacked conditionals.
@@ -141,4 +141,4 @@ def apply_aggregate(
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
     if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
-    return exp.Cast(this=aggregate, to=exp.DataType(this=exp.DataType.Type(restored.value)))
+    return exp.Cast(this=aggregate, to=cast_target(restored))

@@ -19,7 +19,7 @@ by ``tests/test_ingestion_schema_qualification.py``.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -174,6 +174,18 @@ def is_system_schema(token: str, *, qualifies: bool = False) -> bool:
     if last in _SYSTEM_LAST_SEGMENTS:
         return True
     return last.startswith(("pg_temp_", "pg_toast_temp_"))
+
+
+class IngestScopeArgs(TypedDict, total=False):
+    """The scan-scope keywords every ingestion entry point takes."""
+
+    include_tables: list[str] | None
+    exclude_tables: list[str] | None
+    schema: str | None
+    schemas: list[str] | None
+    all_schemas: bool
+    include_views: bool
+    surface_internals: bool
 
 
 def validate_scope_args(

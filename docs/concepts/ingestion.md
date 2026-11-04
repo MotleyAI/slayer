@@ -158,16 +158,14 @@ slayer ingest --datasource my_postgres --all-schemas
 
 ```python
 import asyncio
-from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 
 async def main():
     engine = SlayerQueryEngine(storage=storage)
     try:
-        result = await ingest_datasource_idempotent(
-            datasource=ds,
-            storage=engine.storage,  # the engine's view upgrades stored models through its client
-            client=engine.client_for(ds),  # the database is read through the engine's client
+        # Reads the database through the engine's client and writes to its storage.
+        result = await engine.ingest_idempotent(
+            ds,
             schema="public",
             include_tables=["orders", "customers"],  # Optional filter
             exclude_tables=["migrations"],            # Optional exclusion

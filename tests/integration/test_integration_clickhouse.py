@@ -8,8 +8,8 @@ distinguishing characteristics:
 * Native ``stddev_*`` / ``var_*`` / ``corr`` / ``covar_*`` (sqlglot
   transpiles to the dialect-correct spellings).
 * Native ``LOG10`` / ``LOG2``.
-* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (issue #62
-  regression — auto-ingestion).
+* ``DateTime`` columns must round-trip as ``DataType.TIMESTAMP`` (auto-ingestion
+  regression).
 
 Rollup-ingestion tests are intentionally omitted: ClickHouse exposes no
 foreign-key metadata via SQLAlchemy's Inspector. Cross-model coverage
@@ -48,7 +48,7 @@ from slayer.core.models import (
 from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient, SqlClient
@@ -161,7 +161,7 @@ def _drop_module_db(clickhouse_container, db_name: str) -> None:
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     sql_client = SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=sql_client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
     finally:
         await sql_client.aclose()
         sql_client.close()
@@ -1104,7 +1104,7 @@ async def test_integration_clickhouse_cross_model_derived_columnsql(
 
 
 # ---------------------------------------------------------------------------
-# Dialect-specific: DateTime column type round-trip (issue #62 regression)
+# Dialect-specific: DateTime column type round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -1136,7 +1136,7 @@ def clickhouse_ingest_for_types_env(clickhouse_container):
 
 @pytest.mark.integration
 def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) -> None:
-    """Regression for issue #62: auto-ingesting a ClickHouse DateTime
+    """Regression: auto-ingesting a ClickHouse DateTime
     column must produce ``DataType.TIMESTAMP``, not STRING. Int32 / Float64
     must map to INT / DOUBLE."""
     ds = clickhouse_ingest_for_types_env
@@ -1266,7 +1266,7 @@ class TestClickHouseModeAEscaping:
 
 
 # ---------------------------------------------------------------------------
-# Decimal native-type preservation (#364)
+# Decimal native-type preservation
 # ---------------------------------------------------------------------------
 
 

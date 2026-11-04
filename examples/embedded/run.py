@@ -21,7 +21,6 @@ from seed import seed  # ALLOW(import-not-top): sys.path bootstrap for the share
 from slayer.async_utils import run_sync  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 from slayer.core.models import DatasourceConfig  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
-from slayer.engine.ingestion import ingest_datasource  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/seed.py
 
@@ -50,7 +49,7 @@ def main():
     # 3. Auto-ingest models (with rollup joins) + set default time dimension
     print("\n=== Ingesting models ===")
     engine = SlayerQueryEngine(storage=storage)
-    models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds)))
+    models = engine.ingest_sync(ds)
     for model in models:
         if model.name == "orders":
             model.default_time_dimension = "created_at"

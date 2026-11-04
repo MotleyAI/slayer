@@ -22,8 +22,8 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
-    ingest_datasource,
     ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -120,7 +120,7 @@ def _ds_config(dataset_id: str, *, name: str = "bqtest", description: str | None
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     sql_client = SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=sql_client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
     finally:
         await sql_client.aclose()
         sql_client.close()
@@ -287,7 +287,7 @@ class TestBigQueryDriftWithSecondDataset:
     async def test_bare_models_resolve_in_the_url_dataset(self, bq_dataset, second_dataset, client_for) -> None:
         _, dataset_id = bq_dataset
         ds = _ds_config(dataset_id, name="bqdrift")
-        models = await ingest_datasource(ds, client=client_for(ds))
+        models = await ingestion.ingest_datasource_async(ds, client=client_for(ds))
         assert {m.sql_table for m in models} == {"orders", "plain"}
         plain = next(m for m in models if m.name == "plain")
         plain.columns.append(Column(name="ghost", type=DataType.TEXT))

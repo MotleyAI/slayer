@@ -15,6 +15,7 @@ from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -649,6 +650,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         compact: Annotated[bool, Field(description="Compact rendering.")] = True,
     ) -> str:
         """DEPRECATED: use `inspect` with entity_type="model"."""
+        warn_deprecated(
+            'The MCP inspect_model tool is deprecated; call inspect with entity_type="model". '
+            "It is served until SLayer 2.0.",
+            removal="2.0",
+        )
         try:
             model = await storage.get_model_or_builtin(model_name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -1342,7 +1348,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Auto-ingest models
         try:
             # Via the module so tests can monkeypatch the seam.
-            ingest_output = await engine_ingestion.ingest_datasource_report(
+            ingest_output = await engine_ingestion.ingest_datasource_report_async(
                 datasource=ds,
                 client=client,
                 schema=schema_name or None,

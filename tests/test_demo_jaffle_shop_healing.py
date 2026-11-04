@@ -21,7 +21,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.demo import jaffle_shop
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
@@ -182,7 +182,7 @@ def _register_demo_ds(*, storage: YAMLStorage, store_dir: str) -> DatasourceConf
 def _store_affected_models(*, storage: YAMLStorage, store_dir: str) -> None:
     """Persist demo models as an affected release left them: no joins, no money ``db_type``."""
     ds = _register_demo_ds(storage=storage, store_dir=store_dir)
-    for model in run_sync(_with_client(ingest_datasource, datasource=ds)):
+    for model in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds)):
         jaffle_shop.apply_demo_enrichment(model)
         model.joins = []
         for column in model.columns:

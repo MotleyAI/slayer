@@ -19,7 +19,7 @@ from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult
+from slayer.sql.client import ExecutionResult, ResultColumnType
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
@@ -949,22 +949,22 @@ class TestEngineContract:
         for key in resp.attributes.dimensions:
             assert key in resp.columns
 
-    async def test_get_column_types_decodes_fitted_aliases(
+    async def test_get_result_column_types_decodes_fitted_aliases(
         self, chain, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``get_column_types`` probe keys are fitted aliases and must decode back to canonical."""
+        """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
         over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
 
-        captured: dict[str, str] = {}
+        captured: dict[str, ResultColumnType] = {}
 
         class _FakeClient:
-            async def get_column_types(self, sql: str) -> dict[str, str]:
+            async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
                 # Echo back server keys exactly as emitted.
                 for name, _ in _projection_aliases(
                     next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
                 ):
-                    captured[name] = "double precision"
+                    captured[name] = ResultColumnType(type=DataType.DOUBLE, db_type="double precision")
                 return dict(captured)
 
             async def aclose(self) -> None:  # pragma: no cover — not reached
@@ -985,7 +985,7 @@ class TestEngineContract:
             "slayer.engine.query_engine.client_cache_key", lambda ds: "x",
         )
 
-        types = await engine.get_column_types(model_name="TypeProbe")
+        types = await engine.get_result_column_types(model_name="TypeProbe")
         assert captured, "probe must have emitted at least one alias"
         emitted = [k for k in captured if _nbytes(k) > 63]
         assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
