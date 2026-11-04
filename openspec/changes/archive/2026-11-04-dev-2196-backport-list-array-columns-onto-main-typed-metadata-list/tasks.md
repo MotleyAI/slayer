@@ -64,4 +64,4 @@ Port from the branch (see design.md › Context for refs) keeping its symbol nam
 
 ## 10. Verification
 
-- [ ] 10.1 Full unit suite (`poetry run pytest -m "not integration"`), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new baseline entries) and `poetry run la-arch-check`; all green
+- [x] 10.1 Full unit suite (`poetry run pytest -m "not integration"`), the CI integration invocation, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new baseline entries) and `poetry run la-arch-check`; all green
