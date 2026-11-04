@@ -1,0 +1,35 @@
+## 1. Tests first (pr-tests)
+
+- [ ] 1.1 Pure fold tests (new module, no module-level `importorskip`): `fold_source_identifiers` per dialect class (Postgres ASCII-only, Redshift, Snowflake / Oracle full lowercase, every no-op dialect of design decision 10 unchanged); quoted identifiers, string / raw-string literals, comments, Snowflake `v:FirstName` paths kept; CTE declaration + uses, mixed-case projection alias + `ORDER BY` alias, correlated subquery, user type / function name folded consistently; reserved words before and after a fold target (offset-mapped prequote, decision 13), doubled quotes, several replacements, Unicode; Cube `{…}` / `${…}` / FILTER_PARAMS sentinels and dbt `{{ … }}` masked; unparseable text reported, not folded; `fold=None` returns the undecidable identifiers; verify each fails today (helper absent)
+- [ ] 1.2 `denoted_name` and the live-name index: exact / folded / ambiguous on each dialect class; mocked Snowflake / Oracle reflection holding `FOO`, `"foo"` and `"Foo"` (SQLAlchemy quote flags) reports `foo` ambiguous (spec "Folded and exact live spellings on Snowflake")
+- [ ] 1.3 `render_table_name` + the one `sql_table` reader round trip: spaces, quoted dots, escaped quotes, catalog parts, reserved words, leading digits, exact mixed-case names stay unquoted; `split_sql_table`, `_parse_qualified_sql_table` and `schema_drift`'s splitting read through it; `SchemaRef.qualify` (explicit and resolved schema) renders through it
+- [ ] 1.4 `tests/test_importer_source_names.py`: revise `test_unquoted_mixed_case_table_types_the_table_queries_read` per design decision 5 (user-approved logic change; Postgres decoy `sales.orderitems (qty TEXT, 't')` in the Postgres fixture only; DuckDB keeps today's assertion); add the meaning-preservation Postgres scenarios for Cube, dbt and OSI (unquoted → `TEXT`/`t`, quoted → `INT`/`4`), mixed-case column, quoted / literal / comment / logical refs, names local to a source query, dbt member without `expr`, OSI cross-dataset reference; move pure (non-Postgres) cases out per decision 21 only where new
+- [ ] 1.5 Snowflake (and Oracle where an importer allows it) emission tests, no server: Cube `sql_table: Sales.OrderItems` + `{CUBE}.OrderAmount` generates unquoted `sales.orderitems` / `orderamount`; DuckDB stores as written
+- [ ] 1.6 Refusal: offline `slayer import-cube` / `import-dbt` with mixed-case names fails via `_fail` (non-zero exit, names listed, no traceback, zero models saved); all-lowercase offline imports; configured-but-unreachable Postgres folds and adds the offline typing note
+- [ ] 1.7 Unparseable mixed-case Cube dimension (`{CUBE}.Amount +* 2`) dropped with a report; rest of the cube imports
+- [ ] 1.8 Cube pipeline (decision 19): FILTER_PARAMS arrow / string bodies, required and optional variables, several sentinels in one expression, quoted physical names, mixed-case foreign physical join keys (`{customers}.CustId`); calculated measure with mixed-case operand on Postgres (cube-import scenario)
+- [ ] 1.9 dbt quoting policy (dbt-import scenarios): Postgres default keeps case (decoy pair), `dbt_project.yml` `quoting: {identifier: false}`, Snowflake default / quoting on (emission), flags part by part (database / schema / identifier each independently, Postgres and Snowflake), per-model `config(quoting=…)` reported, non-boolean flag reported; hidden regular-model lookup follows the policy
+- [ ] 1.10 dbt `sources:` (dbt-import scenarios): declared schema / identifier, defaults, undeclared reported and kept as `g.t`, duplicate declaration reported (first wins), package-qualified `ref()`; dbt metric filters with mixed-case logical dimensions unchanged and an `Entity()` whose `expr` is mixed-case reads the folded column
+- [ ] 1.11 OSI (osi-import scenarios): target-native `amount::NUMBER(10,2)` exact, `OrderAmount::NUMBER(10,2)` → `orderamount::NUMBER(10,2)` on Snowflake, portable `IFF(OrderAmount …)` folded on Postgres, multi-dialect candidates with different case, quoted vs unquoted dataset `source`
+- [ ] 1.12 Ingestion (models/table-names scenarios, Postgres via pytest-postgresql): table `sales."order items"` ingests and queries; schema `sales.v2` ingests as `"sales.v2".orders`, queries, re-ingest changes nothing, `validate_models` reports no drift; mixed-case live table `"OrderItems"` queries the exact table; `ArtifactsCore` stored name still reads exactly
+- [ ] 1.13 Codex-review the tests against the plan (reviewers.codex); fold findings per the frozen plan
+
+## 2. Building blocks
+
+- [ ] 2.1 `denoted_name` + SLayer-owned folding-dialect table in `slayer/sql/naming.py`; `PhysicalIndex` and `LiveSource.column` match through it, live names keep SQLAlchemy's quote flag; verify 1.2 and the existing physical / ambiguity tests
+- [ ] 2.2 Offset-mapped prequote + `fold_source_identifiers` in `slayer/sql/render/parse.py` (spans from `exp.Identifier` meta, right-to-left edits, masks as equal-length quoted identifiers, typed result: folded text / undecidable identifiers / unparseable-with-uppercase-word); verify 1.1
+- [ ] 2.3 `render_table_name` in `slayer/sql/naming.py`; `split_sql_table`, `_parse_qualified_sql_table`, `schema_drift` splitting and `SchemaRef.qualify` move onto `parse_table` / `render_table_name`; verify 1.3 and 1.12
+- [ ] 2.4 `UndecidableIdentifierCaseError` (importers) and the CLI catches in `_run_import_cube` / `_run_import_dbt`; verify 1.6
+
+## 3. Importers
+
+- [ ] 3.1 Cube: fold pass at the start of `convert()` in the decision-19 order over every physical field of design D3 (`sql_table`, `sql`, dimension / case / measure / measure-filter / segment / join SQL, FILTER_PARAMS bodies); unparseable-with-uppercase drops (decision 20); refusal when the dialect is unknown; verify 1.4–1.8
+- [ ] 3.2 dbt parser: `dbt_project.yml` `quoting:`, `sources:` blocks, per-model `config(quoting=…)` detection; models in `slayer/dbt/models.py`; verify 1.9 / 1.10 parse cases
+- [ ] 3.3 dbt converter: quoting policy, one relation renderer for `model:` without SQL, `ref()` to a table, `source()` and hidden regular models; `resolve_refs` takes the relation callback; fold dimension / measure / entity `expr` and `raw_code` (not filters, decision 12); member without `expr` reads its folded name; refusal when the dialect is unknown; verify 1.4, 1.6, 1.9, 1.10
+- [ ] 3.4 OSI: dataset `source` table form through `parse_table` + fold (replace `_split_identifier`), query form folded; each selected field candidate folded with its read dialect before target rendering, cross-dataset references untouched; verify 1.4, 1.11
+
+## 4. Close-out
+
+- [ ] 4.1 Docs, one sentence each: `docs/cube/cube_import.md` (identifier folding, offline refusal), `docs/dbt/dbt_import.md` (folding, quoting policy, `sources:`), `docs/osi/osi_import.md` (folding); grep `docs/` for statements that importers store SQL verbatim
+- [ ] 4.2 Full unit suite (`poetry run pytest -m "not integration"`), CI integration invocation, `ruff check slayer/ tests/`, `basedpyright` (no new errors), `la-arch-check` all green
+- [ ] 4.3 On the tracker: note that this PR closes DEV-1679 (comment on DEV-1679)
