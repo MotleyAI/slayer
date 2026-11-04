@@ -24,7 +24,7 @@ import sqlglot
 from sqlalchemy import event
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -1049,3 +1049,11 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         with sf_engine.connect() as conn:
             conn.execute(sa.text('DROP TABLE IF EXISTS "lower_items"'))
             conn.commit()
+
+
+def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_models) -> None:
+    '''Profiling reads ``orders``/``customer_id`` as Snowflake folds them (``ORDERS``/``CUSTOMER_ID``).'''
+    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    report = run_sync(engine.detect_join_cardinality(data_source="sf_test", model="orders"))
+    (finding,) = [f for f in report.findings if f.target_model == "customers"]
+    assert finding.detected is JoinCardinality.MANY_TO_ONE
