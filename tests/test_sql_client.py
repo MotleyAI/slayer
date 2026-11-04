@@ -27,7 +27,7 @@ from slayer.sql.client import (
 )
 from slayer.sql.dialects import dialect_for_ds_type
 
-from tests._engine_helpers import disposable_engine
+from tests._engine_helpers import disposable_engine, plant_async_engine
 
 
 class TestDuckdbDriverTypeObjects:
@@ -444,12 +444,13 @@ class TestClientDiscardsEngineOnAuthFailure:
         invalidate.assert_not_called()
         assert client._sync_engine is engine
 
-    async def test_async_engine_is_disposed_too(self) -> None:
-        """Native-async dialects hold a second pool ``invalidate_engine`` knows
-        nothing about."""
-        client = self._client()
+    async def test_async_engine_is_disposed_too(self, monkeypatch) -> None:
+        """An async driver's pool is one ``invalidate_engine`` knows nothing about."""
+        client = sql_client.SlayerSQLClient(
+            datasource=DatasourceConfig(name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d"),
+        )
         async_engine = AsyncMock()
-        client._async_engine = async_engine
+        plant_async_engine(monkeypatch, client, async_engine)
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
             patch("slayer.sql.engine_factory.invalidate_engine"),
@@ -457,7 +458,7 @@ class TestClientDiscardsEngineOnAuthFailure:
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
         async_engine.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        plant_async_engine(monkeypatch, client, AsyncMock())
 
     async def test_get_result_column_types_also_discards(self) -> None:
         """Runs its own SQL on the same cached engine, so it needs the same

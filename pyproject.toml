@@ -135,6 +135,7 @@ pytest-xdist = ">=3.6"
 living-architecture = "0.4.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
+pg8000 = "^1.31.6"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

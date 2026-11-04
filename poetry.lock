@@ -355,14 +355,14 @@ test = ["dateparser (==1.*)", "pre-commit", "pytest", "pytest-cov", "pytest-mock
 name = "asn1crypto"
 version = "1.5.1"
 description = "Fast ASN.1 parser and serializer with definitions for private keys, public keys, certificates, CRL, OCSP, CMS, PKCS#3, PKCS#7, PKCS#8, PKCS#12, PKCS#5, X.509 and TSP"
-optional = true
+optional = false
 python-versions = "*"
-groups = ["main"]
-markers = "extra == \"snowflake\" or extra == \"all\""
+groups = ["main", "dev"]
 files = [
     {file = "asn1crypto-1.5.1-py2.py3-none-any.whl", hash = "sha256:db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67"},
     {file = "asn1crypto-1.5.1.tar.gz", hash = "sha256:13ae38502be632115abf8a24cbe5f4da52e3b5231990aff31123c805306ccb9c"},
 ]
+markers = {main = "extra == \"snowflake\" or extra == \"all\""}
 
 [[package]]
 name = "asttokens"
@@ -4732,6 +4732,22 @@ files = [
 ptyprocess = ">=0.5"
 
 [[package]]
+name = "pg8000"
+version = "1.31.6"
+description = "PostgreSQL interface library"
+optional = false
+python-versions = ">=3.9"
+groups = ["dev"]
+files = [
+    {file = "pg8000-1.31.6-py3-none-any.whl", hash = "sha256:1ffe27af94fa5b37ce6885b98d591dc75562ff076859bf50ca7729af59345a80"},
+    {file = "pg8000-1.31.6.tar.gz", hash = "sha256:553b240256d4b2d8f0ad2af28d07df1f9980247f74ac98d2c2b573762ec1ff1b"},
+]
+
+[package.dependencies]
+python-dateutil = ">=2.8.2"
+scramp = "1.5.0"
+
+[[package]]
 name = "platformdirs"
 version = "4.9.6"
 description = "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`."
@@ -6709,6 +6725,21 @@ botocore = ">=1.37.4,<2.0a0"
 crt = ["botocore[crt] (>=1.37.4,<2.0a0)"]
 
 [[package]]
+name = "scramp"
+version = "1.5.0"
+description = "An implementation of the SCRAM protocol."
+optional = false
+python-versions = ">=3.11"
+groups = ["dev"]
+files = [
+    {file = "scramp-1.5.0-py3-none-any.whl", hash = "sha256:8280608f568e81da9e9c9d69cac1331b836622d9b48bf5c5e400e16129c6d1fa"},
+    {file = "scramp-1.5.0.tar.gz", hash = "sha256:21b88a54bc4b656f57de9f0f6be531ca99f7efe49220bbd083b84cf88748e395"},
+]
+
+[package.dependencies]
+asn1crypto = ">=1.5.1"
+
+[[package]]
 name = "send2trash"
 version = "2.1.0"
 description = "Send file to trash natively under Mac OS X, Windows and Linux"
@@ -8282,4 +8313,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "fd0e094b0beef5f5d7c2f9adec2c889741dd0b0fb912fd32e866b63588920abc"
+content-hash = "648bfd2d6f076eb7164092b1495cea5b04e1d0e25942ddab99d48c9a5951fb8f"
