@@ -7,7 +7,8 @@ query of execute, dry run and explain, the refresh-key scan, the join-cardinalit
 statistics and the column-type probe — by rewriting the statement's syntax tree before the
 statement is rendered, never by parsing rendered SQL. The rewrite SHALL scope exactly the
 physical tables, with exactly the predicates, that a rewrite of the same statement's
-rendered SQL would, on every dialect. Every fail-closed refusal SHALL be preserved: a
+rendered SQL would, on every dialect, except that a schema- or catalog-qualified table
+sharing a CTE's name is scoped too. Every fail-closed refusal SHALL be preserved: a
 non-query statement, a table whose tenant column cannot be confirmed, a table the policy
 does not cover, or an invalid join path SHALL be refused before any SQL for that statement
 reaches the database; each statement kind keeps its existing outcome for a refusal (the
