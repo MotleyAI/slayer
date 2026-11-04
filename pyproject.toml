@@ -43,6 +43,7 @@ pandas = {version = ">=2.0", optional = true}
 # imports (renamed to `mcp.server.mcpserver.MCPServer`); cap until the 2.x migration
 # lands. Floor 1.19: the first `FastMCP.tool` accepting `meta` (always-load option).
 mcp = ">=1.19,<2"
+psycopg = {version = ">=3.1", extras = ["binary"], optional = true}
 psycopg2-binary = {version = ">=2.9", optional = true}
 asyncpg = {version = ">=0.27", optional = true}
 pymysql = {version = ">=1.0", optional = true}
@@ -87,7 +88,7 @@ trino = {version = ">=0.340", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
-postgres = ["psycopg2-binary", "asyncpg"]
+postgres = ["psycopg", "psycopg2-binary", "asyncpg"]
 mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
@@ -98,7 +99,7 @@ dbt = ["dbt-core"]
 flight = ["pyarrow", "protobuf"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino", "dbt-core", "pyarrow", "protobuf", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -135,6 +136,7 @@ pytest-xdist = ">=3.6"
 living-architecture = "0.4.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
+pg8000 = "^1.31.6"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

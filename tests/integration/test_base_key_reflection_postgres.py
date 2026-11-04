@@ -56,9 +56,10 @@ def pg_engine(postgresql, pg_ds) -> Iterator[sa.Engine]:
 
 
 def _keys(engine: sa.Engine, table: str) -> TableKeys:
-    return PostgresDialect().reflect_table_keys(
-        sa_engine=engine, inspector=sa.inspect(engine), table=table, schema="shop", catalog=None,
-    )
+    with engine.connect() as conn:
+        return PostgresDialect().reflect_table_keys(
+            connection=conn, inspector=sa.inspect(conn), table=table, schema="shop", catalog=None,
+        )
 
 
 def test_pk_unique_and_whole_table_unique_indexes(pg_engine) -> None:

@@ -12,6 +12,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
+from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -178,23 +179,26 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             .order_by(col("ordinal_position"))
         )
 
-    def reflect_default_schema(self, *, sa_engine: sa.Engine | None, inspector: Any) -> str | None:  # NOSONAR(S1172) — hook signature
+    def url_default_schema(self, *, url: URL) -> str | None:
+        """The URL's dataset (``bigquery://project/dataset``), read as ``sqlalchemy-bigquery`` reads it."""
+        return url.database or None
+
+    def reflect_default_schema(self, *, connection: sa.Connection | None, inspector: Any) -> str | None:  # NOSONAR(S1172) — hook signature
         """The connection URL's dataset (the driver reports no ``default_schema_name``); no SQL runs."""
-        dataset = getattr(getattr(sa_engine, "dialect", None), "dataset_id", None)
+        dataset = getattr(getattr(connection, "dialect", None), "dataset_id", None)
         return dataset if isinstance(dataset, str) and dataset else None
 
     def reflect_schema_description(
-        self, *, sa_engine: sa.Engine, schema: str | None, configured_schema: str | None,
+        self, *, connection: sa.Connection, schema: str | None, configured_schema: str | None,
     ) -> str | None:
         """The dataset's description via the driver's client; ``None`` when unresolvable or failing."""
-        dataset = schema or self.reflect_default_schema(sa_engine=sa_engine, inspector=None) or configured_schema
+        dataset = schema or self.reflect_default_schema(connection=connection, inspector=None) or configured_schema
         if not dataset:
             return None
         try:
-            with sa_engine.connect() as conn:
-                # Private handle sqlalchemy-bigquery itself uses; no public accessor.
-                client = conn.connection._client
-                return clean_comment(client.get_dataset(dataset).description)
+            # Private handle sqlalchemy-bigquery itself uses; no public accessor.
+            client = connection.connection._client
+            return clean_comment(client.get_dataset(dataset).description)
         except Exception:  # noqa: BLE001 — a description is optional
             return None
 

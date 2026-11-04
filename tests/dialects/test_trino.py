@@ -74,8 +74,8 @@ def test_presto_and_athena_resolve_to_presto() -> None:
 
 def test_trino_driver_facts() -> None:
     facts = TrinoDialect().driver_facts("trino")
-    assert (facts.url_scheme, facts.sync_driver, facts.async_driver, facts.install_extra) == (
-        "trino", None, None, "trino",
+    assert (facts.url_scheme, facts.default_driver, facts.extra_drivers, facts.install_extra) == (
+        "trino", None, {}, "trino",
     )
 
 

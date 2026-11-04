@@ -250,6 +250,21 @@ class MissingDriverError(SlayerError, ImportError):
         self.name = missing
 
 
+class UnsupportedDriverError(SlayerError):
+    """A datasource's URL names a driver SLayer cannot serve the type through; ``hint`` names one it can."""
+
+    def __init__(self, *, datasource_name: str, ds_type: str | None, driver: str, reason: str, hint: str) -> None:
+        self.datasource_name = datasource_name
+        self.ds_type = ds_type
+        self.driver = driver
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Datasource {datasource_name!r} (type {ds_type!r}) cannot use driver {driver!r}: {reason}",
+            suggestion=hint,
+        ))
+
+
 class ModelSqlValidationError(SlayerError, ValueError):
     """Raw-``sql`` model source rejected by its reachable datasource at save time.
 
