@@ -24,6 +24,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from slayer.async_utils import on_caller_thread
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
@@ -151,14 +152,6 @@ _CATEGORIES = {
 def type_categories(types: dict[str, ResultColumnType]) -> dict[str, str]:
     """The 1.5.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
     return {name: _CATEGORIES.get(column.type, "string") for name, column in types.items()}
-
-
-def warn_category_probe(*, deprecated: str, replacement: str) -> None:
-    _warnings_module.warn(
-        f"{deprecated} returns 1.5.0 type categories and is removed in SLayer 2.0; "
-        f"use {replacement}, which returns SLayer types and database type names.",
-        DeprecationWarning, stacklevel=3,
-    )
 
 
 # T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
@@ -474,7 +467,11 @@ def get_column_types_sync(
     sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
 ) -> dict[str, str]:
     """Deprecated: the 1.5.0 category probe over an existing engine; use ``get_result_column_types_sync``."""
-    warn_category_probe(deprecated="get_column_types_sync", replacement="get_result_column_types_sync")
+    warn_deprecated(
+        "get_column_types_sync() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+        "use get_result_column_types_sync(), which returns SLayer types and database type names.",
+        removal="2.0",
+    )
     return type_categories(get_result_column_types_sync(
         sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
     ))
@@ -765,7 +762,11 @@ class SlayerSQLClient:
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
         """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
-        warn_category_probe(deprecated="SlayerSQLClient.get_column_types", replacement="get_result_column_types")
+        warn_deprecated(
+            "SlayerSQLClient.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
         return type_categories(await self.get_result_column_types(sql))
 
     async def server_profile(self) -> ServerProfile:

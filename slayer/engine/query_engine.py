@@ -24,6 +24,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync, run_sync_on_caller_thread
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -157,7 +158,6 @@ from slayer.sql.client import (
     build_sql_model_trial_query,
     classify_model_sql,
     type_categories,
-    warn_category_probe,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
@@ -1870,7 +1870,11 @@ class SlayerQueryEngine:
 
     async def get_column_types(self, model_name: str, data_source: Optional[str] = None) -> Dict[str, str]:
         """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
-        warn_category_probe(deprecated="SlayerQueryEngine.get_column_types", replacement="get_result_column_types")
+        warn_deprecated(
+            "SlayerQueryEngine.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
         return type_categories(await self.get_result_column_types(model_name, data_source=data_source))
 
     async def get_result_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.

@@ -205,14 +205,14 @@ class TestTheCategoryProbesKeepWorkingAndWarn:
 
     def test_sync_entry_point(self, sqlite_ds: DatasourceConfig) -> None:
         engine = engine_factory.get_engine(sqlite_ds)
-        with pytest.warns(DeprecationWarning, match="get_result_column_types"):
+        with pytest.warns(FutureWarning, match="get_result_column_types"):
             types = get_column_types_sync("SELECT id, name FROM t", engine=engine, db_type="sqlite")
         assert types == {"id": "number", "name": "string"}
 
     async def test_client_probe(self, duckdb_ds: DatasourceConfig) -> None:
         client = SlayerSQLClient(datasource=duckdb_ds)
         try:
-            with pytest.warns(DeprecationWarning, match="get_result_column_types"):
+            with pytest.warns(FutureWarning, match="get_result_column_types"):
                 types = await client.get_column_types(
                     "SELECT 1 AS i, 1.5::DOUBLE AS d, 'x' AS s, DATE '2024-01-01' AS dt, "
                     "TIMESTAMP '2024-01-01 00:00:00' AS ts, TRUE AS b, '{}'::JSON AS j",
@@ -251,6 +251,6 @@ class TestTheEngineProbe:
         assert _types(result) == {"name": DataType.TEXT, "d": DataType.DOUBLE, "qty": DataType.INT}
 
     async def test_categories_warn(self, engine: SlayerQueryEngine) -> None:
-        with pytest.warns(DeprecationWarning, match="get_result_column_types"):
+        with pytest.warns(FutureWarning, match="get_result_column_types"):
             types = await engine.get_column_types("t")
         assert types == {"name": "string", "d": "number", "qty": "number"}
