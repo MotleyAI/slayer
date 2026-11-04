@@ -131,82 +131,24 @@ def parse_dbt_project(
     all_metrics: list[DbtMetric] = []
     all_sources: list[DbtSource] = []
     declared: dict[str, DbtRegularModel] = {}
+    quoting: dict[str, Any] = {}
 
     yaml_paths = _collect_yaml_paths(project_path)
     if not yaml_paths:
         logger.warning("No YAML files found in %s", project_path)
 
     for path in yaml_paths:
-        with open(path, encoding="utf-8") as f:
-            try:
-                data = yaml.safe_load(f)
-            except yaml.YAMLError as e:
-                logger.warning("Failed to parse %s: %s", path, e)
-                continue
-
-        if not isinstance(data, dict):
+        data = _load_yaml(path)
+        if data is None:
             continue
-
-        # Parse semantic_models (plural list, dbt-core format)
-        raw_models = data.get("semantic_models", [])
-        if not isinstance(raw_models, list):
-            raw_models = [raw_models]
-        for raw in raw_models:
-            if not isinstance(raw, dict):
-                continue
-            # Resolve ref() in model field
-            if "model" in raw and isinstance(raw["model"], str):
-                raw["model"] = _extract_ref_name(raw["model"])
-            try:
-                sm = DbtSemanticModel.model_validate(raw)
-                all_semantic_models.append(sm)
-            except Exception as e:
-                logger.warning("Failed to parse semantic model in %s: %s", path, e)
-
+        if Path(path) == Path(project_path) / "dbt_project.yml" and isinstance(data.get("quoting"), dict):
+            quoting = data["quoting"]
+        all_semantic_models.extend(_semantic_models(data.get("semantic_models", []), path=path))
         declared.update((m.name, m) for m in _declared_models(data.get("models"), path=path))
         all_sources.extend(_declared_sources(data.get("sources"), path=path))
+        all_metrics.extend(_metrics(data.get("metrics", []), path=path))
 
-        # Parse metrics (plural list)
-        raw_metrics = data.get("metrics", [])
-        if not isinstance(raw_metrics, list):
-            raw_metrics = [raw_metrics]
-        for raw in raw_metrics:
-            if not isinstance(raw, dict):
-                continue
-            # Normalize filter: can be a string or multiline YAML
-            if "filter" in raw and isinstance(raw["filter"], str):
-                raw["filter"] = raw["filter"].strip()
-            try:
-                metric = DbtMetric.model_validate(raw)
-                all_metrics.append(metric)
-            except Exception as e:
-                logger.warning("Failed to parse metric in %s: %s", path, e)
-
-    # Always scan .sql files on disk — cheap (just file reads), no dbt-core
-    # dependency, and required so the converter can inline regular-model SQL
-    # into semantic models whose underlying dbt model is a query. Manifest
-    # loading remains gated behind `include_regular_models` because it can
-    # invoke `dbt parse` which is slow and fails without dbt-core installed.
-    sql_by_name = _collect_sql_files(project_path)
-
-    if include_regular_models:
-        manifest_models = _parse_regular_models(project_path)
-        by_name = {rm.name: rm for rm in manifest_models}
-        # Overlay raw_code onto manifest-derived entries; add pure-from-disk
-        # entries for any .sql files with no corresponding manifest node.
-        for name, raw_code in sql_by_name.items():
-            if name in by_name:
-                by_name[name].raw_code = raw_code
-            else:
-                by_name[name] = DbtRegularModel(name=name, raw_code=raw_code)
-    else:
-        by_name = {name: DbtRegularModel(name=name, raw_code=raw_code) for name, raw_code in sql_by_name.items()}
-    for name, schema_model in declared.items():
-        _overlay_declared_columns(by_name.setdefault(name, DbtRegularModel(name=name)), schema_model)
-    regular_models = list(by_name.values())
-    for rm in regular_models:
-        rm.config_quoting = bool(rm.raw_code and _CONFIG_QUOTING_RE.search(rm.raw_code))
-
+    regular_models = _regular_models(project_path, declared=declared, include_manifest=include_regular_models)
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
         len(all_semantic_models), len(all_metrics), len(regular_models), len(yaml_paths),
@@ -216,20 +158,71 @@ def parse_dbt_project(
         metrics=all_metrics,
         regular_models=regular_models,
         sources=all_sources,
-        quoting=_project_quoting(project_path),
+        quoting=quoting,
     )
 
 
-def _project_quoting(project_path: str) -> dict[str, Any]:
-    """``dbt_project.yml``'s ``quoting:`` block, ``{}`` when absent."""
-    path = os.path.join(project_path, "dbt_project.yml")
-    try:
-        with open(path, encoding="utf-8") as f:
+def _load_yaml(path: str) -> dict[str, Any] | None:
+    """A YAML file's top-level mapping; ``None`` when it does not parse or is not a mapping."""
+    with open(path, encoding="utf-8") as f:
+        try:
             data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
-        return {}
-    quoting = data.get("quoting") if isinstance(data, dict) else None
-    return quoting if isinstance(quoting, dict) else {}
+        except yaml.YAMLError as e:
+            logger.warning("Failed to parse %s: %s", path, e)
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def _semantic_models(raw_models: Any, *, path: str) -> list[DbtSemanticModel]:
+    """The ``semantic_models`` entries of one YAML file (plural list, dbt-core format)."""
+    out: list[DbtSemanticModel] = []
+    for raw in raw_models if isinstance(raw_models, list) else [raw_models]:
+        if not isinstance(raw, dict):
+            continue
+        if "model" in raw and isinstance(raw["model"], str):
+            raw["model"] = _extract_ref_name(raw["model"])
+        try:
+            out.append(DbtSemanticModel.model_validate(raw))
+        except Exception as e:
+            logger.warning("Failed to parse semantic model in %s: %s", path, e)
+    return out
+
+
+def _metrics(raw_metrics: Any, *, path: str) -> list[DbtMetric]:
+    """The ``metrics`` entries of one YAML file."""
+    out: list[DbtMetric] = []
+    for raw in raw_metrics if isinstance(raw_metrics, list) else [raw_metrics]:
+        if not isinstance(raw, dict):
+            continue
+        # Normalize filter: can be a string or multiline YAML
+        if "filter" in raw and isinstance(raw["filter"], str):
+            raw["filter"] = raw["filter"].strip()
+        try:
+            out.append(DbtMetric.model_validate(raw))
+        except Exception as e:
+            logger.warning("Failed to parse metric in %s: %s", path, e)
+    return out
+
+
+def _regular_models(project_path: str, *, declared: dict[str, DbtRegularModel],
+                    include_manifest: bool) -> list[DbtRegularModel]:
+    """The project's regular models: ``.sql`` bodies, manifest metadata when asked, declared columns."""
+    # Always scan .sql files on disk — cheap (just file reads), no dbt-core
+    # dependency, and required so the converter can inline regular-model SQL
+    # into semantic models whose underlying dbt model is a query. Manifest
+    # loading remains gated behind `include_manifest` because it can
+    # invoke `dbt parse` which is slow and fails without dbt-core installed.
+    sql_by_name = _collect_sql_files(project_path)
+    by_name = {rm.name: rm for rm in _parse_regular_models(project_path)} if include_manifest else {}
+    # Overlay raw_code onto manifest-derived entries; add pure-from-disk
+    # entries for any .sql files with no corresponding manifest node.
+    for name, raw_code in sql_by_name.items():
+        by_name.setdefault(name, DbtRegularModel(name=name)).raw_code = raw_code
+    for name, schema_model in declared.items():
+        _overlay_declared_columns(by_name.setdefault(name, DbtRegularModel(name=name)), schema_model)
+    for rm in by_name.values():
+        rm.config_quoting = bool(rm.raw_code and _CONFIG_QUOTING_RE.search(rm.raw_code))
+    return list(by_name.values())
 
 
 def _declared_sources(raw: Any, *, path: str) -> list[DbtSource]:

@@ -157,25 +157,28 @@ def _logical_identifiers(tree: Expr, qualifiers: Collection[str]) -> set[int]:
     return out
 
 
+def _fold_span(node: Expr, *, shift: int, origin: list[int | None], text: str) -> tuple[int, int, str] | None:
+    """``(start, end, name)`` in the original text of an unquoted identifier or user-function name, else ``None``."""
+    start, end = node.meta.get("start"), node.meta.get("end")
+    if start is None or end is None or not isinstance(node.this, str):
+        return None
+    start, end = start - shift, end - shift
+    if isinstance(node, exp.Identifier) and node.quoted:
+        if origin[start] is not None:
+            return None  # quoted in the source
+        start, end = start + 1, end - 1  # quoted only so a reserved word parses
+    first, last = origin[start], origin[end]
+    if first is not None and last is not None and text[first:last + 1] == node.this:
+        return first, last, node.this
+    return None
+
+
 def _fold_spans(tree: Expr, *, shift: int, origin: list[int | None], text: str,
                 logical: set[int]) -> list[tuple[int, int, str]]:
     """``(start, end, name)`` in the original text of each unquoted identifier and user-function name."""
-    spans: list[tuple[int, int, str]] = []
-    for node in tree.walk():
-        if not isinstance(node, (exp.Identifier, exp.Anonymous)) or id(node) in logical:
-            continue
-        start, end = node.meta.get("start"), node.meta.get("end")
-        if start is None or end is None or not isinstance(node.this, str):
-            continue
-        start, end = start - shift, end - shift
-        if isinstance(node, exp.Identifier) and node.quoted:
-            if origin[start] is not None:
-                continue  # quoted in the source
-            start, end = start + 1, end - 1  # quoted only so a reserved word parses
-        first, last = origin[start], origin[end]
-        if first is not None and last is not None and text[first:last + 1] == node.this:
-            spans.append((first, last, node.this))
-    return sorted(set(spans))
+    spans = (_fold_span(node, shift=shift, origin=origin, text=text) for node in tree.walk()
+             if isinstance(node, (exp.Identifier, exp.Anonymous)) and id(node) not in logical)
+    return sorted({span for span in spans if span is not None})
 
 
 def fold_source_identifiers(

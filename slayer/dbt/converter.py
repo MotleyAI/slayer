@@ -77,7 +77,7 @@ from slayer.importers.physical import UndecidableIdentifierCaseError, physical_i
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers, stored_identifier
 
 logger = logging.getLogger(__name__)
@@ -235,8 +235,11 @@ class DbtToSlayerConverter:
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
-        self._sql_dialect = (dialect_for_ds_type(target_dialect) if target_dialect
-                             else dialect_for_engine(sa_engine) if sa_engine is not None else None)
+        self._sql_dialect: SqlDialect | None = None
+        if target_dialect:
+            self._sql_dialect = dialect_for_ds_type(target_dialect)
+        elif sa_engine is not None:
+            self._sql_dialect = dialect_for_engine(sa_engine)
         self._dialect = self._sql_dialect.sqlglot_name if self._sql_dialect is not None else None
         self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=self._dialect)
@@ -307,13 +310,7 @@ class DbtToSlayerConverter:
             undecidable.extend(found.undecidable)
             return None if found.unreadable else found.text
 
-        unreadable_sql: set[str] = set()
-        for name, raw in self._regular_models_sql.items():
-            folded = fold(raw)
-            if folded is None:
-                unreadable_sql.add(name)
-            else:
-                self._regular_models_sql[name] = folded
+        unreadable_sql = self._fold_regular_sql(fold)
         for rm in self.project.regular_models:
             if rm.config_quoting:
                 self._warnings.append(ConversionWarning(
@@ -337,6 +334,29 @@ class DbtToSlayerConverter:
         if undecidable or self._relations.undecidable:
             raise UndecidableIdentifierCaseError([*undecidable, *self._relations.undecidable])
 
+    def _fold_regular_sql(self, fold: Callable[[str], str | None]) -> set[str]:
+        """Fold each regular model's SQL in place; the names whose SQL does not parse."""
+        unreadable: set[str] = set()
+        for name, raw in self._regular_models_sql.items():
+            folded = fold(raw)
+            if folded is None:
+                unreadable.add(name)
+            else:
+                self._regular_models_sql[name] = folded
+        return unreadable
+
+    def _named_member(self, member: _Member, *, undecidable: list[str]) -> _Member:
+        """A member without an ``expr``, reading the physical column its name folds to."""
+        if not any(c.isupper() for c in member.name):
+            return member
+        if self._sql_dialect is None:
+            undecidable.append(member.name)
+            return member
+        folded_name = stored_identifier(member.name, dialect=self._sql_dialect)
+        if folded_name != member.name and self._sql_dialect.identifier_folding != "none":
+            return member.model_copy(update={"expr": folded_name})
+        return member
+
     def _folded_members(self, sm: DbtSemanticModel, *, fold: Callable[[str], str | None],
                         undecidable: list[str]) -> DbtSemanticModel:
         """``sm`` with each member's ``expr`` folded (a missing one: its folded name); unreadable members dropped."""
@@ -344,13 +364,7 @@ class DbtToSlayerConverter:
             out = []
             for member in members:
                 if member.expr is None:
-                    if any(c.isupper() for c in member.name):
-                        if self._sql_dialect is None:
-                            undecidable.append(member.name)
-                        elif (folded_name := stored_identifier(member.name, dialect=self._sql_dialect)) != member.name \
-                                and self._sql_dialect.identifier_folding != "none":
-                            member = member.model_copy(update={"expr": folded_name})
-                    out.append(member)
+                    out.append(self._named_member(member, undecidable=undecidable))
                     continue
                 folded = fold(member.expr)
                 if folded is None:

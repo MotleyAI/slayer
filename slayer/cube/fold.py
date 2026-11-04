@@ -46,16 +46,34 @@ class _Folder:
         self.undecidable += found.undecidable
         return None if found.unreadable else found.text
 
+    def fold_in_place(self, holders: Sequence[Any], whens: Sequence[dict[str, Any]] = ()) -> str | None:
+        """Fold each holder's (and CASE ``when``'s) ``sql`` in place; the first text that cannot be read, else
+        ``None`` (nothing is changed then)."""
+        texts = [h.sql for h in holders] + [w.get("sql") for w in whens]
+        folded = [self.fold(t) if t else t for t in texts]
+        if bad := next((t for t, f in zip(texts, folded) if t and f is None), None):
+            return bad
+        for holder, text in zip(holders, folded):
+            holder.sql = text
+        for when, text in zip(whens, folded[len(holders):]):
+            when["sql"] = text
+        return None
+
+    def fold_refs(self, refs: list[CubeFilterParamRef]) -> list[CubeFilterParamRef]:
+        """Each FILTER_PARAMS body folded; an unreadable one is kept and its sentinel marks its holder unreadable."""
+        out: list[CubeFilterParamRef] = []
+        for ref in refs:
+            body = self.fold(ref.body_template, masks=_VARIABLE_MASKS)
+            if body is None:
+                self.bad_sentinels.add(ref.sentinel)
+            out.append(ref.model_copy(update={"body_template": body or ref.body_template}))
+        return out
+
 
 def fold_cube(cube: CubeCube, refs: list[CubeFilterParamRef], *, dialect: SqlDialect | None) -> FoldedCube:
     """``cube`` and its FILTER_PARAMS bodies folded; a member whose SQL cannot be read is dropped with a report."""
     folder = _Folder(dialect)
-    folded_refs: list[CubeFilterParamRef] = []
-    for ref in refs:
-        body = folder.fold(ref.body_template, masks=_VARIABLE_MASKS)
-        if body is None:
-            folder.bad_sentinels.add(ref.sentinel)
-        folded_refs.append(ref.model_copy(update={"body_template": body or ref.body_template}))
+    folded_refs = folder.fold_refs(refs)
     cube = cube.model_copy(deep=True, update={"filter_params": folded_refs if cube.filter_params else []})
     issues: list[CubeConversionIssue] = []
 
@@ -73,17 +91,11 @@ def fold_cube(cube: CubeCube, refs: list[CubeFilterParamRef], *, dialect: SqlDia
             setattr(cube, field, folded)
 
     def readable(member: str, holders: Sequence[Any], whens: Sequence[dict[str, Any]] = ()) -> bool:
-        """Fold each holder's (and CASE ``when``'s) ``sql`` in place; ``False`` (reported) when one cannot be read."""
-        texts = [h.sql for h in holders] + [w.get("sql") for w in whens]
-        folded = [folder.fold(t) if t else t for t in texts]
-        if bad := next((t for t, f in zip(texts, folded) if t and f is None), None):
+        """Fold ``holders`` in place; ``False`` (reported) when one cannot be read."""
+        bad = folder.fold_in_place(holders, whens)
+        if bad is not None:
             issue(member, _unreadable(f"{member!r}", bad))
-            return False
-        for holder, text in zip(holders, folded):
-            holder.sql = text
-        for when, text in zip(whens, folded[len(holders):]):
-            when["sql"] = text
-        return True
+        return bad is None
 
     cube.dimensions = [d for d in cube.dimensions if readable(
         d.name, [d], [w for w in (d.case or {}).get("when", []) if isinstance(w, dict)])]

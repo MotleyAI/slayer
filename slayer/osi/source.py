@@ -38,7 +38,8 @@ class ParsedSource(BaseModel):
 
 def _outside_quotes(s: str, *, read: str | None) -> str:
     """``s`` with its quoted identifier spans (``read``'s identifier quotes) removed."""
-    quotes = dict(q if isinstance(q, tuple) else (q, q) for q in Dialect.get_or_raise(read).tokenizer_class.IDENTIFIERS)
+    pairs = [q if isinstance(q, tuple) else (q, q) for q in Dialect.get_or_raise(read).tokenizer_class.IDENTIFIERS]
+    quotes = dict(pairs)
     out: list[str] = []
     close: str | None = None
     i = 0
