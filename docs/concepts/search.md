@@ -392,7 +392,7 @@ Every column carries three optional sample-value fields for richer results:
 Profiling is lazy, never run at ingest (a per-column full scan would dominate
 ingest wall-clock). Samples populate on first `inspect` of a column, and also on:
 `slayer datasources refresh-samples`, `edit_model` (edited column, or every column on a
-model-level change), `inspect_model` (missing values), `search()` column hits
+model-level change), a model `inspect` (missing values), `search()` column hits
 (stale values — one profiling call per model, models concurrently; no-op without
 an engine), and single-entity `inspect` at `compact=False`. Legacy models carrying
 only `sampled` re-profile on the next such touch. sql-mode and query-backed models
@@ -416,7 +416,7 @@ Sample values: ["paid", "refunded", "cancelled", "pending", …]
 When `sampled_values` is `None` (numeric/temporal, legacy data) the renderer
 falls back to `sampled`; an empty `[]` is authoritative-empty (line skipped, no
 fallback). The same renderer feeds both the search index doc and `EntityHit.text`.
-`inspect_model`'s markdown `## Columns` table keeps the 20-truncated `sampled` for
+A model `inspect`'s markdown `## Columns` table keeps the 20-truncated `sampled` for
 readability; its JSON output carries the full list.
 
 **Known limitation.** The refresh hook runs *after* RRF fusion, on the returned

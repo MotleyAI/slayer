@@ -40,7 +40,6 @@ from slayer.engine import ingestion
 from slayer.engine.schema_drift import _live_schema_for_datasource
 from slayer.engine.ingestion import (
     IntrospectedColumn,
-    ingest_datasource,
     _sqlite_probe_integer_columns,
 )
 from slayer.sql.client import SlayerSQLClient
@@ -156,7 +155,7 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list:
     async with _client(ds) as client:
-        return await ingest_datasource(ds, client=client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
 
 
 def _literals(sql: str, *, read: str = "postgres") -> dict[str, str]:
@@ -423,7 +422,7 @@ class TestGenerateJoinsDedup:
         monkeypatch.setattr(SqliteDialect, "reflect_table_keys", _keys)
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)
         async with _client(ds) as client:
-            report = await ingestion.ingest_datasource_report(datasource=ds, client=client)
+            report = await ingestion.ingest_datasource_report_async(datasource=ds, client=client)
         return next(m for m in report.models if m.name == "orders").joins
 
     async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch):

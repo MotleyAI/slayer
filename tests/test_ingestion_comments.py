@@ -36,9 +36,7 @@ from slayer.engine.ingestion import (
     _print_ingest_addition,
     _safe_get_table_comment,
     _sqlite_probe_integer_columns,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
     introspect_table_to_model,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
@@ -212,12 +210,12 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
     async with _client(ds) as client:
-        return await ingest_datasource(ds, client=client)
+        return await ingestion_mod.ingest_datasource_async(ds, client=client)
 
 
 async def _report(ds: DatasourceConfig) -> IngestionScanReport:
     async with _client(ds) as client:
-        return await ingest_datasource_report(ds, client=client)
+        return await ingestion_mod.ingest_datasource_report_async(ds, client=client)
 
 
 async def _idempotent(*, datasource: DatasourceConfig | None, storage: YAMLStorage) -> IdempotentIngestResult:
@@ -751,13 +749,13 @@ def _sqlite_live_db(tmp_path: Path) -> str:
 
 
 def _patch_full_ingest(monkeypatch: pytest.MonkeyPatch, description: str | None):
-    real = ingestion_mod.ingest_datasource_report
+    real = ingestion_mod.ingest_datasource_report_async
 
     async def _fake(*args, **kwargs):
         out = await real(*args, **kwargs)
         return out.model_copy(update={"schema_description": description})
 
-    monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
+    monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
 
 
 class TestIdempotentDatasourceDescription:

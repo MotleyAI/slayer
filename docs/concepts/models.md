@@ -504,7 +504,7 @@ Rules:
     ```
 
     With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in every Mode-B expression.
-- **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the model's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
+- **`inspect` shows the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the model's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
 
 **Scope:** substitution applies to the **direct source model**, each stage's own source model, and every stage of a query-backed source (spliced into the statement); join-target and cross-model-target models are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
 
@@ -527,7 +527,7 @@ Unresolved placeholders raise a clear error at execute time, naming the model an
 
 ### What gets cached
 
-For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect_model`, `get_result_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
+For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect`, `get_result_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
 
 You **cannot** supply `columns` yourself when creating a query-backed model — they are engine-managed, and any user-supplied value is rejected with a clear error.
 

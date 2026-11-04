@@ -1,4 +1,4 @@
-"""Schema-qualified ingestion (DEV-1758), behavioral end-to-end on DuckDB.
+"""Schema-qualified ingestion, behavioral end-to-end on DuckDB.
 
 DuckDB is the only exposed Tier-1 dialect whose ``Inspector`` sweeps every
 schema for a ``schema=None`` listing, so it is where the regression is visible
@@ -34,9 +34,7 @@ from slayer.engine import ingestion as mod
 from slayer.engine import schema_drift as drift_mod
 from slayer.engine.ingestion import (
     _print_ingest_addition,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
     introspect_table_to_model,
     list_ingestable_objects,
 )
@@ -196,7 +194,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
     - ``main.pktbl(id PK)`` exists in both → DuckDB gives both the same
       auto-generated PK constraint name, so a schema-only join duplicates it.
     - ``main.commented(v)`` exists in both with DIFFERENT comments on ``v`` →
-      the DEV-1809 cross-catalog comment-bleed trap.
+      the cross-catalog comment-bleed trap.
     - ``only_in_other`` lives ONLY in ``aaa`` → a bare-token retry from
       ``att_main`` would wrongly find it.
     """
@@ -280,12 +278,12 @@ class _UnlistableSchemas(DelegatingSqlClient):
 async def _report(ds: DatasourceConfig | None, **kwargs: Any):
     assert ds is not None
     async with _client(ds) as client:
-        return await ingest_datasource_report(ds, client=client, **kwargs)
+        return await mod.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
 async def _ingest(ds: DatasourceConfig, **kwargs: Any):
     async with _client(ds) as client:
-        return await ingest_datasource(ds, client=client, **kwargs)
+        return await mod.ingest_datasource_async(ds, client=client, **kwargs)
 
 
 async def _idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage, **kwargs: Any):
@@ -635,7 +633,7 @@ class TestScopeResolution:
 
 
 class TestSkippedSchemasReported:
-    """DEV-1758 (Codex): a requested schema dropped from scope (system /
+    """A requested schema dropped from scope (system /
     foreign catalog) is surfaced in the report, not a silent empty ingest."""
 
     async def test_report_surfaces_a_requested_system_schema(self, basic_db) -> None:
@@ -702,7 +700,7 @@ class TestCollisions:
     async def test_faithful_and_sanitized_names_do_not_collide_across_schemas(
         self, sanitize_collision_db
     ) -> None:
-        """DEV-1743: ``s1.a__b`` keeps its faithful name ``a__b``; ``s2.a_b`` is
+        """``s1.a__b`` keeps its faithful name ``a__b``; ``s2.a_b`` is
         the distinct ``a_b`` — the old sanitize-collapse collision is gone, so
         both are modelled and neither is skipped."""
         report = await _report(_ds(sanitize_collision_db), all_schemas=True
@@ -722,7 +720,7 @@ class TestCollisions:
     async def test_faithful_and_sanitized_names_are_distinct_in_one_schema(
         self, tmp_path
     ) -> None:
-        """DEV-1743: within one schema ``a_b`` and ``a__b`` are distinct models —
+        """Within one schema ``a_b`` and ``a__b`` are distinct models —
         no collision, nothing skipped."""
         path = str(tmp_path / "one.duckdb")
         _duck(path=path, statements=[
@@ -736,7 +734,7 @@ class TestCollisions:
 
 class TestCollisionTieBreaks:
     async def test_distinct_dunder_names_in_one_schema_do_not_tie(self, tmp_path) -> None:
-        """DEV-1743: ``s2.a__b`` and ``s2.a___b`` are different faithful models —
+        """``s2.a__b`` and ``s2.a___b`` are different faithful models —
         no sanitize-collapse tie, both modelled, nothing skipped."""
         path = str(tmp_path / "tie.duckdb")
         _duck(path=path, statements=[
@@ -1236,7 +1234,7 @@ class TestLiveTableResolution:
 
 
 # ===========================================================================
-# DEV-1809 composition — comments from a non-default schema, no cross-bleed
+# Comments from a non-default schema, no cross-bleed
 # ===========================================================================
 
 
@@ -1529,7 +1527,7 @@ class TestMcpParity:
     async def test_show_tables_does_not_sweep_non_default_schemas(self, basic_db, tmp_path) -> None:
         """MCP ``datasources show``'s table listing routes through scope
         resolution, so DuckDB no longer sweeps every schema (§3.9)."""
-        # DEV-1750: _fetch_tables returns IngestableObjects (name + kind).
+        # _fetch_tables returns IngestableObjects (name + kind).
         async with _client(_ds(basic_db)) as client:
             objects, err = await _fetch_tables(client, schema_name=None)
         assert err is None

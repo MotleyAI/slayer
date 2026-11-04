@@ -38,7 +38,6 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.errors import SlayerError
-from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.base import StorageBackend, storage_base_dir
@@ -964,9 +963,7 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
     """
     engine = SlayerQueryEngine(storage=storage)
     try:
-        result = engine.run_sync(ingest_datasource_idempotent(
-            datasource=datasource, storage=engine.storage, client=engine.client_for(datasource),
-        ))
+        result = engine.ingest_idempotent_sync(datasource)
         stored = {
             m.name: m
             for m in DocumentLoadFailures().skip(

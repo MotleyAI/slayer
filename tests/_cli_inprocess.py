@@ -39,9 +39,8 @@ def run_cli_in_process(
     maps to 1 with its traceback on stderr, as in a real process.
     argv/stdin/stdout/stderr/environ are restored.
 
-    ``env`` replaces ``os.environ`` for the call (runtime-read vars only); it does
-    not affect import-time constants like ``slayer.cli._STORAGE_DEFAULT`` — pass
-    ``--storage`` in ``args`` to control storage.
+    ``env`` replaces ``os.environ`` for the call (runtime-read vars only, which
+    include the default storage location ``SLAYER_STORAGE``).
     """
     old_argv, old_stdin = sys.argv, sys.stdin
     old_environ = dict(os.environ)

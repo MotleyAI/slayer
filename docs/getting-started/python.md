@@ -23,7 +23,6 @@ Use SLayer directly in your Python code — no HTTP, no server process:
 ```python
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -43,13 +42,15 @@ ds = DatasourceConfig(
 run_sync(storage.save_datasource(ds))
 
 # Auto-generate models from schema, reading the database through the engine's client
-models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds), schema="public"))
+models = engine.ingest_sync(ds, schema="public")
 for model in models:
     run_sync(storage.save_model(model))
     print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")
 ```
 
 Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
+
+Code written for SLayer 1.5.0 — `ingest_datasource(ds)` without a `client`, or a dbt / OSI converter given `sa_engine=` — still runs, with a `FutureWarning`, until SLayer 2.0.
 
 ## Query
 

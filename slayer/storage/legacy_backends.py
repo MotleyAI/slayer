@@ -3,9 +3,10 @@
 import abc
 import functools
 import sys
-import warnings
 from collections.abc import Callable, Coroutine
 from typing import Any
+
+from slayer.core.deprecation import WarningLocation, warn_deprecated
 
 _SHAPE = "(memories, failed_rows)"
 _ADAPTED = "__slayer_adapted_save_datasource__"
@@ -47,10 +48,10 @@ def _adapt_save_datasource(*, cls: type, base: type) -> None:
         setattr(cls, "save_datasource", _validated_first(own))
     else:
         return
-    warnings.warn(
+    warn_deprecated(
         f"{_owner(cls)} overrides save_datasource, the 0.9.x storage hook; implement _save_datasource_impl "
         "instead. The override is adapted until SLayer 2.0.",
-        FutureWarning, stacklevel=_caller_stacklevel(base),
+        removal="2.0", stacklevel=_caller_stacklevel(base),
     )
 
 
@@ -90,10 +91,11 @@ def _check_list_memories_rows(cls: type) -> None:
             )
         if not warned:
             code = own.__code__
-            warnings.warn_explicit(
+            warn_deprecated(
                 f"{owner}._list_memories_rows returns a plain list, the 0.9.x shape; return {_SHAPE} instead. "
                 "Plain lists are accepted until SLayer 2.0, and one unloadable memory fails the whole call.",
-                FutureWarning, filename=code.co_filename, lineno=code.co_firstlineno, module=cls.__module__,
+                removal="2.0",
+                location=WarningLocation(filename=code.co_filename, lineno=code.co_firstlineno, module=cls.__module__),
             )
             warned = True
         return list(result), []
