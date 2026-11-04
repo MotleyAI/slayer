@@ -56,7 +56,8 @@ def test_folded_and_exact_live_spellings_are_ambiguous(dialect: str) -> None:
     """SQLAlchemy reflects ``FOO`` as ``foo``, ``"foo"`` as a quoted ``foo`` and ``"Foo"`` as ``Foo``."""
     index = PhysicalIndex([], dialect=dialect, live=["foo", quoted_name("foo", True), "Foo"])
     problem = index.problem(exp.to_identifier("foo"))
-    assert problem is not None and "ambiguous" in problem
+    assert problem is not None
+    assert "ambiguous" in problem
     assert index.problem(exp.to_identifier("Foo", quoted=True)) is None
     assert index.problem(exp.to_identifier("foo", quoted=True)) is None
 

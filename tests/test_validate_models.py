@@ -51,8 +51,11 @@ from slayer.engine.schema_drift import (
     diff_sql_model,
     diff_sql_table_model,
 )
+from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+
+POSTGRES = get_dialect("postgres")
 
 
 # ---------------------------------------------------------------------------
@@ -1392,7 +1395,7 @@ class TestResolveLiveTable:
     def test_bare_table_matches(self) -> None:
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="orders", live_tables={"orders": live}
+            sql_table="orders", live_tables={"orders": live}, dialect=POSTGRES
         ) is live
 
     def test_schema_qualified_matches_the_qualified_key(self) -> None:
@@ -1403,7 +1406,7 @@ class TestResolveLiveTable:
         # key directly.
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="public.orders", live_tables={"public.orders": live}
+            sql_table="public.orders", live_tables={"public.orders": live}, dialect=POSTGRES
         ) is live
 
     def test_schema_qualified_does_not_fall_back_to_a_bare_twin(self) -> None:
@@ -1411,29 +1414,29 @@ class TestResolveLiveTable:
         # key (a different, default-schema table).
         live = self._live("orders")
         assert _resolve_live_table(
-            sql_table="public.orders", live_tables={"orders": live}
+            sql_table="public.orders", live_tables={"orders": live}, dialect=POSTGRES
         ) is None
 
     def test_quoted_table_part_strips_quotes(self) -> None:
         live = self._live("Company")
         # prod."Company" resolves against the per-segment-unquoted qualified key.
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"prod.Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}, dialect=POSTGRES
         ) is live
 
     def test_both_parts_quoted(self) -> None:
         live = self._live("Company")
         assert _resolve_live_table(
-            sql_table='"prod"."Company"', live_tables={"prod.Company": live}
+            sql_table='"prod"."Company"', live_tables={"prod.Company": live}, dialect=POSTGRES
         ) is live
 
     def test_escaped_inner_quote_in_table(self) -> None:
         live = self._live('Comp"any')
         assert _resolve_live_table(
-            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}
+            sql_table='prod."Comp""any"', live_tables={'prod.Comp"any': live}, dialect=POSTGRES
         ) is live
 
     def test_missing_returns_none(self) -> None:
         assert _resolve_live_table(
-            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}
+            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}, dialect=POSTGRES
         ) is None

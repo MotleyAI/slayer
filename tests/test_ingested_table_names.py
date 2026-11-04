@@ -90,7 +90,8 @@ async def test_schema_name_with_a_dot(shop: tuple[DatasourceConfig, YAMLStorage]
     assert await _qty(storage, model.name) == [5]
     again = await ingest_datasource_idempotent(datasource=datasource, storage=storage, schema="sales.v2")
     assert [(a.created, a.new_columns) for a in again.additions] == [(False, [])]
-    assert again.to_delete == [] and again.errors == []
+    assert again.to_delete == []
+    assert again.errors == []
     assert await _drift(storage) == []
 
 

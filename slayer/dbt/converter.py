@@ -54,6 +54,7 @@ from slayer.dbt.models import (
 from slayer.dbt.relations import RelationNames
 from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.introspect_utils import dialect_for_engine
 from slayer.engine.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
@@ -76,7 +77,7 @@ from slayer.importers.physical import UndecidableIdentifierCaseError, physical_i
 # existing ``from slayer.dbt.converter import ConversionResult`` imports keep
 # working against the same class objects.
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers, stored_identifier
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ class DbtToSlayerConverter:
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
         self._sql_dialect = (dialect_for_ds_type(target_dialect) if target_dialect
-                             else dialect_for_sa_backend(sa_engine.dialect.name) if sa_engine is not None else None)
+                             else dialect_for_engine(sa_engine) if sa_engine is not None else None)
         self._dialect = self._sql_dialect.sqlglot_name if self._sql_dialect is not None else None
         self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=self._dialect)

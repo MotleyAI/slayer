@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
@@ -176,9 +176,11 @@ async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> 
                                  model=items, dialect=dialect)
     tree = sqlglot.parse_one(sql, read=dialect)
     (table,) = tree.find_all(exp.Table)
-    assert [(p.name, p.quoted) for p in table.parts] == [("sales", False), ("orderitems", False)]
+    assert [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)] == [
+        ("sales", False), ("orderitems", False)]
     physical = [c.this for c in tree.find_all(exp.Column) if c.name.lower() == "orderamount"]
-    assert physical and all((i.name, i.quoted) == ("orderamount", False) for i in physical)
+    assert physical
+    assert all((i.name, i.quoted) == ("orderamount", False) for i in physical)
 
 
 @pytest.fixture
@@ -206,7 +208,8 @@ def test_folded_and_exact_live_spellings_on_snowflake(snowflake_reflection: sa.E
 def test_offline_mixed_case_cube_is_refused() -> None:
     with pytest.raises(UndecidableIdentifierCaseError) as raised:
         _cube(ITEMS, dialect=None)
-    assert "Sales" in str(raised.value) and "OrderItems" in str(raised.value)
+    assert "Sales" in str(raised.value)
+    assert "OrderItems" in str(raised.value)
 
 
 def test_offline_lowercase_cube_imports() -> None:
@@ -225,8 +228,9 @@ def test_offline_lowercase_cube_imports() -> None:
 def test_offline_mixed_case_dbt_is_refused(semantic_model: dict[str, Any], raw_code: str | None, named: str) -> None:
     regular = [{"name": "src", "raw_code": raw_code}] if raw_code else []
     project = DbtProject.model_validate({"semantic_models": [semantic_model], "regular_models": regular})
+    converter = DbtToSlayerConverter(project=project, data_source=DS)
     with pytest.raises(UndecidableIdentifierCaseError) as raised:
-        DbtToSlayerConverter(project=project, data_source=DS).convert()
+        converter.convert()
     assert named in str(raised.value)
 
 
@@ -313,12 +317,14 @@ def test_osi_target_native_mixed_case_identifier_folded(osi_db: Path) -> None:
 
 def test_osi_portable_expression_folded_by_the_target(osi_db: Path) -> None:
     sql = _osi_sql(osi_db, f("pos", "IFF(OrderAmount > 0, OrderAmount, 0)"), target="postgres")
-    assert sql is not None and _columns_read(sql) == {"orderamount"}
+    assert sql is not None
+    assert _columns_read(sql) == {"orderamount"}
 
 
 def test_osi_candidate_read_with_its_dialect_folded_by_the_target(osi_db: Path) -> None:
     sql = _osi_sql(osi_db, f_dialects("pick", ("BIGQUERY", "OrderAmount * 5")), target="postgres")
-    assert sql is not None and _columns_read(sql) == {"orderamount"}
+    assert sql is not None
+    assert _columns_read(sql) == {"orderamount"}
 
 
 def test_osi_candidates_differing_in_case(osi_db: Path) -> None:

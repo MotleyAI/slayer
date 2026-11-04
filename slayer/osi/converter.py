@@ -340,7 +340,7 @@ class OsiToSlayerConverter:
             else:
                 base = introspect_table_to_model(
                     sa_engine=self.sa_engine, inspector=inspector,
-                    table_name=quoted_name(parsed.table, True) if parsed.table_quoted else parsed.table,
+                    table_name=quoted_name(parsed.table or "", True) if parsed.table_quoted else parsed.table or "",
                     ref=requested_schema_ref(parsed.schema_name, sa_engine=self.sa_engine),
                     data_source=self.data_source, model_name=ds.name,
                 )

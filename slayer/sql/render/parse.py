@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr, Expression
-from sqlglot.tokens import TokenType
+from sqlglot.tokenizer_core import TokenType
 
 from slayer.core.errors import NotReadOnlyQueryError
 from slayer.sql.dialects.base import SqlDialect, ascii_lower
@@ -111,7 +111,7 @@ def _masked(sql: str, masks: Sequence[re.Pattern[str]]) -> str:
     return sql
 
 
-def _parsed_for_fold(text: str, *, read: str, table: bool) -> tuple[Expression, int] | None:
+def _parsed_for_fold(text: str, *, read: str, table: bool) -> tuple[Expr, int] | None:
     """``text``'s parse tree and the offset its spans are shifted by, or ``None`` when it does not parse."""
     if table:
         try:
@@ -145,7 +145,7 @@ def stored_identifier(word: str, *, dialect: SqlDialect) -> str:
     return ascii_lower(word) if dialect.identifier_folding == "lower" else word.lower()
 
 
-def _logical_identifiers(tree: Expression, qualifiers: Collection[str]) -> set[int]:
+def _logical_identifiers(tree: Expr, qualifiers: Collection[str]) -> set[int]:
     """Ids of the identifiers of columns qualified by one of ``qualifiers`` (an unquoted one matching in any case)."""
     folded = {q.lower() for q in qualifiers}
     out: set[int] = set()
@@ -157,7 +157,7 @@ def _logical_identifiers(tree: Expression, qualifiers: Collection[str]) -> set[i
     return out
 
 
-def _fold_spans(tree: Expression, *, shift: int, origin: list[int | None], text: str,
+def _fold_spans(tree: Expr, *, shift: int, origin: list[int | None], text: str,
                 logical: set[int]) -> list[tuple[int, int, str]]:
     """``(start, end, name)`` in the original text of each unquoted identifier and user-function name."""
     spans: list[tuple[int, int, str]] = []
