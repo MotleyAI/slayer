@@ -1,4 +1,4 @@
-"""Integration tests for the Postgres facade (DEV-1486).
+"""Integration tests for the Postgres facade.
 
 Boots a real ``slayer pg-serve``-equivalent asyncio server (in a background
 thread with its own event loop) backed by the bundled Jaffle Shop demo, and
@@ -22,11 +22,11 @@ asyncpg = pytest.importorskip("asyncpg")
 
 @pytest.fixture(scope="module")
 def pg_demo_server(
-    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+    shared_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[tuple[str, int]]:
     base = str(tmp_path_factory.mktemp("pg-demo"))
     loop, thread, host, port = start_pg_demo_server(
-        token=None, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
+        token=None, prebuilt_duckdb=shared_demo_duckdb, base_dir=base
     )
     try:
         yield host, port
@@ -37,12 +37,12 @@ def pg_demo_server(
 
 @pytest.fixture(scope="module")
 def pg_demo_server_with_token(
-    jaffle_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
+    shared_demo_duckdb: str, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[tuple[str, int, str]]:
     token = "s3cret"
     base = str(tmp_path_factory.mktemp("pg-demo-tok"))
     loop, thread, host, port = start_pg_demo_server(
-        token=token, prebuilt_duckdb=jaffle_demo_duckdb, base_dir=base
+        token=token, prebuilt_duckdb=shared_demo_duckdb, base_dir=base
     )
     try:
         yield host, port, token
@@ -71,7 +71,7 @@ async def test_connect_and_current_database(pg_demo_server) -> None:
 
 
 async def test_arbitrary_database_name_accepted(pg_demo_server) -> None:
-    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # The database parameter is a logical DB name, not a datasource
     # selector — any name connects and current_database() echoes it back.
     host, port = pg_demo_server
     conn = await _connect(host, port, database="nope")
@@ -110,7 +110,7 @@ async def test_information_schema_metrics(pg_demo_server) -> None:
         rows = await conn.fetch(
             "SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name = 'orders'"
         )
-        # DEV-1558: WHERE is now honored server-side; result is filtered.
+        # WHERE is now honored server-side; result is filtered.
         assert rows  # at least one row
         assert all(r["table_name"] == "orders" for r in rows)
         assert any(r["metric_name"] == "row_count" for r in rows)
@@ -133,7 +133,7 @@ async def test_pg_class_orders_present(pg_demo_server) -> None:
     conn = await _connect(host, port)
     try:
         rows = await conn.fetch("SELECT * FROM pg_catalog.pg_class WHERE relname = 'orders'")
-        # DEV-1558: WHERE is now honored; only `orders` comes back.
+        # WHERE is now honored; only `orders` comes back.
         assert {r["relname"] for r in rows} == {"orders"}
         assert rows[0]["relkind"] == "r"
     finally:
@@ -147,7 +147,7 @@ async def test_pg_attribute_has_orders_columns(pg_demo_server) -> None:
         oid = await conn.fetchval(
             "SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders'"
         )
-        # DEV-1558: WHERE is now honored server-side. Inline the OID rather
+        # WHERE is now honored server-side. Inline the OID rather
         # than binding $1: the pg facade types unannounced $N parameters as
         # TEXT (per asyncpg's wire expectation), and asyncpg refuses to
         # encode an int through a TEXT parameter.
@@ -160,7 +160,7 @@ async def test_pg_attribute_has_orders_columns(pg_demo_server) -> None:
         await conn.close()
 
 
-# --- DEV-1558 Metabase v0.62 schema-sync queries (live asyncpg) -------------
+# --- Metabase v0.62 schema-sync queries (live asyncpg) -------------
 
 
 async def test_metabase_get_tables_4way_join(pg_demo_server) -> None:
@@ -408,7 +408,7 @@ async def test_dml_rejected(pg_demo_server) -> None:
 
 
 async def test_cast_unsupported_coercion_returns_postgres_error(pg_demo_server) -> None:
-    """DEV-1566: CAST(<TEXT col> AS INT) is outside the admitted-coercion
+    """CAST(<TEXT col> AS INT) is outside the admitted-coercion
     allowlist (truncation/parse semantics differ from Postgres). The
     translator surfaces a clean PostgresError with the strict-allowlist
     message — not an internal connection crash at wire-encode time."""
@@ -441,7 +441,7 @@ async def test_parameterised_query_substitutes(pg_demo_server) -> None:
 
 
 async def test_bind_empty_string_against_int_column_succeeds(pg_demo_server) -> None:
-    """DEV-1570: pgjdbc-style empty-string-for-null-text bound against an
+    """pgjdbc-style empty-string-for-null-text bound against an
     INT-shaped catalog column previously tripped DuckDB's
     ``Conversion Error: Could not convert string '' to INT64``.
     The Bind-time rewrite swaps the literal to NULL so the query runs."""

@@ -33,16 +33,10 @@ from slayer.sql.client import SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests.integration._demo_build import NOTEBOOK_DEMO_DB
 
 pytestmark = pytest.mark.integration
 
-# Cached 3-year demo DB maintained by tests/integration/test_notebooks.py's
-# session-scoped _ensure_jaffle_db fixture. Reusing it avoids ~6s of
-# `jafgen` subprocess time per pytest invocation.
-_CACHED_JAFFLE_DB = (
-    Path(__file__).resolve().parent.parent.parent
-    / "docs" / "examples" / "jaffle_data" / "demo" / "jaffle_shop.duckdb"
-)
 
 
 @pytest.fixture(scope="module")
@@ -53,8 +47,8 @@ def jaffle_duckdb_path(tmp_path_factory):
     tmpdir = tmp_path_factory.mktemp("jaffle_ingest")
     db_path = tmpdir / "jaffle_ingest.duckdb"
 
-    if _CACHED_JAFFLE_DB.exists():
-        shutil.copy(_CACHED_JAFFLE_DB, db_path)
+    if NOTEBOOK_DEMO_DB.exists():
+        shutil.copy(NOTEBOOK_DEMO_DB, db_path)
         return str(db_path)
 
     try:

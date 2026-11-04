@@ -1,4 +1,4 @@
-"""DEV-1815 reuse guards: the Jaffle Shop demo is built once and shared.
+"""Reuse guards: the Jaffle Shop demo is built once and shared.
 
 These lock in the perf-critical reuse so a future change cannot silently
 regress to cold-building the demo per server fixture.
@@ -26,19 +26,19 @@ def _forbid_jafgen(*_args, **_kwargs):
 
 
 def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
-    jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+    shared_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Copying the session DuckDB must skip jafgen yet keep an in-dir datasource path."""
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
 
     args, storage = _demo_build.prepare_demo_storage(
-        base_dir=str(tmp_path / "prep"), prebuilt_duckdb=jaffle_demo_duckdb
+        base_dir=str(tmp_path / "prep"), prebuilt_duckdb=shared_demo_duckdb
     )
 
     # The DuckDB lives inside THIS dir (a copy), not the shared template.
     local_db = os.path.join(args.storage, "demo", "jaffle_shop.duckdb")
     assert os.path.exists(local_db)
-    assert os.path.abspath(local_db) != os.path.abspath(jaffle_demo_duckdb)
+    assert os.path.abspath(local_db) != os.path.abspath(shared_demo_duckdb)
 
     # Codex #8: the ingested datasource must point at the copy, not the template.
     ds = run_sync(storage.get_datasource(DEMO_NAME))
@@ -48,12 +48,12 @@ def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
 
 
 def test_warm_demo_setup_rebuilds_and_writes_nothing(
-    jaffle_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+    shared_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A second demo setup over warm models reconciles in place: no DuckDB rebuild, no model write."""
     base = tmp_path / "warm"
     (base / "demo").mkdir(parents=True)
-    shutil.copy2(jaffle_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")
+    shutil.copy2(shared_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")
     storage = YAMLStorage(base_dir=str(base))
 
     # First setup populates all base models.
