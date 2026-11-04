@@ -16,10 +16,12 @@ import logging
 from collections.abc import Callable
 from typing import Any, Optional
 
+import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import resolve_hop
@@ -29,9 +31,10 @@ from slayer.engine.syntax import parse_expr
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.query_engine import run_over_caller_engine
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import CATEGORY_DATA_TYPES, SqlClient
+from slayer.sql.client import ResultColumnType, SqlClient
 from slayer.osi.dialects import Selection, read, render, select_expression
 from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
 from slayer.osi.models import (
@@ -64,12 +67,13 @@ _TEMPORAL_DATATYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
 _TIME_DIMENSION_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
 
-def _typed_column(*, name: str, data_type: DataType, sql: str | None = None,
-                  element: DataType | None = None, hidden: bool = False) -> Column:
+def _typed_column(*, name: str, data_type: DataType, sql: str | None = None, element: DataType | None = None,
+                  hidden: bool = False, db_type: str | None = None) -> Column:
     """A column of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
     if data_type is not DataType.ARRAY:
-        return Column(name=name, sql=sql, type=data_type, hidden=hidden)
-    return Column(name=name, sql=sql, type=data_type, element_type=element or DataType.UNKNOWN, hidden=hidden)
+        return Column(name=name, sql=sql, type=data_type, db_type=db_type, hidden=hidden)
+    return Column(name=name, sql=sql, type=data_type, element_type=element or DataType.UNKNOWN, db_type=db_type,
+                  hidden=hidden)
 
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
@@ -189,12 +193,23 @@ class OsiToSlayerConverter:
         self,
         documents: list[OSIDocument],
         data_source: str,
+        sa_engine: sa.Engine | None = None,
         *,
         dialect: str | None = None,
         target_dialect: str | None = None,
     ) -> None:
+        """Passing ``sa_engine`` is deprecated: ``convert()`` then collects its own metadata through it."""
+        if sa_engine is not None:
+            warn_deprecated(
+                "OsiToSlayerConverter(sa_engine=...) is deprecated; await "
+                "converter.collect_metadata(client=engine.client_for(datasource)) before convert(). "
+                "sa_engine works until SLayer 2.0.",
+                removal="2.0",
+            )
         self.documents = documents
         self.data_source = data_source
+        self.sa_engine = sa_engine
+        self._collected = False
         self.dialect = dialect
         self.target_dialect = target_dialect
         # sqlglot name of the datasource dialect every stored raw SQL is rendered in.
@@ -202,8 +217,8 @@ class OsiToSlayerConverter:
         # Live metadata from ``collect_metadata``: per dataset its introspected model (or the
         # failure), per source query its column types, per probe statement its types (None: failed).
         self._tables: dict[str, SlayerModel | str] = {}
-        self._query_types: dict[str, dict[str, str] | str] = {}
-        self._probes: dict[str, dict[str, str] | None] = {}
+        self._query_types: dict[str, dict[str, ResultColumnType] | str] = {}
+        self._probes: dict[str, dict[str, ResultColumnType] | None] = {}
         self._probe_misses: set[str] = set()
         self._reset()
 
@@ -244,21 +259,23 @@ class OsiToSlayerConverter:
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read every dataset's source and every type probe conversion needs through ``client``."""
+        self._collected = False
         if self.target_dialect is None:
             self._target = dialect_for_ds_type(client.datasource.type).sqlglot_name
         for doc in self.documents:
             for ds in doc.datasets:
                 await self._collect_source(client=client, ds=ds)
         for _ in range(_MAX_PROBE_PASSES):
-            self.convert()
+            self._convert()
             misses = self._probe_misses - self._probes.keys()
             if not misses:
-                return
+                break
             for probe in sorted(misses):
                 try:
-                    self._probes[probe] = await client.get_column_types(probe)
+                    self._probes[probe] = await client.get_result_column_types(probe)
                 except Exception:  # noqa: BLE001 — probe is best-effort; conversion falls back
                     self._probes[probe] = None
+        self._collected = True
 
     async def _collect_source(self, *, client: SqlClient, ds: OSIDataset) -> None:
         try:
@@ -267,7 +284,7 @@ class OsiToSlayerConverter:
             return
         try:
             if parsed.query is not None:
-                self._query_types[parsed.query] = await client.get_column_types(parsed.query)
+                self._query_types[parsed.query] = await client.get_result_column_types(parsed.query)
             elif parsed.table is not None:
                 self._tables[ds.name] = await introspect_table_to_model(
                     client=client, table_name=parsed.table, schema=parsed.schema_name,
@@ -280,6 +297,14 @@ class OsiToSlayerConverter:
                 self._tables[ds.name] = str(exc)
 
     def convert(self) -> ConversionResult:
+        """Convert from the collected metadata (a deprecated ``sa_engine`` converter collects it first)."""
+        if not self._collected and self.sa_engine is not None:
+            run_over_caller_engine(
+                self.sa_engine, data_source=self.data_source, work=lambda client: self.collect_metadata(client=client),
+            )
+        return self._convert()
+
+    def _convert(self) -> ConversionResult:
         self._reset()
         self._check_duplicate_dataset_names()
 
@@ -376,7 +401,7 @@ class OsiToSlayerConverter:
         types = self._query_types.get(query, "no query metadata was collected (collect_metadata)")
         if isinstance(types, str):
             raise _MetadataUnavailable(types)
-        columns = [_typed_column(name=name, data_type=CATEGORY_DATA_TYPES[category]) for name, category in types.items()]
+        columns = [_typed_column(name=name, data_type=t.type, db_type=t.lossy_db_type) for name, t in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
 
@@ -524,11 +549,15 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="missing_column",
             )
             return None
-        db_type = self._probe_expression_type(model=model, expr=sql)
+        probed = self._probe_expression_type(model=model, expr=sql)
+        if probed is not None:
+            return _typed_column(
+                name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type,
+            ), probed.type
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
-        element = shadowed.element_type if shadowed is not None and db_type is None else None
-        return _typed_column(name=field.name, sql=sql, data_type=db_type or fallback, element=element), db_type
+        element = shadowed.element_type if shadowed is not None else None
+        return _typed_column(name=field.name, sql=sql, data_type=fallback, element=element), None
 
     @staticmethod
     def _apply_field_metadata(*, col: Column, field: OSIField) -> None:
@@ -544,7 +573,7 @@ class OsiToSlayerConverter:
         if meta:
             col.meta = {**(col.meta or {}), **meta}
 
-    def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
+    def _probe_expression_type(self, model: SlayerModel, expr: str) -> ResultColumnType | None:
         """A derived expression's type from a LIMIT-0 probe of the model's source, or ``None``."""
         if model.sql_table:
             from_clause = model.sql_table
@@ -557,10 +586,7 @@ class OsiToSlayerConverter:
             self._probe_misses.add(probe)
             return None
         types = self._probes[probe]
-        if types is None:
-            return None
-        category = next(iter(types.values()), None)
-        return None if category is None else CATEGORY_DATA_TYPES[category]
+        return next(iter(types.values()), None) if types else None
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset, doc: OSIDocument) -> None:
         model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
@@ -1043,5 +1069,9 @@ class OsiToSlayerConverter:
             model = self._models.get(mc.owning_model)
             if model is None or any(c.name == mc.name for c in model.columns):
                 continue
-            dtype = self._probe_expression_type(model=model, expr=self._physical_sql(model, mc.sql))
-            model.columns.append(_typed_column(name=mc.name, sql=mc.sql, data_type=dtype or DataType.DOUBLE, hidden=True))
+            probed = self._probe_expression_type(model=model, expr=self._physical_sql(model, mc.sql))
+            model.columns.append(_typed_column(
+                name=mc.name, sql=mc.sql, hidden=True,
+                data_type=probed.type if probed is not None else DataType.DOUBLE,
+                db_type=probed.lossy_db_type if probed is not None else None,
+            ))

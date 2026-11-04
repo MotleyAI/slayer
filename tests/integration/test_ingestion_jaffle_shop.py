@@ -1,7 +1,7 @@
 """End-to-end auto-ingestion test against the Jaffle Shop DuckDB.
 
-This is the integration test called out in S4 (issue #48): generate the
-Jaffle Shop demo into a temp DuckDB, call ``ingest_datasource``, and assert
+Generate the Jaffle Shop demo into a temp DuckDB, call
+``ingest_datasource_async``, and assert
 the resulting models conform to the v2 unified-columns shape (one ``Column``
 list per model, ``measures`` library left empty by ingestion, no dotted
 column names, joins resolved to direct FK pairs only). Also round-trips the
@@ -28,7 +28,7 @@ from slayer.demo.jaffle_shop import (
     generate_data,
     load_data,
 )
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
@@ -74,7 +74,7 @@ def jaffle_duckdb_path(tmp_path_factory):
 async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
     client = SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=client)
+        return await ingestion.ingest_datasource_async(ds, client=client)
     finally:
         await client.aclose()
         client.close()

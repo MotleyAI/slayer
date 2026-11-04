@@ -11,7 +11,8 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
-from typing import ClassVar
+from collections.abc import Sequence
+from typing import Any, ClassVar
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -23,7 +24,13 @@ from slayer.sql.dialects.base import (
     StatAgg2Name,
     _build_covar_decomposition,
 )
-from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    TableLocation,
+    call,
+    info_schema_comments_query,
+    result_column_type_of_name,
+)
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -31,6 +38,15 @@ _SUB_DAY_TRUNC_FORMATS = {
     TimeGranularity.MINUTE: "%Y-%m-%d %H:%i:00",
     TimeGranularity.SECOND: "%Y-%m-%d %H:%i:%s",
 }
+# Wire-protocol field types → type names; TINY, BIT and the decimals are read by length / scale.
+_FIELD_TYPE_NAMES: dict[int, str] = {
+    2: "SMALLINT", 3: "INT", 4: "FLOAT", 5: "DOUBLE", 7: "TIMESTAMP", 8: "BIGINT", 9: "MEDIUMINT",
+    10: "DATE", 11: "TIME", 12: "DATETIME", 13: "YEAR", 14: "DATE", 15: "VARCHAR", 245: "JSON",
+    247: "ENUM", 248: "SET", 249: "TINYBLOB", 250: "MEDIUMBLOB", 251: "LONGBLOB", 252: "BLOB",
+    253: "VARCHAR", 254: "CHAR", 255: "GEOMETRY",
+}
+_TINY, _BIT, _DECIMALS = 1, 16, frozenset({0, 246})
+
 _MYSQL_PART_FUNCTIONS = {
     DatePart.YEAR: "YEAR", DatePart.QUARTER: "QUARTER", DatePart.MONTH: "MONTH",
     DatePart.DAY: "DAYOFMONTH", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
@@ -73,6 +89,22 @@ class MysqlDialect(SqlDialect):
 
     def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         return f"SET max_execution_time = {timeout_seconds * 1000}"
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """PyMySQL / aiomysql field types: length 1 makes ``TINY`` and ``BIT`` boolean; decimals type by scale."""
+        code, length, scale = description_row[1], description_row[3], description_row[5]
+        if not isinstance(code, int):
+            return None
+        if code == _TINY:
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.INT, db_type=f"TINYINT({length})")
+        if code == _BIT:
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.TEXT, db_type=f"BIT({length})")
+        if code in _DECIMALS:
+            # Length counts the sign (assumed: the row has no UNSIGNED flag) and, at a positive scale, the point.
+            precision = max(1, (length or 0) - 1 - (1 if scale else 0))
+            return result_column_type_of_name(f"DECIMAL({precision},{scale or 0})")
+        name = _FIELD_TYPE_NAMES.get(code)
+        return None if name is None else result_column_type_of_name(name)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(

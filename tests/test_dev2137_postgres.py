@@ -6,7 +6,7 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine.ingestion import ingest_datasource_async
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -52,6 +52,6 @@ async def test_mixed_numeric_lists(pg) -> None:
 
 async def test_ingested_list_columns(pg) -> None:
     engine, ds = pg
-    (model,) = await ingest_datasource(ds, client=engine.client_for(ds), include_tables=["contractors"])
+    (model,) = await ingest_datasource_async(ds, client=engine.client_for(ds), include_tables=["contractors"])
     typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
     assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

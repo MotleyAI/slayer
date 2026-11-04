@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
@@ -386,10 +387,18 @@ def storage_base_dir(path: str) -> str:
 
 
 def default_storage_path() -> str:
-    """Default storage dir: $SLAYER_STORAGE, else legacy $SLAYER_MODELS_DIR, else the platform data dir (XDG on Linux, Application Support on macOS, LOCALAPPDATA on Windows)."""
-    env = os.environ.get("SLAYER_STORAGE") or os.environ.get("SLAYER_MODELS_DIR")
-    if env:
-        return env
+    """Default storage dir: $SLAYER_STORAGE, else deprecated $SLAYER_MODELS_DIR, else the platform data dir (XDG on Linux, Application Support on macOS, LOCALAPPDATA on Windows)."""
+    current = os.environ.get("SLAYER_STORAGE")
+    if current:
+        return current
+    legacy = os.environ.get("SLAYER_MODELS_DIR")
+    if legacy:
+        warn_deprecated(
+            "The SLAYER_MODELS_DIR environment variable is deprecated; set SLAYER_STORAGE instead. "
+            "It is read until SLayer 2.0.",
+            removal="2.0",
+        )
+        return legacy
 
     if os.name == "nt":
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))

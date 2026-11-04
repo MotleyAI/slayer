@@ -10,7 +10,9 @@ import threading
 import time
 import warnings as _warnings_module
 import weakref
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import sqlalchemy as sa
@@ -21,14 +23,23 @@ from sqlglot import expressions as exp
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from slayer.async_utils import on_caller_thread
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.sql import engine_factory
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
-from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.dialects.base import ServerProfile, describe_type_name_code
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
-from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation, clean_comment, schema_token
+from slayer.sql.dialects.reflection import (
+    ReflectedColumn,
+    ResultColumnType,
+    TableKeys,
+    TableLocation,
+    clean_comment,
+    schema_token,
+)
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
 
@@ -36,6 +47,9 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 _ENV_REF = re.compile(r"\$\{\w+\}")
+
+# Who disposes a client's sync engine: the caller who passed it, the client (private in-memory), or the factory.
+EngineOwner = Literal["caller", "client", "factory"]
 
 
 class SqlClientError(Exception):
@@ -95,187 +109,51 @@ def _async_connection_string(connection_string: str, db_type: str | None) -> str
     return url.set(drivername=f"{backend}+{facts.async_driver}").render_as_string(hide_password=False)
 
 
-#: Cursor type categories → their ``DataType``.
-CATEGORY_DATA_TYPES: dict[str, DataType] = {
-    "number": DataType.DOUBLE, "string": DataType.TEXT, "boolean": DataType.BOOLEAN,
-    "time": DataType.TIMESTAMP, "list": DataType.ARRAY,
-}
+_TEXT = ResultColumnType(type=DataType.TEXT)
 
 
-def _map_type_code(type_code, db_type: str | None = None) -> str:
-    """Map a DB-API type_code to a SLayer type category.
-
-    Handles DuckDB (str names), SQLite (Python types), Postgres OIDs, MySQL
-    field-types. Dialect map_cursor_type_code (Snowflake) is consulted first.
-    """
-    if isinstance(type_code, int) and db_type:
-        dialect_category = dialect_for_ds_type(db_type).map_cursor_type_code(type_code)
-        if dialect_category is not None:
-            return dialect_category
-    if db_type and "duckdb" in db_type.lower():
-        # DuckDB returns DuckDBPyType objects; str() is the type name.
-        type_code = str(type_code)
-    if isinstance(type_code, str):
-        tc = type_code.upper()
-        if tc == "ARRAY" or tc.endswith("[]") or tc.startswith(("LIST(", "ARRAY(", "ARRAY<")):
-            return "list"
-        # Check temporal names before numeric ones: INTERVAL contains "INT".
-        if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
-            return "time"
-        if any(t in tc for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")):
-            return "number"
-        if any(t in tc for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")):
-            return "string"
-        if "BOOL" in tc:
-            return "boolean"
-        return "string"
-    if isinstance(type_code, type):
-        # Check bool before int — bool subclasses int.
-        if issubclass(type_code, bool):
-            return "boolean"
-        if issubclass(type_code, (int, float)):
-            return "number"
-        if issubclass(type_code, str):
-            return "string"
-        return "string"
-    if isinstance(type_code, int):
-        if db_type and "mysql" in db_type.lower():
-            return _MYSQL_TYPE_MAP.get(type_code, "string")
-        if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
-            return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
-        # Snowflake already tried above; unrecognised codes default to string
-        # rather than misclassifying through the Postgres OID map.
-        if db_type and "snowflake" in db_type.lower():
-            return "string"
-        return _PG_OID_MAP.get(type_code, "string")
-    return "string"
+def _first_value_type(value: Any) -> ResultColumnType:
+    """A column typed off one value; a number is uncertified, so DOUBLE."""
+    if isinstance(value, bool):
+        return ResultColumnType(type=DataType.BOOLEAN)
+    if isinstance(value, (list, tuple)):
+        return ResultColumnType(type=DataType.ARRAY)
+    if isinstance(value, (int, float, Decimal)):
+        return ResultColumnType(type=DataType.DOUBLE)
+    if isinstance(value, datetime):
+        return ResultColumnType(type=DataType.TIMESTAMP)
+    if isinstance(value, date):
+        return ResultColumnType(type=DataType.DATE)
+    return _TEXT
 
 
-# Postgres OIDs (from pg_type)
-_PG_OID_MAP: dict[int, str] = {
-    16: "boolean",   # bool
-    20: "number",    # int8 (bigint)
-    21: "number",    # int2 (smallint)
-    23: "number",    # int4 (integer)
-    26: "number",    # oid
-    700: "number",   # float4
-    701: "number",   # float8
-    1700: "number",  # numeric
-    790: "number",   # money
-    18: "string",    # char
-    25: "string",    # text
-    1042: "string",  # bpchar
-    1043: "string",  # varchar
-    1082: "time",    # date
-    1083: "time",    # time
-    1114: "time",    # timestamp
-    1184: "time",    # timestamptz
-    1186: "time",    # interval
-    1000: "list",    # bool[]
-    1005: "list",    # int2[]
-    1007: "list",    # int4[]
-    1009: "list",    # text[]
-    1015: "list",    # varchar[]
-    1016: "list",    # int8[]
-    1021: "list",    # float4[]
-    1022: "list",    # float8[]
-    1182: "list",    # date[]
-    1115: "list",    # timestamp[]
-    1185: "list",    # timestamptz[]
-    1014: "list",    # bpchar[]
-    1231: "list",    # numeric[]
-    2951: "list",    # uuid[]
-    199: "list",     # json[]
-    3807: "list",    # jsonb[]
-    1001: "list",    # bytea[]
-}
-
-# MySQL field-type codes (aiomysql wire protocol)
-_MYSQL_TYPE_MAP: dict[int, str] = {
-    0: "number",     # MYSQL_TYPE_DECIMAL
-    1: "boolean",    # MYSQL_TYPE_TINY (TINYINT/BOOL)
-    2: "number",     # MYSQL_TYPE_SHORT
-    3: "number",     # MYSQL_TYPE_LONG (INT)
-    4: "number",     # MYSQL_TYPE_FLOAT
-    5: "number",     # MYSQL_TYPE_DOUBLE
-    8: "number",     # MYSQL_TYPE_LONGLONG (BIGINT)
-    9: "number",     # MYSQL_TYPE_INT24
-    16: "number",    # MYSQL_TYPE_BIT
-    246: "number",   # MYSQL_TYPE_NEWDECIMAL
-    7: "time",       # MYSQL_TYPE_TIMESTAMP
-    10: "time",      # MYSQL_TYPE_DATE
-    11: "time",      # MYSQL_TYPE_TIME
-    12: "time",      # MYSQL_TYPE_DATETIME
-    13: "time",      # MYSQL_TYPE_YEAR
-    14: "time",      # MYSQL_TYPE_NEWDATE
-    15: "string",    # MYSQL_TYPE_VARCHAR
-    253: "string",   # MYSQL_TYPE_VAR_STRING
-    254: "string",   # MYSQL_TYPE_STRING
-}
-
-# ODBC SQL type codes (pyodbc / SQL Server); negatives are SQL_SS_* extensions.
-_ODBC_SQL_TYPE_MAP: dict[int, str] = {
-    4: "number",      # SQL_INTEGER
-    5: "number",      # SQL_SMALLINT
-    -6: "number",     # SQL_TINYINT
-    -5: "number",     # SQL_BIGINT
-    2: "number",      # SQL_NUMERIC
-    3: "number",      # SQL_DECIMAL
-    6: "number",      # SQL_FLOAT
-    7: "number",      # SQL_REAL
-    8: "number",      # SQL_DOUBLE
-    1: "string",      # SQL_CHAR
-    12: "string",     # SQL_VARCHAR
-    -1: "string",     # SQL_LONGVARCHAR
-    -8: "string",     # SQL_WCHAR
-    -9: "string",     # SQL_WVARCHAR
-    -10: "string",    # SQL_WLONGVARCHAR
-    -152: "string",   # SQL_SS_XML
-    -11: "string",    # SQL_GUID (uniqueidentifier)
-    -7: "boolean",    # SQL_BIT
-    -2: "string",     # SQL_BINARY
-    -3: "string",     # SQL_VARBINARY
-    -4: "string",     # SQL_LONGVARBINARY
-    91: "time",       # SQL_TYPE_DATE
-    92: "time",       # SQL_TYPE_TIME
-    93: "time",       # SQL_TYPE_TIMESTAMP
-    -154: "time",     # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
-    -155: "time",     # SQL_SS_TIME2 (time with fractional seconds)
-}
-
-
-def _extract_types_from_cursor(result, db_type: str | None = None) -> dict[str, str]:
-    """Extract {column: type_category} from a CursorResult.
-
-    Uses cursor.description type_codes; falls back to first-row value types.
-    """
+def _types_from_cursor(result: Any, *, dialect: SqlDialect) -> dict[str, ResultColumnType]:
+    """Per column: the dialect's reading of its description row, the type-name reading, then TEXT;
+    a column the description gives no type code is typed off the first row."""
     columns = list(result.keys())
-    cursor_desc = result.cursor.description
-
-    if cursor_desc is not None:
-        type_codes = [desc[1] for desc in cursor_desc]
-        if any(tc is not None for tc in type_codes):
-            return {col: _map_type_code(tc, db_type=db_type) for col, tc in zip(columns, type_codes)}
-
-    rows = result.fetchall()
-    if not rows:
-        return dict.fromkeys(columns, "string")  # empty table — safe default
-    row = rows[0]
-    types = {}
-    for col, val in zip(columns, row):
-        if val is None:
-            types[col] = "string"  # can't infer from NULL
-        elif isinstance(val, bool):
-            types[col] = "boolean"
-        elif isinstance(val, (int, float)):
-            types[col] = "number"
-        elif isinstance(val, str):
-            types[col] = "string"
-        elif hasattr(val, "isoformat"):
-            types[col] = "time"
+    description = result.cursor.description or [None] * len(columns)
+    types: dict[str, ResultColumnType | None] = {}
+    for name, row in zip(columns, description):
+        if row is None or row[1] is None:
+            types[name] = None
         else:
-            types[col] = "string"
-    return types
+            types[name] = dialect.describe_cursor_column(row) or describe_type_name_code(row) or _TEXT
+    if any(t is None for t in types.values()):
+        rows = result.fetchall()
+        first = dict(zip(columns, rows[0])) if rows else {}
+        types = {name: t or _first_value_type(first.get(name)) for name, t in types.items()}
+    return {name: t or _TEXT for name, t in types.items()}
+
+
+_CATEGORIES = {
+    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
+    DataType.BOOLEAN: "boolean",
+}
+
+
+def type_categories(types: dict[str, ResultColumnType]) -> dict[str, str]:
+    """The 1.5.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
+    return {name: _CATEGORIES.get(column.type, "string") for name, column in types.items()}
 
 
 # T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
@@ -294,12 +172,35 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         return await loop.run_in_executor(executor, call)
 
 
-def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
-    """Build a row-limiting probe query appropriate for the target dialect."""
-    limit = 0 if dialect_for_ds_type(db_type).cursor_reports_types else 1
+def _wrap_probe(sql: str, *, db_type: str | None, limit: int | None, select: str = "*") -> str:
+    """``SELECT <select> FROM (<sql>) AS _types``, row-limited in the dialect's spelling."""
     if db_type in _TSQL_DB_TYPES:
-        return f"SELECT TOP {limit} * FROM ({sql}) AS _types"
-    return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+        top = "" if limit is None else f"TOP {limit} "
+        return f"SELECT {top}{select} FROM ({sql}) AS _types"
+    tail = "" if limit is None else f" LIMIT {limit}"
+    return f"SELECT {select} FROM ({sql}) AS _types{tail}"
+
+
+def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
+    """The row-limiting probe: no rows where the cursor reports types, else one."""
+    limit = 0 if dialect_for_ds_type(db_type).cursor_reports_types else 1
+    return _wrap_probe(sql, db_type=db_type, limit=limit)
+
+
+def _census_sql(sql: str, *, db_type: str | None, columns: list[str]) -> str | None:
+    """The dialect's storage census over a sample of ``sql``'s rows, or ``None`` when its cursor types columns."""
+    dialect = dialect_for_ds_type(db_type)
+    select = dialect.result_census_select(columns)
+    if select is None or dialect.result_census_rows is None:
+        return None
+    rendered = ", ".join(e.sql(dialect=dialect.sqlglot_name) for e in select)
+    sample = _wrap_probe(sql, db_type=db_type, limit=dialect.result_census_rows)
+    return _wrap_probe(sample, db_type=db_type, limit=None, select=rendered)
+
+
+def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
+    keys = list(result.keys())
+    return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
 def build_sql_model_trial_query(inner_sql: str) -> str:
@@ -504,15 +405,54 @@ def _read_only_transaction_sql(db_type: str | None) -> str | None:
     return None
 
 
-def _get_column_types_sync(
-    sql: str,
-    *,
-    db_type: str | None,
-    engine: sa.Engine,
-    datasource_name: str | None = None,
-) -> dict[str, str]:
-    """Infer column types read-only (rolled back) so a trial probe can't mutate."""
-    limit_sql = _build_type_probe_sql(sql, db_type)
+def _probe_sync(conn: Any, *, sql: str, db_type: str | None) -> dict[str, ResultColumnType]:
+    """Type ``sql``'s result on ``conn``: the dialect's describe statement, else the probe's cursor or census."""
+    dialect = dialect_for_ds_type(db_type)
+    probe_sql = _build_type_probe_sql(sql, db_type)
+    describe = dialect.describe_result_statement(exp.National(this=probe_sql))
+    if describe is not None:
+        try:
+            described = _exec_verbatim(conn, describe.sql(dialect=dialect.sqlglot_name))
+            return dialect.read_result_description(_rows_as_dicts(described))
+        except sqlalchemy.exc.DBAPIError as exc:
+            if not dialect.result_undescribable(exc):
+                raise
+    result = _exec_verbatim(conn, probe_sql)
+    columns = list(result.keys())
+    census_sql = _census_sql(sql, db_type=db_type, columns=columns)
+    if census_sql is None:
+        return _types_from_cursor(result, dialect=dialect)
+    result.fetchall()
+    return dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
+
+
+async def _probe_async(conn: Any, *, sql: str, db_type: str | None) -> dict[str, ResultColumnType]:
+    """Async sibling of ``_probe_sync``."""
+    dialect = dialect_for_ds_type(db_type)
+    probe_sql = _build_type_probe_sql(sql, db_type)
+    describe = dialect.describe_result_statement(exp.National(this=probe_sql))
+    if describe is not None:
+        try:
+            described = await _exec_verbatim_async(conn, describe.sql(dialect=dialect.sqlglot_name))
+            return dialect.read_result_description(_rows_as_dicts(described))
+        except sqlalchemy.exc.DBAPIError as exc:
+            if not dialect.result_undescribable(exc):
+                raise
+    result = await _exec_verbatim_async(conn, probe_sql)
+    columns = list(result.keys())
+    census_sql = _census_sql(sql, db_type=db_type, columns=columns)
+    if census_sql is None:
+        return _types_from_cursor(result, dialect=dialect)
+    result.fetchall()
+    return dialect.result_census_types(
+        columns=columns, row=_first_row(await _exec_verbatim_async(conn, census_sql)),
+    )
+
+
+def get_result_column_types_sync(
+    sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
+) -> dict[str, ResultColumnType]:
+    """Column types of ``sql``'s result over an existing engine, read-only (rolled back) so a probe can't mutate."""
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
@@ -520,8 +460,7 @@ def _get_column_types_sync(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
-        result = _exec_verbatim(conn=conn, sql=limit_sql)
-        types = _extract_types_from_cursor(result, db_type=db_type)
+        types = _probe_sync(conn, sql=sql, db_type=db_type)
         conn.rollback()
     return types
 
@@ -529,18 +468,24 @@ def _get_column_types_sync(
 def get_column_types_sync(
     sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
 ) -> dict[str, str]:
-    """Public sync column-type inference over an existing engine (stable entry point)."""
-    return _get_column_types_sync(sql, db_type=db_type, engine=engine, datasource_name=datasource_name)
+    """Deprecated: the 1.5.0 category probe over an existing engine; use ``get_result_column_types_sync``."""
+    warn_deprecated(
+        "get_column_types_sync() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+        "use get_result_column_types_sync(), which returns SLayer types and database type names.",
+        removal="2.0",
+    )
+    return type_categories(get_result_column_types_sync(
+        sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
+    ))
 
 
-async def _get_column_types_async(
+async def _get_result_column_types_async(
     sql: str,
     engine,
     db_type: str | None,
     datasource_name: str | None = None,
-) -> dict[str, str]:
-    """Async type inference read-only (rolled back) so a trial probe can't mutate."""
-    limit_sql = _build_type_probe_sql(sql, db_type)
+) -> dict[str, ResultColumnType]:
+    """Async sibling of ``get_result_column_types_sync``."""
     async with engine.connect() as conn, _statement_timeout_async(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
@@ -548,8 +493,7 @@ async def _get_column_types_async(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             await _exec_verbatim_async(conn, ro_sql)
-        result = await _exec_verbatim_async(conn, limit_sql)
-        types = _extract_types_from_cursor(result, db_type=db_type)
+        types = await _probe_async(conn, sql=sql, db_type=db_type)
         await conn.rollback()
     return types
 
@@ -574,7 +518,7 @@ class SqlClient(Protocol):
 
     async def execute(self, sql: str) -> ExecutionResult: ...
 
-    async def get_column_types(self, sql: str) -> dict[str, str]: ...
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]: ...
 
     async def server_profile(self) -> ServerProfile: ...
 
@@ -606,18 +550,15 @@ class SlayerSQLClient:
 
     A native async driver where the dialect has one (a missing one raises), else
     sync-in-thread. The async engine is cached per instance (bound to the current event loop).
+    A caller's ``sa_engine`` serves every call on the caller's thread and is never disposed here.
     """
 
-    def __init__(self, datasource: DatasourceConfig):
+    def __init__(self, datasource: DatasourceConfig, *, sa_engine: sa.Engine | None = None):
         self.datasource = datasource
         self._async_engine = None
-        self._sync_engine: sa.Engine | None = None
-        # Set only when ``_sync_engine`` is this client's PRIVATE in-memory
-        # engine (built off the factory's StaticPool builder). A factory-owned
-        # engine is disposed by the factory, never here.
-        self._owns_sync_engine = False
-        # weakref backstop: disposes the private engine if the client is
-        # collected without ``close()`` (D4). Detached whenever we dispose it.
+        self._sync_engine: sa.Engine | None = sa_engine
+        self._sync_engine_owner: EngineOwner | None = "caller" if sa_engine is not None else None
+        # Backstop disposing a client-owned engine when the client is collected unclosed.
         self._sync_engine_finalizer: weakref.finalize | None = None
 
     def close(self) -> None:
@@ -638,13 +579,13 @@ class SlayerSQLClient:
 
     def _dispose_private_sync_engine(self) -> bool:
         """Dispose the private in-memory engine (detaching its finalizer) and
-        forget it; return whether there was one. Idempotent; a factory-owned
-        engine is left untouched."""
+        forget it; return whether there was one. Idempotent; a factory- or
+        caller-owned engine is left untouched."""
         finalizer = self._sync_engine_finalizer
-        if self._owns_sync_engine and self._sync_engine is not None:
+        if self._sync_engine_owner == "client" and self._sync_engine is not None:
             engine = self._sync_engine
             self._sync_engine = None
-            self._owns_sync_engine = False
+            self._sync_engine_owner = None
             self._sync_engine_finalizer = None
             if finalizer is not None:
                 finalizer.detach()
@@ -654,7 +595,7 @@ class SlayerSQLClient:
 
     async def aclose(self) -> None:
         """Release loop-bound resources (the async engine, idle pooled connections); the client stays usable."""
-        if self._sync_engine is not None and not self._owns_sync_engine:
+        if self._sync_engine is not None and self._sync_engine_owner == "factory":
             engine_factory.release_idle(self._sync_engine)
         engine = self._async_engine
         if engine is None:
@@ -677,8 +618,8 @@ class SlayerSQLClient:
         return ds
 
     def _get_async_engine(self):
-        """Get or create the async engine for this client (cached per instance)."""
-        if self._async_engine is None:
+        """Get or create the async engine for this client (cached per instance); none over a caller's engine."""
+        if self._async_engine is None and self._sync_engine_owner != "caller":
             ds = self._connection_datasource()
             conn_str = ds.get_connection_string()
             dialect = dialect_for_ds_type(ds.type)
@@ -705,25 +646,35 @@ class SlayerSQLClient:
         if engine_factory._is_in_memory_sqlite(conn_str):
             engine = engine_factory.build_in_memory_sqlite_engine(conn_str)
             self._sync_engine = engine
-            self._owns_sync_engine = True
+            self._sync_engine_owner = "client"
             self._sync_engine_finalizer = weakref.finalize(
                 self, _dispose_engine_quietly, engine,
             )
             return engine
         self._sync_engine = engine_factory.get_engine(ds)
+        self._sync_engine_owner = "factory"
         return self._sync_engine
+
+    async def _blocking(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run blocking ``func``: on the caller's thread over a caller's engine (pools may be thread-bound), else in a worker."""
+        if self._sync_engine_owner == "caller":
+            return await on_caller_thread(functools.partial(func, *args, **kwargs))
+        return await _run_sync_in_thread(func, *args, **kwargs)
 
     def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
         """Drop the sync engine on a credential rejection; return whether exc was one.
 
         Credentials are fixed at construction, so a revoked grant poisons the
-        engine permanently — dispose a private one, evict a factory one.
-        Best-effort; never displace exc.
+        engine permanently — dispose a private one, evict a factory one, leave
+        a caller's alone. Best-effort; never displace exc.
         """
         if not _is_auth_failure(exc):
             return False
+        if self._sync_engine_owner == "caller":
+            return True
         if not self._dispose_private_sync_engine():
             self._sync_engine = None
+            self._sync_engine_owner = None
             try:
                 engine_factory.invalidate_engine(self._connection_datasource())
             except Exception:
@@ -784,30 +735,41 @@ class SlayerSQLClient:
             timeout_seconds=timeout_seconds,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
+            run=self._blocking,
         )
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        """Infer column types via LIMIT 0; returns {column: number|string|time|boolean}."""
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        """The SLayer type and database type name of each of ``sql``'s result columns."""
         try:
-            return await self._get_column_types(sql=sql)
+            return await self._get_result_column_types(sql=sql)
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    async def _get_column_types(self, *, sql: str) -> dict[str, str]:
-        async_engine = self._get_async_engine()
-        if async_engine is not None:
-            return await _get_column_types_async(
-                sql=sql, engine=async_engine, db_type=self.datasource.type,
-                datasource_name=self.datasource.name,
-            )
-        return await _run_sync_in_thread(
-            _get_column_types_sync,
+    async def _get_result_column_types(self, *, sql: str) -> dict[str, ResultColumnType]:
+        db_type = self.datasource.type
+        if not dialect_for_ds_type(db_type).type_probe_uses_sync_driver:
+            async_engine = self._get_async_engine()
+            if async_engine is not None:
+                return await _get_result_column_types_async(
+                    sql=sql, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
+                )
+        return await self._blocking(
+            get_result_column_types_sync,
             sql=sql,
-            db_type=self.datasource.type,
+            db_type=db_type,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
         )
+
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        """Deprecated: the 1.5.0 category probe; use ``get_result_column_types``."""
+        warn_deprecated(
+            "SlayerSQLClient.get_column_types() returns 1.5.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        return type_categories(await self.get_result_column_types(sql))
 
     async def server_profile(self) -> ServerProfile:
         """The server's profile for this client's engine, probed once per engine."""
@@ -819,19 +781,19 @@ class SlayerSQLClient:
             if async_engine is not None:
                 async with async_engine.connect() as conn:
                     return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
-            return await _run_sync_in_thread(
+            return await self._blocking(
                 _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
             )
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    # Live metadata: synchronous reflection run in a worker thread over the sync engine.
+    # Live metadata: synchronous reflection over the sync engine, off the event loop.
 
     async def _metadata(self, read: Callable[[sa.Engine], _T]) -> _T:
         try:
             engine = self._get_sync_engine_for_client()
-            return await _run_sync_in_thread(read, engine)
+            return await self._blocking(read, engine)
         except Exception as exc:
             await self._typed(exc)
             raise
@@ -1213,10 +1175,11 @@ async def _execute_with_retry_threaded(
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
+    run: Callable[..., Awaitable[Any]] = _run_sync_in_thread,
 ) -> ExecutionResult:
     return await _retry_with_backoff(
         sql=sql,
-        do_call=lambda: _run_sync_in_thread(
+        do_call=lambda: run(
             _execute_sql_sync,
             sql=sql,
             db_type=db_type,
@@ -1362,8 +1325,8 @@ class DelegatingSqlClient:
     async def execute(self, sql: str) -> ExecutionResult:
         return await self.inner.execute(sql)
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        return await self.inner.get_column_types(sql)
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        return await self.inner.get_result_column_types(sql)
 
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()

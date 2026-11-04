@@ -17,8 +17,6 @@ from slayer.engine import ingestion as ingestion_module
 from slayer.engine.ingestion import (
     IngestionScanReport,
     _introspect_table_columns,
-    ingest_datasource,
-    ingest_datasource_report,
 )
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
@@ -53,12 +51,12 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     async with _client(ds) as client:
-        return await ingest_datasource(ds, client=client, **kwargs)
+        return await ingestion_module.ingest_datasource_async(ds, client=client, **kwargs)
 
 
 async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
     async with _client(ds) as client:
-        return await ingest_datasource_report(ds, client=client, **kwargs)
+        return await ingestion_module.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
 def _skipped_names(report: IngestionScanReport) -> set[str]:

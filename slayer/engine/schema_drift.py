@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import (
     Annotated,
@@ -20,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
+from slayer.async_utils import marked_coroutine_function
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -43,7 +46,7 @@ from slayer.engine.schema_scope import (
     resolve_ingest_scope,
     split_sql_table,
 )
-from slayer.engine import ingestion
+from slayer.engine import ingestion, query_engine
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, is_addressable
 from slayer.core.join_search import reachable
@@ -61,7 +64,7 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import CATEGORY_DATA_TYPES, SqlClient, build_sql_model_trial_query
+from slayer.sql.client import SqlClient, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -1877,12 +1880,12 @@ async def _live_columns_for_sql_model(
     model: SlayerModel,
     client: SqlClient,
 ) -> dict[str, DataType] | None:
-    """Trial-execute ``model.sql`` with a 0-row guard; return cursor types, or None on failure."""
+    """Trial-execute ``model.sql`` with a 0-row guard; return probed types, or None on failure."""
     if not model.sql:
         return None
     # Trailing ``;`` stripped before wrapping, else its syntax error looks like drift.
     try:
-        cats = await client.get_column_types(build_sql_model_trial_query(model.sql))
+        types = await client.get_result_column_types(build_sql_model_trial_query(model.sql))
     except Exception as exc:
         logger.info(
             "validate_models: trial-execute on %r failed: %s",
@@ -1890,10 +1893,7 @@ async def _live_columns_for_sql_model(
             exc,
         )
         return None
-    return {
-        name: CATEGORY_DATA_TYPES.get(cat, DataType.TEXT)
-        for name, cat in cats.items()
-    }
+    return {name: column.type for name, column in types.items()}
 
 
 def _has_star_projection(parsed: exp.Expression) -> bool:
@@ -2077,7 +2077,7 @@ async def _source_tables_resolve(
     for table, columns in refs.items():
         select_list = ", ".join(sorted(columns)) or "*"
         try:
-            await client.get_column_types(
+            await client.get_result_column_types(
                 f"SELECT {select_list} FROM {table} AS _sd_probe WHERE 1=0"
             )
         except Exception:
@@ -2398,21 +2398,58 @@ async def _collect_sql_diffs(
     return out
 
 
-async def validate_datasource(
+_UNSET: Any = object()
+
+
+@marked_coroutine_function
+def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: list[SlayerModel],
-    client: SqlClient,
+    client: SqlClient | None = None,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
     findings_out: list[ListRetypeFinding] | None = None,
-) -> list[ToDeleteEntry]:
+    sql_clients: object = _UNSET,
+) -> Coroutine[Any, Any, list[ToDeleteEntry]]:
     """Validate ``models`` (all one DS) against the live schema through ``client``. Read-only.
 
     ``available_in_ds`` names every model of the DS (default: ``models``); a
     ``snapshot`` scopes introspection to ``models``' objects and reuses its facts;
     ``findings_out`` collects the report-only re-type findings.
+    Omitting ``client`` or passing ``sql_clients`` (ignored) is deprecated.
     """
+    if client is None or sql_clients is not _UNSET:
+        warn_deprecated(
+            "validate_datasource() without client= (or with sql_clients=, now ignored) is deprecated; pass "
+            "client=engine.client_for(datasource). The old form works until SLayer 2.0.",
+            removal="2.0",
+        )
+    validate = functools.partial(
+        _validate_datasource, datasource=datasource, models=models, available_in_ds=available_in_ds,
+        snapshot=snapshot, findings_out=findings_out,
+    )
+    if client is not None:
+        return validate(client=client)
+    return _validate_short_lived(datasource=datasource, validate=validate)
+
+
+async def _validate_short_lived(
+    *, datasource: DatasourceConfig, validate: Callable[..., Awaitable[list[ToDeleteEntry]]],
+) -> list[ToDeleteEntry]:
+    async with query_engine.short_lived_engine() as engine:
+        return await validate(client=engine.client_for(datasource))
+
+
+async def _validate_datasource(
+    *,
+    datasource: DatasourceConfig,
+    models: list[SlayerModel],
+    client: SqlClient,
+    available_in_ds: set[str] | None,
+    snapshot: DriftSnapshot | None,
+    findings_out: list[ListRetypeFinding] | None,
+) -> list[ToDeleteEntry]:
     if not models:
         return []
     if snapshot is not None:

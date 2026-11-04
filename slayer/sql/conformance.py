@@ -110,9 +110,13 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
             return
         raise _Failed("an invalid statement succeeded")
 
-    async def get_column_types() -> None:
-        types = await client.get_column_types(f"SELECT id, name FROM {_CUSTOMERS}")
-        _expect(types == {"id": "number", "name": "string"}, f"types {types!r}")
+    async def get_result_column_types() -> None:
+        types = await client.get_result_column_types(f"SELECT id, name FROM {_CUSTOMERS}")
+        _expect({k: t.type for k, t in types.items()} == {"id": DataType.INT, "name": DataType.TEXT}, f"types {types!r}")
+        _expect(
+            all(t.db_type is None or (isinstance(t.db_type, str) and t.db_type) for t in types.values()),
+            f"type names {types!r}",
+        )
 
     async def server_profile() -> None:
         _expect(isinstance(await client.server_profile(), ServerProfile), "not a ServerProfile")
@@ -183,7 +187,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
         ("execute_rows", True, execute_rows),
         ("execute_verbatim_literals", True, execute_verbatim_literals),
         ("execute_error_unchanged", True, execute_error_unchanged),
-        ("get_column_types", True, get_column_types),
+        ("get_result_column_types", True, get_result_column_types),
         ("server_profile", True, server_profile),
         ("ping", True, ping),
         ("default_schema_listed", True, default_schema_listed),

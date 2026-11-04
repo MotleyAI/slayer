@@ -14,9 +14,9 @@ from pydantic import ValidationError
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     _additive_merge_existing,
-    ingest_datasource,
     ingest_datasource_idempotent,
     introspect_table_to_model,
     list_ingestable_objects,
@@ -70,7 +70,7 @@ _TABLE_AND_VIEW = """
 class TestClassification:
     def test_table_and_view_are_classified(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
-        by_name = {m.name: m for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        by_name = {m.name: m for m in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].source_kind == "table"
         assert by_name["v_orders"].source_kind == "view"
 

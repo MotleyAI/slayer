@@ -18,69 +18,51 @@ from __future__ import annotations
 import logging
 import math
 
-from pydantic import BaseModel
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
+from slayer.sql.dialects import sqlite as _sqlite
+from slayer.sql.dialects.sqlite import StorageCensus, census_counts
 
 
 logger = logging.getLogger(__name__)
 
 
-# Row-count cap for the main probe SQL. We always run with LIMIT (CAP + 1)
-# so we can detect saturation: getting back exactly CAP + 1 rows means
-# there's at least one row past the cap.
-PROBE_SCAN_CAP: int = 100_000
+# Row-count cap for the main probe; it runs with LIMIT (CAP + 1) so saturation shows.
+PROBE_SCAN_CAP: int = _sqlite.PROBE_SCAN_CAP
 
 # Distinct-text-value cap for the secondary coerce probe.
 COERCE_DISTINCT_LIMIT: int = 1_000
 
 
-def _quote_sqlite_ident(name: str) -> str:
-    """Quote one identifier for SQLite (embedded quotes escaped); an already-quoted one is quoted once."""
+def _identifier(name: str) -> exp.Identifier:
+    """A quoted identifier; an already-quoted name is quoted once."""
     if len(name) >= 2 and name[0] == '"' == name[-1]:
         name = name[1:-1].replace('""', '"')
-    return exp.to_identifier(name, quoted=True).sql(dialect="sqlite")
+    return exp.to_identifier(name, quoted=True)
 
 
-def _qualified_table(table: str, schema: str | None) -> str:
-    """Build a quoted, optionally schema-qualified SQLite table reference."""
-    tname = _quote_sqlite_ident(table)
-    if schema:
-        return f"{_quote_sqlite_ident(schema)}.{tname}"
-    return tname
+def _sample(*, table: str, schema: str | None, column: str) -> exp.Subquery:
+    """``(SELECT column FROM [schema.]table LIMIT CAP + 1) AS sample``."""
+    relation = exp.Table(this=_identifier(table), db=_identifier(schema) if schema else None)
+    select = exp.select(exp.column(_identifier(column))).from_(relation).limit(PROBE_SCAN_CAP + 1)
+    return select.subquery("sample")
 
 
-class _ProbeCounts(BaseModel):
-    """Result of the main probe SQL — one row of per-storage-class counts."""
-
-    n_rows: int
-    n_non_null: int
-    n_real: int
-    n_text: int
-    n_blob: int
-    n_non_integral: int
+def _sql(statement: Expression) -> str:
+    return statement.sql(dialect="sqlite")
 
 
 async def _run_main_probe(
-    *, client: SqlClient, qtable: str, qcol: str, table: str, column: str,
-) -> _ProbeCounts | None:
-    """Run the main probe aggregate. Returns ``None`` on driver failure
-    (after logging a WARNING)."""
-    scan_cap_plus_one = PROBE_SCAN_CAP + 1
-    sql = (
-        f"SELECT "
-        f"  COUNT(*) AS n_rows, "
-        f"  SUM(CASE WHEN typeof({qcol}) <> 'null' THEN 1 ELSE 0 END) AS n_non_null, "
-        f"  SUM(CASE WHEN typeof({qcol}) = 'real' THEN 1 ELSE 0 END) AS n_real, "
-        f"  SUM(CASE WHEN typeof({qcol}) = 'text' THEN 1 ELSE 0 END) AS n_text, "
-        f"  SUM(CASE WHEN typeof({qcol}) = 'blob' THEN 1 ELSE 0 END) AS n_blob, "
-        f"  SUM(CASE WHEN {qcol} IS NOT NULL "
-        f"            AND typeof({qcol}) IN ('integer','real') "
-        f"            AND ROUND({qcol}) <> {qcol} THEN 1 ELSE 0 END) AS n_non_integral "
-        f"FROM (SELECT {qcol} FROM {qtable} LIMIT {scan_cap_plus_one})"
-    )
+    *, client: SqlClient, table: str, schema: str | None, column: str,
+) -> StorageCensus | None:
+    """The column's storage census; ``None`` on driver failure (after logging a WARNING)."""
+    value = exp.column(_identifier(column))
+    sql = _sql(exp.select(exp.Count(this=exp.Star()), *census_counts(value)).from_(
+        _sample(table=table, schema=schema, column=column),
+    ))
     try:
         rows = (await client.execute(sql)).rows
     except (DatabaseUnavailable, AuthenticationRefused):
@@ -88,38 +70,26 @@ async def _run_main_probe(
     except Exception as exc:
         logger.warning("probe failed for %s.%s: %s", table, column, exc)
         return None
-    row = list(rows[0].values()) if rows else None
-    if row is None:
-        # Defensive: SELECT-with-aggregates always returns one row.
-        return _ProbeCounts(n_rows=0, n_non_null=0, n_real=0, n_text=0, n_blob=0, n_non_integral=0)
-    return _ProbeCounts(
-        n_rows=int(row[0] or 0),
-        n_non_null=int(row[1] or 0),
-        n_real=int(row[2] or 0),
-        n_text=int(row[3] or 0),
-        n_blob=int(row[4] or 0),
-        n_non_integral=int(row[5] or 0),
-    )
+    row = list(rows[0].values()) if rows else [0] * 6
+    return StorageCensus.of(n_rows=row[0], counts=row[1:])
 
 
 async def _classify_text_branch(
-    *, client: SqlClient, qtable: str, qcol: str, table: str, column: str,
+    *, client: SqlClient, table: str, schema: str | None, column: str,
 ) -> DataType | None:
     """The ``n_text > 0`` decision branch — runs the bounded distinct-text
     coerce probe and classifies. Returns the verdict (DOUBLE / TEXT) or
     ``None`` on coerce-probe driver failure (after logging a WARNING).
     """
-    scan_cap_plus_one = PROBE_SCAN_CAP + 1
-    distinct_limit_plus_one = COERCE_DISTINCT_LIMIT + 1
-    # Bound the DISTINCT scan to the same row sample as the main probe —
-    # otherwise a column with mixed-text storage in a billion-row table
-    # would silently turn the LIMIT-100k probe into a full-table scan.
-    coerce_sql = (
-        f"SELECT DISTINCT {qcol} AS v FROM ("
-        f"  SELECT {qcol} FROM {qtable} LIMIT {scan_cap_plus_one}"
-        f") AS sample "
-        f"WHERE typeof({qcol}) = 'text' "
-        f"LIMIT {distinct_limit_plus_one}"
+    value = exp.column(_identifier(column))
+    # Bounded to the main probe's row sample, so mixed-text storage never scans the whole table.
+    coerce_sql = _sql(
+        exp.select(value.as_("v")).distinct()
+        .from_(_sample(table=table, schema=schema, column=column))
+        .where(exp.EQ(
+            this=exp.Anonymous(this="typeof", expressions=[value.copy()]), expression=exp.Literal.string("text"),
+        ))
+        .limit(COERCE_DISTINCT_LIMIT + 1)
     )
     try:
         distinct_rows = [row["v"] for row in (await client.execute(coerce_sql)).rows]
@@ -145,28 +115,6 @@ async def _classify_text_branch(
             return DataType.TEXT
     # Every distinct text value is a finite float.
     return DataType.DOUBLE
-
-
-def _classify_no_evidence(
-    *, counts: _ProbeCounts, table: str, column: str,
-) -> DataType | None:
-    """The all-zero-evidence branch — saturated, empty, or all-NULL all
-    decline to certify INT. Returns ``None`` after logging a WARNING for
-    saturated samples; returns ``None`` silently for empty / all-NULL;
-    returns ``DataType.INT`` only when there's positive integer evidence."""
-    if counts.n_rows > PROBE_SCAN_CAP:
-        logger.warning(
-            "probe sample saturated for %s.%s (>%d rows); cannot certify INT",
-            table, column, PROBE_SCAN_CAP,
-        )
-        return None
-    if counts.n_non_null == 0:
-        # Empty table OR all-NULL — no evidence either way. Return None so
-        # callers treat this as "no information" rather than "certified
-        # INT". Ingest callers will fall back to the SA-derived type;
-        # refinement callers won't narrow a persisted DOUBLE.
-        return None
-    return DataType.INT
 
 
 async def probe_sqlite_integer_column(
@@ -205,19 +153,16 @@ async def probe_sqlite_integer_column(
     perspective, which is what we want: both mean "the probe couldn't
     certify a widening".
     """
-    qtable = _qualified_table(table, schema)
-    qcol = _quote_sqlite_ident(column)
-    counts = await _run_main_probe(
-        client=client, qtable=qtable, qcol=qcol, table=table, column=column,
-    )
+    counts = await _run_main_probe(client=client, table=table, schema=schema, column=column)
     if counts is None:
         return None
     if counts.n_blob > 0:
         return DataType.TEXT
     if counts.n_text > 0:
-        return await _classify_text_branch(
-            client=client, qtable=qtable, qcol=qcol, table=table, column=column,
+        return await _classify_text_branch(client=client, table=table, schema=schema, column=column)
+    verdict = counts.numeric_verdict(cap=PROBE_SCAN_CAP)
+    if verdict is None and counts.n_rows > PROBE_SCAN_CAP:
+        logger.warning(
+            "probe sample saturated for %s.%s (>%d rows); cannot certify INT", table, column, PROBE_SCAN_CAP,
         )
-    if counts.n_real > 0 or counts.n_non_integral > 0:
-        return DataType.DOUBLE
-    return _classify_no_evidence(counts=counts, table=table, column=column)
+    return verdict

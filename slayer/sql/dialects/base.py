@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeGuard, get_args
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
@@ -30,6 +30,7 @@ from slayer.sql._identifier_fit import (
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
+    ResultColumnType,
     TableKeys,
     TableLocation,
     all_of,
@@ -45,6 +46,7 @@ from slayer.sql.dialects.reflection import (
     inspector_unique_constraints,
     inspector_unique_indexes,
     relation,
+    result_column_type_of_name,
     schema_token,
     without_primary_key,
 )
@@ -212,6 +214,16 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
         nested_comments=nested,
         dollar_quotes="$" in heredoc or any("$" in str(r) for r in raw),
     )
+
+
+def describe_type_name_code(
+    description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
+) -> ResultColumnType | None:
+    """A description row whose type code is a type name (DuckDB, BigQuery, Trino, ClickHouse); ``None`` otherwise."""
+    code = description_row[1]
+    if code is None or isinstance(code, (int, type)):
+        return None
+    return result_column_type_of_name(str(code), overrides=overrides)
 
 
 def _scheme_driver(url_scheme: str | None) -> str | None:
@@ -414,6 +426,12 @@ class SqlDialect(BaseModel):
 
     # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
     cursor_reports_types: bool = True
+
+    # Column-type probes run on the synchronous driver (the async one hides what typing needs).
+    type_probe_uses_sync_driver: bool = False
+
+    # Rows a ``result_census_select`` samples.
+    result_census_rows: int | None = None
 
     # The Inspector's PK is final: an empty one means "no PK", never an INFORMATION_SCHEMA retry.
     primary_key_inspector_only: bool = False
@@ -1165,9 +1183,31 @@ class SqlDialect(BaseModel):
         """Hook: the key an uncorrelated ``IN`` subquery projects; default unchanged."""
         return key
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:  # NOSONAR(S1172) — no-op hook default
-        """Hook: cursor type code → SLayer category, or ``None`` for the Postgres OID map."""
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """Hook: one DB-API ``cursor.description`` row → its type, or ``None`` when the code is not this dialect's."""
+        return describe_type_name_code(description_row)
+
+    def describe_result_statement(self, probe: exp.National) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a statement whose rows describe ``probe``'s result columns, or ``None`` to read the cursor."""
         return None
+
+    def read_result_description(self, rows: list[dict[str, Any]]) -> dict[str, ResultColumnType]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``describe_result_statement``'s rows → the result's column types."""
+        return {}
+
+    def result_undescribable(self, exc: BaseException) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether ``exc`` says the describe statement cannot type this result (the cursor is read instead)."""
+        return False
+
+    def result_census_select(self, columns: Sequence[str]) -> list[Expression] | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a select-list counting ``columns``' stored value kinds over a sample, or ``None`` when the cursor types them."""
+        return None
+
+    def result_census_types(  # NOSONAR(S1172) — no-op hook default
+        self, *, columns: Sequence[str], row: Sequence[Any] | None,
+    ) -> dict[str, ResultColumnType]:
+        """Hook: ``result_census_select``'s row → the result's column types."""
+        return dict.fromkeys(columns, ResultColumnType(type=DataType.TEXT))
 
     # Structure reflection: the one reader of a live table's columns and keys.
 

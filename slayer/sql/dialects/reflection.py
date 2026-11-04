@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+import re
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from typing import Any, Protocol, TypeVar
 
@@ -49,6 +50,24 @@ class ReflectedColumn(BaseModel):
     comment: str | None = None
 
 
+class ResultColumnType(BaseModel):
+    """One result column's SLayer type and the database's name for it (``None`` when the driver names none)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: DataType
+    db_type: str | None = None
+
+    @property
+    def lossy_db_type(self) -> str | None:
+        """The type name a stored ``Column.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
+        exact-numeric)."""
+        if self.db_type is None:
+            return None
+        name = unwrap_clickhouse_wrapper_str(self.db_type)
+        return name if self.type.is_opaque or self.type.is_list or is_exact_numeric_db_type(name) else None
+
+
 class ReflectedForeignKey(BaseModel):
     columns: list[str]
     referred_schema: str | None = None
@@ -64,29 +83,93 @@ class TableKeys(BaseModel):
     unique_key_sets: list[list[str]] = Field(default_factory=list)
 
 
-# --- Type strings → DataType ---
+# --- Type names → DataType (one table for catalog strings, SQLAlchemy types and probes) ---
 
-_FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset({"FLOAT", "DOUBLE", "REAL"})
-
-_INFO_SCHEMA_TYPE_MAP = {
+_TYPE_NAME_MAP = {
     "INTEGER": DataType.INT,
+    "INT": DataType.INT,
     "BIGINT": DataType.INT,
     "SMALLINT": DataType.INT,
     "TINYINT": DataType.INT,
+    "MEDIUMINT": DataType.INT,
     "HUGEINT": DataType.INT,
+    "SERIAL": DataType.INT,
+    "BIGSERIAL": DataType.INT,
+    "OID": DataType.INT,
+    "YEAR": DataType.INT,
     "FLOAT": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE,
     "REAL": DataType.DOUBLE,
+    "DOUBLE": DataType.DOUBLE,
+    "DOUBLE_PRECISION": DataType.DOUBLE,
+    "DOUBLE PRECISION": DataType.DOUBLE,
+    "MONEY": DataType.DOUBLE,
+    "SMALLMONEY": DataType.DOUBLE,
     "VARCHAR": DataType.TEXT,
     "CHAR": DataType.TEXT,
     "TEXT": DataType.TEXT,
+    "STRING": DataType.TEXT,
     "BOOLEAN": DataType.BOOLEAN,
+    "BOOL": DataType.BOOLEAN,
+    "BIT": DataType.BOOLEAN,  # T-SQL boolean
     "TIMESTAMP": DataType.TIMESTAMP,
-    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,
+    "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
+    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_TZ": DataType.TIMESTAMP,
     "DATE": DataType.DATE,
     "TIME": DataType.TIMESTAMP,
+    "INTERVAL": DataType.TEXT,  # no interval DataType; groupable as TEXT
+    # ClickHouse
+    "INT8": DataType.INT,
+    "INT16": DataType.INT,
+    "INT32": DataType.INT,
+    "INT64": DataType.INT,
+    "INT128": DataType.INT,
+    "INT256": DataType.INT,
+    "UINT8": DataType.INT,
+    "UINT16": DataType.INT,
+    "UINT32": DataType.INT,
+    "UINT64": DataType.INT,
+    "UINT128": DataType.INT,
+    "UINT256": DataType.INT,
+    "FLOAT32": DataType.DOUBLE,
+    "FLOAT64": DataType.DOUBLE,
+    "DATETIME64": DataType.TIMESTAMP,
+    "DATE32": DataType.DATE,
+    # T-SQL
+    "DATETIME2": DataType.TIMESTAMP,
+    "SMALLDATETIME": DataType.TIMESTAMP,
+    "DATETIMEOFFSET": DataType.TIMESTAMP,
+    "NVARCHAR": DataType.TEXT,
+    "NCHAR": DataType.TEXT,
+    "NTEXT": DataType.TEXT,
+    "ROWVERSION": DataType.TEXT,  # 8-byte binary counter, not temporal
+    "UUID": DataType.TEXT,
+    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
 }
+
+# NUMERIC/DECIMAL are float-like only by scale.
+_FLOAT_LIKE_TYPE_NAMES = frozenset({
+    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "DOUBLE PRECISION", "FLOAT32", "FLOAT64", "MONEY", "SMALLMONEY",
+})
+
+# Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
+# A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
+_OPAQUE_TYPE_NAMES = frozenset({
+    "JSON",  # ``jsonb`` is groupable and deliberately absent
+    "XML",
+    "TXID_SNAPSHOT",
+    # Geometric / spatial — none have a default btree/hash opclass
+    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
+    "GEOMETRY", "GEOGRAPHY", "RASTER",
+    # Range types
+    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
+})
+
+# List / struct / map spellings across DuckDB, Trino, ClickHouse, BigQuery and Postgres.
+_CONTAINER_PREFIXES = ("ARRAY", "LIST", "STRUCT", "ROW", "MAP", "TUPLE", "NESTED")
 
 CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
 CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
@@ -112,8 +195,8 @@ def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
 
 
 def is_exact_numeric_db_type(db_type: str | None) -> bool:
-    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers excluded)."""
-    if not db_type:
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers and lists excluded)."""
+    if not db_type or info_schema_list_element(db_type) is not None:
         return False
     token = db_type.split("(")[0].upper().strip()
     return "DECIMAL" in token or "NUMERIC" in token
@@ -129,20 +212,38 @@ def parse_info_schema_is_float(data_type_str: str) -> bool:
     return True
 
 
-def info_schema_type(data_type_str: str) -> tuple[DataType, bool]:
-    """``(DataType, is_float)`` of a catalog type string; substring checks run widest-match-last."""
-    base = data_type_str.split("(")[0].upper().strip()
-    mapped = _INFO_SCHEMA_TYPE_MAP.get(base)
-    if mapped is not None:
-        return mapped, base in _FLOAT_LIKE_INFO_SCHEMA_TYPES
+def _is_container_name(name: str) -> bool:
+    if name.endswith("[]"):
+        return True
+    return re.split(r"[(<\s]", name, maxsplit=1)[0].upper() in _CONTAINER_PREFIXES
+
+
+def info_schema_type(
+    data_type_str: str, *, overrides: Mapping[str, DataType] | None = None,
+) -> tuple[DataType, bool]:
+    """``(DataType, is_float)`` of a type name; ``overrides`` (upper-case base names) win over the table."""
+    name = unwrap_clickhouse_wrapper_str(data_type_str)
+    base = name.split("(")[0].upper().strip()
+    if overrides and base in overrides:
+        return overrides[base], False
+    if info_schema_list_element(name) is not None:
+        return DataType.ARRAY, False
+    if _is_container_name(name):
+        return DataType.TEXT, False
+    if base in _OPAQUE_TYPE_NAMES:
+        return DataType.UNKNOWN, False
     if is_exact_numeric_db_type(base):
-        return DataType.DOUBLE, parse_info_schema_is_float(data_type_str)
+        is_float = parse_info_schema_is_float(name)
+        return (DataType.DOUBLE if is_float else DataType.INT), is_float
+    mapped = _TYPE_NAME_MAP.get(base)
+    if mapped is not None:
+        return mapped, base in _FLOAT_LIKE_TYPE_NAMES
     if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
         return DataType.DOUBLE, True
     if "TIMESTAMP" in base or "DATETIME" in base:
         return DataType.TIMESTAMP, False
     if "INTERVAL" in base:
-        return DataType.TEXT, False  # no interval DataType; groupable as TEXT
+        return DataType.TEXT, False
     if "INT" in base:
         return DataType.INT, False
     return DataType.TEXT, False
@@ -166,7 +267,16 @@ def info_schema_list_element(data_type_str: str | None) -> DataType | None:
     return info_schema_type(unwrap_clickhouse_wrapper_str(inner))[0]
 
 
-def column_from_type_string(*, name: str, data_type: str | None, comment: str | None = None) -> ReflectedColumn:
+def result_column_type_of_name(
+    name: str, *, overrides: Mapping[str, DataType] | None = None,
+) -> ResultColumnType:
+    """A probed column the database names ``name``."""
+    return ResultColumnType(type=info_schema_type(name, overrides=overrides)[0], db_type=name)
+
+
+def column_from_type_string(
+    *, name: str, data_type: str | None, comment: str | None = None, overrides: Mapping[str, DataType] | None = None,
+) -> ReflectedColumn:
     """A column read from a catalog type string; ``db_type`` kept for a list and for exact numerics."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
     element = info_schema_list_element(unwrapped)
@@ -174,7 +284,7 @@ def column_from_type_string(*, name: str, data_type: str | None, comment: str | 
         return ReflectedColumn(
             name=name, type=DataType.ARRAY, element_type=element, db_type=unwrapped, comment=clean_comment(comment),
         )
-    mapped, is_float = info_schema_type(unwrapped)
+    mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float,
         db_type=unwrapped if is_exact_numeric_db_type(unwrapped) else None,
@@ -186,87 +296,6 @@ def column_from_type_string(*, name: str, data_type: str | None, comment: str | 
 
 # Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
-
-# Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
-# A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
-_OPAQUE_SA_TYPE_NAMES = frozenset({
-    "JSON",  # ``jsonb`` is groupable and deliberately absent
-    "XML",
-    "TXID_SNAPSHOT",
-    # Geometric / spatial — none have a default btree/hash opclass
-    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
-    "GEOMETRY", "GEOGRAPHY", "RASTER",
-    # Range types
-    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
-})
-
-_SA_TYPE_MAP = {
-    "INTEGER": DataType.INT,
-    "BIGINT": DataType.INT,
-    "SMALLINT": DataType.INT,
-    "SERIAL": DataType.INT,
-    "BIGSERIAL": DataType.INT,
-    "FLOAT": DataType.DOUBLE,
-    "REAL": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE,
-    "DOUBLE_PRECISION": DataType.DOUBLE,
-    # Refined by scale in _sa_type_to_data_type; DOUBLE when scale is unknown.
-    "NUMERIC": DataType.DOUBLE,
-    "DECIMAL": DataType.DOUBLE,
-    "VARCHAR": DataType.TEXT,
-    "CHAR": DataType.TEXT,
-    "TEXT": DataType.TEXT,
-    "STRING": DataType.TEXT,
-    "BOOLEAN": DataType.BOOLEAN,
-    "BOOL": DataType.BOOLEAN,
-    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
-    "TIMESTAMP": DataType.TIMESTAMP,
-    "DATETIME": DataType.TIMESTAMP,
-    "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_TZ": DataType.TIMESTAMP,
-    "DATE": DataType.DATE,
-    "TIME": DataType.TIMESTAMP,
-    # ClickHouse
-    "INT8": DataType.INT,
-    "INT16": DataType.INT,
-    "INT32": DataType.INT,
-    "INT64": DataType.INT,
-    "INT128": DataType.INT,
-    "INT256": DataType.INT,
-    "UINT8": DataType.INT,
-    "UINT16": DataType.INT,
-    "UINT32": DataType.INT,
-    "UINT64": DataType.INT,
-    "UINT128": DataType.INT,
-    "UINT256": DataType.INT,
-    "FLOAT32": DataType.DOUBLE,
-    "FLOAT64": DataType.DOUBLE,
-    "DATETIME64": DataType.TIMESTAMP,
-    "DATE32": DataType.DATE,
-    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
-    "TINYINT": DataType.INT,
-    "DATETIME2": DataType.TIMESTAMP,
-    "SMALLDATETIME": DataType.TIMESTAMP,
-    "DATETIMEOFFSET": DataType.TIMESTAMP,
-    "NVARCHAR": DataType.TEXT,
-    "NCHAR": DataType.TEXT,
-    "NTEXT": DataType.TEXT,
-    "UUID": DataType.TEXT,  # ClickHouse (not an sa.Uuid)
-    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
-    "MONEY": DataType.DOUBLE,
-    "SMALLMONEY": DataType.DOUBLE,
-    # SQL Server rowversion — 8-byte binary counter, not temporal
-    "ROWVERSION": DataType.TEXT,
-}
-
-# NUMERIC/DECIMAL are float-like only by scale (see _sa_type_is_float).
-_FLOAT_LIKE_SA_TYPES = frozenset({
-    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "FLOAT32", "FLOAT64", "MONEY", "SMALLMONEY",
-})
-
 
 def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
     """Peel nested ClickHouse Nullable/LowCardinality wrappers (as-is if no ``nested_type``)."""
@@ -342,20 +371,22 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
-    if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
+    if type_name in _CONTAINER_PREFIXES or _is_container_name(str(sa_type)):
+        return DataType.TEXT
+    if type_name in _OPAQUE_TYPE_NAMES or type_str in _OPAQUE_TYPE_NAMES:
         return DataType.UNKNOWN
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
         return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
-    if type_name in _SA_TYPE_MAP:
-        return _SA_TYPE_MAP[type_name]
-    if type_str in _SA_TYPE_MAP:
-        return _SA_TYPE_MAP[type_str]
+    if type_name in _TYPE_NAME_MAP:
+        return _TYPE_NAME_MAP[type_name]
+    if type_str in _TYPE_NAME_MAP:
+        return _TYPE_NAME_MAP[type_str]
     if type_name not in _logged_unmapped_sa_types:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Add a non-comparable type to _OPAQUE_SA_TYPE_NAMES "
-            "and a mappable one to _SA_TYPE_MAP.",
+            "DataType.TEXT. Add a non-comparable type to _OPAQUE_TYPE_NAMES "
+            "and a mappable one to _TYPE_NAME_MAP.",
             type_name,
             str(sa_type),
         )
@@ -384,13 +415,13 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     """Whether the type is float-like; NUMERIC/DECIMAL only when scale > 0 or unknown."""
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
     type_name = type(sa_type).__name__.upper()
-    if type_name in _FLOAT_LIKE_SA_TYPES:
+    if type_name in _FLOAT_LIKE_TYPE_NAMES:
         return True
     if is_exact_numeric_db_type(type_name):
         scale = getattr(sa_type, "scale", None)
         return scale is None or scale > 0
     type_str = str(sa_type).split("(")[0].upper().strip()
-    if type_str in _FLOAT_LIKE_SA_TYPES:
+    if type_str in _FLOAT_LIKE_TYPE_NAMES:
         return True
     if is_exact_numeric_db_type(type_str):
         scale = getattr(sa_type, "scale", None)

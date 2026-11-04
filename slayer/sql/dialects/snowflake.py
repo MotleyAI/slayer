@@ -19,7 +19,13 @@ from slayer.sql.dialects.base import (
     LIST_VALUE, ListRelation, SqlDialect, anon, element_lambda, lit, operand_copy,
 )
 from slayer.sql.dialects.drivers import import_driver
-from slayer.sql.dialects.reflection import TableLocation, call, info_schema_comments_query
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    TableLocation,
+    call,
+    info_schema_comments_query,
+    result_column_type_of_name,
+)
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -53,22 +59,12 @@ _TYPEOF_TYPES: dict[str, DataType] = {
     "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.TIMESTAMP,
     "TIMESTAMP_LTZ": DataType.TIMESTAMP, "TIMESTAMP_TZ": DataType.TIMESTAMP,
 }
-# ``snowflake.connector.constants.FieldType`` codes → SLayer category.
-_SNOWFLAKE_TYPE_MAP: dict[int, str] = {
-    0: "number",   # FIXED (NUMBER / INT / DECIMAL)
-    1: "number",   # REAL (FLOAT / DOUBLE)
-    2: "string",   # TEXT (VARCHAR / STRING)
-    3: "time",     # DATE
-    4: "time",     # TIMESTAMP (legacy alias)
-    5: "string",   # VARIANT (semi-structured JSON / object)
-    6: "time",     # TIMESTAMP_LTZ
-    7: "time",     # TIMESTAMP_TZ
-    8: "time",     # TIMESTAMP_NTZ
-    9: "string",   # OBJECT
-    10: "list",    # ARRAY
-    11: "string",  # BINARY
-    12: "time",    # TIME
-    13: "boolean", # BOOLEAN
+# ``snowflake.connector.constants.FieldType`` codes → type names; ``FIXED`` (0) is read by precision / scale.
+_FIXED = 0
+_FIELD_TYPE_NAMES: dict[int, str] = {
+    1: "FLOAT", 2: "TEXT", 3: "DATE", 4: "TIMESTAMP", 5: "VARIANT", 6: "TIMESTAMP_LTZ",
+    7: "TIMESTAMP_TZ", 8: "TIMESTAMP_NTZ", 9: "OBJECT", _ARRAY_TYPE_CODE: "ARRAY", 11: "BINARY", 12: "TIME",
+    13: "BOOLEAN", 14: "GEOGRAPHY", 15: "GEOMETRY",
 }
 
 
@@ -373,6 +369,14 @@ class SnowflakeDialect(SqlDialect):
         """Session-wide ``STATEMENT_TIMEOUT_IN_SECONDS``."""
         return f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout_seconds}"
 
-    def map_cursor_type_code(self, type_code: int) -> str | None:
-        """Map a connector ``FieldType`` code to a SLayer category; None if unknown."""
-        return _SNOWFLAKE_TYPE_MAP.get(type_code)
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """A connector ``FieldType`` code; ``FIXED`` is INT at scale 0, DOUBLE otherwise; ``None`` if unknown."""
+        code, precision, scale = description_row[1], description_row[4], description_row[5]
+        if code == _FIXED:
+            known = precision is not None and scale is not None
+            return ResultColumnType(
+                type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                db_type=f"NUMBER({precision},{scale})" if known else "NUMBER",
+            )
+        name = _FIELD_TYPE_NAMES.get(code) if isinstance(code, int) else None
+        return None if name is None else result_column_type_of_name(name)

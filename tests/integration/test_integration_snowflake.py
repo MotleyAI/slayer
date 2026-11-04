@@ -33,9 +33,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
+from slayer.engine import ingestion
+from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
+from slayer.sql.client import ResultColumnType
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_model, contractors_statements
@@ -224,7 +226,7 @@ def sf_datasource(sf_transient_schema: str) -> DatasourceConfig:
 async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     sql_client = client.SlayerSQLClient(datasource=ds)
     try:
-        return await ingest_datasource(ds, client=sql_client, **kwargs)
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
     finally:
         await sql_client.aclose()
         sql_client.close()
@@ -597,7 +599,7 @@ def test_statement_timeout_aborts_long_query(sf_engine) -> None:
 
 def test_column_types_round_trip(sf_engine) -> None:
     """A SELECT against each Snowflake type code must round-trip through
-    ``_get_column_types_sync`` and produce the expected SLayer categories."""
+    ``get_result_column_types_sync`` and produce the expected SLayer types."""
     sql = """
         SELECT
             CAST(1 AS NUMBER) AS as_number,
@@ -607,17 +609,17 @@ def test_column_types_round_trip(sf_engine) -> None:
             CAST('2024-01-01' AS DATE) AS as_date,
             CAST('2024-01-01 10:00' AS TIMESTAMP_NTZ) AS as_ts
     """
-    types = client._get_column_types_sync(
+    types = client.get_result_column_types_sync(
         sql=sql,
         db_type="snowflake",
         engine=sf_engine,
     )
-    assert types["as_number"] == "number"
-    assert types["as_double"] == "number"
-    assert types["as_text"] == "string"
-    assert types["as_bool"] == "boolean"
-    assert types["as_date"] == "time"
-    assert types["as_ts"] == "time"
+    assert types["as_number"] == ResultColumnType(type=DataType.INT, db_type="NUMBER(38,0)")
+    assert types["as_double"].type == DataType.DOUBLE
+    assert types["as_text"].type == DataType.TEXT
+    assert types["as_bool"].type == DataType.BOOLEAN
+    assert types["as_date"].type == DataType.DATE
+    assert types["as_ts"].type == DataType.TIMESTAMP
 
 
 def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:

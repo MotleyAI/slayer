@@ -23,7 +23,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.ingestion import _is_id_column
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
@@ -429,7 +429,8 @@ class TestMdCodeSpan:
         assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
-            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+            model=model, num_rows=3,
+            measure_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
         assert "avg(amount)" in formulas
@@ -449,7 +450,7 @@ class TestInspectModelQueryBacked:
                 Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
-        # engine.save_model warms the cache (columns + SQL); read paths don't (issue #74).
+        # engine.save_model warms the cache (columns + SQL); read paths don't.
         engine = SlayerQueryEngine(storage=storage)
         await engine.save_model(SlayerModel(
             name="qb",
@@ -715,7 +716,7 @@ class TestInspectModelSectionGating:
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
         """A names-only section with no entities does not emit a heading."""
@@ -772,7 +773,7 @@ class TestInspectModelSectionGating:
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
         assert "Omitted: samples, learnings, saved_queries" in result
-        assert "Re-call inspect_model with `sections=[...]`" in result
+        assert "Re-call inspect with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
@@ -1224,7 +1225,7 @@ class TestInspectModelHelpers:
         assert "Sections shown: columns." in result
         assert "Names-only: measures, joins." in result
         assert "Omitted: samples." in result
-        assert "Re-call inspect_model" in result
+        assert "Re-call inspect with" in result
 
 
 class TestBuildSampleQueryArgs:
@@ -1328,7 +1329,7 @@ class TestBuildSampleQueryArgs:
         opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
         assert _choose_sample_agg(opaque, measure_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.
-        assert _choose_sample_agg(opaque, measure_types={"loc": "string"}) is None
+        assert _choose_sample_agg(opaque, measure_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
 
         model = SlayerModel(
             name="places", sql_table="places", data_source="ds",
@@ -2781,13 +2782,13 @@ class TestDatasources:
         with transaction(db_path) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
-        real = ingestion_mod.ingest_datasource_report
+        real = ingestion_mod.ingest_datasource_report_async
 
         async def _fake(*args, **kwargs):
             out = await real(*args, **kwargs)
             return out.model_copy(update={"schema_description": "From the dataset"})
 
-        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report", _fake)
+        monkeypatch.setattr(ingestion_mod, "ingest_datasource_report_async", _fake)
         result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "ds", "type": "sqlite", "database": db_path,
         })
@@ -2955,7 +2956,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2975,7 +2976,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2998,7 +2999,7 @@ class TestDataProfileRetryScope:
             def __init__(self) -> None:
                 self.dimensioned_seen = False
 
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):

@@ -20,7 +20,7 @@ from slayer.core.errors import ListTypeError, SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import (
     IntrospectedColumn, _inferred_elements, _introspect_table_columns, _introspected_column, _retyped_list,
-    ingest_datasource, ingest_datasource_idempotent,
+    ingest_datasource_async, ingest_datasource_idempotent,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_scope import SchemaRef
@@ -177,7 +177,7 @@ class TestDuckDBIngestion:
         cols = ", ".join(f"{c} {t}" for c, (t, _) in DUCKDB_KINDS.items())
         with _duckdb_file(f"CREATE TABLE kinds (id INTEGER, {cols})") as (ds, _tmp):
             async with _client(ds) as client:
-                model = (await ingest_datasource(ds, client=client, include_tables=["kinds"]))[0]
+                model = (await ingest_datasource_async(ds, client=client, include_tables=["kinds"]))[0]
         for name, (db_type, element) in DUCKDB_KINDS.items():
             col = model.get_column(name)
             assert col is not None
@@ -407,8 +407,8 @@ class TestSqlModeElementType:
     async def test_cursor_reports_a_list(self) -> None:
         with _duckdb_file(*SQL_LIVE) as (ds, _tmp):
             async with _client(ds) as client:
-                types = await client.get_column_types("SELECT id, skills FROM people")
-        assert types["skills"] == "list"
+                types = await client.get_result_column_types("SELECT id, skills FROM people")
+        assert types["skills"].type is DataType.ARRAY
 
     async def test_undeclared_element_type(self) -> None:
         undeclared = Column(name="skills", type=DataType.ARRAY)
@@ -641,4 +641,6 @@ class TestCatalogFallbackLists:
         assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.UNKNOWN, "ARRAY")
 
     def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
-        assert get_dialect("snowflake").map_cursor_type_code(10) == "list"
+        typed = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
+        assert typed is not None
+        assert typed.type is DataType.ARRAY

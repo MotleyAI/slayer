@@ -7,13 +7,79 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 
-from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from collections.abc import Sequence
+from typing import Any, ClassVar, Optional
 
-from typing import ClassVar, Optional
+from pydantic import BaseModel
+from sqlglot import exp
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
+from slayer.sql.dialects.reflection import ResultColumnType
+
+# Rows sampled to certify integers; a sample of ``PROBE_SCAN_CAP + 1`` rows is saturated.
+PROBE_SCAN_CAP: int = 100_000
+
+
+class StorageCensus(BaseModel):
+    """One column's stored value kinds over a sample of ``n_rows`` rows."""
+
+    n_rows: int
+    n_non_null: int
+    n_real: int
+    n_text: int
+    n_blob: int
+    n_non_integral: int
+
+    @classmethod
+    def of(cls, *, n_rows: Any, counts: Sequence[Any]) -> StorageCensus:
+        """From ``COUNT(*)`` and :func:`census_counts`' values (an empty sample sums to NULL)."""
+        non_null, real, text, blob, non_integral = (int(v or 0) for v in counts)
+        return cls(
+            n_rows=int(n_rows or 0), n_non_null=non_null, n_real=real, n_text=text, n_blob=blob,
+            n_non_integral=non_integral,
+        )
+
+    def numeric_verdict(self, *, cap: int) -> DataType | None:
+        """With no text or blob stored: DOUBLE on a real or fractional value, INT when an unsaturated sample
+        holds integers only, else ``None`` (saturated, or no non-NULL value)."""
+        if self.n_real or self.n_non_integral:
+            return DataType.DOUBLE
+        if self.n_rows > cap or not self.n_non_null:
+            return None
+        return DataType.INT
+
+
+def _count_where(condition: Expr) -> Expression:
+    return exp.Sum(this=exp.Case(
+        ifs=[exp.If(this=condition, true=exp.Literal.number(1))], default=exp.Literal.number(0),
+    ))
+
+
+def census_counts(value: Expression) -> list[Expression]:
+    """``value``'s non-NULL, real, text, blob and fractional counts, in :class:`StorageCensus` order."""
+    typeof = exp.Anonymous(this="typeof", expressions=[value.copy()])
+
+    def _is(kind: str) -> Expression:
+        return exp.EQ(this=typeof.copy(), expression=exp.Literal.string(kind))
+
+    numeric = exp.In(this=typeof.copy(), expressions=[exp.Literal.string("integer"), exp.Literal.string("real")])
+    fractional = exp.NEQ(this=exp.Round(this=value.copy()), expression=value.copy())
+    return [
+        _count_where(exp.NEQ(this=typeof.copy(), expression=exp.Literal.string("null"))),
+        _count_where(_is("real")),
+        _count_where(_is("text")),
+        _count_where(_is("blob")),
+        _count_where(exp.and_(exp.Not(this=exp.Is(this=value.copy(), expression=exp.Null())), numeric, fractional)),
+    ]
+
+
+def _census_verdict(census: StorageCensus) -> DataType:
+    """A result column's type: stored text or blob, or no value, is TEXT; a saturated integer sample DOUBLE."""
+    if census.n_text or census.n_blob or not census.n_non_null:
+        return DataType.TEXT
+    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.DOUBLE
 
 
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
@@ -391,6 +457,23 @@ class SqliteDialect(SqlDialect):
     exact_decimal_native: bool = False
     max_identifier_bytes: int | None = None  # unbounded
     url_scheme: str | None = "sqlite"
+    result_census_rows: int | None = PROBE_SCAN_CAP + 1
+
+    def result_census_select(self, columns: Sequence[str]) -> list[Expression]:
+        """``COUNT(*)``, then each column's :func:`census_counts`."""
+        counts = [c for name in columns for c in census_counts(exp.column(exp.to_identifier(name, quoted=True)))]
+        return [exp.Count(this=exp.Star()), *counts]
+
+    def result_census_types(
+        self, *, columns: Sequence[str], row: Sequence[Any] | None,
+    ) -> dict[str, ResultColumnType]:
+        values = list(row) if row else [0] * (1 + 5 * len(columns))
+        return {
+            name: ResultColumnType(type=_census_verdict(
+                StorageCensus.of(n_rows=values[0], counts=values[1 + 5 * i: 6 + 5 * i]),
+            ))
+            for i, name in enumerate(columns)
+        }
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""

@@ -7,7 +7,6 @@ import duckdb
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -93,7 +92,7 @@ def setup_diamond_example() -> tuple:
     run_sync(storage.save_datasource(ds))
 
     engine = SlayerQueryEngine(storage=storage)
-    models = engine.run_sync(ingest_datasource(ds, client=engine.client_for(ds)))
+    models = engine.ingest_sync(ds)
     for model in models:
         run_sync(storage.save_model(model))
 

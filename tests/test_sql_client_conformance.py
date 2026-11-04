@@ -17,7 +17,8 @@ from pytest_postgresql import factories
 import slayer.sql.conformance as conformance
 from slayer.core.models import DatasourceConfig
 from slayer.sql import engine_factory
-from slayer.sql.client import DelegatingSqlClient, ObjectNotFound, SlayerSQLClient
+from slayer.core.enums import DataType
+from slayer.sql.client import DelegatingSqlClient, ObjectNotFound, ResultColumnType, SlayerSQLClient
 from slayer.sql.conformance import ConformanceReport, capabilities_for, fixture_statements, run_conformance
 from slayer.storage.sqlite_conn import transaction
 
@@ -133,8 +134,19 @@ class _StatementsOnly(DelegatingSqlClient):
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
         return await self.inner.execute(*args, **kwargs)
 
-    async def get_column_types(self, *args: Any, **kwargs: Any) -> Any:
-        return await self.inner.get_column_types(*args, **kwargs)
+    async def get_result_column_types(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.inner.get_result_column_types(*args, **kwargs)
+
+
+class _IntegersAsDouble(DelegatingSqlClient):
+    """Broken: every integer result column is reported DOUBLE."""
+
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        types = await self.inner.get_result_column_types(sql)
+        return {
+            name: column.model_copy(update={"type": DataType.DOUBLE}) if column.type == DataType.INT else column
+            for name, column in types.items()
+        }
 
 
 class TestBrokenClientsAreCaught:
@@ -144,8 +156,15 @@ class TestBrokenClientsAreCaught:
         dead = await _run(_DeadAfterAclose(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
         assert any("not_found" in check for check in empty.failed), empty.failed
         assert any("aclose" in check for check in dead.failed), dead.failed
+        assert "get_result_column_types" in good.passed
         assert set(empty.failed) <= set(good.passed)
         assert set(dead.failed) <= set(good.passed)
+
+
+class TestTheTypedProbeIsChecked:
+    async def test_integers_reported_double_fail_the_check(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_IntegersAsDouble(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert report.failed == ["get_result_column_types"]
 
 
 class TestStatementsOnlyDelegatingClientConforms:

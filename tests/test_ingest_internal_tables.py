@@ -26,9 +26,7 @@ from slayer.engine.ingestion import (
     _bare_table_name,
     _columns_to_model,
     _print_ingest_drift_and_errors,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
 )
 from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -224,7 +222,7 @@ class TestNoSqlitePrefixRule:
             live = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
         assert "sqlite_sequence" in live  # the engine really did create it
 
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         assert {o.name for o in report.objects} == {"orders"}
         assert {m.name for m in report.models} == {"orders"}
         assert report.hidden_internals == []
@@ -248,7 +246,7 @@ class TestScanClassification:
         self, workspace: Path
     ) -> None:
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
 
         # Nothing is omitted — hidden, not skipped.
         assert set(by_name) == {"orders"} | _INTERNAL_NAMES
@@ -259,7 +257,7 @@ class TestScanClassification:
 
     def test_breadcrumb_records_the_matching_tool(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
 
         assert by_name["_dlt_loads"].meta == {"internal_table": "dlt"}
         assert by_name["alembic_version"].meta == {"internal_table": "alembic"}
@@ -267,12 +265,12 @@ class TestScanClassification:
     def test_real_tables_get_no_breadcrumb(self, workspace: Path) -> None:
         """A non-matching model must not grow an empty meta dict that would show up in every ingested YAML."""
         _, ds = _ds(workspace, _MIXED)
-        by_name = {m.name: m for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        by_name = {m.name: m for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
         assert by_name["orders"].meta is None
 
     def test_report_lists_each_hidden_internal(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         assert {h.table_name for h in report.hidden_internals} == _INTERNAL_NAMES
         by_table = {h.table_name: h for h in report.hidden_internals}
@@ -282,7 +280,7 @@ class TestScanClassification:
 
     def test_report_omits_real_tables(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         assert "orders" not in {h.table_name for h in report.hidden_internals}
 
     def test_matching_view_is_hidden_and_labelled_view(
@@ -296,7 +294,7 @@ class TestScanClassification:
             CREATE VIEW _dlt_v AS SELECT id FROM orders;
             """,
         )
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
         assert by_name["_dlt_v"].hidden is True
@@ -316,7 +314,7 @@ class TestMatchesTheLiveObjectName:
             workspace,
             "CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);",
         )
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
         assert "_dlt_loads__x" in by_name
@@ -341,7 +339,7 @@ class TestSqlitePrefixOnAnotherEngine:
         con.close()
 
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         by_name = {m.name: m for m in report.models}
 
         assert by_name["sqlite_backup"].hidden is False
@@ -365,7 +363,7 @@ class TestSkipAndHideAreDisjoint:
         monkeypatch.setattr(ing, "_build_one_model", _boom)
 
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ing.ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         assert "_dlt_version" in {s.table_name for s in report.skipped}
         assert "_dlt_version" not in {h.table_name for h in report.hidden_internals}
@@ -386,7 +384,7 @@ class TestSkipAndHideAreDisjoint:
             CREATE TABLE _dlt_loads__x (id INTEGER PRIMARY KEY, v TEXT);
             """,
         )
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         skipped_names = {s.table_name for s in report.skipped}
         hidden_names = {h.table_name for h in report.hidden_internals}
@@ -405,7 +403,7 @@ class TestLiveNameSurvivesToTheReport:
 
     def test_dotted_schema_still_classifies(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
         # Simulate the dotted-schema shape and re-check what a consumer sees.
         entry = next(
             t for t in report.internal_tables if t.table_name == "_dlt_loads"
@@ -465,7 +463,7 @@ class TestSurfaceInternals:
     ) -> None:
         """`internal_tables` is populated regardless of the flag, so a surfaced run can still report an earlier run's hidden model."""
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds, surface_internals=True))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds, surface_internals=True))
 
         assert {t.table_name for t in report.internal_tables} == _INTERNAL_NAMES
         assert all(t.hidden is False for t in report.internal_tables)
@@ -474,7 +472,7 @@ class TestSurfaceInternals:
         _, ds = _ds(workspace, _MIXED)
         by_name = {
             m.name: m
-            for m in run_sync(_with_client(ingest_datasource, datasource=ds, surface_internals=True))
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         for name in _INTERNAL_NAMES:
             assert by_name[name].hidden is False, name
@@ -483,22 +481,22 @@ class TestSurfaceInternals:
         _, ds = _ds(workspace, _MIXED)
         by_name = {
             m.name: m
-            for m in run_sync(_with_client(ingest_datasource, datasource=ds, surface_internals=True))
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         assert by_name["_dlt_loads"].meta is None
 
     def test_flag_empties_the_scan_report_list(self, workspace: Path) -> None:
         """The list means "what we hid" — nothing was hidden, so it is empty."""
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds, surface_internals=True))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds, surface_internals=True))
         assert report.hidden_internals == []
 
     def test_flag_does_not_change_which_models_exist(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        hidden_run = {m.name for m in run_sync(_with_client(ingest_datasource, datasource=ds))}
+        hidden_run = {m.name for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds))}
         surfaced_run = {
             m.name
-            for m in run_sync(_with_client(ingest_datasource, datasource=ds, surface_internals=True))
+            for m in run_sync(_with_client(ing.ingest_datasource_async, datasource=ds, surface_internals=True))
         }
         assert hidden_run == surfaced_run
 
@@ -513,7 +511,7 @@ class TestIncludeExclude:
         self, workspace: Path
     ) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report,
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds, exclude_tables=["_dlt_loads"]
         ))
         assert "_dlt_loads" not in {m.name for m in report.models}
@@ -522,7 +520,7 @@ class TestIncludeExclude:
     def test_explicit_include_still_hides(self, workspace: Path) -> None:
         """`--include`/`--exclude` choose which objects are scanned; visibility is a separate axis, so an explicit include still hides."""
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report,
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds, include_tables=["orders", "_dlt_loads"]
         ))
         by_name = {m.name: m for m in report.models}
@@ -533,7 +531,7 @@ class TestIncludeExclude:
 
     def test_include_plus_surface_internals_shows_it(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report,
+        report = run_sync(_with_client(ing.ingest_datasource_report_async,
             datasource=ds,
             include_tables=["_dlt_loads"],
             surface_internals=True,
@@ -843,7 +841,7 @@ class TestRenderer:
     def test_accepts_a_scan_report(self, workspace: Path, capsys) -> None:
         """The renderer accepts an `IngestionScanReport`, which lacks `to_delete` and `errors` entirely."""
         _, ds = _ds(workspace, _MIXED)
-        report = run_sync(_with_client(ingest_datasource_report, datasource=ds))
+        report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))
 
         _print_ingest_drift_and_errors(report)
 

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import sqlglot
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import MissingDriverError
 from slayer.core.models import DatasourceConfig
 from slayer.sql.dialects import dialect_for_ds_type
@@ -397,32 +397,34 @@ def test_statement_timeout_sql_zero_seconds() -> None:
     assert d.statement_timeout_sql(0) == "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 0"
 
 
-# map_cursor_type_code — snowflake-connector FieldType integer codes
+# describe_cursor_column — snowflake-connector FieldType integer codes
 
 
 @pytest.mark.parametrize(
     "type_code,expected",
     [
-        (0, "number"),   # FIXED
-        (1, "number"),   # REAL
-        (2, "string"),   # TEXT
-        (3, "time"),     # DATE
-        (4, "time"),     # TIMESTAMP
-        (5, "string"),   # VARIANT
-        (6, "time"),     # TIMESTAMP_LTZ
-        (7, "time"),     # TIMESTAMP_TZ
-        (8, "time"),     # TIMESTAMP_NTZ
-        (9, "string"),   # OBJECT
-        (10, "list"),  # ARRAY
-        (11, "string"),  # BINARY
-        (12, "time"),    # TIME
-        (13, "boolean"), # BOOLEAN
+        (0, DataType.INT),         # FIXED, scale 0
+        (1, DataType.DOUBLE),      # REAL
+        (2, DataType.TEXT),        # TEXT
+        (3, DataType.DATE),        # DATE
+        (4, DataType.TIMESTAMP),   # TIMESTAMP
+        (5, DataType.TEXT),        # VARIANT
+        (6, DataType.TIMESTAMP),   # TIMESTAMP_LTZ
+        (7, DataType.TIMESTAMP),   # TIMESTAMP_TZ
+        (8, DataType.TIMESTAMP),   # TIMESTAMP_NTZ
+        (9, DataType.TEXT),        # OBJECT
+        (10, DataType.ARRAY),      # ARRAY
+        (11, DataType.TEXT),       # BINARY
+        (12, DataType.TIMESTAMP),  # TIME
+        (13, DataType.BOOLEAN),    # BOOLEAN
     ],
 )
-def test_map_cursor_type_code_each(type_code: int, expected: str) -> None:
-    assert SnowflakeDialect().map_cursor_type_code(type_code) == expected
+def test_describe_cursor_column_each(type_code: int, expected: DataType) -> None:
+    described = SnowflakeDialect().describe_cursor_column(("c", type_code, None, None, 38, 0, True))
+    assert described is not None
+    assert described.type == expected
 
 
-def test_map_cursor_type_code_unknown_returns_none() -> None:
+def test_describe_cursor_column_unknown_returns_none() -> None:
     """Unknown codes return ``None``."""
-    assert SnowflakeDialect().map_cursor_type_code(999) is None
+    assert SnowflakeDialect().describe_cursor_column(("c", 999, None, None, None, None, True)) is None

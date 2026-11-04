@@ -2934,14 +2934,6 @@
                 }
             },
             {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 50,
-                    "endColumn": 63,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 25,
@@ -23760,16 +23752,6 @@
                 "range": {
                     "startColumn": 18,
                     "endColumn": 70,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/test_native_type_preservation.py": [
-            {
-                "code": "reportOperatorIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 56,
                     "lineCount": 1
                 }
             }

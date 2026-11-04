@@ -15,7 +15,7 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
 | `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. |
-| `get_column_types(sql)` | `{column: "number" \| "string" \| "time" \| "boolean"}` | The result columns' types, without fetching data. |
+| `get_result_column_types(sql)` | `{column: ResultColumnType(type, db_type)}` | Each result column's SLayer `type` (`DataType`) and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |
 | `list_schemas()` | `list[str]` | Visible schema tokens (catalog-qualified, `catalog.schema`, on DuckDB). |
@@ -53,7 +53,7 @@ The smallest gateway routes only the statements and keeps the default client for
 ```python
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -62,8 +62,8 @@ class GatewayClient(DelegatingSqlClient):
         # Send ``sql`` to your gateway here; this one runs it on the wrapped client.
         return await self.inner.execute(sql)
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        return await self.inner.get_column_types(sql)
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        return await self.inner.get_result_column_types(sql)
 
 
 def client_factory(datasource: DatasourceConfig) -> GatewayClient:

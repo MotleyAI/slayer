@@ -9,8 +9,12 @@ from typing import Any, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.sql.client import CATEGORY_DATA_TYPES, _fetch_rows, _map_type_code
+from slayer.core.models import Column
+from slayer.sql.client import _fetch_rows, _types_from_cursor
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.base import describe_type_name_code
+from slayer.sql.dialects.reflection import ResultColumnType, is_exact_numeric_db_type
+from slayer.sql.render.value_expr import keeps_native_type
 from slayer.sql.dialects._clickhouse_cells import array_reader
 
 
@@ -120,17 +124,21 @@ def test_clickhouse_cell_escapes(cell: str, expected: list[str]) -> None:
 # --------------------------------------------------------------------------- #
 # Cursor type codes
 # --------------------------------------------------------------------------- #
-def test_the_list_category_is_the_array_type() -> None:
-    assert CATEGORY_DATA_TYPES["list"] is DataType.ARRAY
+def _row(type_code: Any) -> tuple[Any, ...]:
+    return ("c", type_code, None, None, None, None, None)
 
 
 @pytest.mark.parametrize("type_code", ["INTEGER[]", "VARCHAR[]", "LIST(VARCHAR)", "ARRAY(INTEGER)", "ARRAY<STRING>"])
 def test_list_type_names_are_lists(type_code: str) -> None:
-    assert _map_type_code(type_code) == "list"
+    typed = describe_type_name_code(_row(type_code))
+    assert typed is not None
+    assert typed.type is DataType.ARRAY
 
 
 def test_an_untyped_array_name_is_a_list() -> None:
-    assert _map_type_code("ARRAY") == "list"
+    typed = describe_type_name_code(_row("ARRAY"))
+    assert typed is not None
+    assert typed.type is DataType.ARRAY
 
 
 @pytest.mark.parametrize(("oid", "pg_type"), [
@@ -140,4 +148,27 @@ def test_an_untyped_array_name_is_a_list() -> None:
     (1001, "bytea[]"),
 ])
 def test_postgres_array_type_codes_are_lists(oid: int, pg_type: str) -> None:
-    assert _map_type_code(oid, "postgresql") == "list", pg_type
+    typed = get_dialect("postgres").describe_cursor_column(_row(oid))
+    assert typed is not None
+    assert typed.type is DataType.ARRAY, pg_type
+
+
+def test_an_untyped_cursor_column_holding_lists_is_a_list() -> None:
+    result = _Result(["l", "n"], [None, None], [(["go", "sql"], 1)])
+    types = _types_from_cursor(result, dialect=get_dialect("sqlite"))
+    assert types["l"].type is DataType.ARRAY
+    assert types["n"].type is DataType.DOUBLE
+
+
+def test_a_probed_list_keeps_its_type_name() -> None:
+    assert ResultColumnType(type=DataType.ARRAY, db_type="INTEGER[]").lossy_db_type == "INTEGER[]"
+
+
+@pytest.mark.parametrize("name", ["NUMERIC[]", "DECIMAL(10,2)[]", "ARRAY(DECIMAL(10,2))", "Array(Decimal(9,2))"])
+def test_a_numeric_list_is_not_exact_numeric(name: str) -> None:
+    assert not is_exact_numeric_db_type(name)
+
+
+def test_a_numeric_list_column_is_cast_like_any_list() -> None:
+    col = Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE, db_type="NUMERIC[]")
+    assert not keeps_native_type(col=col, dialect=get_dialect("postgres"))

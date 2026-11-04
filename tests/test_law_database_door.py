@@ -221,7 +221,7 @@ class TestListPathsUseTheEngineClient:
             await engine.aclose()
             engine.close()
         assert guard.attempts == []
-        assert "get_column_types" in [call.op for call in factory.all_calls()]
+        assert "get_result_column_types" in [call.op for call in factory.all_calls()]
         assert [e for e in entries if "skills" in str(e.model_dump())] == []
 
 

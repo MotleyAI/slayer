@@ -183,7 +183,7 @@ class SaveMemoryRequest(BaseModel):
     int-shaped id.
 
     Optional ``description`` is a short compact preview
-    surfaced by ``search(compact=True)`` and ``inspect_model``. Hard
+    surfaced by ``search(compact=True)`` and ``inspect``. Hard
     cap of 500 chars; over-cap returns HTTP 400.
     """
 

@@ -5,7 +5,6 @@ set -e
 python -c "
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -17,7 +16,7 @@ ds = DatasourceConfig(
     database='slayer_demo', username='sa', password='YourStrong@Passw0rd',
 )
 run_sync(storage.save_datasource(ds))
-result = engine.run_sync(ingest_datasource_idempotent(datasource=ds, storage=engine.storage, client=engine.client_for(ds)))
+result = engine.ingest_idempotent_sync(ds)
 print(f'Ingested {len(result.additions)} models')
 "
 

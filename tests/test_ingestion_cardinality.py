@@ -11,10 +11,10 @@ import sqlalchemy as sa
 
 from slayer.core.enums import JoinCardinality
 from slayer.core.models import DatasourceConfig
+from slayer.engine import ingestion
 from slayer.engine.ingestion import (
     _generate_joins,
     _is_cross_schema_fk,
-    ingest_datasource,
     ingest_datasource_idempotent,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult
@@ -191,7 +191,7 @@ class TestCompositeFk:
         _create_schema(db_path)
         client = _CountsDefaultSchema(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
         try:
-            models = await ingest_datasource(client.datasource, client=client)
+            models = await ingestion.ingest_datasource_async(client.datasource, client=client)
         finally:
             await client.aclose()
             client.close()
@@ -204,7 +204,7 @@ class TestCompositeFk:
         _create_schema(db_path)
         client = _FailsFirstScanRead(SlayerSQLClient(datasource=DatasourceConfig(name="ds", type="sqlite", database=db_path)))
         try:
-            models = await ingest_datasource(client.datasource, client=client)
+            models = await ingestion.ingest_datasource_async(client.datasource, client=client)
         finally:
             await client.aclose()
             client.close()

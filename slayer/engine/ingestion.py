@@ -3,12 +3,14 @@
 import logging
 import sys
 from collections import defaultdict
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TextIO
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field
 from sqlglot import exp
 
+from slayer.async_utils import marked_coroutine_function, run_sync
+from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -20,6 +22,7 @@ from slayer.core.models import (
     sanitize_model_name,
 )
 from slayer.core.join_edges import edge_reference
+from slayer.engine import query_engine, schema_drift
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
@@ -29,6 +32,7 @@ from slayer.sql.client import ObjectNotFound, SqlClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys
 from slayer.engine.schema_scope import (
+    IngestScopeArgs,
     SchemaRef,
     UNREACHABLE,
     SkippedSchema,
@@ -53,6 +57,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 class IntrospectedColumn(BaseModel):
@@ -738,7 +744,7 @@ def _plan_scanned_edges(models: list[SlayerModel]) -> list[SlayerModel]:
     return [plan.models[m.name] for m in models]
 
 
-async def ingest_datasource_report(
+async def ingest_datasource_report_async(
     datasource: DatasourceConfig,
     *,
     client: SqlClient,
@@ -820,7 +826,7 @@ async def ingest_datasource_report(
     )
 
 
-async def ingest_datasource(
+async def ingest_datasource_async(
     datasource: DatasourceConfig,
     *,
     client: SqlClient,
@@ -833,7 +839,7 @@ async def ingest_datasource(
     surface_internals: bool = False,
 ) -> list[SlayerModel]:
     """Models only, for callers that don't need the skip report."""
-    return (await ingest_datasource_report(
+    return (await ingest_datasource_report_async(
         datasource=datasource,
         client=client,
         include_tables=include_tables,
@@ -844,6 +850,80 @@ async def ingest_datasource(
         include_views=include_views,
         surface_internals=surface_internals,
     )).models
+
+
+def _run_through(
+    datasource: DatasourceConfig, *, client: SqlClient | None, work: Callable[[SqlClient], Awaitable[_T]],
+) -> _T:
+    """Run ``work`` synchronously over ``client`` (released after), else over a short-lived engine's client."""
+
+    async def _run() -> _T:
+        if client is None:
+            async with query_engine.short_lived_engine() as engine:
+                return await work(engine.client_for(datasource))
+        try:
+            return await work(client)
+        finally:
+            await client.aclose()
+
+    return run_sync(_run())
+
+
+def ingest_datasource_report(
+    datasource: DatasourceConfig,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+    *,
+    client: SqlClient | None = None,
+) -> IngestionScanReport:
+    """Synchronous ``ingest_datasource_report_async``; omitting ``client`` is deprecated."""
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is None:
+        warn_deprecated(
+            "ingest_datasource_report() without client= is deprecated; pass client=engine.client_for(datasource), "
+            "or await ingest_datasource_report_async(datasource, client=...). The no-client form works until "
+            "SLayer 2.0.",
+            removal="2.0",
+        )
+    return _run_through(
+        datasource, client=client, work=lambda c: ingest_datasource_report_async(datasource, client=c, **scope),
+    )
+
+
+def ingest_datasource(
+    datasource: DatasourceConfig,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+    *,
+    client: SqlClient | None = None,
+) -> list[SlayerModel]:
+    """Synchronous ``ingest_datasource_async``; omitting ``client`` is deprecated."""
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is None:
+        warn_deprecated(
+            "ingest_datasource() without client= is deprecated; use engine.ingest_sync(datasource, ...) or pass "
+            "client=engine.client_for(datasource). The no-client form works until SLayer 2.0.",
+            removal="2.0",
+        )
+    return _run_through(
+        datasource, client=client, work=lambda c: ingest_datasource_async(datasource, client=c, **scope),
+    )
 
 
 # --- Idempotent re-ingestion ---
@@ -1494,8 +1574,6 @@ async def _run_additive_pass(
 
     Every name is computed before the first save, and name-only updates save first.
     """
-    from slayer.engine.schema_drift import IngestionError, ModelAddition  # ALLOW(import-not-top): circular — schema_drift imports ingestion
-
     loaded, unloaded = await storage.load_models(data_source=datasource.name)
     stored = {m.name: m for m in failures.skip((loaded, unloaded))}
     merges, merge_skipped = _merge_fresh_tables(
@@ -1509,26 +1587,72 @@ async def _run_additive_pass(
 
     name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
     rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
-    errors: list[IngestionError] = []
+    errors: list[schema_drift.IngestionError] = []
     for name in [*name_only, *rest]:
         try:
             await storage.save_model(plan.models[name], failures=failures)
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
-            errors.append(IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
+            errors.append(schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.model_name for e in errors}
 
     additions = [
-        ModelAddition(data_source=datasource.name, **_addition_fields(merge=m, final=plan.models[n], plan=plan))
+        schema_drift.ModelAddition(
+            data_source=datasource.name, **_addition_fields(merge=m, final=plan.models[n], plan=plan),
+        )
         for n, m in merges.items() if n not in failed
     ]
     additions.extend(
-        ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
+        schema_drift.ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
         for n in name_only if n not in merges and n not in failed
     )
     return additions, errors, merge_skipped
 
 
-async def ingest_datasource_idempotent(
+@marked_coroutine_function
+def ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient | None = None,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    schemas: list[str] | None = None,
+    all_schemas: bool = False,
+    include_views: bool = True,
+    surface_internals: bool = False,
+) -> Coroutine[Any, Any, "schema_drift.IdempotentIngestResult"]:
+    """Idempotent re-ingestion: create missing models, additively merge existing ones.
+
+    User-authored sql/query-backed models are skipped. Then validates the same
+    scope so drift and dropped tables show up in ``to_delete``. Omitting ``client``
+    is deprecated. A plain function returning the coroutine, so a deprecation names the caller's line.
+    """
+    scope = IngestScopeArgs(
+        include_tables=include_tables, exclude_tables=exclude_tables, schema=schema, schemas=schemas,
+        all_schemas=all_schemas, include_views=include_views, surface_internals=surface_internals,
+    )
+    if client is not None:
+        return _ingest_idempotent(datasource=datasource, storage=storage, client=client, **scope)
+    warn_deprecated(
+        "ingest_datasource_idempotent() without client= is deprecated; use engine.ingest_idempotent(datasource) "
+        "(or engine.ingest_idempotent_sync) or pass client=engine.client_for(datasource). The no-client form "
+        "works until SLayer 2.0.",
+        removal="2.0",
+    )
+    return _ingest_idempotent_short_lived(datasource=datasource, storage=storage, scope=scope)
+
+
+async def _ingest_idempotent_short_lived(
+    *, datasource: DatasourceConfig, storage: StorageBackend, scope: IngestScopeArgs,
+) -> "schema_drift.IdempotentIngestResult":
+    async with query_engine.short_lived_engine(storage) as engine:
+        return await _ingest_idempotent(
+            datasource=datasource, storage=engine.storage, client=engine.client_for(datasource), **scope,
+        )
+
+
+async def _ingest_idempotent(
     *,
     datasource: DatasourceConfig,
     storage: StorageBackend,
@@ -1540,21 +1664,10 @@ async def ingest_datasource_idempotent(
     all_schemas: bool = False,
     include_views: bool = True,
     surface_internals: bool = False,
-):
-    """Idempotent re-ingestion: create missing models, additively merge existing ones.
-
-    User-authored sql/query-backed models are skipped. Then validates the same
-    scope so drift and dropped tables show up in ``to_delete``.
-    """
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
-    from slayer.engine.schema_drift import (  # ALLOW(import-not-top): circular — schema_drift imports ingestion
-        IdempotentIngestResult,
-        IngestionError,
-        validate_datasource,
-    )
-
-    scan = await ingest_datasource_report(
+    scan = await ingest_datasource_report_async(
         datasource=datasource,
         client=client,
         include_tables=include_tables,
@@ -1609,7 +1722,7 @@ async def ingest_datasource_idempotent(
                 )
                 datasource_described = True
         except Exception as exc:  # noqa: BLE001 — best-effort isolation
-            errors.append(IngestionError(
+            errors.append(schema_drift.IngestionError(
                 model_name="",
                 data_source=datasource.name,
                 error=f"datasource description save: {exc}",
@@ -1621,7 +1734,7 @@ async def ingest_datasource_idempotent(
         in_scope_table_names=in_scope_table_names,
         failures=failures,
     )
-    to_delete = await validate_datasource(
+    to_delete = await schema_drift.validate_datasource(
         datasource=datasource, models=scoped_models, client=client,
     )
 
@@ -1631,7 +1744,7 @@ async def ingest_datasource_idempotent(
         datasource_name=datasource.name, storage=storage, failures=failures,
     )
     for model_name, err in embedding_errors:
-        errors.append(IngestionError(
+        errors.append(schema_drift.IngestionError(
             model_name=model_name,
             data_source=datasource.name,
             error=f"embedding refresh: {err}",
@@ -1645,11 +1758,11 @@ async def ingest_datasource_idempotent(
         failures=failures,
     )
     errors.extend(
-        IngestionError(model_name=e.name, data_source=e.data_source, error=str(e))
+        schema_drift.IngestionError(model_name=e.name, data_source=e.data_source, error=str(e))
         for e in failures.errors if e.data_source is not None
     )
 
-    return IdempotentIngestResult(
+    return schema_drift.IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
