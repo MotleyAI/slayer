@@ -16,21 +16,26 @@ from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.errors import UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     NativeFn,
     set_statement,
     FALSE_WORDS,
+    INT64_BOUNDS,
+    INTEGER_TEXT_PATTERN,
+    NARROW_INTEGER_BOUNDS,
     NUMBER_TEXT_PATTERN,
     PORTABLE_LIBRARY,
     REGEX_LIBRARY,
     TRUE_WORDS,
+    UNSIGNED_CAST_TYPES,
     MathFn,
     ServerProfile,
     SqlDialect,
@@ -95,6 +100,10 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
+        exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
+    })
     database_name: ClassVar[str] = "MySQL"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
@@ -210,6 +219,18 @@ class MysqlDialect(SqlDialect):
                        true=exp.false()),
             ])
         return exp.Cast(this=value, to=to)
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """An integer ``CAST`` saturates here: the text's exact value is range-checked first."""
+        trimmed = exp.Trim(this=text.copy())
+        unsigned = (0, 2 ** 64 - 1) if to.this in UNSIGNED_CAST_TYPES else INT64_BOUNDS
+        low, high = NARROW_INTEGER_BOUNDS.get(to.this, unsigned)
+        exact = exp.Cast(this=trimmed.copy(), to=exp.DataType.build("DECIMAL(65, 0)"))
+        valid = exp.And(
+            this=self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
+            expression=exp.Between(this=exact, low=lit(low), high=lit(high)),
+        )
+        return case((valid, self.build_try_cast(trimmed, to)))
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True

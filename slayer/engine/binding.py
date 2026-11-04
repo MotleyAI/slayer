@@ -41,7 +41,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_data_type, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, numeric_valued
+from slayer.core.keys import ColumnTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, numeric_valued
 from slayer.core.join_walker import (
     LIST_ELEMENT_COLUMN,
     resolved_terminal,
@@ -108,7 +108,7 @@ from slayer.core.scalar_args import (
     slot_name,
 )
 from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
-from slayer.sql.sql_expr import build_cast_type, has_window_function, native_json_type
+from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, has_window_function, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
@@ -411,7 +411,7 @@ def _bind(
         measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
-        return _bind_cast(parsed, source=sub(parsed.source), bundle=bundle)
+        return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
@@ -548,13 +548,33 @@ def _temporal_literal_value(parsed: TemporalLiteral):
     return value
 
 
-def _bind_cast(parsed: Cast, *, source: ValueKey, bundle: ResolvedSourceBundle) -> CastKey:
+def _try_cast_source(source: ValueKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+    """What a ``TRY_CAST`` reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
+    if integer_text_valued(source, column_type=column_type):
+        return DataType.INT
+    return DataType.DOUBLE if numeric_valued(source, column_type=column_type) else None
+
+
+def _bind_cast(
+    parsed: Cast, *, source: ValueKey, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+) -> CastKey:
+    if parsed.try_ and cast_type_parts(parsed.type_text).array_rank:
+        raise CastTypeError(
+            summary=f"TRY_CAST to the array type {parsed.type_text} is not supported.",
+            suggestion="use CAST(x AS <type>[]), whose invalid input is the database's own.",
+        )
     try:
         build_cast_type(parsed.type_text, dialect=bundle.dialect)
     except ValueError as e:
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
+    data_type, element_type = cast_slayer_type(parsed.type_text, dialect=bundle.dialect)
+    column_type = scope_column_type(scope=scope, bundle=bundle)
+    if parsed.try_ and data_type in (DataType.INT, DataType.DOUBLE) and boolean_valued(source, column_type=column_type):
+        source = CastKey(source=source, type_text="INT", data_type=DataType.INT)  # a boolean reads as its 1 / 0
     return CastKey(
-        source=source, type_text=parsed.type_text, data_type=cast_data_type(parsed.type_text), try_=parsed.try_,
+        source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
+        element_type=element_type,
+        numeric_source=_try_cast_source(source, column_type=column_type) if parsed.try_ else None,
     )
 
 

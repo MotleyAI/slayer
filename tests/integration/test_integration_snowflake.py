@@ -38,6 +38,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import client, engine_factory
 from slayer.sql.dialects import SnowflakeDialect
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -336,6 +337,10 @@ def test_basic_query(sf_storage_with_models) -> None:
     # 6 orders, quantities 2+1+5+3+1+4 = 16
     val = next(iter(rows[0].values()))
     assert int(val) == 16
+
+
+def test_try_cast_integer_targets(sf_storage_with_models) -> None:
+    run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
 
 
 def test_functional_aggregation_parity(sf_storage_with_models) -> None:

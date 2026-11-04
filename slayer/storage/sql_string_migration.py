@@ -1,8 +1,8 @@
 """SlayerModel v15 / SlayerQuery v6 / Memory v4: stored Mode-B text adopts the SQL string and identifier rules.
 
-A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one and a ``|``
-concatenation becomes ``||``. Stored-only: a fresh payload is never rewritten, nor is text the old grammar
-could not have held.
+A double-quoted or backslash-escaped string literal becomes the equivalent single-quoted one, a ``|``
+concatenation becomes ``||``, touching minus signs are spaced (``a--b`` → ``a- -b``) and a ``#`` comment becomes ``--``.
+Stored-only: a fresh payload is never rewritten, nor is text the old grammar could not have held.
 """
 
 import ast
@@ -33,20 +33,26 @@ def _star_sources_named(text: str) -> str:
 
 
 def sql_quote_strings(text: str) -> str:
-    """``text`` with Python string literals re-spelled as SQL ``'…'`` literals (adjacent ones joined) and a lone
-    ``|`` as ``||``; everything else byte-for-byte. Untokenisable text is returned unchanged."""
+    """``text`` with Python string literals re-spelled as SQL ``'…'`` literals (adjacent ones joined), a lone
+    ``|`` as ``||`` and ``#`` comments as ``--``; everything else byte-for-byte. Untokenisable text is returned unchanged."""
     try:
-        tokens = [t for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type not in _SKIP]
+        every = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, SyntaxError):
         return text
+    tokens = [t for t in every if t.type not in _SKIP]
     if any(t.type == tokenize.ERRORTOKEN for t in tokens):
         return text
     line_starts = [0]
-    for line in text.splitlines(keepends=True):
+    for line in io.StringIO(text):  # the lines ``tokenize`` reads (``splitlines`` also splits at U+2028 & co.)
         line_starts.append(line_starts[-1] + len(line))
     edits = _edits(tokens, line_starts=line_starts)
     if edits is None:
         return text
+    replaced = [(start, end) for start, end, _ in edits]
+    for comment in (t for t in every if t.type == tokenize.COMMENT):
+        start = line_starts[comment.start[0] - 1] + comment.start[1]
+        if not any(low <= start < high for low, high in replaced):
+            edits.append((start, start + 1, " --" if text[start - 1:start] == "-" else "--"))
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text
@@ -79,8 +85,16 @@ def _edits(tokens: list[tokenize.TokenInfo], *, line_starts: list[int]) -> list[
             continue
         if tok.type == tokenize.OP and tok.string == "|" and not _pipe_pair(tokens, i):
             edits.append((offset(tok.start), offset(tok.end), "||"))
+        if _minus_pair(tokens, i):
+            edits.append((offset(tok.end), offset(tok.end), " "))
         i += 1
     return edits
+
+
+def _minus_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
+    """Whether the ``-`` at ``i`` touches a following ``-`` (SQL would read the pair as a comment)."""
+    return (i + 1 < len(tokens) and tokens[i].type == tokens[i + 1].type == tokenize.OP
+            and tokens[i].string == tokens[i + 1].string == "-" and tokens[i].end == tokens[i + 1].start)
 
 
 def _string_run(tokens: list[tokenize.TokenInfo], i: int) -> tuple[int, str | None]:

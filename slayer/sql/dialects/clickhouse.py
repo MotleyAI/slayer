@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Optional
 import sqlglot
 from sqlalchemy.types import NullType
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -201,6 +202,12 @@ _CH_ADD_FUNCTIONS = {
 
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
+    array_cast_types: ClassVar[bool] = True
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
+        exp.DataType.Type.UINT128, exp.DataType.Type.UINT256,
+    })
+    vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.INT128, exp.DataType.Type.INT256})
     ilike_native: ClassVar[bool] = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "OBJECT"})

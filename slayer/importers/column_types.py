@@ -12,44 +12,22 @@ from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.schema_scope import table_schema_ref
 from slayer.sql.client import CATEGORY_DATA_TYPES, probe_columns_sync, render_type_probe
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
+from slayer.sql.dialects.base import slayer_type_of
 from slayer.sql.render.parse import parse_expression, parse_query, parse_table
 
 Typed = tuple[DataType, DataType | None]
 
 _NUMERIC_AGGS = frozenset({"sum", "avg", "average", "median", "percentile", "stddev", "variance"})
 _COUNT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
-_TIMESTAMPS = (exp.DType.TIMESTAMP, exp.DType.TIMESTAMPTZ, exp.DType.TIMESTAMPLTZ, exp.DType.TIMESTAMPNTZ,
-               exp.DType.DATETIME, exp.DType.DATETIME64, exp.DType.TIMESTAMP_S, exp.DType.TIMESTAMP_MS,
-               exp.DType.TIMESTAMP_NS)
-
-
-def _scalar(dt: exp.DataType) -> DataType | None:
-    if dt.is_type(*exp.DataType.INTEGER_TYPES):
-        return DataType.INT
-    if dt.is_type(*exp.DataType.REAL_TYPES):
-        return DataType.DOUBLE
-    if dt.is_type(*exp.DataType.TEXT_TYPES):
-        return DataType.TEXT
-    if dt.is_type(exp.DType.BOOLEAN):
-        return DataType.BOOLEAN
-    if dt.is_type(exp.DType.DATE):
-        return DataType.DATE
-    if dt.is_type(*_TIMESTAMPS):
-        return DataType.TIMESTAMP
-    return None
 
 
 def declared_type(text: str, *, dialect: str | None) -> Typed | None:
     """A declared SQL type in ``dialect`` as SLayer's; ``None`` when unrecognised."""
     try:
-        dt = exp.DataType.build(text, dialect=dialect)
+        found = slayer_type_of(exp.DataType.build(text, dialect=dialect))
     except (SqlglotError, ValueError):
         return None
-    if dt.is_type(exp.DType.ARRAY):
-        inner = next((e for e in dt.expressions if isinstance(e, exp.DataType)), None)
-        return DataType.ARRAY, (_scalar(inner) if inner is not None else None) or DataType.UNKNOWN
-    found = _scalar(dt)
-    return None if found is None else (found, None)
+    return None if found[0] is DataType.UNKNOWN else found
 
 
 def implied_type(agg: str) -> Typed | None:

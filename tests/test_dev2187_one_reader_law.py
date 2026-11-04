@@ -382,7 +382,7 @@ TD_PINS: dict[str, tuple[str, str]] = {
     "month(date_trunc('day', created_at))": ("date_trunc('day', created_at)", "month"),
     "date_trunc('month', created_at)": ("created_at", "month"),
     "date_trunc('month', coalesce(shipped_at, created_at))": ("coalesce(shipped_at, created_at)", "month"),
-    "month(created_at -- c)": ("created_at -- c", "month"),
+    "month(created_at - -c)": ("created_at - -c", "month"),
     "created_at:month": ("created_at", "month"),
     "orders.created_at:month": ("orders.created_at", "month"),
 }

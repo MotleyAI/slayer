@@ -30,6 +30,7 @@ from slayer.engine.ingestion import (
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import EditModelDelete, validate_datasource
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -344,6 +345,10 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
 
 async def test_dev2120_library(bq_dev2120_storage) -> None:
     await check_library(SlayerQueryEngine(storage=bq_dev2120_storage))
+
+
+async def test_try_cast_integer_targets(bq_dev2120_storage) -> None:
+    await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), model=LIB.name)
 
 
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:

@@ -52,6 +52,7 @@ from tests._dev2120_fixtures import (
     lib_model,
     server_table_statements as dev2120_table_statements,
 )
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
@@ -269,6 +270,9 @@ async def _week_buckets(engine: SlayerQueryEngine, *, column: str, granularity: 
 
 @pytest.mark.integration
 class TestTrinoQueries:
+    async def test_try_cast_integer_targets(self, trino_env: SlayerQueryEngine) -> None:
+        await check_try_cast_targets(trino_env, model="orders")
+
     async def test_count_all(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "*:count"}]}))
         assert result.row_count == 1
