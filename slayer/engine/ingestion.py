@@ -722,7 +722,8 @@ def _columns_to_model(
         cols.append(
             Column(
                 name=column_name,
-                sql=col.name,
+                # A quoted lower-case Snowflake / Oracle column names itself exactly.
+                sql=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 type=col.type,
                 element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,

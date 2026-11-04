@@ -14,9 +14,12 @@ from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
-from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.ingestion import ingest_datasource_idempotent, list_ingestable_objects
+from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.query import SlayerQuery
+from slayer.engine.ingestion import (
+    IntrospectedColumn, _columns_to_model, ingest_datasource_idempotent, list_ingestable_objects,
+)
 from slayer.engine.schema_drift import _list_live_objects
 from slayer.engine.schema_scope import SchemaRef, is_quoted_name
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -26,7 +29,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine
+from tests._engine_helpers import _engine_generate, disposable_engine
 
 DS = "ds"
 
@@ -214,3 +217,43 @@ def test_listed_objects_keep_their_quoting() -> None:
     ((_, names),) = _list_live_objects([SchemaRef(name="s")], inspector=inspector,
                                        datasource=DatasourceConfig(name=DS, type="snowflake"))
     assert [is_quoted_name(n) for n in names] == [True, False]
+
+
+# ── a quoted physical key reads its exact-case column ─────────────────────
+
+def _keyed(*, cardinality: JoinCardinality) -> list[SlayerModel]:
+    customers = SlayerModel(name="customers", data_source=DS, sql_table="customers", columns=[
+        Column(name="id", sql='"id"', type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+        joins=[ModelJoin(target_model="orders", join_pairs=[["id", "cust"]], cardinality=cardinality)])
+    orders = SlayerModel(name="orders", data_source=DS, sql_table="orders", columns=[
+        Column(name="oid", type=DataType.INT, primary_key=True), Column(name="cust", sql='"cust_key"', type=DataType.INT),
+        Column(name="status", type=DataType.TEXT)])
+    return [customers, orders]
+
+
+def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
+    tree = sqlglot.parse_one(sql, read=dialect)
+    keys = {"id", "cust_key"}
+    return {(c.name, c.this.quoted) for c in tree.find_all(exp.Column) if c.name in keys}
+
+
+@pytest.mark.parametrize(("cardinality", "query"), [
+    (JoinCardinality.ONE_TO_ONE, {"source_model": "customers", "dimensions": ["name", "orders.status"]}),
+    (JoinCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
+                                   "filters": ["orders.status = 'x'"]}),
+    (JoinCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
+                                   "filters": ["name = 'a' OR orders.status = 'x'"]}),
+])
+@pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
+async def test_quoted_join_keys_stay_quoted(cardinality: JoinCardinality, query: dict[str, Any], dialect: str) -> None:
+    customers, orders = _keyed(cardinality=cardinality)
+    sql = await _engine_generate(query=SlayerQuery.model_validate(query), model=customers, extra_models=[orders],
+                                 dialect=dialect)
+    assert _key_columns(sql, dialect=dialect) == {("id", True), ("cust_key", True)}
+
+
+def test_ingested_quoted_column_reads_itself_exactly() -> None:
+    model = _columns_to_model(name="t", data_source=DS, sql_table="t", columns=[
+        IntrospectedColumn(name="foo", type=DataType.INT, quoted=True), IntrospectedColumn(name="bar", type=DataType.INT)])
+    assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.columns] == [
+        ("foo", '"foo"', "foo", True), ("bar", "bar", "bar", False)]

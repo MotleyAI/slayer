@@ -404,6 +404,14 @@ def maybe_quote_ident(ident: Optional[Expression]) -> None:
         ident.set("quoted", True)
 
 
+def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
+    """A physical column ``name`` as SLayer reads it: quoted when its stored SQL quotes it or it holds an upper-case
+    letter."""
+    ident = exp.to_identifier(name, quoted=True if quoted else None)
+    maybe_quote_ident(ident)
+    return ident
+
+
 def quote_mixed_case_identifiers(node: Expression) -> Expression:
     """Quote mixed-case DB identifiers (``.transform`` callback): a ``Column``'s name leaf and a ``Table``'s physical parts only. Idempotent."""
     if isinstance(node, exp.Column):
