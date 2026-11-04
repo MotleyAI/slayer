@@ -33,6 +33,7 @@ from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_co
 from slayer.engine.schema_scope import split_sql_table
 from slayer.sql import engine_factory
 from slayer.sql import sqlite_introspect
+from slayer.sql.dialects import dialect_for_ds_type
 
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ def _parse_sql_table_with_default_schema(
     ``catalog`` schema.
     """
     default_schema = getattr(datasource, "schema_name", None) or None
-    schema_token, table_name = split_sql_table(sql_table)
+    schema_token, table_name = split_sql_table(sql_table, dialect=dialect_for_ds_type(datasource.type))
     if schema_token is None:
         return default_schema, table_name
     return schema_token, table_name

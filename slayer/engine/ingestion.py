@@ -35,7 +35,7 @@ from slayer.engine.internal_tables import internal_table_rule
 from slayer.engine.introspect_utils import dialect_for_engine, reflect_columns, reflect_table_keys
 from slayer.sql import engine_factory, sqlite_introspect
 from slayer.sql.client import CATEGORY_DATA_TYPES, SlayerSQLClient, render_type_probe, sql_model_trial_query
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import (
     CLICKHOUSE_WRAPPER_MAX_DEPTH,
     CLICKHOUSE_WRAPPER_NAMES,
@@ -81,6 +81,7 @@ class IntrospectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
 
 
 # Dedup set for unrecognized SA type warnings, keyed by upper-cased class name.
@@ -501,7 +502,7 @@ def _introspected_column(
             db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(col_type))
     return IntrospectedColumn(
         name=name, type=data_type, element_type=element_type, primary_key=primary_key, is_float=is_float,
-        db_type=db_type, comment=col.comment,
+        db_type=db_type, comment=col.comment, quoted=col.quoted,
     )
 
 
@@ -755,7 +756,7 @@ def _sqlite_probe_integer_columns(
     if not dialect_for_engine(sa_engine).probes_integer_affinity:
         return columns
 
-    schema, table = _parse_qualified_sql_table(sql_table)
+    schema, table = split_sql_table(sql_table, dialect=dialect_for_engine(sa_engine))
     out: list[IntrospectedColumn] = []
     with sa_engine.connect() as conn:
         for col in columns:
@@ -787,12 +788,15 @@ def _sqlite_probe_integer_columns(
     return out
 
 
-def _parse_qualified_sql_table(sql_table: str) -> tuple[str | None, str]:
-    """Split ``"schema.table"`` on the first dot into ``(schema, table)``."""
-    if "." in sql_table:
-        schema, _, table = sql_table.partition(".")
-        return schema or None, table
-    return None, sql_table
+def introspect_table_columns(
+    *, sa_engine: sa.Engine, inspector: sa.engine.Inspector, table_name: str, ref: SchemaRef | None,
+) -> list[IntrospectedColumn]:
+    """A live table's columns, typed as ingestion types them."""
+    ref = ref or default_schema_ref(inspector, sa_engine)
+    columns = _introspect_query_columns_via_inspector(
+        sa_engine=sa_engine, inspector=inspector, table_name=table_name, ref=ref)
+    return _sqlite_probe_integer_columns(
+        sa_engine=sa_engine, sql_table=ref.qualify(table_name, dialect=dialect_for_engine(sa_engine)), columns=columns)
 
 
 def introspect_table_to_model(
@@ -819,7 +823,7 @@ def introspect_table_to_model(
         ref=ref,
         primary_key=keys.primary_key,
     )
-    sql_table = ref.qualify(table_name)
+    sql_table = ref.qualify(table_name, dialect=dialect_for_engine(sa_engine))
     columns = _sqlite_probe_integer_columns(
         sa_engine=sa_engine,
         sql_table=sql_table,
@@ -989,6 +993,7 @@ def _resolve_scanned_collisions(
     scanned: list[tuple[SchemaRef, IngestableObject]],
     *,
     multi_schema: bool,
+    dialect: SqlDialect,
 ) -> tuple[
     dict[str, tuple[SchemaRef, IngestableObject]], list[SkippedTable]
 ]:
@@ -1004,7 +1009,7 @@ def _resolve_scanned_collisions(
         win_ref, win_obj = ordered[0]
         winners[model_name] = (win_ref, win_obj)
         winner_label = (
-            win_ref.qualify(win_obj.name) if multi_schema else win_obj.name
+            win_ref.qualify(win_obj.name, dialect=dialect) if multi_schema else win_obj.name
         )
         for ref, obj in ordered[1:]:
             label = (
@@ -1045,7 +1050,7 @@ def _build_one_model(
     ``keys_by_table`` memoizes each table's keys across the schema's objects.
     """
     schema_token = ref.token
-    sql_table = ref.qualify(obj.name)
+    sql_table = ref.qualify(obj.name, dialect=dialect_for_engine(sa_engine))
     keys_by_table = keys_by_table if keys_by_table is not None else {}
     model_joins = _generate_joins(
         inspector=inspector,
@@ -1222,7 +1227,7 @@ def ingest_datasource_report(
 
         all_objects = [obj for _, obj in scanned]
         winners, skipped = _resolve_scanned_collisions(
-            scanned, multi_schema=multi_schema
+            scanned, multi_schema=multi_schema, dialect=dialect_for_engine(sa_engine)
         )
 
         by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
@@ -1658,8 +1663,9 @@ def _merge_one_table(
         and fresh.sql_table
         and persisted.sql_table != fresh.sql_table
     ):
-        persisted_schema, persisted_obj = split_sql_table(persisted.sql_table)
-        fresh_schema, _ = split_sql_table(fresh.sql_table)
+        dialect = dialect_for_ds_type(datasource.type)
+        persisted_schema, persisted_obj = split_sql_table(persisted.sql_table, dialect=dialect)
+        fresh_schema, _ = split_sql_table(fresh.sql_table, dialect=dialect)
         if persisted_schema is not None:
             # A differently qualified twin is a different physical table.
             return SkippedTable(
@@ -1699,18 +1705,18 @@ def _merge_one_table(
     )
 
 
-def _bare_table_name(sql_table: str) -> str:
-    """Strip an optional schema prefix from a ``schema.table`` reference."""
-    return sql_table.split(".", 1)[1] if "." in sql_table else sql_table
+def _bare_table_name(sql_table: str, *, dialect: SqlDialect) -> str:
+    """The live object a ``sql_table`` names, without its schema."""
+    return split_sql_table(sql_table, dialect=dialect)[1]
 
 
 def _sql_table_identity(
-    sql_table: str | None, *, default_schema: str | None,
+    sql_table: str | None, *, default_schema: str | None, dialect: SqlDialect,
 ) -> tuple[str | None, str] | None:
     """``(schema, object)`` identity of a ``sql_table``, unqualified → ``default_schema``."""
     if not sql_table:
         return None
-    schema, obj = split_sql_table(sql_table)
+    schema, obj = split_sql_table(sql_table, dialect=dialect)
     return (schema if schema is not None else default_schema, obj)
 
 
@@ -1725,7 +1731,8 @@ async def _stored_sanitized_identity_map(
     identities = await storage._list_all_model_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
     stored_identity: dict[str, tuple[str | None, str] | None] = {
-        m.name: _sql_table_identity(m.sql_table, default_schema=default_schema)
+        m.name: _sql_table_identity(m.sql_table, default_schema=default_schema,
+                                    dialect=dialect_for_ds_type(datasource.type))
         for m in failures.skip(await storage.load_models(data_source=datasource.name))
     }
     return stored_names, stored_identity
@@ -1737,6 +1744,7 @@ def _sanitized_rename_map(
     stored_names: set[str],
     stored_identity: dict[str, tuple[str | None, str] | None],
     default_schema: str | None,
+    dialect: SqlDialect,
 ) -> dict[str, str]:
     """Map each fresh name onto a stored sanitized spelling of the SAME live object."""
     rename_map: dict[str, str] = {}
@@ -1749,7 +1757,7 @@ def _sanitized_rename_map(
         if sanitized in fresh_by_name:
             continue  # sanitized spelling is a distinct live object — don't collapse
         fresh_identity = _sql_table_identity(
-            fresh.sql_table, default_schema=default_schema,
+            fresh.sql_table, default_schema=default_schema, dialect=dialect,
         )
         if fresh_identity is not None and stored_identity.get(sanitized) == fresh_identity:
             rename_map[name] = sanitized
@@ -1774,6 +1782,7 @@ async def _adopt_stored_sanitized_names(
     rename_map = _sanitized_rename_map(
         fresh_by_name=fresh_by_name, stored_names=stored_names,
         stored_identity=stored_identity, default_schema=default_schema,
+        dialect=dialect_for_ds_type(datasource.type),
     )
     if not rename_map:
         return fresh_by_name, {}
@@ -1839,7 +1848,8 @@ async def _scoped_models_for_validation(
     """Persisted models to validate: in-scope ``sql_table`` models plus all sql/query-backed ones."""
     return [
         m for m in failures.skip(await storage.load_models(data_source=datasource.name))
-        if not m.sql_table or _bare_table_name(m.sql_table) in in_scope_table_names
+        if not m.sql_table
+        or _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type)) in in_scope_table_names
     ]
 
 
@@ -1901,9 +1911,10 @@ def _schema_hint_message(other_schemas: list[str]) -> str | None:
     )
 
 
-def _edge_name_collision(*, table_name: str, fresh: SlayerModel, edge_owner: dict[str, str]) -> SkippedTable:
+def _edge_name_collision(*, table_name: str, fresh: SlayerModel, edge_owner: dict[str, str],
+                         dialect: SqlDialect) -> SkippedTable:
     return SkippedTable(
-        table_name=_bare_table_name(fresh.sql_table) if fresh.sql_table else table_name,
+        table_name=_bare_table_name(fresh.sql_table, dialect=dialect) if fresh.sql_table else table_name,
         kind=fresh.source_kind,
         reason=(
             f"model name '{table_name}' collides with the edge '{table_name}' declared on "
@@ -1929,7 +1940,8 @@ def _merge_fresh_tables(
         if table_name in unloadable:
             continue
         if table_name not in stored and table_name in edge_owner:
-            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner))
+            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner,
+                                                dialect=dialect_for_ds_type(datasource.type)))
             continue
         outcome = _merge_one_table(
             table_name=table_name, fresh=fresh, persisted=stored.get(table_name), datasource=datasource,
@@ -2076,7 +2088,8 @@ async def ingest_datasource_idempotent(
         ]
     # Live object names, not model names (the two can differ).
     in_scope_table_names: set[str] = {
-        _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
+        _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type))
+        for m in fresh_models if m.sql_table
     }
 
     additions, errors, merge_skipped = await _run_additive_pass(

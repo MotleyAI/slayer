@@ -573,6 +573,15 @@ def _digest(secret: str | None) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
+# How the database reads an unquoted identifier: as written, ASCII letters lowercased, or uppercased.
+IdentifierFolding = Literal["none", "lower", "upper"]
+
+
+def ascii_lower(name: str) -> str:
+    """``name`` with its ASCII letters lowercased (Postgres's unquoted-identifier rule)."""
+    return "".join(c.lower() if "A" <= c <= "Z" else c for c in name)
+
+
 #: A list child's element column, as every list relation exposes it.
 LIST_VALUE = "value"
 _UNNESTED = "__slayer_u"
@@ -734,6 +743,15 @@ class SqlDialect(BaseModel):
 
     # ``get_schema_names()`` yields ``catalog.schema`` tokens; elsewhere a dot is part of the name.
     catalog_qualified_schema_tokens: bool = False
+
+    # Whether quoting an identifier changes which object it names, and how an unquoted one is folded.
+    identifier_folding: ClassVar[IdentifierFolding] = "none"
+
+    def unquoted_identifier(self, name: str) -> str:
+        """The exact name the database resolves ``name``, written unquoted, to."""
+        if self.identifier_folding == "upper":
+            return name.upper()
+        return ascii_lower(name) if self.identifier_folding == "lower" else name
 
     @property
     def sync_driver(self) -> str | None:
@@ -1916,7 +1934,8 @@ class SqlDialect(BaseModel):
         """Inspector columns; when it raises, ``columns_query`` plus ``column_comments_query``."""
         try:
             return [
-                ReflectedColumn(name=c["name"], type=c["type"], comment=clean_comment(c.get("comment")))
+                ReflectedColumn(name=c["name"], type=c["type"], comment=clean_comment(c.get("comment")),
+                                quoted=getattr(c["name"], "quote", None) is True)
                 for c in inspector.get_columns(table, schema=schema_token(schema=schema, catalog=catalog))
             ]
         except Exception:  # noqa: BLE001 — catalog fallback below

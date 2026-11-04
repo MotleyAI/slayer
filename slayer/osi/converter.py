@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 import sqlglot
+from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
@@ -29,6 +30,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel, joi
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.sql.column_expansion import root_scope_column_ids, resolve_ref_target
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.render.parse import fold_source_identifiers
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.schema_scope import requested_schema_ref
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
@@ -36,9 +38,9 @@ from slayer.importers.column_types import LiveSource
 from slayer.importers.aggregates import (
     MaterializedColumn, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
 )
-from slayer.importers.physical import unreadable_columns
+from slayer.importers.physical import PhysicalIndex, live_exact_name, unreadable_columns
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.dialects import Selection, is_native, read, render, select_expression
+from slayer.osi.dialects import Selection, is_native, read, reader_for, render, select_expression
 from slayer.osi.models import (
     OSIAIContext,
     OSICustomExtension,
@@ -95,26 +97,24 @@ def _legal_measure_name(name: str) -> bool:
     return bool(_IDENTIFIER_RE.match(name))
 
 
-def _bare_column(tree: exp.Expr) -> str | None:
-    """The column name if ``tree`` is one unqualified (possibly quoted) column, else ``None``."""
-    if (isinstance(tree, exp.Column) and not tree.table
+def _bare_column(tree: exp.Expr) -> exp.Identifier | None:
+    """The identifier if ``tree`` is one unqualified (possibly quoted) column, else ``None``."""
+    if (isinstance(tree, exp.Column) and not tree.table and isinstance(tree.this, exp.Identifier)
             and not tree.args.get("db") and not tree.args.get("catalog")):
-        return tree.name
+        return tree.this
     return None
 
 
-def _missing_expr_columns(tree: exp.Expr, available: set[str], self_name: str) -> list[str]:
-    """Unqualified and self-qualified column names in ``tree`` absent from ``available``.
+def _missing_expr_columns(tree: exp.Expr, known: Callable[[exp.Identifier], bool], self_name: str) -> list[str]:
+    """Unqualified and self-qualified column names in ``tree`` no source column has.
 
     Other qualifiers are cross-model refs, checked after joins exist.
     """
     missing = []
     for col in tree.find_all(exp.Column):
-        if not col.table:
-            if col.name not in available:
-                missing.append(col.name)
-        elif col.table == self_name and col.name not in available:
-            missing.append(f"{col.table}.{col.name}")
+        if not isinstance(col.this, exp.Identifier) or (col.table and col.table != self_name) or known(col.this):
+            continue
+        missing.append(f"{col.table}.{col.name}" if col.table else col.name)
     return missing
 
 
@@ -223,6 +223,8 @@ class OsiToSlayerConverter:
         self._dialect = (dialect_for_ds_type(target_dialect) if target_dialect
                          else dialect_for_sa_backend(sa_engine.dialect.name))
         self._target = self._dialect.sqlglot_name
+        # Every dataset's name: a column a dataset name qualifies is a logical reference.
+        self._dataset_names = {ds.name for doc in documents for ds in doc.datasets}
         self._models: dict[str, SlayerModel] = {}
         # Introspected source columns per model, for field validation.
         self._physical: dict[str, dict[str, Column]] = {}
@@ -321,7 +323,15 @@ class OsiToSlayerConverter:
             )
             return
 
-        parsed = parse_source(ds.source)
+        parsed = parse_source(ds.source, dialect=self._dialect)
+        folded = fold_source_identifiers(parsed.query or ds.source.strip(), dialect=self._dialect,
+                                         table=not parsed.is_query)
+        if folded.unreadable:
+            self._warn(f"Dataset {ds.name!r} dropped: its source {ds.source!r} does not parse, so its identifiers "
+                       f"could not be read with the source's meaning.", model_name=ds.name, category="expression")
+            return
+        parsed = parse_source(folded.text, dialect=self._dialect) if not parsed.is_query else parsed.model_copy(
+            update={"query": folded.text})
         resolve_datasource(parsed.database, self.data_source)  # stubbed routing
 
         try:
@@ -330,7 +340,8 @@ class OsiToSlayerConverter:
             else:
                 base = introspect_table_to_model(
                     sa_engine=self.sa_engine, inspector=inspector,
-                    table_name=parsed.table, ref=requested_schema_ref(parsed.schema_name, sa_engine=self.sa_engine),
+                    table_name=quoted_name(parsed.table, True) if parsed.table_quoted else parsed.table,
+                    ref=requested_schema_ref(parsed.schema_name, sa_engine=self.sa_engine),
                     data_source=self.data_source, model_name=ds.name,
                 )
         except Exception as exc:  # noqa: BLE001 — per-dataset isolation
@@ -458,18 +469,22 @@ class OsiToSlayerConverter:
         if selection.candidate is None:
             self._warn(f"{label} {selection.reason}; skipping.", model_name=ds.name, category="dialect")
             return None
+        folded = fold_source_identifiers(selection.candidate.text, dialect=self._dialect,
+                                         read=reader_for(selection.candidate.dialect),
+                                         logical_qualifiers=self._dataset_names - {ds.name})
+        candidate = selection.candidate.model_copy(update={"text": folded.text})
         try:
-            tree = read(selection.candidate)
+            tree = read(candidate)
         except SqlglotError:
-            self._warn(f"{label} has an unparseable expression {selection.candidate.text!r}; skipping.",
+            self._warn(f"{label} has an unparseable expression {candidate.text!r}; skipping.",
                        model_name=ds.name, category="expression")
             return None
         try:
-            rendered = tree if is_native(selection.candidate, target=self._target) else self._list_calls(tree, ds=ds)
+            rendered = tree if is_native(candidate, target=self._target) else self._list_calls(tree, ds=ds)
         except (Unconvertible, UnsupportedServerFunctionError) as exc:
             self._warn(f"{label}: {exc}; skipping.", model_name=ds.name, category="expression")
             return None
-        return render(selection.candidate, rendered, target=self._target), tree
+        return render(candidate, rendered, target=self._target), tree
 
     def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
         """``tree`` with array functions as SLayer's own list SQL for the target."""
@@ -511,9 +526,17 @@ class OsiToSlayerConverter:
         self._apply_field_metadata(col=col, field=field)
         return col
 
-    def _bare_field_column(self, *, field: OSIField, ds: OSIDataset, bare: str,
+    def _source_columns(self, ds_name: str, ident: exp.Identifier) -> list[Column]:
+        """The source columns of ``ds_name`` that ``ident`` names, matched with the datasource dialect's rules."""
+        columns = [c for c in self._physical[ds_name].values() if c.is_base]
+        exact = {live_exact_name(c.physical_name, dialect=self._dialect): c for c in columns}
+        index = PhysicalIndex([], dialect=self._target, live=[c.physical_name for c in columns])
+        return [exact[n] for n in index.live_names(ident)]
+
+    def _bare_field_column(self, *, field: OSIField, ds: OSIDataset, bare: exp.Identifier,
                            sql: str) -> tuple[Column, DataType | None] | None:
-        source = self._physical[ds.name].get(bare)
+        found = self._source_columns(ds.name, bare)
+        source = found[0] if len(found) == 1 else None
         if source is None:
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
@@ -522,13 +545,15 @@ class OsiToSlayerConverter:
             )
             return None
         # A copy keeps the source's type, db_type, key flag and DB comment.
-        col = source.model_copy(deep=True, update={"name": field.name, "sql": None if bare == field.name else sql})
+        col = source.model_copy(deep=True, update={"name": field.name,
+                                                   "sql": None if bare.name == field.name else sql})
         return col, source.type
 
     def _derived_field_column(self, *, field: OSIField, ds: OSIDataset, model: SlayerModel, sql: str,
                               tree: exp.Expr, declared: DataType | None) -> tuple[Column, DataType | None] | None:
         physical = self._physical[ds.name]
-        missing = _missing_expr_columns(tree, available=set(physical), self_name=ds.name)
+        missing = _missing_expr_columns(tree, known=lambda ident: bool(self._source_columns(ds.name, ident)),
+                                        self_name=ds.name)
         if missing:
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} references unknown "

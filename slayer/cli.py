@@ -31,6 +31,7 @@ from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
+from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.demo import (
     DEMO_NAME,
     build_jaffle_shop,
@@ -2206,7 +2207,10 @@ def _run_import_dbt(args):
         target_dialect=ds.type if ds is not None else None,
         offline_reason=offline_reason,
     )
-    result = converter.convert()
+    try:
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     # Cached engine — engine_factory owns its lifecycle; don't dispose.
 
     hidden_count = 0
@@ -2255,11 +2259,15 @@ def _run_import_cube(args):
         _fail(f"No cubes or views found in {args.cube_project_path}")
 
     ds, sa_engine, offline_reason = _import_datasource(storage, args.datasource)
-    result = CubeToSlayerConverter(
+    converter = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
         honor_required_meta=not args.ignore_required_meta, sa_engine=sa_engine,
         target_dialect=ds.type if ds is not None else None, offline_reason=offline_reason,
-    ).convert()
+    )
+    try:
+        result = converter.convert()
+    except UndecidableIdentifierCaseError as exc:
+        _fail(str(exc))
     saved = 0
     for model in result.models:
         try:

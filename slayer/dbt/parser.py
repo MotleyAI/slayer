@@ -18,7 +18,9 @@ from typing import Any
 import yaml
 
 from slayer.dbt.manifest import load_or_generate_manifest, regular_models_from_manifest
-from slayer.dbt.models import DbtColumnMeta, DbtMetric, DbtProject, DbtRegularModel, DbtSemanticModel
+from slayer.dbt.models import (
+    DbtColumnMeta, DbtMetric, DbtProject, DbtRegularModel, DbtSemanticModel, DbtSource, DbtSourceTable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,10 @@ _REF_PATTERN = re.compile(
     r"\s*(?:,\s*\w+\s*=\s*[^)]+)?"        # optional trailing kwargs (e.g. v=1)
     r"\s*\)"
 )
+
+
+# A ``{{ config(...) }}`` block setting ``quoting``.
+_CONFIG_QUOTING_RE = re.compile(r"\{\{\s*config\s*\((?:(?!\}\}).)*?\bquoting\s*=", re.DOTALL)
 
 
 def _extract_ref_name(raw: str) -> str:
@@ -123,6 +129,7 @@ def parse_dbt_project(
     """
     all_semantic_models: list[DbtSemanticModel] = []
     all_metrics: list[DbtMetric] = []
+    all_sources: list[DbtSource] = []
     declared: dict[str, DbtRegularModel] = {}
 
     yaml_paths = _collect_yaml_paths(project_path)
@@ -157,6 +164,7 @@ def parse_dbt_project(
                 logger.warning("Failed to parse semantic model in %s: %s", path, e)
 
         declared.update((m.name, m) for m in _declared_models(data.get("models"), path=path))
+        all_sources.extend(_declared_sources(data.get("sources"), path=path))
 
         # Parse metrics (plural list)
         raw_metrics = data.get("metrics", [])
@@ -196,6 +204,8 @@ def parse_dbt_project(
     for name, schema_model in declared.items():
         _overlay_declared_columns(by_name.setdefault(name, DbtRegularModel(name=name)), schema_model)
     regular_models = list(by_name.values())
+    for rm in regular_models:
+        rm.config_quoting = bool(rm.raw_code and _CONFIG_QUOTING_RE.search(rm.raw_code))
 
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
@@ -205,7 +215,38 @@ def parse_dbt_project(
         semantic_models=all_semantic_models,
         metrics=all_metrics,
         regular_models=regular_models,
+        sources=all_sources,
+        quoting=_project_quoting(project_path),
     )
+
+
+def _project_quoting(project_path: str) -> dict[str, Any]:
+    """``dbt_project.yml``'s ``quoting:`` block, ``{}`` when absent."""
+    path = os.path.join(project_path, "dbt_project.yml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return {}
+    quoting = data.get("quoting") if isinstance(data, dict) else None
+    return quoting if isinstance(quoting, dict) else {}
+
+
+def _declared_sources(raw: Any, *, path: str) -> list[DbtSource]:
+    """The ``sources:`` entries of one YAML file."""
+    out: list[DbtSource] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        try:
+            out.append(DbtSource(
+                name=entry["name"], database=entry.get("database"), schema_name=entry.get("schema"),
+                quoting=entry.get("quoting"),
+                tables=[DbtSourceTable.model_validate(t) for t in entry.get("tables") or []
+                        if isinstance(t, dict) and isinstance(t.get("name"), str)]))
+        except Exception as e:  # noqa: BLE001 — one malformed entry never blocks the project
+            logger.warning("Failed to parse source in %s: %s", path, e)
+    return out
 
 
 def _declared_models(raw: Any, *, path: str) -> list[DbtRegularModel]:

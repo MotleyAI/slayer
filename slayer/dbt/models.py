@@ -4,7 +4,7 @@ Lightweight representations of dbt's semantic_models and metrics YAML.
 We don't use metricflow-semantic-interfaces because it requires a Pydantic v1
 compatibility shim and has heavy transitive dependencies we don't need.
 
-DEV-1595: parser completeness — every semantically-relevant
+Parser completeness: every semantically-relevant
 dbt-semantic-interfaces (DSI) field is parsed (so the converter can either
 represent it or route it to a clean-fail report), never silently dropped.
 Pydantic ``extra="ignore"`` is kept everywhere (DSI is forward-compatible and
@@ -352,6 +352,22 @@ class DbtRegularModel(BaseModel):
     tags: list[str] = Field(default_factory=list)
     columns: list[DbtColumnMeta] = Field(default_factory=list)
     raw_code: str | None = None  # SQL body from the .sql file on disk, Jinja unresolved
+    config_quoting: bool = False  # its SQL sets ``config(quoting=…)``, which the import does not apply
+
+
+class DbtSourceTable(BaseModel):
+    name: str
+    identifier: str | None = None  # the relation's name; defaults to ``name``
+    quoting: dict[str, Any] | None = None
+
+
+class DbtSource(BaseModel):
+    """A ``sources:`` entry: the relations ``{{ source(name, table) }}`` names."""
+    name: str
+    database: str | None = None
+    schema_name: str | None = None  # defaults to ``name``
+    quoting: dict[str, Any] | None = None
+    tables: list[DbtSourceTable] = Field(default_factory=list)
 
 
 class DbtProject(BaseModel):
@@ -364,3 +380,5 @@ class DbtProject(BaseModel):
     semantic_models: list[DbtSemanticModel] = Field(default_factory=list)
     metrics: list[DbtMetric] = Field(default_factory=list)
     regular_models: list[DbtRegularModel] = Field(default_factory=list)
+    sources: list[DbtSource] = Field(default_factory=list)  # in declaration order, duplicates kept
+    quoting: dict[str, Any] = Field(default_factory=dict)  # ``dbt_project.yml`` ``quoting:``

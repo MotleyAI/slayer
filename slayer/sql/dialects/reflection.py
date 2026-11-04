@@ -46,6 +46,8 @@ class ReflectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
+    quoted: bool = False
 
 
 class ReflectedForeignKey(BaseModel):

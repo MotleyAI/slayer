@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sqlalchemy as sa
+from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
-from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.ingestion import introspect_table_columns
 from slayer.engine.schema_scope import table_schema_ref
+from slayer.importers.physical import PhysicalIndex, live_exact_name
 from slayer.sql.client import CATEGORY_DATA_TYPES, probe_columns_sync, render_type_probe
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import slayer_type_of
@@ -91,19 +93,26 @@ class LiveSource:
         if sql_table:
             table = parse_table(name=sql_table, dialect=self._source)
             self._relation: Expression = table
-            self.columns: dict[str, Typed] = self._reflect(table)
+            found = self._reflect(table)
         else:
             query = parse_query(sql=sql or "", target_dialect=self._target, parse_dialect=self._source)
             self._relation = query.subquery("_slayer_src")
-            self.columns = self._described()
+            found = self._described()
+        # Live column names in SQLAlchemy's spelling, its quote flag kept.
+        self.names: list[str] = [name for name, _ in found]
+        self.columns: dict[str, Typed] = dict(found)
+        self._index = PhysicalIndex([], dialect=self._source.sqlglot_name, live=self.names)
+        self._by_exact = {live_exact_name(name, dialect=self._source): typed for name, typed in found}
 
-    def _reflect(self, table: exp.Table) -> dict[str, Typed]:
+    def _reflect(self, table: exp.Table) -> list[tuple[str, Typed]]:
         ref = table_schema_ref(catalog=table.catalog, schema=table.db, sa_engine=self.engine)
-        model = introspect_table_to_model(sa_engine=self.engine, inspector=sa.inspect(self.engine),
-                                          table_name=table.name, ref=ref, data_source=self.data_source)
-        if not model.columns:
+        columns = introspect_table_columns(sa_engine=self.engine, inspector=sa.inspect(self.engine),
+                                           table_name=table.name, ref=ref)
+        if not columns:
             raise ValueError(f"table {table.sql(dialect=self._source.sqlglot_name)} was not found")
-        return {c.name: (c.type, c.element_type) for c in model.columns}
+        return [(quoted_name(c.name, True) if c.quoted else c.name,
+                 (c.type, (c.element_type or DataType.UNKNOWN) if c.type is DataType.ARRAY else None))
+                for c in columns]
 
     def _probed(self, query: exp.Select) -> dict[str, Typed]:
         """Each column of ``query``: the driver's type name where it gives one, else its type category."""
@@ -115,14 +124,16 @@ class LiveSource:
                                  DataType.UNKNOWN if found.category == "list" else None)
         return out
 
-    def _described(self) -> dict[str, Typed]:
-        return self._probed(exp.select("*").from_(self._relation.copy()))
+    def _described(self) -> list[tuple[str, Typed]]:
+        """The source query's columns, named as SQLAlchemy would reflect them."""
+        sa_dialect = self.engine.dialect
+        return [(sa_dialect.normalize_name(name) if sa_dialect.requires_name_normalize else name, typed)
+                for name, typed in self._probed(exp.select("*").from_(self._relation.copy())).items()]
 
-    def column(self, physical: str) -> Typed | None:
-        """The live type of the physical column ``physical``."""
-        if physical in self.columns:
-            return self.columns[physical]
-        return next((t for n, t in self.columns.items() if n.lower() == physical.lower()), None)
+    def column(self, physical: exp.Identifier | str) -> Typed | None:
+        """The live type of the one physical column ``physical`` names; ``None`` for none or several."""
+        found = self._index.live_names(exp.to_identifier(physical) if isinstance(physical, str) else physical)
+        return self._by_exact[found[0]] if len(found) == 1 else None
 
     def probe(self, expr: str) -> Typed | None:
         """``expr``'s type from a zero-row probe over the source; a list's elements are ``UNKNOWN``."""

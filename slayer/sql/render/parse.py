@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Collection, Sequence
 from typing import Optional, TypeGuard
 
 import sqlglot
+from pydantic import BaseModel
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expr, Expression
+from sqlglot.tokens import TokenType
 
 from slayer.core.errors import NotReadOnlyQueryError
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import SqlDialect, ascii_lower
 from slayer.sql.naming import quote_mixed_case_identifiers
-from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers, prequote_reserved_identifiers_mapped
 
 # A read-only source parses to a query root with no DML/DDL nested (a data-modifying CTE hides DML under a SELECT).
 _READ_ONLY_ROOTS = (
@@ -83,6 +88,126 @@ def parse_table(*, name: str, dialect: SqlDialect) -> exp.Table:
     table = exp.to_table(name, dialect=dialect.sqlglot_name).transform(quote_mixed_case_identifiers)
     assert isinstance(table, exp.Table)
     return table
+
+
+class FoldedSql(BaseModel):
+    """Source SQL with its unquoted identifiers in SLayer's spelling."""
+
+    text: str
+    # Unquoted identifiers holding an upper-case letter, when there is no dialect to fold them with.
+    undecidable: list[str] = []
+    # The text did not parse, and an unquoted word in it holds an upper-case letter.
+    unreadable: bool = False
+
+
+def _has_upper(text: str) -> bool:
+    return any(c.isupper() for c in text)
+
+
+def _masked(sql: str, masks: Sequence[re.Pattern[str]]) -> str:
+    """``sql`` with each mask match replaced by a quoted identifier of the same length."""
+    for mask in masks:
+        sql = mask.sub(lambda m: f'"{"_" * (len(m.group(0)) - 2)}"' if len(m.group(0)) > 2 else m.group(0), sql)
+    return sql
+
+
+def _parsed_for_fold(text: str, *, read: str, table: bool) -> tuple[Expression, int] | None:
+    """``text``'s parse tree and the offset its spans are shifted by, or ``None`` when it does not parse."""
+    if table:
+        try:
+            found = sqlglot.parse_one(text, read=read, into=exp.Table)
+        except SqlglotError:
+            return None
+        return (found, 0) if isinstance(found, exp.Table) and not found.alias else None
+    try:
+        tree = sqlglot.parse_one(text, read=read)
+        if not isinstance(tree, exp.Command):
+            return tree, 0
+    except SqlglotError:
+        pass
+    try:
+        return sqlglot.parse_one(f"SELECT {text}", read=read), len("SELECT ")
+    except SqlglotError:
+        return None
+
+
+def _mixed_case_words(text: str, *, read: str) -> list[str]:
+    """Unquoted words of ``text`` holding an upper-case letter, by token scan."""
+    try:
+        tokens = sqlglot.tokenize(text, dialect=read)
+    except Exception:  # noqa: BLE001 — an unlexable text may hold any word
+        return re.findall(r"[^\W\d]\w*", text) if _has_upper(text) else []
+    return [t.text for t in tokens if t.token_type is TokenType.VAR and _has_upper(t.text)]
+
+
+def stored_identifier(word: str, *, dialect: SqlDialect) -> str:
+    """The spelling SLayer reads as the name the database folds unquoted ``word`` to."""
+    return ascii_lower(word) if dialect.identifier_folding == "lower" else word.lower()
+
+
+def _logical_identifiers(tree: Expression, qualifiers: Collection[str]) -> set[int]:
+    """Ids of the identifiers of columns qualified by one of ``qualifiers`` (an unquoted one matching in any case)."""
+    folded = {q.lower() for q in qualifiers}
+    out: set[int] = set()
+    for col in tree.find_all(exp.Column):
+        table = col.args.get("table")
+        if isinstance(table, exp.Identifier) and (
+                table.name in qualifiers if table.quoted else table.name.lower() in folded):
+            out.update(id(i) for i in col.find_all(exp.Identifier))
+    return out
+
+
+def _fold_spans(tree: Expression, *, shift: int, origin: list[int | None], text: str,
+                logical: set[int]) -> list[tuple[int, int, str]]:
+    """``(start, end, name)`` in the original text of each unquoted identifier and user-function name."""
+    spans: list[tuple[int, int, str]] = []
+    for node in tree.walk():
+        if not isinstance(node, (exp.Identifier, exp.Anonymous)) or id(node) in logical:
+            continue
+        start, end = node.meta.get("start"), node.meta.get("end")
+        if start is None or end is None or not isinstance(node.this, str):
+            continue
+        start, end = start - shift, end - shift
+        if isinstance(node, exp.Identifier) and node.quoted:
+            if origin[start] is not None:
+                continue  # quoted in the source
+            start, end = start + 1, end - 1  # quoted only so a reserved word parses
+        first, last = origin[start], origin[end]
+        if first is not None and last is not None and text[first:last + 1] == node.this:
+            spans.append((first, last, node.this))
+    return sorted(set(spans))
+
+
+def fold_source_identifiers(
+    sql: str, *, dialect: SqlDialect | None, masks: Sequence[re.Pattern[str]] = (), read: str | None = None,
+    table: bool = False, logical_qualifiers: Collection[str] = (),
+) -> FoldedSql:
+    """``sql`` with each unquoted identifier read by ``dialect``'s folding, the rest byte-identical.
+
+    ``masks`` match logical references kept as written; ``read`` is the sqlglot dialect to parse with (default:
+    ``dialect``'s); ``table`` reads ``sql`` as a table name; columns qualified by ``logical_qualifiers`` are kept.
+    ``dialect=None`` folds nothing and reports the identifiers whose meaning depends on it."""
+    if dialect is not None and dialect.identifier_folding == "none":
+        return FoldedSql(text=sql)
+    masked = _masked(sql, masks)
+    if not _has_upper(masked):
+        return FoldedSql(text=sql)
+    read = read or (dialect.sqlglot_name if dialect is not None else "postgres")
+    prequoted, origin = prequote_reserved_identifiers_mapped(masked, dialect=read)
+    parsed = _parsed_for_fold(prequoted, read=read, table=table)
+    if parsed is None:
+        words = _mixed_case_words(masked, read=read)
+        if dialect is None:
+            return FoldedSql(text=sql, undecidable=list(dict.fromkeys(words)))
+        return FoldedSql(text=sql, unreadable=bool(words))
+    tree, shift = parsed
+    spans = [s for s in _fold_spans(tree, shift=shift, origin=origin, text=masked,
+                                    logical=_logical_identifiers(tree, logical_qualifiers)) if _has_upper(s[2])]
+    if dialect is None:
+        return FoldedSql(text=sql, undecidable=list(dict.fromkeys(name for _, _, name in spans)))
+    for start, end, name in reversed(spans):
+        sql = sql[:start] + stored_identifier(name, dialect=dialect) + sql[end + 1:]
+    return FoldedSql(text=sql)
 
 
 ReadOnlyRoot = exp.Select | exp.Union | exp.Except | exp.Intersect | exp.Subquery | exp.Values

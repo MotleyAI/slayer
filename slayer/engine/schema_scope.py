@@ -23,8 +23,11 @@ from typing import Optional
 
 import sqlalchemy as sa
 from pydantic import BaseModel
+from sqlglot.errors import SqlglotError
 
-from slayer.sql.dialects import dialect_for_sa_backend
+from slayer.sql.dialects import SqlDialect, dialect_for_sa_backend
+from slayer.sql.naming import render_table_name
+from slayer.sql.render.parse import parse_table
 
 logger = logging.getLogger(__name__)
 
@@ -83,19 +86,22 @@ class SchemaRef(BaseModel, frozen=True):
             return f"{self.catalog}.{self.name}"
         return self.name
 
-    def qualify(self, obj_name: str) -> str:
-        """Prefix ``obj_name`` for a persisted ``sql_table``.
+    def qualify(self, obj_name: str, *, dialect: SqlDialect) -> str:
+        """The persisted ``sql_table`` of live object ``obj_name`` in this schema.
 
-        An explicit request is emitted exactly as typed. An auto-resolved
-        default (or a dialect with no schema concept) stays bare; an
-        auto-resolved non-default emits its bare schema name (never the
-        catalog — the datasource already points at one catalog).
+        An explicit request names its schema exactly as typed (a catalog only
+        when typed). An auto-resolved default (or a dialect with no schema
+        concept) stays bare; an auto-resolved non-default names its bare schema
+        (never the catalog — the datasource already points at one catalog).
         """
-        if self.explicit:
-            return f"{self.requested}.{obj_name}"
-        if self.is_default or not self.name:
-            return obj_name
-        return f"{self.name}.{obj_name}"
+        if self.requested is not None:
+            qualifiers = (self.requested.split(".", 1) if dialect.catalog_qualified_schema_tokens
+                          else [self.requested])
+        elif self.is_default or not self.name:
+            qualifiers = []
+        else:
+            qualifiers = [self.name]
+        return render_table_name(parts=[*qualifiers, obj_name], dialect=dialect)
 
 
 class SkippedSchema(BaseModel):
@@ -117,17 +123,20 @@ class IngestScope(BaseModel):
     skipped: list[SkippedSchema] = []
 
 
-def split_sql_table(sql_table: str) -> tuple[Optional[str], str]:
-    """Split a persisted ``sql_table`` into ``(schema_token, object)``.
+def sql_table_parts(sql_table: str, *, dialect: SqlDialect) -> list[str]:
+    """The live names a persisted ``sql_table`` reads (``[[catalog,] schema,] object``); unparseable: itself."""
+    try:
+        table = parse_table(name=sql_table, dialect=dialect)
+    except SqlglotError:
+        return [sql_table]
+    return [p for p in (table.catalog, table.db, table.name) if p]
 
-    Splits on the FINAL dot so a 3-part ``catalog.schema.table`` keeps its
-    catalog with the schema token (``"c.s.t" -> ("c.s", "t")``); a quoted
-    object identifier is preserved. Returns ``(None, name)`` when unqualified.
-    """
-    schema_token, sep, obj = sql_table.rpartition(".")
-    if not sep:
-        return None, sql_table
-    return (schema_token or None), obj
+
+def split_sql_table(sql_table: str, *, dialect: SqlDialect) -> tuple[Optional[str], str]:
+    """A persisted ``sql_table`` as ``(schema_token, object)``: a 3-part ``catalog.schema.table`` keeps its
+    catalog with the schema token (``"c.s.t" -> ("c.s", "t")``); ``(None, object)`` when unqualified."""
+    *qualifiers, obj = sql_table_parts(sql_table, dialect=dialect)
+    return ".".join(qualifiers) or None, obj
 
 
 def schema_ref_from_token(

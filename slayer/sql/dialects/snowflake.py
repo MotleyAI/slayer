@@ -19,7 +19,7 @@ from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
+    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, ListRelation, SqlDialect, TextFn, anon, as_text, case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
@@ -157,6 +157,7 @@ class SnowflakeDialect(SqlDialect):
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
+    identifier_folding: ClassVar[IdentifierFolding] = "upper"
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
