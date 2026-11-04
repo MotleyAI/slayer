@@ -52,10 +52,11 @@ Each importer has one in-memory boundary between parse and conversion (`CubeProj
    spelling. Postgres folds ASCII letters only (its UTF-8 downcasing rule); Snowflake / Oracle lowercase fully.
    (default)
 9. **SLayer's reading is one helper** (`denoted_name`, `slayer/sql/naming.py`): quoted or holding an upper-case
-   letter → exact; else the database's folding. `PhysicalIndex` and `LiveSource.column` match by it; `PhysicalIndex`
-   keeps its ambiguity logic. `LiveSource.column`'s blanket case-insensitive fallback becomes the dialect's own
-   matching. (default)
-10. **Folding dialects are an SLayer-owned table**, not sqlglot's normalization strategy (codex): fold on Postgres,
+   letter → exact; else the database's folding. `PhysicalIndex`, `LiveSource.column` and the OSI converter's
+   field-column lookups match by it; `PhysicalIndex` keeps its ambiguity logic. `LiveSource.column`'s blanket
+   case-insensitive fallback becomes the dialect's own matching. (default; OSI lookups: user)
+10. **Folding is an SLayer-owned attribute of each dialect** (`slayer/sql/dialects/`, sql §3.2), not sqlglot's
+    normalization strategy (codex): fold on Postgres,
     Redshift, Snowflake, Oracle; no-op on MySQL, ClickHouse, BigQuery, T-SQL, Trino, Presto, DuckDB, SQLite,
     Databricks, Spark — there quoting does not change which object a name resolves to. Redshift folds although sqlglot
     classes it case-insensitive: with `enable_case_sensitive_identifier` on it reads like Postgres, and lowercasing is

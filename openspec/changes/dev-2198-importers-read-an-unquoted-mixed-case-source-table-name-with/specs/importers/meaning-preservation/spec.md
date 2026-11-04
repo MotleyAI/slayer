@@ -14,7 +14,7 @@ Each importer SHALL read every unquoted identifier of the source's physical SQL 
 
 #### Scenario: The same two tables through dbt and OSI
 - **WHEN** a dbt semantic model's SQL is `SELECT qty FROM Sales.OrderItems`, or an OSI dataset's `source` is `Sales.OrderItems`, over the same datasource
-- **THEN** `qty` is typed `TEXT` and returns `t`; with `"Sales"."OrderItems"` written instead it is typed `INT` and returns `4`
+- **THEN** `qty` is typed `TEXT` and returns `t`; with `"Sales"."OrderItems"` written instead it is typed `INT` (the dbt SQL source: the numeric type its type category gives) and returns `4`
 
 #### Scenario: Mixed-case column on Postgres
 - **WHEN** on Postgres a Cube dimension `amount` has `sql: {CUBE}.OrderAmount` and a measure `total` sums `{CUBE}.OrderAmount`
