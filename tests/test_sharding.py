@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -14,13 +16,20 @@ _MODULES = {
 }
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_PASSED = re.compile(r"^PASSED (\S+::\S+)")
+
+
 def _make_project(pytester: pytest.Pytester) -> None:
-    pytester.makeini("[pytest]\nasyncio_default_fixture_loop_scope = function\n")
+    pytester.makeini("[pytest]\nasyncio_default_fixture_loop_scope = function\nmarkers = slow\n")
     (pytester.path / "sub").mkdir()
     for path, n_tests in _MODULES.items():
         body = "\n".join(f"def test_{i}():\n    pass\n" for i in range(n_tests))
         (pytester.path / path).write_text(body)
     (pytester.path / "helper.py").write_text("def test_not_collected():\n    pass\n")
+    (pytester.path / "test_marked.py").write_text(
+        "import pytest\n\n@pytest.mark.slow\ndef test_slow():\n    pass\n\ndef test_fast():\n    pass\n"
+    )
 
 
 def _collected(pytester: pytest.Pytester, *args: str) -> list[str]:
@@ -77,7 +86,7 @@ class TestShardedCollection:
         everything = _collected(pytester)
         shards = [_collected(pytester, "--shard", f"{k}/3") for k in (1, 2, 3)]
         flat = [nodeid for shard in shards for nodeid in shard]
-        assert len(everything) == sum(_MODULES.values())
+        assert len(everything) == sum(_MODULES.values()) + 2
         assert sorted(flat) == sorted(everything)
         assert all(shards)
 
@@ -87,7 +96,7 @@ class TestShardedCollection:
         for k in (1, 2, 3):
             for nodeid in _collected(pytester, "--shard", f"{k}/3"):
                 owners.setdefault(nodeid.split("::")[0], set()).add(k)
-        assert sorted(owners) == sorted(_MODULES)
+        assert sorted(owners) == sorted([*_MODULES, "test_marked.py"])
         assert all(len(shards) == 1 for shards in owners.values())
 
     def test_ignore_option_still_applies_inside_the_owning_shard(self, pytester: pytest.Pytester) -> None:
@@ -98,7 +107,21 @@ class TestShardedCollection:
             for nodeid in _collected(pytester, "--shard", f"{k}/3", "--ignore=test_d.py")
         ]
         assert not [nodeid for nodeid in flat if nodeid.startswith("test_d.py")]
-        assert len(flat) == sum(_MODULES.values()) - _MODULES["test_d.py"]
+        assert len(flat) == sum(_MODULES.values()) + 2 - _MODULES["test_d.py"]
+
+    def test_marker_filter_partitions_the_filtered_collection(self, pytester: pytest.Pytester) -> None:
+        _make_project(pytester)
+        everything = _collected(pytester, "-m", "not slow")
+        flat = [nodeid for k in (1, 2, 3) for nodeid in _collected(pytester, "--shard", f"{k}/3", "-m", "not slow")]
+        assert "test_marked.py::test_slow" not in everything
+        assert sorted(flat) == sorted(everything)
+
+    def test_shards_partition_under_xdist(self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+        _make_project(pytester)
+        monkeypatch.setenv("PYTHONPATH", str(_REPO_ROOT))
+        everything = _collected(pytester)
+        flat = [nodeid for k in (1, 2, 3) for nodeid in _passed_under_xdist(pytester, "--shard", f"{k}/3")]
+        assert sorted(flat) == sorted(everything)
 
     def test_bad_spec_fails_the_run(self, pytester: pytest.Pytester) -> None:
         _make_project(pytester)
@@ -106,14 +129,30 @@ class TestShardedCollection:
         assert result.ret == pytest.ExitCode.USAGE_ERROR
 
 
+def _passed_under_xdist(pytester: pytest.Pytester, *args: str) -> list[str]:
+    result = pytester.runpytest_subprocess("-p", "tests._sharding", "-p", "xdist", "-n", "2", "-rA", *args)
+    assert result.ret in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED), result.outlines
+    return [m.group(1) for line in result.outlines if (m := _PASSED.match(line))]
+
+
 def test_stored_durations_cover_every_run_module(pytester: pytest.Pytester) -> None:
     _make_project(pytester)
     out = pytester.path / "durations.json"
     result = pytester.runpytest("-p", "tests._sharding", "--store-shard-durations", str(out))
-    result.assert_outcomes(passed=sum(_MODULES.values()))
+    result.assert_outcomes(passed=sum(_MODULES.values()) + 2)
     durations = json.loads(out.read_text())
-    assert sorted(durations) == sorted(_MODULES)
+    assert sorted(durations) == sorted([*_MODULES, "test_marked.py"])
     assert all(seconds >= 0 for seconds in durations.values())
+
+
+def test_stored_durations_under_xdist_cover_every_worker_module(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _make_project(pytester)
+    monkeypatch.setenv("PYTHONPATH", str(_REPO_ROOT))
+    out = pytester.path / "durations.json"
+    assert len(_passed_under_xdist(pytester, "--store-shard-durations", str(out))) == sum(_MODULES.values()) + 2
+    assert sorted(json.loads(out.read_text())) == sorted([*_MODULES, "test_marked.py"])
 
 
 class TestMergeDurations:
