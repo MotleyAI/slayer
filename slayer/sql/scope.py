@@ -29,7 +29,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
-from slayer.core.join_walker import model_column_type, resolved_terminal
+from slayer.core.join_walker import model_column, model_column_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
@@ -41,7 +41,7 @@ from slayer.core.keys import (
     SqlFragmentKey,
     TimeTruncKey,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.sql.column_expansion import (
     collect_root_scope_joined_paths,
     expand_column_definition_sync,
@@ -489,6 +489,10 @@ class ScopeFrame(BaseModel):
         if ref in self.placeholder_types:
             return self.placeholder_types[ref]
         return model_column_type(model=self.root_model, models_by_name=self._models_by_name())(ref)
+
+    def column(self, ref: ColumnKey | ColumnSqlKey) -> Optional[Column]:
+        """The model column ``ref`` names, or ``None`` when unresolvable."""
+        return model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

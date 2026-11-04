@@ -1592,3 +1592,33 @@ def test_every_mysql_alias_failure_is_quoted(mysql_container) -> None:
     finally:
         conn.close()
         _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_probe_ds(mysql_container):
+    db_name = _create_module_db(mysql_container)
+    conn = _admin_connect(mysql_container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE flags (b BOOL, t TINYINT, b1 BIT(1), b8 BIT(8), n INT, d DECIMAL(10,2)) ENGINE=InnoDB"
+            )
+    finally:
+        conn.close()
+    yield _ds_config(mysql_container, db_name)
+    _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+async def test_typed_probe_boolean_and_tiny_integers(mysql_probe_ds: DatasourceConfig) -> None:
+    client = SlayerSQLClient(datasource=mysql_probe_ds)
+    try:
+        types = await client.get_result_column_types("SELECT b, t, b1, b8, n, d FROM flags")
+    finally:
+        await client.aclose()
+        client.close()
+    assert {name: column.type for name, column in types.items()} == {
+        "b": DataType.BOOLEAN, "t": DataType.INT, "b1": DataType.BOOLEAN, "b8": DataType.TEXT,
+        "n": DataType.INT, "d": DataType.DOUBLE,
+    }
+    assert all(column.db_type for column in types.values())

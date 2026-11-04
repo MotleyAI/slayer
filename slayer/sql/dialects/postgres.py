@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
 
 from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.sql.dialects.base import SqlDialect
-from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    TableLocation,
+    all_of,
+    call,
+    col,
+    eq_literal,
+    relation,
+    result_column_type_of_name,
+)
+
+_NUMERIC_OID = 1700
+
+# ``pg_type`` OIDs → canonical type names.
+_PG_TYPE_NAMES: dict[int, str] = {
+    16: "boolean", 17: "bytea", 18: '"char"', 20: "bigint", 21: "smallint", 23: "integer", 25: "text",
+    26: "oid", 114: "json", 142: "xml", 650: "cidr", 700: "real", 701: "double precision", 790: "money",
+    869: "inet", 1000: "boolean[]", 1005: "smallint[]", 1007: "integer[]", 1009: "text[]",
+    1015: "character varying[]", 1016: "bigint[]", 1021: "real[]", 1022: "double precision[]",
+    1042: "character", 1043: "character varying", 1082: "date", 1083: "time",
+    1114: "timestamp without time zone", 1184: "timestamp with time zone", 1186: "interval",
+    1231: "numeric[]", 1266: "time with time zone", 1560: "bit", 1562: "bit varying", 1700: "numeric",
+    2950: "uuid", 3802: "jsonb",
+}
+
+
+def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnType | None:
+    """A psycopg description row by OID; ``numeric`` carries its typmod; an unknown OID is unnamed TEXT."""
+    code = description_row[1]
+    if not isinstance(code, int):
+        return None
+    name = _PG_TYPE_NAMES.get(code)
+    if name is None:
+        return ResultColumnType(type=DataType.TEXT)
+    precision, scale = description_row[4], description_row[5]
+    if code == _NUMERIC_OID and precision is not None and scale is not None:
+        name = f"numeric({precision},{scale})"
+    return result_column_type_of_name(name)
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -49,6 +89,11 @@ class PostgresDialect(SqlDialect):
     url_scheme: str | None = "postgresql+psycopg2"
     async_driver: str | None = "asyncpg"
     install_extra: str | None = "postgres"
+    # asyncpg reports no NUMERIC typmod.
+    type_probe_uses_sync_driver: bool = True
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        return describe_pg_cursor_column(description_row)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         scope = (

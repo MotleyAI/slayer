@@ -31,7 +31,9 @@ from slayer.core.keys import (
     aggregation_source_type,
     source_anchor_path,
 )
+from slayer.core.models import Column
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.reflection import info_schema_type, is_exact_numeric_db_type
 from slayer.sql.render.aggregates import (
     DISPATCH_DISTINCT,
     DISPATCH_SIMPLE,
@@ -48,6 +50,7 @@ from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surfa
 from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
     DATE_FUNCTIONS,
     _literal,
+    cast_target,
     group_is_operands,
     group_unary_operand,
     iif_case_chain,
@@ -68,20 +71,32 @@ _HAVING_PLACEHOLDER = "__having_ref__"
 
 
 def _wrap_cast_for_type(
-    expr: Expression, dt: Optional[DataType],
+    expr: Expression, dt: Optional[DataType], *, dialect: SqlDialect,
 ) -> Expression:
     """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
-    ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate). Idempotent."""
+    ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate).
+    Idempotent: a cast that renders as the same ``dialect`` type (a re-parsed one included) is kept."""
     if dt is None or dt == DataType.TEXT or dt.is_opaque:
         return expr
     if isinstance(expr, exp.Column):
         return expr
-    target = exp.DataType.Type(dt.value)
+    target = cast_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")
-        if isinstance(existing, exp.DataType) and existing.this == target:
+        if isinstance(existing, exp.DataType) and (
+            existing.sql(dialect=dialect.sqlglot_name) == target.sql(dialect=dialect.sqlglot_name)
+        ):
             return expr
-    return exp.Cast(this=expr, to=exp.DataType(this=target))
+    return exp.Cast(this=expr, to=target)
+
+
+def keeps_native_type(*, col: Column | None, dialect: SqlDialect) -> bool:
+    """Whether derived ``col`` skips its cast: an exact-numeric ``db_type`` the dialect stores exactly,
+    with the type that ``db_type`` implies (a different declared type is an explicit override)."""
+    return (
+        col is not None and dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type)
+        and info_schema_type(col.db_type or "")[0] == col.type
+    )
 
 
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
@@ -350,8 +365,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         resolved = scope.resolve(key, consumer=ctx.consumer)
         # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
         if ctx.filters is not None and ctx.filters.cast_column_sql:
-            col_type = scope.column_type(key)
-            resolved = _wrap_cast_for_type(resolved, _filter_cast_type(col_type))
+            if not keeps_native_type(col=scope.column(key), dialect=ctx.dialect):
+                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.column_type(key)), dialect=ctx.dialect)
         return resolved
 
     if isinstance(key, StarKey):

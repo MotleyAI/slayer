@@ -35,7 +35,7 @@ BACKEND_SUFFIX = "__gateway_backend"
 DS_NAME = "shop"
 
 # Every client operation of the contract (statements, metadata, lifecycle).
-STATEMENT_OPS = ("execute", "get_column_types", "server_profile")
+STATEMENT_OPS = ("execute", "get_result_column_types", "server_profile")
 METADATA_OPS = (
     "ping", "list_schemas", "default_schema", "current_catalog", "list_objects",
     "reflect_columns", "reflect_table_keys", "table_comment", "schema_description",
@@ -151,8 +151,8 @@ class RecordingClient:
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
         return await self._forward("execute", *args, **kwargs)
 
-    async def get_column_types(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._forward("get_column_types", *args, **kwargs)
+    async def get_result_column_types(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._forward("get_result_column_types", *args, **kwargs)
 
     async def server_profile(self, *args: Any, **kwargs: Any) -> Any:
         return await self._forward("server_profile", *args, **kwargs)
@@ -196,10 +196,10 @@ class RecordingClient:
         return [c.op for c in self.calls]
 
     def statements(self) -> list[str]:
-        """SQL text of every ``execute`` / ``get_column_types`` call, in order."""
+        """SQL text of every ``execute`` / ``get_result_column_types`` call, in order."""
         out = []
         for call in self.calls:
-            if call.op in ("execute", "get_column_types"):
+            if call.op in ("execute", "get_result_column_types"):
                 out.append(call.args[0] if call.args else call.kwargs["sql"])
         return out
 

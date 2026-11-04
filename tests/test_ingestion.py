@@ -214,7 +214,7 @@ class TestInfoSchemaTypeMapping:
             ("integer", DataType.INT, False),
             ("bigint", DataType.INT, False),
             ("numeric(10,2)", DataType.DOUBLE, True),
-            ("numeric(10,0)", DataType.DOUBLE, False),
+            ("numeric(10,0)", DataType.INT, False),
         ],
     )
     def test_multi_word_types(self, data_type, expected_type, expected_float):

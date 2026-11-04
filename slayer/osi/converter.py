@@ -34,7 +34,7 @@ from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import SqlClient
+from slayer.sql.client import ResultColumnType, SqlClient
 from slayer.osi.dialects import Selection, read, render, select_expression
 from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
 from slayer.osi.models import (
@@ -207,8 +207,8 @@ class OsiToSlayerConverter:
         # Live metadata from ``collect_metadata``: per dataset its introspected model (or the
         # failure), per source query its column types, per probe statement its types (None: failed).
         self._tables: dict[str, SlayerModel | str] = {}
-        self._query_types: dict[str, dict[str, str] | str] = {}
-        self._probes: dict[str, dict[str, str] | None] = {}
+        self._query_types: dict[str, dict[str, ResultColumnType] | str] = {}
+        self._probes: dict[str, dict[str, ResultColumnType] | None] = {}
         self._probe_misses: set[str] = set()
         self._reset()
 
@@ -262,7 +262,7 @@ class OsiToSlayerConverter:
                 break
             for probe in sorted(misses):
                 try:
-                    self._probes[probe] = await client.get_column_types(probe)
+                    self._probes[probe] = await client.get_result_column_types(probe)
                 except Exception:  # noqa: BLE001 — probe is best-effort; conversion falls back
                     self._probes[probe] = None
         self._collected = True
@@ -274,7 +274,7 @@ class OsiToSlayerConverter:
             return
         try:
             if parsed.query is not None:
-                self._query_types[parsed.query] = await client.get_column_types(parsed.query)
+                self._query_types[parsed.query] = await client.get_result_column_types(parsed.query)
             elif parsed.table is not None:
                 self._tables[ds.name] = await introspect_table_to_model(
                     client=client, table_name=parsed.table, schema=parsed.schema_name,
@@ -391,7 +391,7 @@ class OsiToSlayerConverter:
         types = self._query_types.get(query, "no query metadata was collected (collect_metadata)")
         if isinstance(types, str):
             raise _MetadataUnavailable(types)
-        columns = [Column(name=name, type=category) for name, category in types.items()]
+        columns = [Column(name=name, type=t.type, db_type=t.lossy_db_type) for name, t in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
                            columns=columns)
 
@@ -539,10 +539,12 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="missing_column",
             )
             return None
-        db_type = self._probe_expression_type(model=model, expr=sql)
+        probed = self._probe_expression_type(model=model, expr=sql)
+        if probed is not None:
+            return Column(name=field.name, sql=sql, type=probed.type, db_type=probed.lossy_db_type), probed.type
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.type if shadowed is not None else None) or DataType.DOUBLE
-        return Column(name=field.name, sql=sql, type=db_type or fallback), db_type
+        return Column(name=field.name, sql=sql, type=fallback), None
 
     @staticmethod
     def _apply_field_metadata(*, col: Column, field: OSIField) -> None:
@@ -558,7 +560,7 @@ class OsiToSlayerConverter:
         if meta:
             col.meta = {**(col.meta or {}), **meta}
 
-    def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
+    def _probe_expression_type(self, model: SlayerModel, expr: str) -> ResultColumnType | None:
         """A derived expression's type from a LIMIT-0 probe of the model's source, or ``None``."""
         if model.sql_table:
             from_clause = model.sql_table
@@ -571,13 +573,7 @@ class OsiToSlayerConverter:
             self._probe_misses.add(probe)
             return None
         types = self._probes[probe]
-        if types is None:
-            return None
-        category = next(iter(types.values()), None)
-        if category is None:
-            return None
-        # Reuse Column's category->DataType coercion.
-        return Column(name="_osi_probe", type=category).type
+        return next(iter(types.values()), None) if types else None
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset, doc: OSIDocument) -> None:
         model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
@@ -1050,7 +1046,9 @@ class OsiToSlayerConverter:
             model = self._models.get(mc.owning_model)
             if model is None or any(c.name == mc.name for c in model.columns):
                 continue
-            dtype = self._probe_expression_type(model=model, expr=self._physical_sql(model, mc.sql))
+            probed = self._probe_expression_type(model=model, expr=self._physical_sql(model, mc.sql))
             model.columns.append(Column(
-                name=mc.name, sql=mc.sql, type=dtype or DataType.DOUBLE, hidden=True,
+                name=mc.name, sql=mc.sql, hidden=True,
+                type=probed.type if probed is not None else DataType.DOUBLE,
+                db_type=probed.lossy_db_type if probed is not None else None,
             ))
