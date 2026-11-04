@@ -128,7 +128,7 @@ def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
     ``entry_name`` — unlike ``os.path.exists``, which matches any case
     variant on a case-insensitive filesystem."""
     try:
-        return entry_name in os.listdir(dir_path)
+        return entry_name in os.listdir(dir_path)  # NOSONAR(S6549) — callers pass store dirs built from validated components
     except (FileNotFoundError, NotADirectoryError):
         return False
 
@@ -313,7 +313,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     # ---- internal helpers --------------------------------------------------
 
     def _model_path(self, data_source: str, name: str) -> str:
+        """A model's YAML path; both components are validated where the path is composed."""
+        _validate_path_component(data_source, kind="datasource name")
+        _validate_path_component(name, kind="model name")
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
+
+    def _datasource_path(self, name: str) -> str:
+        """A datasource's YAML path; ``name`` is validated where the path is composed."""
+        _validate_path_component(name, kind="datasource name")
+        return os.path.join(self.datasources_dir, f"{name}.yaml")
 
     def _model_entry_exists(self, *, data_source: str, name: str) -> bool:
         """Exact-case existence check for both path components of a model."""
@@ -330,9 +338,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         """Read the on-disk YAML verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the file is absent or not a mapping."""
+        try:
+            path = self._model_path(data_source, name)
+        except ValueError:  # not a storable model name, e.g. a foreign ``orders.v1.yaml``
+            return None
         if not self._model_entry_exists(data_source=data_source, name=name):
             return None
-        path = self._model_path(data_source, name)
         try:
             with open(path) as f:  # NOSONAR(S7493) — local read
                 raw = yaml.safe_load(f)
@@ -347,7 +358,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self._forget_raw(data_source=data_source, name=name)
 
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        path = self._datasource_path(name)
         self._datasource_cache.pop(path, None)
         _atomic_write_yaml(path=path, data=data)
 
@@ -410,7 +421,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if cached is not None and cached[0] == key_before:
             return cached[1].model_copy(deep=True)
         try:
-            with open(path) as f:
+            with open(path) as f:  # NOSONAR(S2083,S8707) — path from _model_path, which validates both components
                 text = f.read()
         except FileNotFoundError:  # deleted between the stat and the open
             self._model_cache.pop(path, None)
@@ -486,15 +497,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self.check_datasource_id_collision(datasource.name)
-        path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
+        path = self._datasource_path(datasource.name)
         data = datasource.model_dump(mode="json", exclude_none=True)
         self._datasource_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
-        # Sanitize before composing the filesystem path.
-        _validate_path_component(name, kind="datasource name")
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        path = self._datasource_path(name)
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",
         ):
@@ -513,7 +522,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             if cached is not None and cached[0] == key:
                 ds = cached[1]
             else:
-                with open(path) as f:
+                with open(path) as f:  # NOSONAR(S2083) — path from _datasource_path, which validates the name
                     data = yaml.safe_load(f)
                 data = await self._with_library_granularities_renamed(name=name, data=data)
                 ds = DatasourceConfig.model_validate(data)
@@ -541,7 +550,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return result
 
     async def _delete_datasource_row(self, name: str) -> bool:
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
+        path = self._datasource_path(name)
         self._datasource_cache.pop(path, None)  # Evict before the delete
         if not _exact_entry_exists(
             dir_path=self.datasources_dir, entry_name=f"{name}.yaml",

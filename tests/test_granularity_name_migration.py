@@ -186,6 +186,12 @@ async def test_collect(tmp_path: Any, backend: str) -> None:
     assert await bucket_totals(store.storage) == EXPECTED_BUCKETS
 
 
+async def test_a_foreign_dotted_model_file_does_not_block_the_rename(tmp_path: Any) -> None:
+    store = await _store(tmp_path=tmp_path, backend="yaml", granularities=[granularity_definition("collect")],
+                         models=[events_doc(), events_doc(name="orders.v1")])
+    assert await _granularity_names(store.storage) == ["collect_granularity"]
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path: Any, backend: str) -> None:
     def current(doc: dict, entity: str) -> dict:

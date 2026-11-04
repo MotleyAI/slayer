@@ -2755,7 +2755,7 @@ def _load_query_arg(value):
         path = value[1:]
         if not os.path.exists(path):
             _fail(f"Query file not found: {path}")
-        with open(path) as f:
+        with open(path) as f:  # NOSONAR(S8707) — reading the file the CLI user names is the feature
             text = f.read()
     else:
         text = value
