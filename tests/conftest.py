@@ -25,6 +25,8 @@ from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
 
+pytest_plugins = ["tests._sharding", "pytester"]
+
 
 class JaffleGeneratorSpy:
     """Stands in for jaffle_shop ``generate_data``: returns the shared CSVs, counts builds."""
@@ -38,11 +40,25 @@ class JaffleGeneratorSpy:
         return self.data_dir
 
 
+def _run_wide_dir(tmp_path_factory: pytest.TempPathFactory, worker_id: str, name: str) -> Path:
+    """A dir shared by every xdist worker of this run; guard writes with ``FileLock(f"{dir}.lock")``."""
+    if worker_id == "master":
+        return tmp_path_factory.mktemp(name)
+    root = tmp_path_factory.getbasetemp().parent / name
+    root.mkdir(exist_ok=True)
+    return root
+
+
 @pytest.fixture(scope="session")
-def jafgen_dir(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """One jafgen run (1 year) per session; tests only read it."""
-    out = tmp_path_factory.mktemp("jafgen")
-    return jaffle_shop.generate_data(output_dir=str(out), years=1, stream=io.StringIO())
+def jafgen_dir(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> str:
+    """One jafgen run (1 year) per run, shared by every xdist worker; tests only read it."""
+    root = _run_wide_dir(tmp_path_factory, worker_id, "jafgen")
+    done = root / "data_dir.txt"
+    with FileLock(f"{root}.lock"):
+        if not done.exists():
+            data_dir = jaffle_shop.generate_data(output_dir=str(root), years=1, stream=io.StringIO())
+            done.write_text(data_dir)
+    return done.read_text()
 
 
 @pytest.fixture
@@ -58,11 +74,7 @@ DOC_DEMO_YEARS = 2
 @pytest.fixture(scope="session")
 def shared_demo_duckdb(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> str:
     """The 2-year demo DuckDB, built once per run and shared by every xdist worker."""
-    if worker_id == "master":
-        root = tmp_path_factory.mktemp("shared_demo")
-    else:
-        root = tmp_path_factory.getbasetemp().parent / "shared_demo"
-        root.mkdir(exist_ok=True)
+    root = _run_wide_dir(tmp_path_factory, worker_id, "shared_demo")
     db_path = jaffle_shop.resolve_demo_db_path(str(root))
     with FileLock(f"{root}.lock"):
         if not os.path.exists(db_path):
