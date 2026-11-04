@@ -404,7 +404,7 @@ class TestFacades:
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
 
     async def test_flight_facade_query_is_ordered(self, engine) -> None:
-        handlers = FlightHandlers(engine=engine, storage=engine.storage)
+        handlers = FlightHandlers(engine=engine)
         result = handlers._translate("SELECT status, order_total_sum FROM orders")
         assert isinstance(result, QueryResult), result
         table: pa.Table = handlers._execute_full(result)

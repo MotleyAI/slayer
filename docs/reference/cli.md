@@ -461,10 +461,10 @@ gives the full per-model tables); `--type datasource` lists all datasources.
 ```bash
 slayer inspect jaffle_shop.orders --type model
 slayer inspect jaffle_shop.orders.order_total --type column --no-compact
-slayer inspect jaffle_shop.orders.customers.region --type column --no-compact  # join path → owning model
+slayer inspect jaffle_shop.orders.stores.regions.name --type column --no-compact  # join path → owning model
 slayer inspect memory:42 --type memory --no-compact
 slayer inspect jaffle_shop.orders --type model --format json
-slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.order_id --type column --no-compact  # batch
+slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.id --type column --no-compact  # batch
 slayer inspect --type model         # collection: all models, grouped by datasource
 slayer inspect --type datasource    # collection: all datasources
 ```
@@ -522,7 +522,7 @@ slayer search --question "lifetime spend" --format json
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
 
-In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / `inspect_model` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
+In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / MCP `inspect` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
 
 ### `slayer memory`
 
@@ -531,8 +531,8 @@ Manage the agent-memory layer. See [Memories](../concepts/memories.md).
 ```bash
 # Save a learning (--entities is a single comma-separated string)
 slayer memory save \
-  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
-  --entities jaffle_shop.orders.is_returned
+  --learning "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue" \
+  --entities jaffle_shop.orders.status,jaffle_shop.orders.order_total
 
 # Save with a pinned id and multiple entities
 slayer memory save \

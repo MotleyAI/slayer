@@ -45,10 +45,11 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders._count": 42},
-    {"orders.status": "pending", "orders._count": 15}
+    {"orders.status": "completed", "orders._count": 248238},
+    {"orders.status": "refunded", "orders._count": 19288},
+    {"orders.status": "cancelled", "orders._count": 8315}
   ],
-  "row_count": 2,
+  "row_count": 3,
   "columns": ["orders.status", "orders._count"],
   "warnings": []
 }
@@ -112,7 +113,7 @@ curl -X POST http://localhost:5143/models \
     "data_source": "mydb",
     "source_queries": [{
       "source_model": "orders",
-      "measures": ["sum(amount)"],
+      "measures": ["sum(order_total)"],
       "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
     }],
     "query_variables": {"region": "US"}
@@ -257,9 +258,9 @@ Response (`SearchResponse`):
 
 ```json
 {
-  "learning": "orders.is_returned in {0,1,NULL}; treat NULL as not returned",
-  "linked_entities": ["mydb.orders.is_returned"],
-  "id": "kb.returns.null-handling"
+  "learning": "Refunded and cancelled orders keep their order_total; count only completed orders for net revenue",
+  "linked_entities": ["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"],
+  "id": "kb.orders.refunds"
 }
 ```
 
@@ -268,13 +269,13 @@ Response (`SearchResponse`):
 Response:
 
 ```json
-{"memory_id": "kb.returns.null-handling", "entities": ["mydb.orders.is_returned"], "warnings": []}
+{"memory_id": "kb.orders.refunds", "entities": ["jaffle_shop.orders.status", "jaffle_shop.orders.order_total"], "warnings": []}
 ```
 
 **`DELETE /memories/{id}`:**
 
 ```bash
-curl -X DELETE http://localhost:5143/memories/kb.returns.null-handling
+curl -X DELETE http://localhost:5143/memories/kb.orders.refunds
 ```
 
 Removes the memory and the matching embedding row, and strips every `memory:<id>` reference to it from every other memory's `entities` list (exact-match only — `memory:42` does not strip `memory:421`).

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Callable, Dict, Iterable, Iterator, Literal, Optional, Sequence
+from typing import Dict, Iterable, Iterator, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -733,39 +733,33 @@ def resolved_terminal(
     return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=True)
 
 
-def model_column_lookup(
-    *, model: SlayerModel, models_by_name: dict[str, SlayerModel],
-) -> Callable[[object], Optional[Column]]:
-    """The declared ``Column`` of a column leaf rooted at ``model``; ``None`` for anything unresolvable."""
-    def lookup(key: object) -> Optional[Column]:
-        if isinstance(key, ColumnSqlKey):
-            owner = model if key.model == model.name else models_by_name.get(key.model)
-            leaf = key.column_name
-        elif isinstance(key, ColumnKey):
-            owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
-            leaf = key.leaf
-        else:
-            return None
-        return owner.get_column(leaf) if owner is not None else None
-    return lookup
+def model_column(
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel], key: object,
+) -> Optional[Column]:
+    """The column leaf ``key`` names, rooted at ``model``; ``None`` for anything unresolvable."""
+    if isinstance(key, ColumnSqlKey):
+        owner = model if key.model == model.name else models_by_name.get(key.model)
+        leaf = key.column_name
+    elif isinstance(key, ColumnKey):
+        owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
+        leaf = key.leaf
+    else:
+        return None
+    return owner.get_column(leaf) if owner is not None else None
 
 
 def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
     """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
-    lookup = model_column_lookup(model=model, models_by_name=models_by_name)
-
     def column_type(key: ValueKey) -> Optional[DataType]:
-        col = lookup(key)
+        col = model_column(model=model, models_by_name=models_by_name, key=key)
         return col.type if col is not None else None
     return column_type
 
 
 def model_column_element(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnElementFn:
     """Element types of list-typed column leaves rooted at ``model``; ``None`` for anything else."""
-    lookup = model_column_lookup(model=model, models_by_name=models_by_name)
-
     def column_element(key: ValueKey) -> Optional[DataType]:
-        col = lookup(key)
+        col = model_column(model=model, models_by_name=models_by_name, key=key)
         return col.element_type if col is not None else None
     return column_element
 

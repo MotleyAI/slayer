@@ -104,13 +104,13 @@ The agent should call `list_datasources` and then `models_summary(datasource_nam
 Once a datasource is ingested, the agent has access to two extra tools beyond `query`:
 
 - `search` — three-channel retrieval (BM25 over memory tags + Tantivy full-text + optional dense embeddings) fused into a single ranked list of memory hits and canonical entity discovery hits.
-- `save_memory` / `forget_memory` — persist or remove free-form notes tagged with canonical entities (e.g. `mydb.orders.amount`) so the next session inherits the context.
+- `save_memory` / `forget_memory` — persist or remove free-form notes tagged with canonical entities (e.g. `jaffle_shop.orders.order_total`) so the next session inherits the context.
 
 Try it conversationally:
 
-> "Save a memory: 'orders.is_returned is in {0,1,NULL}; treat NULL as not returned' linked to mydb.orders.is_returned"
+> "Save a memory: 'Refunded and cancelled orders keep their order_total; count only completed orders for net revenue' linked to jaffle_shop.orders.status"
 >
-> "Search for what we know about orders.is_returned"
+> "Search for what we know about orders.status"
 
 The agent calls `save_memory` then `search` and gets back a `SearchResponse` with `results: [...]` — each hit carries a `kind` discriminator (`"memory"` for prior notes, `"column"` / `"model"` / etc. for entity discovery hits) and a `score`.
 

@@ -33,6 +33,9 @@ from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.type_refinement import refine_dict_with_live_schema
+from slayer.async_utils import run_sync
+from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1902_fixtures import customers_model, orders_model, regions_model
@@ -344,8 +347,13 @@ class TestDriftAndRefinement:
                 "name": "items", "sql_table": "items", "data_source": "live",
                 "columns": [{"name": "quantity", "sql": '"qty"', "type": "DOUBLE"}],
             }
-            changed = refine_dict_with_live_schema(
-                doc, DatasourceConfig(name="live", type="sqlite", database=db_path))
+            ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
+            client = SlayerSQLClient(datasource=ds)
+            try:
+                changed = run_sync(refine_dict_with_live_schema(doc, ds, client))
+            finally:
+                client.close()
+                engine_factory.invalidate_engine(ds)
             assert changed is True
             assert doc["columns"][0]["type"] == "INT"
 

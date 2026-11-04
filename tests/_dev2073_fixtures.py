@@ -16,6 +16,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SqlClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -118,8 +119,17 @@ class Live(BaseModel):
         run_script(db_path=self.db_path, dialect=self.dialect, script=script)
         engine_factory.invalidate_engine(self.ds)
 
+    def engine(self) -> SlayerQueryEngine:
+        if self._engine is None:
+            self._engine = SlayerQueryEngine(storage=self.storage)
+        return self._engine
+
+    def client(self) -> SqlClient:
+        """The workspace engine's client for the live datasource."""
+        return self.engine().client_for(self.ds)
+
     async def ingest(self):
-        return await ingest_datasource_idempotent(datasource=self.ds, storage=self.storage)
+        return await ingest_datasource_idempotent(datasource=self.ds, storage=self.storage, client=self.client())
 
     async def model(self, name: str) -> SlayerModel:
         model = await self.storage.get_model(name, data_source=DS)
@@ -139,13 +149,12 @@ class Live(BaseModel):
         }
 
     async def query(self, **kwargs):
-        if self._engine is None:
-            self._engine = SlayerQueryEngine(storage=self.storage)
-        return await self._engine.execute(SlayerQuery(**kwargs))
+        return await self.engine().execute(SlayerQuery(**kwargs))
 
     async def aclose(self) -> None:
         if self._engine is not None:
             await self._engine.aclose()
+            self._engine.close()
         engine_factory.invalidate_engine(self.ds)
 
 

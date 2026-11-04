@@ -2442,6 +2442,22 @@ async def test_storage_provider_scopes_connection_after_auth() -> None:
     assert conn._storage is scoped_storage
 
 
+async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
+    engine = _CapturingEngine([])
+    engine.storage = _FakeStorage({"hr": [_employees_model()]})  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return _FakeStorage({"jaffle": [_orders_model()]})
+
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, _ = await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
 async def test_storage_provider_storage_closed_on_connection_end() -> None:
     scoped_storage = _FakeStorage({"hr": [_employees_model()]})
     closed = {"called": False}
@@ -2507,6 +2523,31 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
     )
     assert aclosed["engine"] is True, "engine.aclose must run on connection end"
     assert aclosed["storage"] is True, "storage.aclose must run on connection end"
+
+
+async def test_scoped_engine_closes_even_when_its_release_fails() -> None:
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    closed = {"engine": False}
+
+    async def _failing_aclose():
+        raise RuntimeError("release failed")
+
+    def _close():
+        closed["engine"] = True
+
+    engine = _CapturingEngine([])
+    engine.aclose = _failing_aclose  # type: ignore[attr-defined]
+    engine.close = _close  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert closed["engine"] is True
 
 
 # --- Review #2: static aclose-able storage not touched on early auth failure

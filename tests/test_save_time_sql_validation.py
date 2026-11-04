@@ -23,7 +23,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _live_columns_for_sql_model
-from slayer.sql.client import SlayerSQLClient, TypeProbe, render_type_probe, sql_model_trial_query
+from slayer.sql.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe, sql_model_trial_query
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -75,18 +75,18 @@ def _op_error(message: str) -> sqlalchemy.exc.OperationalError:
 
 
 def _raise(exc: BaseException):
-    async def _get_column_types(self, probe: TypeProbe) -> dict[str, str]:  # noqa: ANN001
+    async def _get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ANN001
         raise exc
 
-    return _get_column_types
+    return _get_result_column_types
 
 
 def _capture(sink: list[str]):
-    async def _get_column_types(self, probe: TypeProbe) -> dict[str, str]:  # noqa: ANN001
+    async def _get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ANN001
         sink.append(probe.sql)
         return {}
 
-    return _get_column_types
+    return _get_result_column_types
 
 
 def _trial(sql: str) -> str:
@@ -108,16 +108,16 @@ def test_error_type_subclasses_slayererror_and_valueerror() -> None:
 
 
 class _CapturingClient:
-    """Duck-typed SlayerSQLClient: records the probe SQL handed to get_column_types."""
+    """Duck-typed SlayerSQLClient: records the probe SQL handed to get_result_column_types."""
 
     datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
 
     def __init__(self, sink: list[str]) -> None:
         self._sink = sink
 
-    async def get_column_types(self, probe: TypeProbe) -> dict[str, str]:
+    async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
         self._sink.append(probe.sql)
-        return {"id": "number"}
+        return {"id": ResultColumnType(type=DataType.DOUBLE)}
 
 
 class TestSchemaDriftReusesSharedBuilder:
@@ -129,6 +129,19 @@ class TestSchemaDriftReusesSharedBuilder:
         model = _sql_model("SELECT id FROM orders;")  # trailing ';' exercises strip
         await _live_columns_for_sql_model(model=model, client=_CapturingClient(seen))
         assert seen == [_trial("SELECT id FROM orders;")]
+
+    async def test_live_columns_take_the_probed_type(self) -> None:
+        class _IntClient:
+            datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
+
+            async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ARG002
+                return {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
+
+        live = await _live_columns_for_sql_model(
+            model=_sql_model("SELECT id FROM orders"),
+            client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
+        )
+        assert live is not None and live.columns == {"id": DataType.INT}
 
 
 class TestRejectAndAccept:
@@ -183,7 +196,7 @@ class TestRejectAndAccept:
     ) -> None:
         engine, _ = await _make_engine(tmp_path)
         seen: list[str] = []
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _capture(seen))
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _capture(seen))
         await engine.save_model(_sql_model("SELECT id FROM orders"))
         assert seen == [_trial("SELECT id FROM orders")]
 
@@ -197,7 +210,7 @@ class TestGatesSkipProbe:
     ) -> None:
         engine, _ = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(AssertionError("trial-execute must not run for sql_table")),
         )
         model = SlayerModel(
@@ -211,7 +224,7 @@ class TestGatesSkipProbe:
     ) -> None:
         engine, _ = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(AssertionError("trial-execute must not run for query-backed")),
         )
         model = SlayerModel(
@@ -228,7 +241,7 @@ class TestGatesSkipProbe:
         engine, storage = await _make_engine(tmp_path)
         # If the probe ran, this reject-class error would block the save.
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("no such table: orders")),
         )
         model = _sql_model(
@@ -245,7 +258,7 @@ class TestGatesSkipProbe:
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("no such table: orders")),
         )
         # Placeholder appears only inside a ``{? ?}`` optional block — still a
@@ -295,7 +308,7 @@ class TestInconclusiveWarnsAndSaves:
         # A transient-only signal — matched by _is_transient_db_error but NOT by
         # _is_unreachable_db_error — so this pins the transient branch alone.
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types", _raise(_op_error("database is locked")),
+            SlayerSQLClient, "get_result_column_types", _raise(_op_error("database is locked")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
             await engine.save_model(_sql_model("SELECT id FROM orders", name="transient"))
@@ -310,7 +323,7 @@ class TestInconclusiveWarnsAndSaves:
         # "unable to open database file" is an unreachable signal but NOT a
         # transient one — isolates the _is_unreachable_db_error path.
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("unable to open database file")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
@@ -324,7 +337,7 @@ class TestInconclusiveWarnsAndSaves:
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("password authentication failed for user")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
@@ -337,7 +350,7 @@ class TestInconclusiveWarnsAndSaves:
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("permission denied for table orders")),
         )
         model = _sql_model("SELECT id FROM orders", name="permdenied")
@@ -363,11 +376,11 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, probe: TypeProbe) -> dict[str, str]:
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
             executed.append(probe.sql)
             return {}
 
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
         model = _sql_model(bad_sql, name="mutating")
         with pytest.raises(ModelSqlValidationError):
             await engine.save_model(model)
@@ -388,11 +401,11 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, probe: TypeProbe) -> dict[str, str]:
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
             executed.append(probe.sql)
             return {}
 
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
         model = _sql_model("SELECT ((( not valid", name="broken")
         with pytest.raises(ModelSqlValidationError):
             await engine.save_model(model)
@@ -405,11 +418,11 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, probe: TypeProbe) -> dict[str, str]:
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
             executed.append(probe.sql)
             return {}
 
-        monkeypatch.setattr(SlayerSQLClient, "get_column_types", _spy)
+        monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
         # Parameterized SQL is not trial-run, but its shape is still classified.
         model = _sql_model("DELETE FROM orders WHERE id = {id}", name="param_dml")
         with pytest.raises(ModelSqlValidationError):
@@ -433,7 +446,7 @@ class TestNonReadOnlySqlRejected:
         # saved, not rejected.
         engine, storage = await _make_engine(tmp_path)
         monkeypatch.setattr(
-            SlayerSQLClient, "get_column_types",
+            SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("probe must not run")),
         )
         await engine.save_model(_sql_model("SELECT * FROM {table}", name="param_ident"))

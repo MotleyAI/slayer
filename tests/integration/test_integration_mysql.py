@@ -19,6 +19,7 @@ import statistics
 from datetime import date, timedelta
 import tempfile
 import uuid
+from typing import Any
 
 import pytest
 
@@ -45,9 +46,10 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -170,6 +172,15 @@ def _drop_module_db(mysql_container, db_name: str) -> None:
             cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
     finally:
         conn.close()
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    sql_client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=sql_client, **kwargs)
+    finally:
+        await sql_client.aclose()
+        sql_client.close()
 
 
 def _ds_config(mysql_container, db_name: str) -> DatasourceConfig:
@@ -743,7 +754,7 @@ def mysql_ingest_env(mysql_container):
             f"rollup tests cannot validate. Inspector output: {fks_on_orders!r}"
         )
 
-        models = ingest_datasource(datasource=ds, schema=None)
+        models = run_sync(_ingest(ds, schema=None))
         yield models, ds, None
     finally:
         _drop_module_db(mysql_container, db_name)
@@ -1663,7 +1674,7 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2120")))
         run_sync(storage.save_datasource(ds))
         run_sync(storage.save_model(lib_model(data_source="testmysql")))
-        for model in ingest_datasource(datasource=ds, include_tables=["docs"]):
+        for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs"]):
             run_sync(storage.save_model(model))
         yield storage
     finally:
@@ -1683,3 +1694,33 @@ class TestMySQLPortableLibrary:
         for filt, expected in (("word = 'ada'", {3, 4}), ("word IN ('paid')", {1, 2}), ("word LIKE 'ada%'", {3, 4})):
             resp = await engine.execute(lib_query(filters=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
+
+
+@pytest.fixture
+def mysql_probe_ds(mysql_container):
+    db_name = _create_module_db(mysql_container)
+    conn = _admin_connect(mysql_container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE flags (b BOOL, t TINYINT, b1 BIT(1), b8 BIT(8), n INT, d DECIMAL(10,2)) ENGINE=InnoDB"
+            )
+    finally:
+        conn.close()
+    yield _ds_config(mysql_container, db_name)
+    _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+async def test_typed_probe_boolean_and_tiny_integers(mysql_probe_ds: DatasourceConfig) -> None:
+    client = SlayerSQLClient(datasource=mysql_probe_ds)
+    try:
+        types = await client.get_result_column_types("SELECT b, t, b1, b8, n, d FROM flags")
+    finally:
+        await client.aclose()
+        client.close()
+    assert {name: column.type for name, column in types.items()} == {
+        "b": DataType.BOOLEAN, "t": DataType.INT, "b1": DataType.BOOLEAN, "b8": DataType.TEXT,
+        "n": DataType.INT, "d": DataType.DOUBLE,
+    }
+    assert all(column.db_type for column in types.values())

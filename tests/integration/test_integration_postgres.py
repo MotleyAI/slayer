@@ -4,7 +4,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
-from typing import LiteralString, cast
+from typing import Any, LiteralString, cast
 
 import pytest
 
@@ -12,8 +12,9 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
@@ -558,6 +559,15 @@ class TestCrossModelAndMultistage:
         assert by_tier["low"] == 3
 
 
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
+    finally:
+        await client.aclose()
+        client.close()
+
+
 @pytest.fixture(scope="module")
 def pg_ingest_env(postgresql_proc):
     """Set up tables with FK relationships and ingest via rollup.
@@ -613,7 +623,7 @@ def pg_ingest_env(postgresql_proc):
             password="",
         )
 
-        models = ingest_datasource(datasource=ds, schema="public")
+        models = run_sync(_ingest(ds, schema="public"))
         yield models, ds, conn
     finally:
         conn.close()

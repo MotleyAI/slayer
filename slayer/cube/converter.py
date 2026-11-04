@@ -10,7 +10,6 @@ import re
 from collections import defaultdict
 from typing import Any
 
-import sqlalchemy as sa
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -64,7 +63,8 @@ from slayer.importers.measures import measure_problems, unreachable_columns
 from slayer.importers.physical import (
     PhysicalIndex, UndecidableIdentifierCaseError, physical_identifier, root_physical_columns, unreadable_columns,
 )
-from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.client import SqlClient
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 
 logger = logging.getLogger(__name__)
 
@@ -312,8 +312,7 @@ class CubeToSlayerConverter:
 
     def __init__(
         self, project, data_source: str, parse_issues=None,
-        *, honor_required_meta: bool = True, sa_engine: sa.Engine | None = None,
-        target_dialect: str | None = None, offline_reason: str | None = None,
+        *, honor_required_meta: bool = True, target_dialect: str | None = None, offline_reason: str | None = None,
     ) -> None:
         self.project = project
         self.data_source = data_source
@@ -322,17 +321,10 @@ class CubeToSlayerConverter:
         # FILTER_PARAMS pushdown as a required (raise-on-missing) variable rather
         # than an optional block. ``--ignore-required-meta`` flips this off.
         self.honor_required_meta = honor_required_meta
-        self.sa_engine = sa_engine
-        self.target_dialect = target_dialect or (sa_engine.dialect.name if sa_engine is not None else None)
-        dialect = None
-        if target_dialect:
-            dialect = dialect_for_ds_type(target_dialect)
-        elif sa_engine is not None:
-            dialect = dialect_for_sa_backend(sa_engine.dialect.name)
-        self._sql_dialect = dialect
-        self._dialect = dialect.sqlglot_name if dialect is not None else None
-        self._live = LiveDatasource(engine=sa_engine, offline_reason=offline_reason, data_source=data_source,
-                                    db_type=self.target_dialect, dialect=self._dialect)
+        self.target_dialect = target_dialect
+        self._live = LiveDatasource(offline_reason=offline_reason, data_source=data_source,
+                                    db_type=target_dialect, dialect=None)
+        self._use_dialect(dialect_for_ds_type(target_dialect) if target_dialect else None)
         self._offline_noted: set[str] = set()
         self._cubes: dict[str, CubeCube] = {}
         self._models: dict[str, SlayerModel] = {}
@@ -347,9 +339,24 @@ class CubeToSlayerConverter:
         # Unquoted mixed-case identifiers no datasource dialect says how to read.
         self._undecidable: list[str] = []
 
+    def _use_dialect(self, dialect: SqlDialect | None) -> None:
+        self._sql_dialect = dialect
+        self._dialect = self._live.dialect = dialect.sqlglot_name if dialect is not None else None
+
+    async def collect_metadata(self, *, client: SqlClient) -> None:
+        """Read every source and probe conversion asks for through ``client`` (in its datasource's dialect when none
+        was given); ``convert`` then needs no database."""
+        if self._sql_dialect is None:
+            self._use_dialect(dialect_for_ds_type(client.datasource.type))
+        await self._live.collect(client=client, convert=self.convert)
+
     # ── pipeline ───────────────────────────────────────────────────────────
 
     def convert(self) -> CubeConversionResult:
+        """Convert from the collected metadata (pure: the database is read by ``collect_metadata``)."""
+        self._offline_noted = set()
+        self._models, self._measure_info, self._pending_joins = {}, {}, {}
+        self._undecidable = []
         report = CubeConversionReport(issues=list(self.parse_issues))
 
         cubes, cube_issues = flatten_cube_extends(self.project.cubes)

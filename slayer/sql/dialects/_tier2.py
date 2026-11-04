@@ -12,12 +12,15 @@ Tier 1 modules.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from collections.abc import Sequence
+from typing import Any, ClassVar
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 
 from slayer.sql.dialects.base import PORTABLE_LIBRARY, IdentifierFolding, NativeFn, SqlDialect
+from slayer.sql.dialects.postgres import describe_pg_cursor_column
+from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.sql.dialects.trino import PrestoFamilyDialect
 
 #: What Redshift, Databricks, Spark and Oracle translate: LIKE / ILIKE, trimming, replacing, finding, extrema.
@@ -43,6 +46,10 @@ class RedshiftDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 127
     approx_count_distinct_native: bool = True
+    type_probe_uses_sync_driver: bool = True
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        return describe_pg_cursor_column(description_row)
 
     def build_null_safe_eq(
         self, left: exp.Expression, right: exp.Expression,

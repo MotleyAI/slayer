@@ -1,4 +1,4 @@
-"""Schema-qualified ingestion (DEV-1758), behavioral end-to-end on DuckDB.
+"""Schema-qualified ingestion, behavioral end-to-end on DuckDB.
 
 DuckDB is the only exposed Tier-1 dialect whose ``Inspector`` sweeps every
 schema for a ``schema=None`` listing, so it is where the regression is visible
@@ -14,13 +14,15 @@ resolution over an inspector that happens to see attached catalogs.
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
+from sqlalchemy.engine.reflection import Inspector
 
 from slayer import cli
 from slayer.api.server import IngestRequest, create_app
@@ -32,9 +34,7 @@ from slayer.engine import ingestion as mod
 from slayer.engine import schema_drift as drift_mod
 from slayer.engine.ingestion import (
     _print_ingest_addition,
-    ingest_datasource,
     ingest_datasource_idempotent,
-    ingest_datasource_report,
     introspect_table_to_model,
     list_ingestable_objects,
 )
@@ -51,6 +51,7 @@ from slayer.engine.schema_scope import (
     resolve_ingest_scope,
 )
 from slayer.mcp.server import _fetch_tables, create_mcp_server
+from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.sql.dialects import DuckdbDialect, ReflectedColumn, TableKeys, dialect_for_sa_backend
 from slayer.sql import engine_factory
 from slayer.storage.sqlite_conn import transaction
@@ -193,7 +194,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
     - ``main.pktbl(id PK)`` exists in both → DuckDB gives both the same
       auto-generated PK constraint name, so a schema-only join duplicates it.
     - ``main.commented(v)`` exists in both with DIFFERENT comments on ``v`` →
-      the DEV-1809 cross-catalog comment-bleed trap.
+      the cross-catalog comment-bleed trap.
     - ``only_in_other`` lives ONLY in ``aaa`` → a bare-token retry from
       ``att_main`` would wrongly find it.
     """
@@ -238,6 +239,58 @@ def _ds(path: str, **kw) -> DatasourceConfig:
     return DatasourceConfig(name="ds", type="duckdb", database=path, **kw)
 
 
+@asynccontextmanager
+async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+    client = SlayerSQLClient(datasource=ds)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        client.close()
+
+
+@asynccontextmanager
+async def _attached_client(paths: tuple[str, str]) -> AsyncIterator[SlayerSQLClient]:
+    """A client over ``att_main`` whose every connection attaches ``aaa``."""
+    main_path, aaa_path = paths
+    ds = _ds(main_path)
+    engine_factory.invalidate_engine(ds)
+    engine = engine_factory.get_engine(ds)
+
+    @sa.event.listens_for(engine, "connect")  # type: ignore[attr-defined]
+    def _attach(dbapi_conn, _rec):  # noqa: ANN001
+        dbapi_conn.execute(f"ATTACH IF NOT EXISTS '{aaa_path}' AS aaa")
+
+    try:
+        async with _client(ds) as client:
+            yield client
+    finally:
+        engine_factory.invalidate_engine(ds)
+
+
+class _UnlistableSchemas(DelegatingSqlClient):
+    """A client whose schema listing fails."""
+
+    async def list_schemas(self) -> list[str]:
+        raise RuntimeError("metadata permission revoked")
+
+
+async def _report(ds: DatasourceConfig | None, **kwargs: Any):
+    assert ds is not None
+    async with _client(ds) as client:
+        return await mod.ingest_datasource_report_async(ds, client=client, **kwargs)
+
+
+async def _ingest(ds: DatasourceConfig, **kwargs: Any):
+    async with _client(ds) as client:
+        return await mod.ingest_datasource_async(ds, client=client, **kwargs)
+
+
+async def _idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage, **kwargs: Any):
+    async with _client(datasource) as client:
+        return await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=client, **kwargs)
+
+
 def _sql_tables(report) -> dict[str, str]:
     return {m.name: m.sql_table for m in report.models}
 
@@ -263,11 +316,11 @@ async def _query_count(storage: YAMLStorage, model_name: str) -> int:
 
 
 class TestReportedRegression:
-    def test_bare_ingest_covers_the_default_schema_only(self, basic_db) -> None:
+    async def test_bare_ingest_covers_the_default_schema_only(self, basic_db) -> None:
         """D-1: bare ingest models only the connection default; the
         non-default ``reports`` is NOT created, and the scope names it as a
         schema the user could opt into."""
-        report = ingest_datasource_report(datasource=_ds(basic_db))
+        report = await _report(_ds(basic_db))
         assert _sql_tables(report) == {"in_default": "in_default"}
 
     async def test_explicit_schema_qualifies_and_is_queryable(self, basic_db, tmp_path) -> None:
@@ -276,11 +329,11 @@ class TestReportedRegression:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
 
-        report = ingest_datasource_report(datasource=ds, schemas=["openfda_rest"])
+        report = await _report(ds, schemas=["openfda_rest"])
         assert _sql_tables(report)["reports"] == "openfda_rest.reports"
 
         await storage.save_datasource(ds)
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
         assert await _query_count(storage, "reports") == 2
@@ -291,7 +344,7 @@ class TestReportedRegression:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, all_schemas=True
         )
         in_default = await storage.get_model("in_default", data_source="ds")
@@ -308,15 +361,15 @@ class TestReportedRegression:
 
 
 class TestColumnCorruption:
-    def test_bare_ingest_never_unions_same_named_columns(self, same_name_db) -> None:
+    async def test_bare_ingest_never_unions_same_named_columns(self, same_name_db) -> None:
         """The default ``reports`` must carry exactly its own column, never the
         union of every schema's ``reports``."""
-        report = ingest_datasource_report(datasource=_ds(same_name_db))
+        report = await _report(_ds(same_name_db))
         reports = next(m for m in report.models if m.name == "reports")
         assert {c.name for c in reports.columns} == {"a"}
 
-    def test_explicit_non_default_gets_its_own_columns(self, same_name_db) -> None:
-        report = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2"])
+    async def test_explicit_non_default_gets_its_own_columns(self, same_name_db) -> None:
+        report = await _report(_ds(same_name_db), schemas=["s2"])
         reports = next(m for m in report.models if m.name == "reports")
         assert {c.name for c in reports.columns} == {"b", "c"}
         assert reports.sql_table == "s2.reports"
@@ -350,11 +403,10 @@ class TestAttachedCatalogs:
             names = set(sa.inspect(engine).get_schema_names())
             assert {"att_main.main", "aaa.main", "att_main.openfda_rest"} <= names
 
-    def test_all_schemas_covers_only_the_current_catalog(self, attached_paths) -> None:
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            scope = resolve_ingest_scope(
-                inspector=insp, sa_engine=engine, requested=None,
+    async def test_all_schemas_covers_only_the_current_catalog(self, attached_paths) -> None:
+        async with _attached_client(attached_paths) as client:
+            scope = await resolve_ingest_scope(
+                client=client, requested=None,
                 all_schemas=True, datasource_schema=None,
             )
             names = {r.name for r in scope.schemas}
@@ -367,13 +419,12 @@ class TestAttachedCatalogs:
             assert "catalog" in aaa_skip.reason.lower()
             assert "aaa" in aaa_skip.reason           # names the offending catalog
 
-    def test_bare_scope_does_not_reach_into_the_attached_catalog(self, attached_paths) -> None:
+    async def test_bare_scope_does_not_reach_into_the_attached_catalog(self, attached_paths) -> None:
         """The default ref must be the QUALIFIED default token, so discovery
         under it does not sweep ``aaa``."""
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            scope = resolve_ingest_scope(
-                inspector=insp, sa_engine=engine, requested=None,
+        async with _attached_client(attached_paths) as client:
+            scope = await resolve_ingest_scope(
+                client=client, requested=None,
                 all_schemas=False, datasource_schema=None,
             )
             assert len(scope.schemas) == 1
@@ -422,55 +473,51 @@ class TestAttachedCatalogs:
             comments = {c.name: c.comment for c in _duck_columns(engine, table="commented", schema="main")}
             assert comments.get("v") == "att_main comment"
 
-    def test_unscoped_table_never_unions(self, attached_paths) -> None:
+    async def test_unscoped_table_never_unions(self, attached_paths) -> None:
         """With no schema and ``shared`` present in several (catalog, schema)
         groups, introspection must NOT silently union. It may resolve to the
         default group ({m}) or refuse (ValueError) — never ``{m, o}`` (§3.10,
         lowest-sorted-wins explicitly rejected)."""
-        with _open_attached(attached_paths) as engine:
+        async with _attached_client(attached_paths) as client:
             try:
-                model = introspect_table_to_model(
-                    sa_engine=engine, inspector=sa.inspect(engine),
-                    table_name="shared", ref=None, data_source="ds",
+                model = await introspect_table_to_model(
+                    client=client, table_name="shared", ref=None, data_source="ds",
                 )
             except ValueError:
                 return                 # refusing to guess is acceptable
             assert {c.name for c in model.columns} == {"m"}  # the default group; never the union
 
-    def test_discovery_ref_none_does_not_sweep_the_attached_catalog(
+    async def test_discovery_ref_none_does_not_sweep_the_attached_catalog(
         self, attached_paths
     ) -> None:
         """``list_ingestable_objects(ref=None)`` resolves None to the QUALIFIED
         default ref before listing, so it never returns ``aaa``'s objects."""
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            names = {o.name for o in list_ingestable_objects(inspector=insp, ref=None)}
+        async with _attached_client(attached_paths) as client:
+            names = {o.name for o in await list_ingestable_objects(client=client, ref=None)}
             assert "only_in_other" not in names
             assert "in_default" in names
 
-    def test_introspect_table_schema_none_resolves_the_qualified_default(
+    async def test_introspect_table_schema_none_resolves_the_qualified_default(
         self, attached_paths
     ) -> None:
         """schema=None probes the qualified default: {m} not {m,o}, bare sql_table."""
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            model = introspect_table_to_model(
-                sa_engine=engine, inspector=insp, table_name="shared",
+        async with _attached_client(attached_paths) as client:
+            model = await introspect_table_to_model(
+                client=client, table_name="shared",
                 ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
             assert model.sql_table == "shared"      # default stays bare
 
-    def test_introspect_table_schema_none_never_unions_a_bare_result(
+    async def test_introspect_table_schema_none_never_unions_a_bare_result(
         self, attached_paths, monkeypatch
     ) -> None:
         """Even when the Inspector RETURNS a bare-schema union, schema=None probes
         the qualified default and keeps only {m}."""
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            real_get_columns = insp.get_columns
+        async with _attached_client(attached_paths) as client:
+            real_get_columns = Inspector.get_columns
 
-            def _bare_returns_union(table_name, schema=None, **kw):
+            def _bare_returns_union(self, table_name, schema=None, **kw):
                 if schema is None:
                     # Simulate an Inspector that sweeps every attached catalog for
                     # a bare request and unions the twins.
@@ -478,24 +525,23 @@ class TestAttachedCatalogs:
                         {"name": "m", "type": sa.INTEGER()},
                         {"name": "o", "type": sa.INTEGER()},
                     ]
-                return real_get_columns(table_name, schema=schema, **kw)
+                return real_get_columns(self, table_name, schema=schema, **kw)
 
-            monkeypatch.setattr(insp, "get_columns", _bare_returns_union)
-            model = introspect_table_to_model(
-                sa_engine=engine, inspector=insp, table_name="shared",
+            monkeypatch.setattr(Inspector, "get_columns", _bare_returns_union)
+            model = await introspect_table_to_model(
+                client=client, table_name="shared",
                 ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
 
-    def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
+    async def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
         """Codex-review: explicitly requesting a foreign attached catalog
         (``--schema aaa.main``) drops it to ``skipped`` and out of scope, like
         the all_schemas enumeration filter — never ingesting a catalog this
         datasource does not own."""
-        with _open_attached(attached_paths) as engine:
-            insp = sa.inspect(engine)
-            scope = resolve_ingest_scope(
-                inspector=insp, sa_engine=engine, requested=["aaa.main"],
+        async with _attached_client(attached_paths) as client:
+            scope = await resolve_ingest_scope(
+                client=client, requested=["aaa.main"],
                 all_schemas=False, datasource_schema=None,
             )
             assert scope.schemas == []
@@ -508,106 +554,90 @@ class TestAttachedCatalogs:
 
 
 class TestScopeResolution:
-    def _scope(self, path, **kw):
-        ds = _ds(path)
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        insp = sa.inspect(engine)
-        defaults = dict(requested=None, all_schemas=False, datasource_schema=None)
+    async def _scope(self, path, **kw):
+        defaults: dict[str, Any] = dict(requested=None, all_schemas=False, datasource_schema=None)
         defaults.update(kw)
-        return resolve_ingest_scope(inspector=insp, sa_engine=engine, **defaults)
+        async with _client(_ds(path)) as client:
+            return await resolve_ingest_scope(client=client, **defaults)
 
-    def test_bare_resolves_to_the_default_and_hints_the_rest(self, basic_db) -> None:
-        scope = self._scope(basic_db)
+    async def test_bare_resolves_to_the_default_and_hints_the_rest(self, basic_db) -> None:
+        scope = await self._scope(basic_db)
         assert [r.name for r in scope.schemas] == ["main"]
         assert scope.schemas[0].is_default is True
         assert "openfda_rest" in scope.other_schemas
 
-    def test_persisted_schema_name_is_explicit_and_verbatim(self, basic_db) -> None:
-        scope = self._scope(basic_db, datasource_schema="main")
+    async def test_persisted_schema_name_is_explicit_and_verbatim(self, basic_db) -> None:
+        scope = await self._scope(basic_db, datasource_schema="main")
         (ref,) = scope.schemas
         assert ref.explicit is True
         assert ref.qualify("t", dialect=DuckdbDialect()) == "main.t"
 
-    def test_multi_request_is_not_verbatim(self, basic_db) -> None:
-        scope = self._scope(basic_db, requested=["main", "openfda_rest"])
+    async def test_multi_request_is_not_verbatim(self, basic_db) -> None:
+        scope = await self._scope(basic_db, requested=["main", "openfda_rest"])
         by_name = {r.name: r for r in scope.schemas}
         assert by_name["main"].explicit is False
         assert by_name["main"].qualify("t", dialect=DuckdbDialect()) == "t"               # default bare
         assert by_name["openfda_rest"].qualify("t", dialect=DuckdbDialect()) == "openfda_rest.t"
 
-    def test_single_request_is_verbatim(self, basic_db) -> None:
-        scope = self._scope(basic_db, requested=["openfda_rest"])
+    async def test_single_request_is_verbatim(self, basic_db) -> None:
+        scope = await self._scope(basic_db, requested=["openfda_rest"])
         (ref,) = scope.schemas
         assert ref.explicit is True
         assert ref.qualify("t", dialect=DuckdbDialect()) == "openfda_rest.t"
 
-    def test_resolved_tokens_are_deduplicated(self, basic_db) -> None:
+    async def test_resolved_tokens_are_deduplicated(self, basic_db) -> None:
         """``main`` given twice (or once bare + once as its default) collapses to
         a single scope entry — the double-scan that marked models for deletion."""
-        scope = self._scope(basic_db, requested=["main", "main"])
+        scope = await self._scope(basic_db, requested=["main", "main"])
         assert len(scope.schemas) == 1
 
-    def test_multi_request_reports_no_hint(self, basic_db) -> None:
-        scope = self._scope(basic_db, requested=["main", "openfda_rest"])
+    async def test_multi_request_reports_no_hint(self, basic_db) -> None:
+        scope = await self._scope(basic_db, requested=["main", "openfda_rest"])
         assert scope.other_schemas == []
 
-    def test_requested_system_schema_is_dropped(self, basic_db) -> None:
+    async def test_requested_system_schema_is_dropped(self, basic_db) -> None:
         """An explicitly requested system schema is dropped, not scanned."""
-        scope = self._scope(basic_db, requested=["information_schema"])
+        scope = await self._scope(basic_db, requested=["information_schema"])
         assert scope.schemas == []
         assert any("information_schema" in (s.token or "") for s in scope.skipped)
 
-    def test_persisted_system_schema_is_dropped(self, basic_db) -> None:
+    async def test_persisted_system_schema_is_dropped(self, basic_db) -> None:
         """A persisted system schema_name is dropped too (datasource branch)."""
-        scope = self._scope(basic_db, datasource_schema="pg_catalog")
+        scope = await self._scope(basic_db, datasource_schema="pg_catalog")
         assert scope.schemas == []
         assert any("pg_catalog" in (s.token or "") for s in scope.skipped)
 
-    def test_all_schemas_raises_when_enumeration_fails(
+    async def test_all_schemas_raises_when_enumeration_fails(
         self, basic_db, monkeypatch
     ) -> None:
         """--all-schemas raises rather than returning a silent empty scope."""
-        ds = _ds(basic_db)
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        insp = sa.inspect(engine)
+        async with _client(_ds(basic_db)) as client:
+            unlistable = _UnlistableSchemas(inner=client)
+            with pytest.raises(SchemaEnumerationError):
+                await resolve_ingest_scope(
+                    client=unlistable, requested=None,
+                    all_schemas=True, datasource_schema=None,
+                )
 
-        def _boom() -> list[str]:
-            raise RuntimeError("metadata permission revoked")
-
-        monkeypatch.setattr(insp, "get_schema_names", _boom)
-        with pytest.raises(SchemaEnumerationError):
-            resolve_ingest_scope(
-                inspector=insp, sa_engine=engine, requested=None,
-                all_schemas=True, datasource_schema=None,
-            )
-
-    def test_default_scope_survives_enumeration_failure(
+    async def test_default_scope_survives_enumeration_failure(
         self, basic_db, monkeypatch
     ) -> None:
         """The implicit default request still resolves when enumeration fails."""
-        ds = _ds(basic_db)
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        insp = sa.inspect(engine)
-
-        def _boom() -> list[str]:
-            raise RuntimeError("metadata permission revoked")
-
-        monkeypatch.setattr(insp, "get_schema_names", _boom)
-        scope = resolve_ingest_scope(
-            inspector=insp, sa_engine=engine, requested=None,
-            all_schemas=False, datasource_schema=None,
-        )
+        async with _client(_ds(basic_db)) as client:
+            scope = await resolve_ingest_scope(
+                client=_UnlistableSchemas(inner=client), requested=None,
+                all_schemas=False, datasource_schema=None,
+            )
         assert len(scope.schemas) == 1
         assert scope.schemas[0].is_default is True
 
 
 class TestSkippedSchemasReported:
-    """DEV-1758 (Codex): a requested schema dropped from scope (system /
+    """A requested schema dropped from scope (system /
     foreign catalog) is surfaced in the report, not a silent empty ingest."""
 
-    def test_report_surfaces_a_requested_system_schema(self, basic_db) -> None:
-        report = ingest_datasource_report(
-            datasource=_ds(basic_db), schemas=["information_schema"]
+    async def test_report_surfaces_a_requested_system_schema(self, basic_db) -> None:
+        report = await _report(_ds(basic_db), schemas=["information_schema"]
         )
         assert report.models == []
         assert any(
@@ -624,17 +654,17 @@ def _reversed_scan(monkeypatch):
     """Reverse the per-schema discovery order to prove order-independence."""
     real = mod.list_ingestable_objects
 
-    def _rev(**kwargs):
-        return list(reversed(real(**kwargs)))
+    async def _rev(**kwargs):
+        return list(reversed(await real(**kwargs)))
 
     monkeypatch.setattr(mod, "list_ingestable_objects", _rev)
 
 
 class TestCollisions:
-    def test_default_schema_wins_and_every_loser_is_skipped(self, same_name_db) -> None:
+    async def test_default_schema_wins_and_every_loser_is_skipped(self, same_name_db) -> None:
         """main wins; BOTH s2 and s3 losers are reported — and under a
         multi-schema scan the labels are fully disambiguated (§3.5)."""
-        report = ingest_datasource_report(datasource=_ds(same_name_db), all_schemas=True)
+        report = await _report(_ds(same_name_db), all_schemas=True)
         reports = [m for m in report.models if m.name == "reports"]
         assert len(reports) == 1
         assert {c.name for c in reports[0].columns} == {"a"}      # main won
@@ -642,70 +672,69 @@ class TestCollisions:
         assert "s2.reports" in labels                              # qualified label
         assert "s3.reports" in labels                             # BOTH losers, no collapse
 
-    def test_non_default_collision_picks_the_lower_schema(self, same_name_db) -> None:
-        report = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
+    async def test_non_default_collision_picks_the_lower_schema(self, same_name_db) -> None:
+        report = await _report(_ds(same_name_db), schemas=["s2", "s3"])
         reports = next(m for m in report.models if m.name == "reports")
         assert reports.sql_table == "s2.reports"                  # s2 < s3
         assert "s3.reports" in _skip_labels(report)
 
-    def test_collision_winner_is_independent_of_discovery_order(
+    async def test_collision_winner_is_independent_of_discovery_order(
         self, same_name_db, monkeypatch
     ) -> None:
         """Reverse ONLY the discovery order (requested order held fixed) so a
         failure isolates to discovery nondeterminism."""
-        forward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
+        forward = await _report(_ds(same_name_db), schemas=["s2", "s3"])
         _reversed_scan(monkeypatch)
-        backward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
+        backward = await _report(_ds(same_name_db), schemas=["s2", "s3"])
         assert _sql_tables(forward)["reports"] == _sql_tables(backward)["reports"]
         # Direct list comparison: the skip labels must be emitted in the same
         # deterministic order regardless of discovery order (the property
         # ``_collision_sort_key`` guarantees).
         assert _skip_labels(forward) == _skip_labels(backward)
 
-    def test_collision_winner_is_independent_of_requested_order(self, same_name_db) -> None:
-        forward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s2", "s3"])
-        backward = ingest_datasource_report(datasource=_ds(same_name_db), schemas=["s3", "s2"])
+    async def test_collision_winner_is_independent_of_requested_order(self, same_name_db) -> None:
+        forward = await _report(_ds(same_name_db), schemas=["s2", "s3"])
+        backward = await _report(_ds(same_name_db), schemas=["s3", "s2"])
         assert _sql_tables(forward)["reports"] == _sql_tables(backward)["reports"]
 
-    def test_faithful_and_sanitized_names_do_not_collide_across_schemas(
+    async def test_faithful_and_sanitized_names_do_not_collide_across_schemas(
         self, sanitize_collision_db
     ) -> None:
-        """DEV-1743: ``s1.a__b`` keeps its faithful name ``a__b``; ``s2.a_b`` is
+        """``s1.a__b`` keeps its faithful name ``a__b``; ``s2.a_b`` is
         the distinct ``a_b`` — the old sanitize-collapse collision is gone, so
         both are modelled and neither is skipped."""
-        report = ingest_datasource_report(
-            datasource=_ds(sanitize_collision_db), all_schemas=True
+        report = await _report(_ds(sanitize_collision_db), all_schemas=True
         )
         tables = _sql_tables(report)
         assert tables["a__b"] == "s1.a__b"
         assert tables["a_b"] == "s2.a_b"
         assert not any("a__b" in lbl for lbl in _skip_labels(report))
 
-    def test_single_schema_output_is_unqualified(self, same_name_db) -> None:
+    async def test_single_schema_output_is_unqualified(self, same_name_db) -> None:
         """Bare ingest of one schema keeps ``sql_table`` and skip labels bare —
         no cross-schema disambiguation when there is nothing to disambiguate."""
-        report = ingest_datasource_report(datasource=_ds(same_name_db))
+        report = await _report(_ds(same_name_db))
         assert _sql_tables(report) == {"reports": "reports"}
         assert report.skipped == []
 
-    def test_faithful_and_sanitized_names_are_distinct_in_one_schema(
+    async def test_faithful_and_sanitized_names_are_distinct_in_one_schema(
         self, tmp_path
     ) -> None:
-        """DEV-1743: within one schema ``a_b`` and ``a__b`` are distinct models —
+        """Within one schema ``a_b`` and ``a__b`` are distinct models —
         no collision, nothing skipped."""
         path = str(tmp_path / "one.duckdb")
         _duck(path=path, statements=[
             "CREATE TABLE a_b(real_col INTEGER)",
             "CREATE TABLE a__b(x INTEGER)",
         ])
-        report = ingest_datasource_report(datasource=_ds(path))
+        report = await _report(_ds(path))
         assert {"a_b", "a__b"} <= {m.name for m in report.models}
         assert _skip_labels(report) == []
 
 
 class TestCollisionTieBreaks:
-    def test_distinct_dunder_names_in_one_schema_do_not_tie(self, tmp_path) -> None:
-        """DEV-1743: ``s2.a__b`` and ``s2.a___b`` are different faithful models —
+    async def test_distinct_dunder_names_in_one_schema_do_not_tie(self, tmp_path) -> None:
+        """``s2.a__b`` and ``s2.a___b`` are different faithful models —
         no sanitize-collapse tie, both modelled, nothing skipped."""
         path = str(tmp_path / "tie.duckdb")
         _duck(path=path, statements=[
@@ -713,7 +742,7 @@ class TestCollisionTieBreaks:
             "CREATE TABLE s2.a__b(x INTEGER)",
             "CREATE TABLE s2.a___b(y INTEGER)",
         ])
-        report = ingest_datasource_report(datasource=_ds(path), schemas=["s2"])
+        report = await _report(_ds(path), schemas=["s2"])
         tables = _sql_tables(report)
         assert tables["a__b"] == "s2.a__b"
         assert tables["a___b"] == "s2.a___b"
@@ -721,10 +750,10 @@ class TestCollisionTieBreaks:
 
 
 class TestWinnersOnlyStructures:
-    def test_join_to_a_collision_loser_is_dropped(self, loser_fk_db) -> None:
+    async def test_join_to_a_collision_loser_is_dropped(self, loser_fk_db) -> None:
         """``s1.y``'s FK targets ``s1.x`` which lost the model name to
         ``main.x``; the join must be dropped, never repointed cross-schema."""
-        report = ingest_datasource_report(datasource=_ds(loser_fk_db), all_schemas=True)
+        report = await _report(_ds(loser_fk_db), all_schemas=True)
         models = {m.name: m for m in report.models}
         y = models["y"]
         assert y.joins == []
@@ -736,8 +765,8 @@ class TestWinnersOnlyStructures:
 
 
 class TestForeignKeysAreSchemaAware:
-    def test_join_is_generated_for_a_non_default_schema(self, fk_db) -> None:
-        report = ingest_datasource_report(datasource=_ds(fk_db), schemas=["ofr"])
+    async def test_join_is_generated_for_a_non_default_schema(self, fk_db) -> None:
+        report = await _report(_ds(fk_db), schemas=["ofr"])
         models = {m.name: m for m in report.models}
         child = models["child"]
         assert child.sql_table == "ofr.child"
@@ -768,7 +797,7 @@ class TestSelfHeal:
         col = Column(name="id", sql="id", type=DataType.INT, description="hand id")
         await self._persist_bare(storage, ds, [col],
                                  extra={"description": "hand table"})
-        result = await ingest_datasource_idempotent(
+        result = await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
         healed = await storage.get_model("reports", data_source="ds")
@@ -789,7 +818,7 @@ class TestSelfHeal:
         )
         await storage.save_datasource(ds)
         await storage.save_model(model)
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
         kept = await storage.get_model("reports", data_source="ds")
@@ -813,7 +842,7 @@ class TestSelfHeal:
                        format={"type": "integer"}),
             ],
         ))
-        result = await ingest_datasource_idempotent(
+        result = await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
         healed = await storage.get_model("reports", data_source="ds")
@@ -835,7 +864,7 @@ class TestSelfHeal:
             name="reports", sql_table="reports", data_source="ds",
             columns=[Column(name="a", sql="a", type=DataType.INT)],
         ))
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, schemas=["main"],   # verbatim → main.reports
         )
         healed = await storage.get_model("reports", data_source="ds")
@@ -875,7 +904,7 @@ class TestCrossSchemaMergeGuard:
             name="reports", sql_table="reports", data_source="ds",
             columns=[Column(name="a", sql="a", type=DataType.INT)],
         ))
-        result = await ingest_datasource_idempotent(
+        result = await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
         )
         kept = await storage.get_model("reports", data_source="ds")
@@ -899,14 +928,14 @@ class TestCrossSchemaMergeGuard:
 
         real = mod.list_ingestable_objects
 
-        def _maybe_raise(**kwargs):
+        async def _maybe_raise(**kwargs):
             ref = kwargs.get("ref")
             if ref is not None and getattr(ref, "is_default", False):
                 raise sa.exc.OperationalError("boom", {}, Exception())
-            return real(**kwargs)
+            return await real(**kwargs)
 
         monkeypatch.setattr(mod, "list_ingestable_objects", _maybe_raise)
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
         )
         kept = await storage.get_model("reports", data_source="ds")
@@ -921,7 +950,8 @@ class TestCrossSchemaMergeGuard:
 
 class TestValidateModels:
     async def _validate(self, ds, models):
-        return await validate_datasource(datasource=ds, models=models)
+        async with _client(ds) as client:
+            return await validate_datasource(datasource=ds, models=models, client=client)
 
     async def test_no_whole_model_delete_after_multi_schema_ingest(
         self, basic_db, tmp_path
@@ -929,7 +959,7 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
-        await ingest_datasource_idempotent(
+        await _idempotent(
             datasource=ds, storage=storage, all_schemas=True
         )
         models = [
@@ -994,11 +1024,11 @@ class TestValidateModels:
         await storage.save_model(model)
         real = mod.list_ingestable_objects
 
-        def _maybe_raise(**kwargs):
+        async def _maybe_raise(**kwargs):
             ref = kwargs.get("ref")
             if ref is not None and getattr(ref, "name", None) == "openfda_rest":
                 raise sa.exc.OperationalError("boom", {}, Exception())
-            return real(**kwargs)
+            return await real(**kwargs)
 
         monkeypatch.setattr(mod, "list_ingestable_objects", _maybe_raise)
         to_delete = await self._validate(ds, [model])
@@ -1062,10 +1092,10 @@ class TestValidateModels:
 
         real = drift_mod.resolve_ingest_scope
 
-        def _no_enumerate(**kwargs):
+        async def _no_enumerate(**kwargs):
             if kwargs.get("all_schemas"):
                 raise SchemaEnumerationError("simulated least-privilege connection")
-            return real(**kwargs)
+            return await real(**kwargs)
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
@@ -1093,10 +1123,10 @@ class TestValidateModels:
 
         real = drift_mod.resolve_ingest_scope
 
-        def _no_enumerate(**kwargs):
+        async def _no_enumerate(**kwargs):
             if kwargs.get("all_schemas"):
                 raise SchemaEnumerationError("simulated least-privilege connection")
-            return real(**kwargs)
+            return await real(**kwargs)
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
@@ -1132,10 +1162,10 @@ class TestValidateModels:
 
         real = drift_mod.resolve_ingest_scope
 
-        def _no_enumerate(**kwargs):
+        async def _no_enumerate(**kwargs):
             if kwargs.get("all_schemas"):
                 raise SchemaEnumerationError("simulated least-privilege connection")
-            return real(**kwargs)
+            return await real(**kwargs)
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, models)
@@ -1189,14 +1219,13 @@ class TestLiveTableResolution:
             sql_table='prod."Company"', live_tables={"prod.Company": live}, dialect=DuckdbDialect()
         ) is live
 
-    def test_configured_schema_live_map_carries_the_catalog(self, basic_db) -> None:
+    async def test_configured_schema_live_map_carries_the_catalog(self, basic_db) -> None:
         """Codex-review: the validate-models live-schema path for a configured
         schema must carry the current catalog on DuckDB, else the bare token
         re-arms the cross-catalog sweep. Pre-fix the ref's catalog was None."""
-        with disposable_engine(f"duckdb:///{basic_db}") as engine:
-            insp = sa.inspect(engine)
-            refs = _live_schema_refs(
-                inspector=insp, sa_engine=engine, datasource=_ds(basic_db),
+        async with _client(_ds(basic_db)) as client:
+            refs = await _live_schema_refs(
+                client=client, datasource=_ds(basic_db),
                 schema="openfda_rest",
             )
             assert len(refs) == 1
@@ -1205,22 +1234,22 @@ class TestLiveTableResolution:
 
 
 # ===========================================================================
-# DEV-1809 composition — comments from a non-default schema, no cross-bleed
+# Comments from a non-default schema, no cross-bleed
 # ===========================================================================
 
 
 class TestCommentComposition:
-    def test_comments_are_read_from_the_named_schema(self, comment_db) -> None:
-        report = ingest_datasource_report(datasource=_ds(comment_db), schemas=["ofr"])
+    async def test_comments_are_read_from_the_named_schema(self, comment_db) -> None:
+        report = await _report(_ds(comment_db), schemas=["ofr"])
         reports = next(m for m in report.models if m.name == "reports")
         assert reports.description == "openfda report rows"
         val = next(c for c in reports.columns if c.name == "val")
         assert val.description == "the measured value"
 
-    def test_comments_do_not_bleed_from_the_default_schema(self, comment_db) -> None:
+    async def test_comments_do_not_bleed_from_the_default_schema(self, comment_db) -> None:
         """The non-default ``val`` comment must win — never the default
         schema's same-named column comment."""
-        report = ingest_datasource_report(datasource=_ds(comment_db), schemas=["ofr"])
+        report = await _report(_ds(comment_db), schemas=["ofr"])
         reports = next(m for m in report.models if m.name == "reports")
         val = next(c for c in reports.columns if c.name == "val")
         assert val.description != "DEFAULT SCHEMA COMMENT"
@@ -1277,7 +1306,7 @@ class TestHint:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db, schema_name="main")
         await storage.save_datasource(ds)
-        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        result = await _idempotent(datasource=ds, storage=storage)
         assert result.schema_hint is not None
         assert "openfda_rest" in result.schema_hint
 
@@ -1287,7 +1316,7 @@ class TestHint:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
-        result = await ingest_datasource_idempotent(
+        result = await _idempotent(
             datasource=ds, storage=storage, all_schemas=True
         )
         assert result.schema_hint is None
@@ -1299,21 +1328,19 @@ class TestHint:
 
 
 class TestIncludeExcludeAcrossSchemas:
-    def test_include_matches_the_bare_name_in_every_schema(self, same_name_db) -> None:
+    async def test_include_matches_the_bare_name_in_every_schema(self, same_name_db) -> None:
         """``include_tables=['reports']`` keeps the ``reports`` twin in each
         scanned schema; collision resolution then picks the winner. Filtering
         must NOT drop the default winner just because a non-default twin shares
         the name."""
-        report = ingest_datasource_report(
-            datasource=_ds(same_name_db), all_schemas=True,
+        report = await _report(_ds(same_name_db), all_schemas=True,
             include_tables=["reports"],
         )
         reports = next(m for m in report.models if m.name == "reports")
         assert {c.name for c in reports.columns} == {"a"}        # main still wins
 
-    def test_exclude_removes_the_name_in_every_schema(self, same_name_db) -> None:
-        report = ingest_datasource_report(
-            datasource=_ds(same_name_db), all_schemas=True,
+    async def test_exclude_removes_the_name_in_every_schema(self, same_name_db) -> None:
+        report = await _report(_ds(same_name_db), all_schemas=True,
             exclude_tables=["reports"],
         )
         assert "reports" not in {m.name for m in report.models}
@@ -1332,7 +1359,7 @@ def _run_cli(monkeypatch, argv: list[str]) -> None:
 
 
 class TestSchemaNamePersistence:
-    def test_create_persists_schema_name_and_bare_ingest_uses_it(
+    async def test_create_persists_schema_name_and_bare_ingest_uses_it(
         self, basic_db, tmp_path, monkeypatch
     ) -> None:
         """``datasources create --schema X --ingest`` persists ``schema_name``;
@@ -1349,7 +1376,7 @@ class TestSchemaNamePersistence:
         assert stored.schema_name == "openfda_rest"
 
         # A bare re-ingest against the stored config uses the persisted schema.
-        report = ingest_datasource_report(datasource=stored)
+        report = await _report(stored)
         assert _sql_tables(report).get("reports") == "openfda_rest.reports"
 
     def test_all_schemas_does_not_persist_schema_name(
@@ -1365,13 +1392,13 @@ class TestSchemaNamePersistence:
         stored = run_sync(storage.get_datasource("ds"))
         assert stored.schema_name is None
 
-    def test_explicit_schema_beats_persisted_beats_default(self, basic_db) -> None:
+    async def test_explicit_schema_beats_persisted_beats_default(self, basic_db) -> None:
         ds = _ds(basic_db, schema_name="main")
         # explicit request overrides the persisted schema_name
-        rep = ingest_datasource_report(datasource=ds, schemas=["openfda_rest"])
+        rep = await _report(ds, schemas=["openfda_rest"])
         assert _sql_tables(rep).get("reports") == "openfda_rest.reports"
         # with no request, the persisted schema_name is used (main → only in_default)
-        rep2 = ingest_datasource_report(datasource=ds)
+        rep2 = await _report(ds)
         assert set(_sql_tables(rep2)) == {"in_default"}
 
 
@@ -1391,16 +1418,16 @@ class TestEngineConflicts:
     """The shared validator rejects conflicts at EVERY engine entry point."""
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
-    def test_report_rejects_conflicts(self, basic_db, kwargs) -> None:
+    async def test_report_rejects_conflicts(self, basic_db, kwargs) -> None:
         ds = _ds(basic_db)
         with pytest.raises(ValueError):
-            ingest_datasource_report(datasource=ds, **kwargs)
+            await _report(ds, **kwargs)
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
-    def test_ingest_datasource_rejects_conflicts(self, basic_db, kwargs) -> None:
+    async def test_ingest_datasource_rejects_conflicts(self, basic_db, kwargs) -> None:
         ds = _ds(basic_db)
         with pytest.raises(ValueError):
-            ingest_datasource(datasource=ds, **kwargs)
+            await _ingest(ds, **kwargs)
 
     @pytest.mark.parametrize("kwargs", _CONFLICTS)
     async def test_idempotent_rejects_conflicts(self, basic_db, tmp_path, kwargs) -> None:
@@ -1408,7 +1435,7 @@ class TestEngineConflicts:
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
         with pytest.raises(ValueError):
-            await ingest_datasource_idempotent(datasource=ds, storage=storage, **kwargs)
+            await _idempotent(datasource=ds, storage=storage, **kwargs)
 
 
 class TestRestParity:
@@ -1500,8 +1527,9 @@ class TestMcpParity:
     async def test_show_tables_does_not_sweep_non_default_schemas(self, basic_db, tmp_path) -> None:
         """MCP ``datasources show``'s table listing routes through scope
         resolution, so DuckDB no longer sweeps every schema (§3.9)."""
-        # DEV-1750: _fetch_tables returns IngestableObjects (name + kind).
-        objects, err = _fetch_tables(ds=_ds(basic_db), schema_name=None)
+        # _fetch_tables returns IngestableObjects (name + kind).
+        async with _client(_ds(basic_db)) as client:
+            objects, err = await _fetch_tables(client, schema_name=None)
         assert err is None
         assert [o.name for o in objects] == ["in_default"]       # not [..., "reports"]
 
@@ -1533,14 +1561,14 @@ class TestCliArgumentParsing:
 
 
 class TestUnqualifiedNonRegression:
-    def test_sqlite_ingest_stays_unqualified(self, tmp_path) -> None:
+    async def test_sqlite_ingest_stays_unqualified(self, tmp_path) -> None:
         db = str(tmp_path / "app.db")
         with transaction(db) as con:
             con.executescript("CREATE TABLE orders(id INTEGER PRIMARY KEY, amount REAL);")
         ds = DatasourceConfig(name="s", type="sqlite", database=db)
-        report = ingest_datasource_report(datasource=ds)
+        report = await _report(ds)
         assert _sql_tables(report) == {"orders": "orders"}
 
-    def test_duckdb_default_schema_stays_unqualified(self, basic_db) -> None:
-        report = ingest_datasource_report(datasource=_ds(basic_db))
+    async def test_duckdb_default_schema_stays_unqualified(self, basic_db) -> None:
+        report = await _report(_ds(basic_db))
         assert _sql_tables(report) == {"in_default": "in_default"}

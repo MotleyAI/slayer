@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import sqlalchemy as sa
+from collections.abc import Callable
+
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 from sqlglot.errors import SqlglotError
@@ -11,8 +12,8 @@ from slayer.core.enums import DataType
 from slayer.engine.ingestion import introspect_table_columns
 from slayer.engine.schema_scope import live_name, table_live_parts, table_schema_ref
 from slayer.importers.physical import PhysicalIndex, live_exact_name
-from slayer.sql.client import CATEGORY_DATA_TYPES, probe_columns_sync, render_type_probe
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
+from slayer.sql.client import ResultColumnType, SqlClient, render_type_probe
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import slayer_type_of
 from slayer.sql.render.parse import parse_expression, parse_query, parse_table
 
@@ -78,103 +79,151 @@ def _shown(typed: Typed) -> str:
     return f"{typed[0].value}<{typed[1].value}>" if typed[1] is not None else typed[0].value
 
 
-class LiveSource:
-    """A source's live column types, and a probe for an expression's type over it."""
+#: Conversion passes ``LiveDatasource.collect`` runs to discover the sources and probes conversion asks for.
+MAX_COLLECT_PASSES = 8
 
-    def __init__(self, *, engine: sa.Engine, data_source: str, db_type: str | None, dialect: str | None,
-                 sql_table: str | None = None, sql: str | None = None) -> None:
-        self.engine = engine
-        self.data_source = data_source
-        self.db_type = db_type or engine.dialect.name
-        self.dialect = dialect
-        self._target = dialect_for_ds_type(db_type) if db_type else dialect_for_sa_backend(engine.dialect.name)
-        self._source: SqlDialect = get_dialect(dialect) if dialect in SQLGLOT_NAMES else self._target
-        if sql_table:
-            table = parse_table(name=sql_table, dialect=self._source)
-            self._relation: Expression = table
-            found = self._reflect(table)
-        else:
-            query = parse_query(sql=sql or "", target_dialect=self._target, parse_dialect=self._source)
-            self._relation = query.subquery("_slayer_src")
-            found = self._described()
+_PENDING = "the source is being read"
+
+SourceKey = tuple[str | None, str | None]
+
+
+def _typed(found: ResultColumnType) -> Typed:
+    if found.type is DataType.ARRAY:
+        return DataType.ARRAY, found.element_type or DataType.UNKNOWN
+    return found.type, None
+
+
+class LiveSource:
+    """A source's collected live column types, and its expressions' collected probe types; never reads the database."""
+
+    def __init__(self, *, owner: LiveDatasource, key: SourceKey, relation: Expression,
+                 found: list[tuple[str, ResultColumnType]], target: SqlDialect, source: SqlDialect) -> None:
+        self._owner = owner
+        self.key = key
+        self.relation = relation
+        self.target = target
+        self.source = source
         # Live column names in SQLAlchemy's spelling, its quote flag kept.
         self.names: list[str] = [name for name, _ in found]
-        self.columns: dict[str, Typed] = dict(found)
-        self._index = PhysicalIndex([], dialect=self._source.sqlglot_name, live=self.names)
-        self._by_exact = {live_exact_name(name, dialect=self._source): typed for name, typed in found}
-
-    def _reflect(self, table: exp.Table) -> list[tuple[str, Typed]]:
-        *qualifiers, name = table_live_parts(table)
-        ref = table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
-                               schema=qualifiers[-1] if qualifiers else None, sa_engine=self.engine)
-        columns = introspect_table_columns(sa_engine=self.engine, inspector=sa.inspect(self.engine),
-                                           table_name=name, ref=ref)
-        if not columns:
-            raise ValueError(f"table {table.sql(dialect=self._source.sqlglot_name)} was not found")
-        return [(live_name(c.name, quoted=c.quoted),
-                 (c.type, (c.element_type or DataType.UNKNOWN) if c.type is DataType.ARRAY else None))
-                for c in columns]
-
-    def _probed(self, query: exp.Select) -> dict[str, Typed]:
-        """Each column of ``query``: the driver's type name where it gives one, else its type category."""
-        out: dict[str, Typed] = {}
-        for col, found in probe_columns_sync(render_type_probe(query, dialect=self._target), engine=self.engine,
-                                             db_type=self.db_type, datasource_name=self.data_source).items():
-            named = declared_type(found.type_name, dialect=self.dialect) if found.type_name else None
-            out[col] = named or (CATEGORY_DATA_TYPES[found.category],
-                                 DataType.UNKNOWN if found.category == "list" else None)
-        return out
-
-    def _described(self) -> list[tuple[str, Typed]]:
-        """The source query's columns, named as SQLAlchemy would reflect them."""
-        sa_dialect = self.engine.dialect
-        return [(sa_dialect.normalize_name(name) if sa_dialect.requires_name_normalize else name, typed)
-                for name, typed in self._probed(exp.select("*").from_(self._relation.copy())).items()]
+        self.result_types: dict[str, ResultColumnType] = dict(found)
+        self.columns: dict[str, Typed] = {name: _typed(t) for name, t in found}
+        self._index = PhysicalIndex([], dialect=source.sqlglot_name, live=self.names)
+        self._by_exact = {live_exact_name(name, dialect=source): _typed(t) for name, t in found}
 
     def column(self, physical: exp.Identifier | str) -> Typed | None:
         """The live type of the one physical column ``physical`` names; ``None`` for none or several."""
         found = self._index.live_names(exp.to_identifier(physical) if isinstance(physical, str) else physical)
         return self._by_exact[found[0]] if len(found) == 1 else None
 
+    def probed(self, expr: str) -> ResultColumnType | None:
+        """``expr``'s collected probe type over the source; ``None`` when not (yet) collected or unprobeable."""
+        return self._owner.probed(self, expr)
+
     def probe(self, expr: str) -> Typed | None:
         """``expr``'s type from a zero-row probe over the source; a list's elements are ``UNKNOWN``."""
-        try:
-            value = parse_expression(sql=expr, target_dialect=self._target, parse_dialect=self._source)
-            types = self._probed(exp.select(exp.paren(value).as_("_slayer_probe")).from_(self._relation.copy()))
-        except Exception:  # noqa: BLE001 — a probe is best-effort
+        found = self.probed(expr)
+        if found is None:
             return None
-        typed = next(iter(types.values()), None)
-        return (DataType.ARRAY, DataType.UNKNOWN) if typed is not None and typed[0] is DataType.ARRAY else typed
+        return (DataType.ARRAY, DataType.UNKNOWN) if found.type is DataType.ARRAY else (found.type, None)
 
 
 class LiveDatasource:
-    """An importer's datasource: each source's live schema, the connection tried at most once."""
+    """An importer's datasource: each source's live schema and probes, read by ``collect`` before a pure convert."""
 
-    def __init__(self, *, engine: sa.Engine | None, offline_reason: str | None, data_source: str,
-                 db_type: str | None, dialect: str | None) -> None:
-        self.engine = engine
+    def __init__(self, *, offline_reason: str | None, data_source: str, db_type: str | None,
+                 dialect: str | None) -> None:
         self.data_source = data_source
         self.db_type = db_type
         self.dialect = dialect
-        self._offline = None if engine is not None else offline_reason or "no datasource connection was given"
-        self._tried = False
-
-    def _reachable(self, engine: sa.Engine) -> bool:
-        if not self._tried:
-            self._tried = True
-            try:
-                engine.connect().close()
-            except Exception as exc:  # noqa: BLE001 — an unreachable datasource still imports
-                self._offline = f"datasource {self.data_source!r} could not be reached: {type(exc).__name__}"
-        return self._offline is None
+        self._offline: str | None = offline_reason or "no datasource connection was given"
+        self._sources: dict[SourceKey, LiveSource | str] = {}
+        self._probes: dict[tuple[SourceKey, str], ResultColumnType | None] = {}
+        self._wanted_sources: set[SourceKey] = set()
+        self._wanted_probes: set[tuple[SourceKey, str]] = set()
+        self._discovering = False
 
     def source(self, *, sql_table: str | None = None, sql: str | None = None) -> LiveSource | str:
         """The source's live schema, or why types are not checked against the database."""
-        engine = self.engine
-        if engine is None or not self._reachable(engine):
-            return self._offline or "no datasource connection was given"
+        key: SourceKey = (sql_table, None) if sql_table else (None, sql)
+        found = self._sources.get(key)
+        if found is not None:
+            return found
+        if self._discovering:
+            self._wanted_sources.add(key)
+            return _PENDING
+        return self._offline or f"the source was not read from datasource {self.data_source!r}"
+
+    def probed(self, source: LiveSource, expr: str) -> ResultColumnType | None:
+        """``expr``'s collected probe type over ``source`` (asked for while discovering)."""
+        key = (source.key, expr)
+        if key not in self._probes and self._discovering:
+            self._wanted_probes.add(key)
+        return self._probes.get(key)
+
+    async def collect(self, *, client: SqlClient, convert: Callable[[], object]) -> None:
+        """Read through ``client`` each source and probe ``convert`` asks for, re-running it until it asks for
+        nothing new; an unreachable datasource leaves every source offline."""
         try:
-            return LiveSource(engine=engine, data_source=self.data_source, db_type=self.db_type, dialect=self.dialect,
-                              sql_table=sql_table, sql=sql)
+            await client.ping()
+        except Exception as exc:  # noqa: BLE001 — an unreachable datasource still imports
+            self._offline = f"datasource {self.data_source!r} could not be reached: {type(exc).__name__}"
+            return
+        self._offline = None
+        self._discovering = True
+        try:
+            for _ in range(MAX_COLLECT_PASSES):
+                self._wanted_sources.clear()
+                self._wanted_probes.clear()
+                convert()
+                sources = self._wanted_sources - self._sources.keys()
+                probes = self._wanted_probes - self._probes.keys()
+                if not sources and not probes:
+                    break
+                for key in sorted(sources, key=str):
+                    self._sources[key] = await self._read(client=client, key=key)
+                for probe in sorted(probes, key=str):
+                    self._probes[probe] = await self._probe(client=client, key=probe)
+        finally:
+            self._discovering = False
+
+    def _dialects(self, client: SqlClient) -> tuple[SqlDialect, SqlDialect]:
+        target = dialect_for_ds_type(self.db_type or client.datasource.type)
+        return target, get_dialect(self.dialect) if self.dialect in SQLGLOT_NAMES else target
+
+    async def _read(self, *, client: SqlClient, key: SourceKey) -> LiveSource | str:
+        sql_table, sql = key
+        target, source = self._dialects(client)
+        try:
+            if sql_table:
+                table = parse_table(name=sql_table, dialect=source)
+                *qualifiers, name = table_live_parts(table)
+                ref = await table_schema_ref(catalog=qualifiers[-2] if len(qualifiers) > 1 else None,
+                                             schema=qualifiers[-1] if qualifiers else None, client=client)
+                columns = await introspect_table_columns(client=client, table_name=name, ref=ref)
+                if not columns:
+                    raise ValueError(f"table {table.sql(dialect=source.sqlglot_name)} was not found")
+                relation: Expression = table
+                found = [(live_name(c.name, quoted=c.quoted),
+                          ResultColumnType(type=c.type, element_type=c.element_type, db_type=c.db_type))
+                         for c in columns]
+            else:
+                query = parse_query(sql=sql or "", target_dialect=target, parse_dialect=source)
+                relation = query.subquery("_slayer_src")
+                # The driver's result names are in SQLAlchemy's spelling already.
+                found = list((await client.get_result_column_types(
+                    render_type_probe(exp.select("*").from_(relation.copy()), dialect=target))).items())
         except Exception as exc:  # noqa: BLE001 — an unreadable source still imports
             return f"the source could not be read from datasource {self.data_source!r}: {type(exc).__name__}"
+        return LiveSource(owner=self, key=key, relation=relation, found=found, target=target, source=source)
+
+    async def _probe(self, *, client: SqlClient, key: tuple[SourceKey, str]) -> ResultColumnType | None:
+        live = self._sources.get(key[0])
+        if not isinstance(live, LiveSource):
+            return None
+        try:
+            value = parse_expression(sql=key[1], target_dialect=live.target, parse_dialect=live.source)
+            query = exp.select(exp.paren(value).as_("_slayer_probe")).from_(live.relation.copy())
+            types = await client.get_result_column_types(render_type_probe(query, dialect=live.target))
+        except Exception:  # noqa: BLE001 — a probe is best-effort
+            return None
+        return next(iter(types.values()), None)

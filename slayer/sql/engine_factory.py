@@ -83,6 +83,22 @@ def _take_evictions_over_limit() -> list[sa.Engine]:
     return evicted
 
 
+def _sync_connection_string(datasource: DatasourceConfig) -> str:
+    """The datasource's URL with an async-only driver moved to the type's default sync driver."""
+    connection_string = datasource.get_connection_string()
+    facts = dialect_for_ds_type(datasource.type).driver_facts(datasource.type)
+    if facts.async_driver is None or facts.sync_driver is None:
+        return connection_string
+    try:
+        url = make_url(connection_string)
+    except ArgumentError:
+        return connection_string
+    backend = url.get_backend_name()
+    if backend not in facts.url_backends or url.get_driver_name() != facts.async_driver:
+        return connection_string
+    return url.set(drivername=f"{backend}+{facts.sync_driver}").render_as_string(hide_password=False)
+
+
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
     """Cache identity: URL + runtime fields + credentials (shared with ``_sql_client_cache_key``)."""
     return (
@@ -93,10 +109,18 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
 
 
 def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
-    """Cache key for ``SlayerQueryEngine._sql_clients`` — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
+    """A datasource's connection identity — delegates to :func:`_cache_key` so a memoized client can't disagree with the engine's creds."""
     return _cache_key(
         datasource=datasource, connection_string=datasource.get_connection_string(),
     )
+
+
+ClientCacheKey = tuple[str, EngineCacheKey]
+
+
+def client_cache_key(datasource: DatasourceConfig) -> ClientCacheKey:
+    """A query engine's client-cache key: datasource name plus connection identity."""
+    return (datasource.name, _sql_client_cache_key(datasource))
 
 
 def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
@@ -184,7 +208,7 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
 
 
 def build_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
-    """The one in-memory SQLite engine builder (DEV-1943 D2).
+    """The one in-memory SQLite engine builder.
 
     ``StaticPool`` + ``check_same_thread=False`` pin one connection shared across
     threads, so the in-memory DB survives across ``asyncio`` worker threads and
@@ -222,7 +246,7 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     """Return a cached engine, building on a miss. The cap is re-applied on hits too, so a lowered ``SLAYER_MAX_CACHED_ENGINES`` takes effect next call."""
     # Snapshot first: a credential rotation mid-build would cache an engine under a wrong fingerprint.
     snapshot = datasource.model_copy()
-    connection_string = snapshot.get_connection_string()
+    connection_string = _sync_connection_string(snapshot)
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         cached = _engine_cache.get(cache_key)
@@ -272,7 +296,7 @@ def release_idle(engine: sa.Engine) -> None:
 def invalidate_engine(datasource: DatasourceConfig) -> bool:
     """Drop and dispose the cached engine (returns whether one was cached) — creds are baked in at construction, so only eviction lets ``get_engine`` rebuild after a rotation/revocation."""
     snapshot = datasource.model_copy()
-    connection_string = snapshot.get_connection_string()
+    connection_string = _sync_connection_string(snapshot)
     cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
     with _cache_lock:
         evicted = _engine_cache.pop(cache_key, None)

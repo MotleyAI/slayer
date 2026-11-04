@@ -22,11 +22,13 @@ from slayer.cube.models import CubeProject
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.importers.column_types import LiveSource
+from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
+from slayer.sql.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
+from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import column, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine
@@ -177,7 +179,9 @@ def _schemas(live: Live) -> None:
 
 def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
     project = CubeProject.model_validate({"cubes": list(cubes)})
-    result = CubeToSlayerConverter(project=project, data_source=DS, sa_engine=live.engine).convert()
+    converter = CubeToSlayerConverter(project=project, data_source=DS)
+    run_over_caller_engine(live.engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+    result = converter.convert()
     return {m.name: m for m in result.models}, [i.message for i in result.report.issues]
 
 
@@ -204,8 +208,8 @@ def _typed(model: SlayerModel, name: str) -> DataType:
 
 
 def _probed(live: Live) -> DataType:
-    """An integer probe's type: ``INT`` where the driver names types (DuckDB), else its numeric category."""
-    return DataType.INT if live.engine.dialect.name == "duckdb" else DataType.DOUBLE
+    """An integer probe's type: ``INT`` on every backend (the typed probe certifies integers)."""
+    return DataType.INT
 
 
 def _items_cube(sql_table: str) -> dict[str, Any]:
@@ -366,23 +370,81 @@ def test_source_sql_the_importer_cannot_read(live: Live, source_sql: str) -> Non
 
 # ── LiveSource ────────────────────────────────────────────────────────────
 
-def _source(live: Live, *, sql_table: str | None = None, sql: str | None = None) -> LiveSource:
-    name = live.engine.dialect.name
-    return LiveSource(engine=live.engine, data_source=DS, db_type=name,
-                      dialect="postgres" if name == "postgresql" else name, sql_table=sql_table, sql=sql)
+#: The connectivity check ``LiveDatasource.collect`` runs first.
+_PING = "SELECT 1"
+
+
+class _ProbeRecorder(DelegatingSqlClient):
+    """Forwards everything, recording each type probe it is handed."""
+
+    def __init__(self, *, inner: SqlClient, probes: list[TypeProbe]) -> None:
+        super().__init__(inner=inner)
+        self._probes = probes
+
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        assert isinstance(sql, TypeProbe)
+        self._probes.append(sql)
+        return await self.inner.get_result_column_types(sql)
+
+
+def _probe_statements(live: Live, probe: TypeProbe, *, columns: list[str]) -> list[str]:
+    """``probe`` run verbatim, followed on SQLite by exactly its integer-certifying census."""
+    census = probe.census_sql(columns, dialect=SqliteDialect()) if live.engine.dialect.name == "sqlite" else None
+    return [probe.sql, *([census] if census is not None else [])]
+
+
+class _Collected:
+    """One source read through ``LiveDatasource.collect`` over the live engine, a probe collected on demand."""
+
+    def __init__(self, live: Live, *, sql_table: str | None, sql: str | None) -> None:
+        self._live, self._sql_table, self._sql = live, sql_table, sql
+        #: The type probes handed to the client, in order.
+        self.probes: list[TypeProbe] = []
+
+    def read(self) -> LiveSource | str:
+        """The collected source, or why it could not be read."""
+        return self._read(None)
+
+    def _read(self, expr: str | None) -> LiveSource | str:
+        name = self._live.engine.dialect.name
+        datasource = LiveDatasource(offline_reason=None, data_source=DS, db_type=name,
+                                    dialect="postgres" if name == "postgresql" else name)
+
+        def convert() -> None:
+            found = datasource.source(sql_table=self._sql_table, sql=self._sql)
+            if expr is not None and isinstance(found, LiveSource):
+                found.probe(expr)
+
+        run_over_caller_engine(self._live.engine, data_source=DS, work=lambda client: datasource.collect(
+            client=_ProbeRecorder(inner=client, probes=self.probes), convert=convert))
+        return datasource.source(sql_table=self._sql_table, sql=self._sql)
+
+    def probe(self, expr: str) -> tuple[DataType, DataType | None] | None:
+        found = self._read(expr)
+        return found.probe(expr) if isinstance(found, LiveSource) else None
+
+    def column(self, physical: str) -> tuple[DataType, DataType | None] | None:
+        found = self._read(None)
+        return found.column(physical) if isinstance(found, LiveSource) else None
+
+
+def _source(live: Live, *, sql_table: str | None = None, sql: str | None = None) -> _Collected:
+    return _Collected(live, sql_table=sql_table, sql=sql)
 
 
 def test_probe_over_a_table_source_selects_from_that_table(live: Live) -> None:
     source = _source(live, sql_table=live.mixed)
     assert source.probe("qty * 2") == (_probed(live), None)
-    (probe,) = live.ran("_slayer_probe")
+    (probe,) = [p for p in source.probes if "_slayer_probe" in p]
+    assert live.ran("_slayer_probe") == _probe_statements(live, probe, columns=["_slayer_probe"])
     assert live.mixed in probe
 
 
 def test_probe_over_a_sql_source_selects_from_its_subquery(live: Live) -> None:
     source = _source(live, sql=f"SELECT qty FROM {live.mixed};")
     assert source.probe("qty * 2") == (_probed(live), None)
-    (probe,) = live.ran("_slayer_probe")
+    (probe,) = [p for p in source.probes if "_slayer_probe" in p]
+    assert live.ran("_slayer_probe") == _probe_statements(live, probe, columns=["_slayer_probe"])
     assert "_slayer_src" in probe
     assert live.mixed in probe
 
@@ -402,14 +464,17 @@ def test_statement_keyword_function_still_probes(live: Live) -> None:
 def test_sql_source_is_described_by_one_statement(live: Live) -> None:
     source = _source(live, sql=f"SELECT qty, placed_at FROM {live.mixed}")
     assert source.column("qty") in ((DataType.INT, None), (DataType.DOUBLE, None))
-    assert len([s for s in live.statements if s.lstrip().upper().startswith("SELECT")]) == 1
+    selects = [s for s in live.statements if s.lstrip().upper().startswith("SELECT") and s != _PING]
+    (describe,) = source.probes
+    assert selects == _probe_statements(live, describe, columns=["qty", "placed_at"])
 
 
 @pytest.mark.parametrize("sql", ["SELECT ((( not valid", 'DELETE FROM "order" RETURNING id'])
 def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Live, sql: str) -> None:
-    with pytest.raises((NotReadOnlyQueryError, ParseError)):  # LiveDatasource.source turns either into a reason
-        _source(live, sql=sql)
-    assert live.statements == []
+    found = _source(live, sql=sql).read()
+    assert isinstance(found, str) and "could not be read" in found
+    assert found.endswith((NotReadOnlyQueryError.__name__, ParseError.__name__)), found
+    assert [s for s in live.statements if s != _PING] == []
 
 
 # ── Postgres folds unquoted identifiers (spec: importers/meaning-preservation, importers/dbt-import) ──

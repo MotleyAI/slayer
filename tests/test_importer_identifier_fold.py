@@ -25,8 +25,9 @@ from slayer.cube.report import CubeConversionResult
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.engine.ingestion import IntrospectedColumn
+from slayer.engine.query_engine import run_over_caller_engine
 from slayer.importers import column_types
-from slayer.importers.column_types import LiveSource
+from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.osi import converter as osi_converter
 from slayer.sql import engine_factory
@@ -47,7 +48,10 @@ ITEMS = {"name": "items", "sql_table": "Sales.OrderItems",
 def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.Engine | None = None,
           project: CubeProject | None = None) -> CubeConversionResult:
     project = project or CubeProject.model_validate({"cubes": list(cubes)})
-    return CubeToSlayerConverter(project=project, data_source=DS, target_dialect=dialect, sa_engine=engine).convert()
+    converter = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=dialect)
+    if engine is not None:
+        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+    return converter.convert()
 
 
 def _models(result: CubeConversionResult) -> dict[str, SlayerModel]:
@@ -362,14 +366,15 @@ def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_
 def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[dict[str, Any]] = []
 
-    def record(**kwargs: Any) -> list[IntrospectedColumn]:
+    async def record(**kwargs: Any) -> list[IntrospectedColumn]:
         seen.append(kwargs)
         return [IntrospectedColumn(name="x", type=DataType.INT)]
 
     monkeypatch.setattr(column_types, "introspect_table_columns", record)
+    datasource = LiveDatasource(offline_reason=None, data_source=DS, db_type="snowflake", dialect="snowflake")
     with disposable_engine(f"sqlite:///{tmp_path / 'live.db'}") as engine:
-        LiveSource(engine=engine, data_source=DS, db_type="snowflake", dialect="snowflake",
-                   sql_table='"lower_schema"."lower_table"')
+        run_over_caller_engine(engine, data_source=DS, work=lambda client: datasource.collect(
+            client=client, convert=lambda: datasource.source(sql_table='"lower_schema"."lower_table"')))
     (call,) = seen
     assert (getattr(call["table_name"], "quote", None), getattr(call["ref"].token, "quote", None)) == (True, True)
     assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'

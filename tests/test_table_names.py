@@ -5,12 +5,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 import sqlglot
-from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
@@ -20,11 +19,13 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
     IntrospectedColumn, _columns_to_model, ingest_datasource_idempotent, list_ingestable_objects,
 )
+from slayer.engine.introspect_utils import table_location
 from slayer.engine.schema_drift import _list_live_objects
 from slayer.engine.schema_scope import SchemaRef, is_quoted_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.physical import PhysicalIndex
 from slayer.sql import engine_factory
+from slayer.sql.client import DelegatingSqlClient, ObjectListing, SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import denoted_name, render_table_name
 from slayer.sql.render.parse import parse_table
@@ -194,29 +195,28 @@ async def test_stored_dotted_table_name_validates_on_sqlite(tmp_path: Path) -> N
         engine_factory.invalidate_engine(ds)
 
 
-class _ReflectingInspector:
-    """Test double: an Inspector listing ``"lower_items"`` as SQLAlchemy reflects it on Snowflake."""
+class _ReflectingClient(DelegatingSqlClient):
+    """Test double: a client listing ``"lower_items"`` as SQLAlchemy reflects it on Snowflake."""
 
-    def get_table_names(self, schema: str | None = None) -> list[str]:
-        return [quoted_name("lower_items", True), "orders"]
-
-    def get_view_names(self, schema: str | None = None) -> list[str]:
-        return []
-
-    def get_materialized_view_names(self, schema: str | None = None) -> list[str]:
-        return []
+    async def list_objects(self, schema: str | None) -> ObjectListing:
+        return ObjectListing(tables=[quoted_name("lower_items", True), "orders"])
 
 
-def test_listed_objects_keep_their_quoting() -> None:
-    inspector = cast(Inspector, _ReflectingInspector())
-    objects = list_ingestable_objects(inspector=inspector, ref=SchemaRef(name="s"))
+async def test_listed_objects_keep_their_quoting() -> None:
+    datasource = DatasourceConfig(name=DS, type="snowflake")
+    client = _ReflectingClient(inner=SlayerSQLClient(datasource=datasource))
+    objects = await list_ingestable_objects(client=client, ref=SchemaRef(name="s"))
     assert [(o.name, o.quoted) for o in objects] == [("lower_items", True), ("orders", False)]
     snowflake = get_dialect("snowflake")
     assert [SchemaRef(name="s", requested="s").qualify(o.live_name, dialect=snowflake) for o in objects] == [
         's."lower_items"', "s.orders"]
-    ((_, names),) = _list_live_objects([SchemaRef(name="s")], inspector=inspector,
-                                       datasource=DatasourceConfig(name=DS, type="snowflake"))
+    ((_, names),) = await _list_live_objects([SchemaRef(name="s")], client=client, datasource=datasource)
     assert [is_quoted_name(n) for n in names] == [True, False]
+
+
+def test_table_location_keeps_the_quoting_of_its_names() -> None:
+    location = table_location(quoted_name("lower_items", True), SchemaRef(name=quoted_name("lower_schema", True)))
+    assert [is_quoted_name(n) for n in (location.name, location.schema_name)] == [True, True]
 
 
 # ── a quoted physical key reads its exact-case column ─────────────────────

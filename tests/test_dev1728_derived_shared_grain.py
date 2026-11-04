@@ -136,8 +136,8 @@ class TestForwardDerivedGrainShape:
 
     async def test_typed_derived_grain_cast_consistent_base_and_cte(self) -> None:
         """A typed non-bare derived grain (``ltv_third`` = INT arithmetic) is
-        wrapped in the SAME ``CAST(... AS INT)`` in both ``_base`` and ``_cm_*``
-        so the join-back compares identically-typed values (Codex F5)."""
+        wrapped in the SAME ``CAST(... AS BIGINT)`` in both ``_base`` and ``_cm_*``
+        so the join-back compares identically-typed values."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.ltv_third"],
@@ -147,10 +147,10 @@ class TestForwardDerivedGrainShape:
         assert_scope_closed(sql)
         base_body = _norm(_extract_cte_body(sql, r"_base"))
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
-        # Both sides CAST the expanded grain expression to INT.
-        assert "CAST(customers_v2.lifetime_value / 3.0 AS INT)" in cm_body, cm_body
-        assert "AS INT)" in base_body, base_body
-        assert "/ 3.0 AS INT)" in base_body, base_body
+        # Both sides CAST the expanded grain expression to the 64-bit INT.
+        assert "CAST(customers_v2.lifetime_value / 3.0 AS BIGINT)" in cm_body, cm_body
+        assert "AS BIGINT)" in base_body, base_body
+        assert "/ 3.0 AS BIGINT)" in base_body, base_body
 
     async def test_grain_equals_aggregate_source_derived(self) -> None:
         """The derived grain dim and the aggregate source can be the SAME derived

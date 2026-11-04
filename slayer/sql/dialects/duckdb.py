@@ -8,6 +8,7 @@ the Postgres catalog queries duckdb-engine inherits.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, ClassVar, Optional
 
 import sqlglot
@@ -27,6 +28,7 @@ from slayer.sql.dialects.base import (
     TextFn,
     anon,
     case,
+    describe_type_name_code,
     is_not_null,
     lit,
     pad_fill,
@@ -37,6 +39,7 @@ from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
     ReflectedForeignKey,
+    ResultColumnType,
     TableKeys,
     all_of,
     best_effort,
@@ -59,6 +62,10 @@ def _compact(values: Expression) -> Expression:
     return exp.Array(expressions=[exp.Comprehension(
         this=element, expression=element.copy(), iterator=values.copy(), condition=is_not_null(element.copy()),
     )])
+
+
+# DuckDB's JSON is VARCHAR-backed and comparable, unlike Postgres ``json``.
+_TYPE_NAME_OVERRIDES = {"JSON": DataType.TEXT}
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:
@@ -171,6 +178,9 @@ class DuckdbDialect(SqlDialect):
             alias=exp.TableAlias(this=exp.to_identifier("_seq"), columns=[exp.to_identifier("i")]),
         ))
 
+    def current_catalog_sql(self) -> str | None:
+        return "SELECT current_database()"
+
     def reflect_columns(
         self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,
@@ -183,11 +193,14 @@ class DuckdbDialect(SqlDialect):
         )
         return [
             column_from_type_string(
-                name=name, data_type=dtype, comment=comment,
+                name=name, data_type=dtype, comment=comment, overrides=_TYPE_NAME_OVERRIDES,
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
             )
             for name, dtype, comment in fetch(sa_engine, query, dialect=self.sqlglot_name)
         ]
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        return describe_type_name_code(description_row, overrides=_TYPE_NAME_OVERRIDES)
 
     def reflect_table_keys(
         self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature

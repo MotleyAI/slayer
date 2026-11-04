@@ -34,8 +34,9 @@ import pytest
 import slayer.mcp.server as srv
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
+from slayer.sql.engine_factory import client_cache_key
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -277,7 +278,7 @@ class TestSqlModeDriftClientReachable:
 
         await _call(server, name="validate_models", arguments={"data_source": "lite"})
 
-        key = _sql_client_cache_key(_lite_datasource(workspace / "live.db"))
+        key = client_cache_key(_lite_datasource(workspace / "live.db"))
         assert key in engine._sql_clients, (
             "sql-mode drift client not cached on the engine — aclose() can't "
             "reach it, so the pool leaks"

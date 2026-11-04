@@ -7,8 +7,12 @@ from typing import Any
 
 import pytest
 
-from slayer.sql.client import _fetch_rows
+from slayer.core.enums import DataType
+from slayer.core.models import Column
+from slayer.sql.client import _fetch_rows, _types_from_cursor
 from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.reflection import is_exact_numeric_db_type
+from slayer.sql.render.value_expr import keeps_native_type
 
 
 class _Cursor:
@@ -17,6 +21,8 @@ class _Cursor:
 
 
 class _Result:
+    returns_rows = True
+
     def __init__(self, columns: list[str], types: list[Any], rows: list[tuple[Any, ...]]) -> None:
         self.cursor = _Cursor([(c, t, None, None, None, None, True) for c, t in zip(columns, types)])
         self._columns = columns
@@ -66,3 +72,20 @@ def test_clickhouse_array_text_reads_as_a_typed_list(type_code: str, text: str, 
 def test_clickhouse_nested_arrays_stay_text() -> None:
     result = _Result(["l"], ["Array(Array(Int64))"], [("[[1],[2]]",)])
     assert _fetch_rows(result, dialect=get_dialect("clickhouse")) == [{"l": "[[1],[2]]"}]
+
+
+def test_an_untyped_cursor_column_holding_lists_is_a_list() -> None:
+    result = _Result(["l", "n"], [None, None], [(["go", "sql"], 1)])
+    types = _types_from_cursor(result, dialect=get_dialect("sqlite"))
+    assert types["l"].type is DataType.ARRAY
+    assert types["n"].type is DataType.DOUBLE
+
+
+@pytest.mark.parametrize("name", ["NUMERIC[]", "DECIMAL(10,2)[]", "ARRAY(DECIMAL(10,2))", "Array(Decimal(9,2))"])
+def test_a_numeric_list_is_not_exact_numeric(name: str) -> None:
+    assert not is_exact_numeric_db_type(name)
+
+
+def test_a_numeric_list_column_is_cast_like_any_list() -> None:
+    col = Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE, db_type="NUMERIC[]")
+    assert not keeps_native_type(col=col, dialect=get_dialect("postgres"))
