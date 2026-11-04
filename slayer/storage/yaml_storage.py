@@ -421,7 +421,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if cached is not None and cached[0] == key_before:
             return cached[1].model_copy(deep=True)
         try:
-            with open(path) as f:  # NOSONAR(S2083,S8707) — path from _model_path, which validates both components
+            with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _model_path, which validates both components; sync I/O by design
                 text = f.read()
         except FileNotFoundError:  # deleted between the stat and the open
             self._model_cache.pop(path, None)
@@ -522,7 +522,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             if cached is not None and cached[0] == key:
                 ds = cached[1]
             else:
-                with open(path) as f:  # NOSONAR(S2083) — path from _datasource_path, which validates the name
+                with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _datasource_path, which validates the name; sync I/O by design
                     data = yaml.safe_load(f)
                 data = await self._with_library_granularities_renamed(name=name, data=data)
                 ds = DatasourceConfig.model_validate(data)
