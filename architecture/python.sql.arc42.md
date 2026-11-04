@@ -109,9 +109,15 @@ flowchart TD
     owner — `engine_factory` for the engines it caches (eviction and
     `reset_cache` always dispose; `:memory:` is built by its single StaticPool
     builder, keyed per datasource), `SlayerSQLClient` for its private in-memory
-    engine (via `close()`, with a finalizer backstop). `create_engine` runs only
+    engine (via `close()`, with a finalizer backstop) and its async engines, one
+    per event loop, each released only on its own loop. `create_engine` runs only
     in the factory and the dialects' build hooks; `create_async_engine` only in
     the client's async builder. [enforced: test:tests/test_law_resource_ownership.py]
+    [enforced: test:tests/test_sql_client_event_loops.py]
+15. **One driver per client**: a client reaches its database through one driver
+    only — its caller's engine's, else its URL's (the one named, else the type's
+    default); no URL is rewritten to another driver.
+    [enforced: test:tests/test_one_driver_per_client.py]
 
 ## 4. Rationale
 

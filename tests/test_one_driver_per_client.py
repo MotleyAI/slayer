@@ -170,8 +170,9 @@ async def test_async_driver_sees_the_query_parameters_unchanged(
 def test_async_driver_execute_sync_builds_no_factory_engine(
     engines: _Engines, ds: DatasourceConfig, expected: str,
 ) -> None:
+    client = SlayerSQLClient(ds)
     with pytest.raises(_Touched):
-        SlayerSQLClient(ds).execute_sync("SELECT 1")
+        client.execute_sync("SELECT 1")
     assert set(engines.async_urls) == {_rendered(expected)}
     assert engines.factory_urls == []
 

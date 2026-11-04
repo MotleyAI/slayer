@@ -138,8 +138,9 @@ class TestAsyncEngineDisposal:
         q = SlayerQuery(
             source_model="missing", measures=["*:count"],  # type: ignore[arg-type]
         )
+        workflow = _planted_then(monkeypatch, client, fake, engine.execute(q))
         with pytest.raises(Exception):
-            engine.run_sync(_planted_then(monkeypatch, client, fake, engine.execute(q)))
+            engine.run_sync(workflow)
         fake.dispose.assert_awaited_once()
 
     def test_no_leak_across_repeated_bridges(self, workspace: Path, monkeypatch) -> None:

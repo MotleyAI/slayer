@@ -744,16 +744,16 @@ class SlayerSQLClient:
         timeout_seconds: int = 120,
     ) -> ExecutionResult:
         """Execute SQL asynchronously."""
-        return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
+        return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
 
-    async def _execute(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
+    async def _typed_execute(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
         try:
-            return await self._run_statement(sql=sql, timeout_seconds=timeout_seconds)
+            return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    async def _run_statement(
+    async def _execute(
         self,
         *,
         sql: str,
@@ -981,7 +981,7 @@ class SlayerSQLClient:
 
     async def _execute_bridged(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
         try:
-            return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
+            return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
         finally:
             await asyncio.shield(self.aclose())
 

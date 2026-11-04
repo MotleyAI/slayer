@@ -216,8 +216,9 @@ def test_missing_bundled_sync_driver_names_extra(monkeypatch) -> None:
         name="pg2", type="postgres", connection_string=f"postgresql+psycopg2://u:p@{_HOST}:5432/d",
     )
     _block_modules(monkeypatch, "psycopg2")
+    client = SlayerSQLClient(ds)
     with pytest.raises(MissingDriverError) as info:
-        SlayerSQLClient(ds).execute_sync("SELECT 1")
+        client.execute_sync("SELECT 1")
     _assert_names(info.value, ds=ds, missing="psycopg2")
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 

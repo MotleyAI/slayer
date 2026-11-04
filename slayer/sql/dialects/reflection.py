@@ -436,7 +436,7 @@ def fetch(connection: CatalogConnection | None, statement: Expression, *, dialec
 
 
 def recover(connection: CatalogConnection | None) -> None:
-    """End a failed read's transaction so the next read on ``connection`` runs (Postgres and DuckDB abort it)."""
+    """End a failed read's transaction so the next read on ``connection`` runs (Postgres aborts it)."""
     if connection is None:
         return
     try:

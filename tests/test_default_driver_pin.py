@@ -208,8 +208,9 @@ async def test_client_connects_with_psycopg_whatever_sqlalchemys_default() -> No
 async def test_missing_default_driver_names_extra(monkeypatch) -> None:
     ds = DatasourceConfig(name="pg_ds", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
     monkeypatch.setitem(sys.modules, "psycopg", None)
+    client = SlayerSQLClient(ds)
     with pytest.raises(MissingDriverError) as info:
-        await SlayerSQLClient(ds).execute("SELECT 1")
+        await client.execute("SELECT 1")
     assert info.value.missing == "psycopg"
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 
