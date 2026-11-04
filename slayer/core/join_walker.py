@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError
 from slayer.core.keys import ColumnKey, ColumnSqlKey, ColumnTypeFn, ValueKey, source_anchor_path
-from slayer.core.models import ModelJoin, SlayerModel, is_key_set_unique, join_key_error
+from slayer.core.models import Column, ModelJoin, SlayerModel, is_key_set_unique, join_key_error
 from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_MODEL, axis_column, is_spine, spine_joins
 
 __all__ = [
@@ -640,18 +640,25 @@ def resolved_terminal(
     return _terminal(root=root, path=path, models_by_name=models_by_name, revisits=True)
 
 
+def model_column(
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel], key: ValueKey,
+) -> Optional[Column]:
+    """The column leaf ``key`` names, rooted at ``model``; ``None`` for anything unresolvable."""
+    if isinstance(key, ColumnSqlKey):
+        owner = model if key.model == model.name else models_by_name.get(key.model)
+        leaf = key.column_name
+    elif isinstance(key, ColumnKey):
+        owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
+        leaf = key.leaf
+    else:
+        return None
+    return owner.get_column(leaf) if owner is not None else None
+
+
 def model_column_type(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> ColumnTypeFn:
     """Declared types of column leaves rooted at ``model``; ``None`` for anything unresolvable."""
     def column_type(key: ValueKey) -> Optional[DataType]:
-        if isinstance(key, ColumnSqlKey):
-            owner = model if key.model == model.name else models_by_name.get(key.model)
-            leaf = key.column_name
-        elif isinstance(key, ColumnKey):
-            owner = resolved_terminal(root=model, path=key.path, models_by_name=models_by_name)
-            leaf = key.leaf
-        else:
-            return None
-        col = owner.get_column(leaf) if owner is not None else None
+        col = model_column(model=model, models_by_name=models_by_name, key=key)
         return col.type if col is not None else None
     return column_type
 

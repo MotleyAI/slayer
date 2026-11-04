@@ -23,7 +23,7 @@ from slayer.engine.cardinality import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.pg_facade.connection import PgConnection
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
+from slayer.sql.client import ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1840_fixtures import dev1840_models, q
@@ -90,10 +90,10 @@ class TestStatementsReachTheFactoryClient:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
-            types = await engine.get_column_types("orders", data_source=DS_NAME)
+            types = await engine.get_result_column_types("orders", data_source=DS_NAME)
         assert guard.attempts == []
         assert types
-        assert "get_column_types" in factory.clients[0].ops()
+        assert "get_result_column_types" in factory.clients[0].ops()
 
     async def test_cache_refresh_scan_reaches_the_factory_client(self, shop: Shop) -> None:
         factory = GatewayFactory()
@@ -180,8 +180,8 @@ class ProfileClient:
         self.executed.append(sql)
         return ExecutionResult(rows=[])
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        self.ops.append("get_column_types")
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        self.ops.append("get_result_column_types")
         return {}
 
     async def _no_metadata(self, *_args: Any, **_kwargs: Any) -> Any:

@@ -23,7 +23,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.ingestion import _is_id_column
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
@@ -429,7 +429,8 @@ class TestMdCodeSpan:
         assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
-            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+            model=model, num_rows=3,
+            measure_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
         assert "avg(amount)" in formulas
@@ -1328,7 +1329,7 @@ class TestBuildSampleQueryArgs:
         opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
         assert _choose_sample_agg(opaque, measure_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.
-        assert _choose_sample_agg(opaque, measure_types={"loc": "string"}) is None
+        assert _choose_sample_agg(opaque, measure_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
 
         model = SlayerModel(
             name="places", sql_table="places", data_source="ds",
@@ -2939,7 +2940,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2959,7 +2960,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2982,7 +2983,7 @@ class TestDataProfileRetryScope:
             def __init__(self) -> None:
                 self.dimensioned_seen = False
 
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):

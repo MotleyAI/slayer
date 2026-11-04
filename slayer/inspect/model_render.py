@@ -25,6 +25,7 @@ from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
+from slayer.sql.client import ResultColumnType
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
@@ -222,7 +223,7 @@ def _choose_sample_dims(
 def _choose_sample_agg(
     column: Column,
     *,
-    measure_types: dict[str, str],
+    measure_types: dict[str, ResultColumnType],
 ) -> str | None:
     """Pick a sample aggregation for ``column``, or ``None`` to skip it.
 
@@ -238,8 +239,7 @@ def _choose_sample_agg(
         safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
         return safe if safe else allowed[0]
     inferred = measure_types.get(column.name)
-    inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
-    if inferred_norm and inferred_norm != "number":
+    if inferred is not None and inferred.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
     if column.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
@@ -249,7 +249,7 @@ def _choose_sample_agg(
 def _build_sample_query_args(
     model: SlayerModel,
     num_rows: int,
-    measure_types: dict[str, str] | None = None,
+    measure_types: dict[str, ResultColumnType] | None = None,
 ) -> dict[str, Any]:
     """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier column."""
     measure_types = measure_types or {}
@@ -611,9 +611,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         }
 
     # Informs the sample query's avg vs count_distinct choice.
-    measure_types: dict[str, str] = {}
+    measure_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        measure_types = await engine.get_column_types(
+        measure_types = await engine.get_result_column_types(
             model_name=model.name,
             data_source=model.data_source or None,
         )

@@ -8,6 +8,7 @@ the Postgres catalog queries duckdb-engine inherits.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import sqlglot
@@ -15,11 +16,13 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import SqlDialect, describe_type_name_code
 from slayer.sql.dialects.reflection import (
     CatalogEngine,
     ReflectedColumn,
     ReflectedForeignKey,
+    ResultColumnType,
     TableKeys,
     all_of,
     best_effort,
@@ -31,6 +34,10 @@ from slayer.sql.dialects.reflection import (
     table_function,
     without_primary_key,
 )
+
+
+# DuckDB's JSON is VARCHAR-backed and comparable, unlike Postgres ``json``.
+_TYPE_NAME_OVERRIDES = {"JSON": DataType.TEXT}
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:
@@ -95,9 +102,12 @@ class DuckdbDialect(SqlDialect):
             .order_by(col("column_index"))
         )
         return [
-            column_from_type_string(name=name, data_type=dtype, comment=comment)
+            column_from_type_string(name=name, data_type=dtype, comment=comment, overrides=_TYPE_NAME_OVERRIDES)
             for name, dtype, comment in fetch(sa_engine, query, dialect=self.sqlglot_name)
         ]
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        return describe_type_name_code(description_row, overrides=_TYPE_NAME_OVERRIDES)
 
     def reflect_table_keys(
         self, *, sa_engine: CatalogEngine | None, inspector: Any,  # NOSONAR(S1172) — hook signature

@@ -34,6 +34,9 @@ PINNED: frozenset[tuple[str, str]] = frozenset({
     ("slayer/storage/base.py", "SLAYER_MODELS_DIR"),
     ("slayer/mcp/server.py", "inspect_model"),
     ("slayer/core/errors.py", ".identifier"),
+    ("slayer/sql/client.py", "get_column_types_sync()"),
+    ("slayer/sql/client.py", "SlayerSQLClient.get_column_types()"),
+    ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types()"),
 })
 
 
