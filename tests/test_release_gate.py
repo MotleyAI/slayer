@@ -224,6 +224,14 @@ def test_passing_fake_install_runs_every_leg_with_every_readme_query(
         assert all(q in recorded for q in readme), leg
 
 
+def test_long_path_sh_trampoline_entry_point_passes(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour())
+    body = slayer.read_text(encoding="utf-8").split("\n", 1)[1]
+    slayer.write_text(f"#!/bin/sh\n'''exec' '{sys.executable}' \"$0\" \"$@\"\n' '''\n{body}", encoding="utf-8")
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_cli_and_mcp_legs_use_separate_storage(tmp_path: Path, checkout: Path) -> None:
     slayer = _fake_slayer(tmp_path, Behaviour())
     result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout)

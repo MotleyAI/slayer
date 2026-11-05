@@ -23,6 +23,12 @@ jobs:
       - name: Build package
         run: poetry build
 
+      - name: Gate the built wheel
+        uses: ./.github/actions/wheel-gate
+        timeout-minutes: 30
+        with:
+          python-version: "3.12"
+
       - name: Publish to TestPyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

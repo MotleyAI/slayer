@@ -19,18 +19,18 @@
 
 ## 2. Shared extractor with alt text
 
-- [ ] 2.1 Move the extraction half of `tests/_doc_examples.py` (models, fence parser, literal scanners,
+- [x] 2.1 Move the extraction half of `tests/_doc_examples.py` (models, fence parser, literal scanners,
   `extract_queries`, `parse_page`, `load_page`, `in_scope_pages`, `REPO_ROOT`, `IN_SCOPE_GLOBS`) into
   `scripts/doc_examples.py` (Pydantic, no `slayer` import); `tests/_doc_examples.py` keeps
   `query_failure`, `reference_failure`, `page_failures` and imports the rest. Verify: the existing
   doc-example tests pass unchanged.
-- [ ] 2.2 `parse_page` reads Markdown image alt text (balanced brackets after `![`) as block-like units
+- [x] 2.2 `parse_page` reads Markdown image alt text (balanced brackets after `![`) as block-like units
   with the code-block rules (illustrative marker, `not-a-query` comment, `source_model` guard). Verify:
   task 1.1 tests and `test_documented_query_returns_rows` (now including the README alt-text query) pass.
 
 ## 3. Gate script
 
-- [ ] 3.1 `scripts/release_gate.py` (`python -m scripts.release_gate --slayer <bin> --wheel <path>`):
+- [x] 3.1 `scripts/release_gate.py` (`python -m scripts.release_gate --slayer <bin> --wheel <path>`):
   clean child env, provenance checks (wheel-metadata version vs `slayer --version`, installed package
   and `sys.path` outside the checkout), README queries via `scripts.doc_examples` (zero fails), CLI leg,
   MCP stdio leg with payload validation, timeouts, one `release gate: <check>: <reason>` line per
@@ -38,16 +38,16 @@
 
 ## 4. Action and workflows
 
-- [ ] 4.1 `.github/actions/wheel-gate/action.yml`: `astral-sh/setup-uv`, resolve exactly one
+- [x] 4.1 `.github/actions/wheel-gate/action.yml`: `astral-sh/setup-uv`, resolve exactly one
   `dist/*.whl` to an absolute path, `uv tool install --python <job python>
   "motley-slayer[all] @ file://<abs>"` into isolated `UV_TOOL_DIR` / `UV_TOOL_BIN_DIR` under
   `$RUNNER_TEMP`, then `poetry run python -m scripts.release_gate --slayer <bin>/slayer --wheel <abs>`.
   Verify: the action YAML parses and task 1.3 passes once wired in.
-- [ ] 4.2 Call `./.github/actions/wheel-gate` in `publish.yml` and `publish-test.yml` between "Build
+- [x] 4.2 Call `./.github/actions/wheel-gate` in `publish.yml` and `publish-test.yml` between "Build
   package" and the upload. Verify: task 1.3 passes.
 
 ## 5. Docs and gates
 
-- [ ] 5.1 One sentence in `CONTRIBUTING.md` § Publishing on the gate. Verify: page reads correctly.
-- [ ] 5.2 Full unit suite (`poetry run pytest -m "not integration"`), `ruff check slayer/ tests/
+- [x] 5.1 One sentence in `CONTRIBUTING.md` § Publishing on the gate. Verify: page reads correctly.
+- [x] 5.2 Full unit suite (`poetry run pytest -m "not integration"`), `ruff check slayer/ tests/
   scripts/`, `basedpyright`, `la-arch-check`, `openspec validate --strict` all green.
