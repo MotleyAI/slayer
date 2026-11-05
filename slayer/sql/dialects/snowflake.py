@@ -156,6 +156,8 @@ class SnowflakeDialect(SqlDialect):
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
     identifier_folding: ClassVar[IdentifierFolding] = "upper"
+    # INFORMATION_SCHEMA has no KEY_COLUMN_USAGE.
+    primary_key_inspector_only: bool = True
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
