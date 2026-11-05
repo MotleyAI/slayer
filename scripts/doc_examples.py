@@ -33,6 +33,7 @@ FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>[^`]*)
 SOURCE_MODEL_RE = re.compile(r"\bsource_model\b")
 REFERENCE_RE = re.compile(r"(?<![\w/.\-])jaffle_shop(?:\.[A-Za-z_]\w*)+")
 # HTML comments and inline code spans (which never cross a blank line), leftmost first.
+LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:", re.MULTILINE)
 NON_IMAGE_PROSE_RE = re.compile(r"<!--.*?-->|(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.DOTALL)
 
 _UNPARSED = object()
@@ -135,15 +136,22 @@ def _blank_out(match: re.Match[str]) -> str:
     return re.sub(r"[^\n]", " ", match.group(0))
 
 
+def _label(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
 def _image_blocks(lines: list[str], prose: str) -> list[DocBlock]:
-    """Alt texts of inline (``![alt](url)``) and reference-style (``![alt][ref]``) images in ``prose``."""
+    """Alt texts of inline (``![alt](url)``), reference (``![alt][ref]``) and shortcut (``![alt]``) images."""
     # Images are found in the masked text; alt text is read from the original, code spans included.
     masked = NON_IMAGE_PROSE_RE.sub(_blank_out, prose)
+    labels = {_label(m[1]) for m in LINK_DEFINITION_RE.finditer(masked)}
     blocks: list[DocBlock] = []
     pos = masked.find("![")
     while pos != -1:
         end = _alt_text_end(masked, pos + 1)
-        if end is None or pos > 0 and masked[pos - 1] == "\\" or masked[end + 1:end + 2] not in ("(", "["):
+        if end is None or pos > 0 and masked[pos - 1] == "\\" or (
+            masked[end + 1:end + 2] not in ("(", "[") and _label(prose[pos + 2:end]) not in labels
+        ):
             pos = masked.find("![", pos + 2)
             continue
         index = prose.count("\n", 0, pos)

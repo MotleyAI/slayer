@@ -314,6 +314,15 @@ class TestAltTextExtraction:
         md = _md(f"![Chart of {COUNT_JSON}][chart]", "", "[chart]: images/x.png")
         assert _checked(md) == [(1, COUNT)]
 
+    def test_shortcut_reference_image(self, doc_demo_storage: YAMLStorage) -> None:
+        md = _md('![Chart of {"source_model": "orders"}]', "", '[chart of {"source_model":  "orders"}]: x.png')
+        assert _checked(md) == [(1, {"source_model": "orders"})]
+        lines = ("![Each query names a source_model]", "", "  [EACH query names a source_model]: x.png")
+        assert len(_failures(doc_demo_storage, *lines)) == 1
+
+    def test_bracketed_text_without_a_definition_is_not_an_image(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, "![Each query names a source_model]", "", "[other]: x.png") == []
+
     def test_nested_brackets_in_alt_text(self) -> None:
         assert _checked(_md(f"![A [boxed] chart of {COUNT_JSON}](images/x.png)")) == [(1, COUNT)]
 
