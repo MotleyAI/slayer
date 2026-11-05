@@ -6,6 +6,7 @@ Spec: sql/client-contract.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,6 +23,7 @@ from slayer.sql.client import (
     ObjectListing,
     ResultColumnType,
     SlayerSQLClient,
+    SqlClient,
     adapt_client,
     type_categories,
 )
@@ -132,6 +134,13 @@ class CategoryStub:
         return {"n": "number", "s": "string", "t": "time", "b": "boolean", "x": "opaque"}
 
 
+class ProtocolSubclass160(SqlClient):
+    """A 1.6.0 client subclassing the protocol: it inherits the typed probe's stub."""
+
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        return {"n": "number"}
+
+
 @pytest.fixture
 def shop_db(tmp_path: Path) -> str:
     path = str(tmp_path / "shop.db")
@@ -214,11 +223,29 @@ async def test_1_6_0_categories_read_as_types() -> None:
     }
 
 
+async def test_an_inherited_protocol_stub_is_no_typed_probe() -> None:
+    client = adapt_client(ProtocolSubclass160())  # pyright: ignore[reportAbstractUsage]
+    with pytest.warns(FutureWarning, match=DEPRECATION):
+        types = await client.get_result_column_types("SELECT 1")
+    assert types == {"n": ResultColumnType(type=DataType.DOUBLE)}
+
+
+class ProxyClient:
+    """Serves every member, the typed probe included, by forwarding to ``inner``."""
+
+    def __init__(self, inner: SlayerSQLClient) -> None:
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
 @pytest.mark.parametrize("make", [
     lambda ds: SlayerSQLClient(datasource=ds),
     lambda ds: DelegatingSqlClient(SlayerSQLClient(datasource=ds)),
     lambda ds: CurrentGateway(SlayerSQLClient(datasource=ds)),
-], ids=["default", "delegating", "current-gateway"])
+    lambda ds: ProxyClient(SlayerSQLClient(datasource=ds)),
+], ids=["default", "delegating", "current-gateway", "proxy"])
 def test_a_client_serving_the_typed_probe_is_used_as_is(shop_db: str, make) -> None:
     client = make(shop_datasource(shop_db))
     assert adapt_client(client) is client

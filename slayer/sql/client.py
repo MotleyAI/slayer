@@ -1463,5 +1463,7 @@ def adapt_client(client: SqlClient) -> SqlClient:
         legacy = (cls.get_result_column_types is DelegatingSqlClient.get_result_column_types
                   and cls.get_column_types is not DelegatingSqlClient.get_column_types)
     else:
-        legacy = not hasattr(client, "get_result_column_types") and hasattr(client, "get_column_types")
+        typed = getattr(client, "get_result_column_types", None)
+        stub = typed is None or getattr(typed, "__func__", None) is SqlClient.get_result_column_types
+        legacy = stub and hasattr(client, "get_column_types")
     return _CategoryProbeClient(client) if legacy else client

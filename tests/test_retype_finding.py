@@ -399,3 +399,23 @@ class TestSqliteProbe:
             await client.aclose()
             engine_factory.invalidate_engine(ds)
         assert (uncollected, calls) == ([], ["s"])
+
+    async def test_probes_only_live_integer_columns(self, tmp_path: Path) -> None:
+        db = tmp_path / "s.db"
+        with transaction(db) as con:
+            con.execute("CREATE TABLE t (id INTEGER, code TEXT, amt INTEGER)")
+            con.execute("INSERT INTO t VALUES (1, '12', 1.5), (2, '7', 2)")
+        ds = DatasourceConfig(name="s", type="sqlite", database=str(db))
+        model = SlayerModel(name="t", sql_table="t", data_source="s", columns=[
+            _pk(), Column(name="code", type=DataType.INT), Column(name="amt", type=DataType.INT),
+            Column(name="amount", sql='"amt"', type=DataType.INT)])
+        findings: list[Any] = []
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            await schema_drift.validate_datasource(datasource=ds, models=[model], client=client,
+                                                   findings_out=findings)
+        finally:
+            await client.aclose()
+            engine_factory.invalidate_engine(ds)
+        assert sorted((f.column, f.live_type) for f in findings) == [
+            ("amount", DataType.DOUBLE), ("amt", DataType.DOUBLE), ("code", DataType.TEXT)]

@@ -19,7 +19,9 @@ logical type, and neither SHALL a row-level derived column whose own physical
 database type is an exact numeric. The generated SQL SHALL carry no lossy cast
 around the aggregate or derived column, and result values SHALL retain the
 database's exact-numeric representation. Reflection and the column-type probe
-SHALL retain an exact numeric's raw database type.
+SHALL retain an exact numeric's raw database type; where the driver reports only
+an exact-numeric value type, the probe SHALL name it `decimal(<precision>,<scale>)`,
+or `decimal` when either is unknown.
 Database-specific nullability/cardinality wrappers around the physical type
 (e.g. ClickHouse `Nullable(...)`, `LowCardinality(...)`, arbitrarily nested)
 SHALL be transparent to this behaviour. An explicitly declared result type

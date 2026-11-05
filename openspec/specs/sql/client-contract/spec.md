@@ -131,7 +131,7 @@ A client's column-type probe SHALL return, for every result column of a statemen
 
 #### Scenario: SQL Server falls back when it cannot describe a statement
 - **WHEN** a SQL Server statement whose result SQL Server cannot describe without running it (a temporary table) is probed
-- **THEN** the columns are still typed from the driver's values, carry no type name, and any other statement error reaches the caller unchanged
+- **THEN** the columns are still typed from the driver's values, a decimal value's column named `decimal(<precision>,<scale>)` (or `decimal` when either is unknown) and the others with no type name, and any other statement error reaches the caller unchanged
 
 #### Scenario: MySQL boolean and tiny integers
 - **WHEN** a MySQL statement selecting a `BOOL`, a `TINYINT`, a `BIT(1)` and a `BIT(8)` column is probed

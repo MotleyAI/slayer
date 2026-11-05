@@ -2155,20 +2155,8 @@ def _resolve_live_table(
     return None
 
 
-def _is_validate_models_base_column(col: Column) -> bool:
-    """Same base-column predicate as storage refinement: ``col.sql`` None or a bare identifier."""
-    if col.type is not DataType.INT:
-        return False
-    if col.sql is None:
-        return True
-    s = col.sql.strip()
-    if not s or s[0].isdigit():
-        return False
-    return all(c.isalnum() or c == "_" for c in s)
-
-
 async def _probe_validate_models_column(
-    *, client: SqlClient, model: SlayerModel, col: Column, table_name: str,
+    *, client: SqlClient, model: SlayerModel, col: Column, physical: str, table_name: str,
     schema_name: str | None,
 ) -> DataType | None:
     """Run the affinity probe for one column in a validate_models pass."""
@@ -2177,7 +2165,7 @@ async def _probe_validate_models_column(
         return await sqlite_introspect.probe_sqlite_integer_column(
             client=client,
             table=table_name,
-            column=col.sql or col.name,
+            column=physical,
             schema=schema_name,
         )
     except UNREACHABLE:
@@ -2194,11 +2182,15 @@ async def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
     client: SqlClient,
+    live_tables: dict[str, LiveTable],
     default_schema: str | None = None,
 ) -> list[RetypeFinding]:
-    """A re-type finding for each INT base column SQLite's storage probe widens to DOUBLE/TEXT; ``default_schema``
-    for unqualified tables, failures skip."""
+    """A re-type finding for each INT base column, live INT too, SQLite's storage probe widens to DOUBLE/TEXT;
+    ``default_schema`` for unqualified tables, failures skip."""
     if model.sql_table is None:
+        return []
+    live = _resolve_live_table(sql_table=model.sql_table, live_tables=live_tables)
+    if live is None or not live.readable:
         return []
 
     schema_name, table_name = split_sql_table(model.sql_table)
@@ -2207,10 +2199,11 @@ async def _sqlite_probe_int_drift_for_model(
 
     drifts: list[RetypeFinding] = []
     for col in model.columns:
-        if not _is_validate_models_base_column(col):
+        physical = physical_column_sql(sql=col.sql, name=col.name)
+        if col.type is not DataType.INT or not _column_is_base(col.sql) or live.columns.get(physical) is not DataType.INT:
             continue
         verdict = await _probe_validate_models_column(
-            client=client, model=model, col=col,
+            client=client, model=model, col=col, physical=physical,
             table_name=table_name, schema_name=schema_name,
         )
         if verdict is None or verdict is DataType.INT:
@@ -2224,6 +2217,7 @@ async def _sqlite_probe_drifts_for_models(
     datasource: DatasourceConfig,
     client: SqlClient,
     sql_table_models: list[SlayerModel],
+    live_tables: dict[str, LiveTable],
 ) -> list[RetypeFinding]:
     """Run the SQLite probe for every model through the datasource's client."""
     if not dialect_for_ds_type(datasource.type).probes_integer_affinity:
@@ -2231,7 +2225,8 @@ async def _sqlite_probe_drifts_for_models(
     default_schema = datasource.schema_name or None
     return [
         f for m in sql_table_models
-        for f in await _sqlite_probe_int_drift_for_model(model=m, client=client, default_schema=default_schema)
+        for f in await _sqlite_probe_int_drift_for_model(
+            model=m, client=client, live_tables=live_tables, default_schema=default_schema)
     ]
 
 
@@ -2298,7 +2293,7 @@ async def _collect_sql_table_diffs(
             live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
             findings.extend(retype_findings(model=m, live_table=live if live is not None and live.readable else None))
         findings.extend(await _sqlite_probe_drifts_for_models(
-            datasource=datasource, client=client, sql_table_models=sql_table_models,
+            datasource=datasource, client=client, sql_table_models=sql_table_models, live_tables=live_tables,
         ))
     return {
         m.name: _diff_one_sql_table_model(model=m, live_tables=live_tables, available_in_ds=available_in_ds)
