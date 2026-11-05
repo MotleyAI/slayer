@@ -10,7 +10,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.sql.dialects.base import ListFn, SqlDialect, is_empty_array, lit
+from slayer.sql.dialects.base import LegacyTypeCategories, ListFn, SqlDialect, is_empty_array, lit
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
     TableLocation,
@@ -107,6 +107,15 @@ class PostgresDialect(SqlDialect):
     )
     database_name: ClassVar[str] = "Postgres"
     native_lists: ClassVar[bool] = True
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "boolean": "boolean", "bigint": "number", "smallint": "number", "integer": "number", "oid": "number",
+            "real": "number", "double precision": "number", "numeric": "number", "money": "number",
+            "date": "time", "time": "time", "timestamp without time zone": "time",
+            "timestamp with time zone": "time", "interval": "time",
+        },
+        other="string",
+    )
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)

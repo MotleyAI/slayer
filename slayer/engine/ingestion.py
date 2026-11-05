@@ -23,6 +23,7 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.engine import query_engine, schema_drift
+from slayer.engine.broken_dependents import broken_dependents, report_broken
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
@@ -1569,10 +1570,13 @@ async def _run_additive_pass(
     default_schema_name: str | None,
     default_objects: set[str] | None,
     failures: DocumentLoadFailures,
+    client: SqlClient,
 ):
-    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped)``.
+    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped,
+    broken_dependents)``.
 
-    Every name is computed before the first save, and name-only updates save first.
+    Every name is computed before the first save, and name-only updates save first; the stored definitions a
+    list re-type breaks are checked before it is saved.
     """
     loaded, unloaded = await storage.load_models(data_source=datasource.name)
     stored = {m.name: m for m in failures.skip((loaded, unloaded))}
@@ -1587,6 +1591,10 @@ async def _run_additive_pass(
 
     name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
     rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
+    found = await broken_dependents(
+        datasource=datasource, storage=storage, client=client, stored=list(stored.values()),
+        retyped=[plan.models[n] for n in rest if n in stored],
+    )
     errors: list[schema_drift.IngestionError] = []
     for name in [*name_only, *rest]:
         try:
@@ -1594,6 +1602,7 @@ async def _run_additive_pass(
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
             errors.append(schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.model_name for e in errors}
+    broken = report_broken(found, unsaved=failed)
 
     additions = [
         schema_drift.ModelAddition(
@@ -1605,7 +1614,7 @@ async def _run_additive_pass(
         schema_drift.ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
         for n in name_only if n not in merges and n not in failed
     )
-    return additions, errors, merge_skipped
+    return additions, errors, merge_skipped, broken
 
 
 @marked_coroutine_function
@@ -1702,13 +1711,14 @@ async def _ingest_idempotent(
         _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
     }
 
-    additions, errors, merge_skipped = await _run_additive_pass(
+    additions, errors, merge_skipped, broken = await _run_additive_pass(
         fresh_by_name=fresh_by_name,
         datasource=datasource,
         storage=storage,
         default_schema_name=default_schema_name,
         default_objects=default_objects,
         failures=failures,
+        client=client,
     )
 
     # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.
@@ -1772,6 +1782,7 @@ async def _ingest_idempotent(
         datasource_described=datasource_described,
         schema_hint=_schema_hint_message(scan.other_schemas),
         skipped_schemas=list(scan.skipped_schemas),
+        broken_dependents=broken,
     )
 
 
@@ -1957,6 +1968,13 @@ def _print_ingest_drift_and_errors(
             "  --surface-internals ingests NEW internals visible; use "
             f"{_unhide_hint(data_source)} to unhide an existing one."
         ),
+        out=out,
+    )
+    broken = getattr(result, "broken_dependents", None) or []
+    _print_report_section(
+        entries=broken,
+        header=f"\nBroken by a list re-type ({len(broken)}):",
+        line=lambda e: e.human_message(),
         out=out,
     )
     errors = getattr(result, "errors", None) or []

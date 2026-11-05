@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.sql.dialects.base import LIST_ELEMENT, SqlDialect, anon, describe_type_name_code, is_not_null
+from slayer.sql.dialects.base import LIST_ELEMENT, LegacyTypeCategories, SqlDialect, anon, describe_type_name_code, is_not_null
 from slayer.sql.dialects.reflection import (
     CatalogConnection,
     ReflectedColumn,
@@ -80,6 +80,15 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 class DuckdbDialect(SqlDialect):
     sqlglot_name: str = "duckdb"
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        contains=(
+            *((t, "time") for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")),
+            *((t, "number") for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")),
+            *((t, "string") for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")),
+            ("BOOL", "boolean"),
+        ),
+        other="string",
+    )
     sa_backend_names: frozenset[str] = frozenset({"duckdb"})
     explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""

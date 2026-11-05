@@ -770,7 +770,7 @@ def _result_with_hidden(**overrides) -> IdempotentIngestResult:
         ],
     )
     base.update(overrides)
-    return IdempotentIngestResult(**base)
+    return IdempotentIngestResult.model_validate(base)
 
 
 class TestRenderer:
