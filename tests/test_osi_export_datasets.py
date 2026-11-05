@@ -9,7 +9,9 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.osi.source import parse_source
+from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, col, customers, monthly_revenue, orders, orders_columns, rich_orders, visits,
@@ -76,6 +78,24 @@ async def test_query_backed_model_reads_its_own_datasource(env, tmp_path: Path) 
     source = dataset((await export(env)).document, "monthly_revenue")["source"]
     assert "1000" not in source
     assert "'US'" in source
+
+
+async def test_unsaved_query_backed_model_expands_through_the_priority_list(env, tmp_path: Path) -> None:
+    await save(env, customers(), orders(measures=BASIC_MEASURES))
+    other = (await make_env(tmp_path / "other", datasource="aaa")).model_copy(update={"store": env.store})
+    storage = YAMLStorage(base_dir=str(env.store))
+    await storage.save_datasource(other.config)
+    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", joins=[]))
+    await storage.set_datasource_priority(["aaa", env.datasource])
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        expanded = await engine.expand_query_backed_model(monthly_revenue().model_copy(update={"data_source": ""}))
+    finally:
+        engine.close()
+        engine_factory.invalidate_engine(env.config)
+        engine_factory.invalidate_engine(other.config)
+    assert expanded.data_source == "aaa"
+    assert "1000" in (expanded.sql or "")
 
 
 async def test_filter_on_joined_model_is_reported(env) -> None:

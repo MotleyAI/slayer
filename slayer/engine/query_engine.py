@@ -2858,7 +2858,7 @@ class SlayerQueryEngine:
 
     async def expand_query_backed_model(self, model: SlayerModel) -> SlayerModel:
         """The sql-mode model a query-backed ``model`` renders as, under its default variables, in its datasource."""
-        return await self._expand_query_backed_model(model=model, prefer_data_source=model.data_source)
+        return await self._expand_query_backed_model(model=model, prefer_data_source=model.data_source or None)
 
     async def create_model_from_query(
         self,
