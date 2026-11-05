@@ -19,13 +19,18 @@ by ``tests/test_ingestion_schema_qualification.py``.
 from __future__ import annotations
 
 import logging
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+from sqlalchemy.sql.elements import quoted_name
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.client import AuthenticationRefused, DatabaseUnavailable, SqlClient
-from slayer.sql.dialects import dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, dialect_for_sa_backend
+from slayer.sql.naming import render_table_name
+from slayer.sql.render.parse import parse_table
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,16 @@ def _dialect_qualifies_tokens(dialect_name: Optional[str]) -> bool:
     return dialect_for_sa_backend((dialect_name or "").lower()).catalog_qualified_schema_tokens
 
 
+def is_quoted_name(name: object) -> bool:
+    """Whether ``name`` is a SQLAlchemy ``quoted_name`` naming its object exactly (a lower-case Snowflake name)."""
+    return getattr(name, "quote", None) is True
+
+
+def live_name(name: str, *, quoted: bool) -> str:
+    """``name`` in SQLAlchemy's spelling, a ``quoted_name`` when ``quoted``."""
+    return quoted_name(name, True) if quoted else name
+
+
 class SchemaRef(BaseModel, frozen=True):
     """One schema's identity — the single owner of schema qualification.
 
@@ -71,6 +86,22 @@ class SchemaRef(BaseModel, frozen=True):
     name: Optional[str] = None
     requested: Optional[str] = None
     is_default: bool = False
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
+
+    @model_validator(mode="before")
+    @classmethod
+    def _quoted_from_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "quoted" not in data:
+            return {**data, "quoted": is_quoted_name(data.get("name"))}
+        return data
+
+    def _live(self, name: str) -> str:
+        return live_name(name, quoted=self.quoted)
+
+    @property
+    def live_name(self) -> Optional[str]:
+        """``name`` in SQLAlchemy's spelling."""
+        return self._live(self.name) if self.name else self.name
 
     @property
     def explicit(self) -> bool:
@@ -82,21 +113,25 @@ class SchemaRef(BaseModel, frozen=True):
         """The catalog-qualified token to hand ``Inspector`` methods."""
         if self.catalog and self.name:
             return f"{self.catalog}.{self.name}"
-        return self.name
+        return self.live_name
 
-    def qualify(self, obj_name: str) -> str:
-        """Prefix ``obj_name`` for a persisted ``sql_table``.
+    def qualify(self, obj_name: str, *, dialect: SqlDialect) -> str:
+        """The persisted ``sql_table`` of live object ``obj_name`` in this schema.
 
-        An explicit request is emitted exactly as typed. An auto-resolved
-        default (or a dialect with no schema concept) stays bare; an
-        auto-resolved non-default emits its bare schema name (never the
-        catalog — the datasource already points at one catalog).
+        An explicit request names its schema exactly as typed (a catalog only
+        when typed). An auto-resolved default (or a dialect with no schema
+        concept) stays bare; an auto-resolved non-default names its bare schema
+        (never the catalog — the datasource already points at one catalog).
         """
-        if self.explicit:
-            return f"{self.requested}.{obj_name}"
-        if self.is_default or not self.name:
-            return obj_name
-        return f"{self.name}.{obj_name}"
+        if self.requested is not None:
+            *catalog, schema = (self.requested.split(".", 1) if dialect.catalog_qualified_schema_tokens
+                                else [self.requested])
+            qualifiers = [*catalog, self._live(schema)]
+        elif self.is_default or not self.name:
+            qualifiers = []
+        else:
+            qualifiers = [self._live(self.name)]
+        return render_table_name(parts=[*qualifiers, obj_name], dialect=dialect)
 
 
 class SkippedSchema(BaseModel):
@@ -118,17 +153,26 @@ class IngestScope(BaseModel):
     skipped: list[SkippedSchema] = []
 
 
-def split_sql_table(sql_table: str) -> tuple[Optional[str], str]:
-    """Split a persisted ``sql_table`` into ``(schema_token, object)``.
+def table_live_parts(table: exp.Table) -> list[str]:
+    """``table``'s ``[[catalog,] schema,] object`` names in SQLAlchemy's spelling, a quoted part flagged quoted."""
+    return [live_name(p.name, quoted=p.quoted)
+            for p in (table.args.get("catalog"), table.args.get("db"), table.this) if isinstance(p, exp.Identifier)]
 
-    Splits on the FINAL dot so a 3-part ``catalog.schema.table`` keeps its
-    catalog with the schema token (``"c.s.t" -> ("c.s", "t")``); a quoted
-    object identifier is preserved. Returns ``(None, name)`` when unqualified.
-    """
-    schema_token, sep, obj = sql_table.rpartition(".")
-    if not sep:
-        return None, sql_table
-    return (schema_token or None), obj
+
+def sql_table_parts(sql_table: str, *, dialect: SqlDialect) -> list[str]:
+    """The live names a persisted ``sql_table`` reads (``[[catalog,] schema,] object``); unparseable: itself."""
+    try:
+        table = parse_table(name=sql_table, dialect=dialect)
+    except SqlglotError:
+        return [sql_table]
+    return table_live_parts(table)
+
+
+def split_sql_table(sql_table: str, *, dialect: SqlDialect) -> tuple[Optional[str], str]:
+    """A persisted ``sql_table`` as ``(schema_token, object)``: a 3-part ``catalog.schema.table`` keeps its
+    catalog with the schema token (``"c.s.t" -> ("c.s", "t")``); ``(None, object)`` when unqualified."""
+    *qualifiers, obj = sql_table_parts(sql_table, dialect=dialect)
+    return (qualifiers[0] if len(qualifiers) == 1 else ".".join(qualifiers) or None), obj
 
 
 def schema_ref_from_token(

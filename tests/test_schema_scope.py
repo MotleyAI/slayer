@@ -1,4 +1,4 @@
-"""Pure-unit tests for the schema-identity value objects (DEV-1758).
+"""Pure-unit tests for the schema-identity value objects.
 
 No database: exercises ``SchemaRef`` (the one owner of schema identity), the
 single ``split_sql_table`` parser, the dialect-gated token constructor, the
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.sql.elements import quoted_name
 
 from slayer.engine.schema_scope import (
     IngestScope,
@@ -20,6 +21,9 @@ from slayer.engine.schema_scope import (
     split_sql_table,
     validate_scope_args,
 )
+from slayer.sql.dialects import get_dialect
+
+DUCKDB = get_dialect("duckdb")
 
 
 # ---------------------------------------------------------------------------
@@ -32,37 +36,37 @@ class TestSchemaRefQualify:
         """A user-named single schema is emitted exactly as typed (D-5)."""
         ref = SchemaRef(catalog="fda", name="openfda_rest",
                         requested="openfda_rest", is_default=False)
-        assert ref.qualify("reports") == "openfda_rest.reports"
+        assert ref.qualify("reports", dialect=DUCKDB) == "openfda_rest.reports"
 
     def test_explicit_schema_is_verbatim_even_when_default(self) -> None:
         """``--schema public`` keeps producing ``public.orders`` — the explicit
         request wins over the default-stays-bare rule."""
         ref = SchemaRef(catalog="fda", name="main", requested="main",
                         is_default=True)
-        assert ref.qualify("t") == "main.t"
+        assert ref.qualify("t", dialect=DUCKDB) == "main.t"
 
     def test_explicit_three_part_schema_is_verbatim(self) -> None:
         """An explicit catalog-qualified schema emits a 3-part name (D-5)."""
         ref = SchemaRef(catalog="att_main", name="ofr",
                         requested="att_main.ofr", is_default=False)
-        assert ref.qualify("reports") == "att_main.ofr.reports"
+        assert ref.qualify("reports", dialect=DUCKDB) == "att_main.ofr.reports"
 
     def test_auto_default_schema_is_bare(self) -> None:
         """Bare ingest of the default schema qualifies nothing (D-9)."""
         ref = SchemaRef(catalog="fda", name="main", requested=None,
                         is_default=True)
-        assert ref.qualify("orders") == "orders"
+        assert ref.qualify("orders", dialect=DUCKDB) == "orders"
 
     def test_auto_non_default_schema_drops_the_catalog(self) -> None:
         """An auto-resolved non-default schema emits the bare last segment."""
         ref = SchemaRef(catalog="fda", name="openfda_rest", requested=None,
                         is_default=False)
-        assert ref.qualify("reports") == "openfda_rest.reports"
+        assert ref.qualify("reports", dialect=DUCKDB) == "openfda_rest.reports"
 
     def test_none_schema_is_bare(self) -> None:
         """A dialect with no schema concept qualifies nothing."""
         ref = SchemaRef(catalog=None, name=None, requested=None, is_default=True)
-        assert ref.qualify("orders") == "orders"
+        assert ref.qualify("orders", dialect=DUCKDB) == "orders"
 
     def test_multi_schema_default_entry_stays_bare(self) -> None:
         """Under ``schemas=[main, ofr]`` the default is NOT verbatim: its ref
@@ -72,15 +76,15 @@ class TestSchemaRefQualify:
                          is_default=True)
         ofr = SchemaRef(catalog="fda", name="openfda_rest", requested=None,
                         is_default=False)
-        assert main.qualify("t") == "t"
-        assert ofr.qualify("t") == "openfda_rest.t"
+        assert main.qualify("t", dialect=DUCKDB) == "t"
+        assert ofr.qualify("t", dialect=DUCKDB) == "openfda_rest.t"
 
     def test_persisted_schema_name_is_verbatim(self) -> None:
         """A persisted ``datasource.schema_name='main'`` is explicit → verbatim,
         so it emits ``main.t`` (contrast the multi-schema case above)."""
         ref = SchemaRef(catalog="fda", name="main", requested="main",
                         is_default=True)
-        assert ref.qualify("t") == "main.t"
+        assert ref.qualify("t", dialect=DUCKDB) == "main.t"
 
 
 class TestSchemaRefDerived:
@@ -120,12 +124,11 @@ class TestSplitSqlTable:
         ],
     )
     def test_splits_on_the_final_dot(self, sql_table, expected) -> None:
-        assert split_sql_table(sql_table) == expected
+        assert split_sql_table(sql_table, dialect=DUCKDB) == expected
 
-    def test_preserves_quoted_identifiers(self) -> None:
-        """A quoted case-sensitive object keeps its quotes; only the schema
-        token is peeled off."""
-        assert split_sql_table('prod."Company"') == ("prod", '"Company"')
+    def test_reads_quoted_identifiers(self) -> None:
+        """A quoted part reads as the live name it denotes."""
+        assert split_sql_table('prod."Company"', dialect=DUCKDB) == ("prod", "Company")
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +270,26 @@ class TestPayloadTypes:
         s = SkippedSchema(token="aaa.main", reason="belongs to attached catalog")
         assert s.token == "aaa.main"
         assert "attached" in s.reason
+
+
+class TestQuotedSchemaName:
+    """SQLAlchemy's ``quoted_name`` (a lower-case Snowflake / Oracle schema) keeps its exact case."""
+
+    @pytest.mark.parametrize("requested", [True, False])
+    def test_quoted_lowercase_schema_qualifies_quoted(self, requested: bool) -> None:
+        schema = quoted_name("lower_schema", True)
+        ref = schema_ref_from_token(schema, dialect_name="snowflake", requested=schema if requested else None)
+        assert ref.qualify(quoted_name("lower_table", True), dialect=get_dialect("snowflake")) == (
+            '"lower_schema"."lower_table"')
+
+    def test_quoted_schema_token_keeps_its_quoting(self) -> None:
+        ref = schema_ref_from_token(quoted_name("lower_schema", True), dialect_name="snowflake")
+        assert getattr(ref.token, "quote", None) is True
+        assert ref != schema_ref_from_token("lower_schema", dialect_name="snowflake")
+
+    def test_stored_quoted_parts_read_back_flagged_quoted(self) -> None:
+        schema, table = split_sql_table('"lower_schema"."lower_table"', dialect=get_dialect("snowflake"))
+        assert (schema, getattr(schema, "quote", None), table, getattr(table, "quote", None)) == (
+            "lower_schema", True, "lower_table", True)
+        unquoted, _ = split_sql_table("lower_schema.lower_table", dialect=get_dialect("snowflake"))
+        assert getattr(unquoted, "quote", None) is not True

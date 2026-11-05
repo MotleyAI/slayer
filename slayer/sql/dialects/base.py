@@ -586,6 +586,15 @@ def _digest(secret: str | None) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
+# How the database reads an unquoted identifier: as written, ASCII letters lowercased, or uppercased.
+IdentifierFolding = Literal["none", "lower", "upper"]
+
+
+def ascii_lower(name: str) -> str:
+    """``name`` with its ASCII letters lowercased (Postgres's unquoted-identifier rule)."""
+    return "".join(c.lower() if "A" <= c <= "Z" else c for c in name)
+
+
 #: A list child's element column, as every list relation exposes it.
 LIST_VALUE = "value"
 _UNNESTED = "__slayer_u"
@@ -756,6 +765,15 @@ class SqlDialect(BaseModel):
 
     # ``get_schema_names()`` yields ``catalog.schema`` tokens; elsewhere a dot is part of the name.
     catalog_qualified_schema_tokens: bool = False
+
+    # Whether quoting an identifier changes which object it names, and how an unquoted one is folded.
+    identifier_folding: ClassVar[IdentifierFolding] = "none"
+
+    def unquoted_identifier(self, name: str) -> str:
+        """The exact name the database resolves ``name``, written unquoted, to."""
+        if self.identifier_folding == "upper":
+            return str(name).upper()  # SQLAlchemy's ``quoted_name.upper()`` returns a quoted name unchanged
+        return ascii_lower(name) if self.identifier_folding == "lower" else name
 
     @property
     def sync_driver(self) -> str | None:

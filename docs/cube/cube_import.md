@@ -84,6 +84,11 @@ type), else from an explicit dimension `type` or the measure's aggregation; an a
 list, or a `min`/`max` over a column nothing types, drops the measure with a report, and an offline import notes
 that types were not checked against the database.
 
+Unquoted names in a cube's SQL (`sql_table`, `sql`, member, join and `FILTER_PARAMS` SQL) are read as the datasource's
+database reads them, so on Postgres, Redshift, Snowflake and Oracle `Sales.OrderItems` and `{CUBE}.OrderAmount` are
+stored as `sales.orderitems` and `orderamount` (quoted names, string literals and comments are kept as written), and an
+import whose datasource is not configured is refused when its SQL holds an unquoted name with an upper-case letter.
+
 ### Joins
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes

@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
@@ -43,6 +43,8 @@ from slayer.engine.schema_scope import (
     UNREACHABLE,
     SkippedSchema,
     default_schema_ref,
+    is_quoted_name,
+    live_name,
     resolve_ingest_scope,
     schema_ref_from_token,
     split_sql_table,
@@ -77,6 +79,7 @@ class IntrospectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
 
 
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
@@ -246,7 +249,7 @@ def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) 
     or a zoned timestamp)."""
     return IntrospectedColumn(
         name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
-        db_type=col.db_type, comment=col.comment,
+        db_type=col.db_type, comment=col.comment, quoted=col.quoted,
     )
 
 
@@ -278,11 +281,12 @@ async def _inferred_elements(
         return column
     dialect = dialect_of(client)
     table = exp.Table(
-        this=exp.to_identifier(table_name),
-        db=exp.to_identifier(ref.name) if ref and ref.name else None,
+        this=exp.to_identifier(table_name, quoted=is_quoted_name(table_name) or None),
+        db=exp.to_identifier(ref.name, quoted=ref.quoted or None) if ref and ref.name else None,
         catalog=exp.to_identifier(ref.catalog) if ref and ref.catalog else None,
     )
-    query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
+    query = dialect.list_element_types_query(table=table,
+                                             column=exp.to_identifier(column.name, quoted=column.quoted or None))
     if query is None:
         return column
     try:
@@ -452,7 +456,8 @@ def _columns_to_model(
         cols.append(
             Column(
                 name=column_name,
-                sql=col.name,
+                # A quoted lower-case Snowflake / Oracle column names itself exactly.
+                sql=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 type=col.type,
                 element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
@@ -489,7 +494,7 @@ async def _sqlite_probe_integer_columns(
     if not dialect_of(client).probes_integer_affinity:
         return columns
 
-    schema, table = _parse_qualified_sql_table(sql_table)
+    schema, table = split_sql_table(sql_table, dialect=dialect_of(client))
     out: list[IntrospectedColumn] = []
     for col in columns:
         if col.type is not DataType.INT or "." in col.name:
@@ -522,12 +527,14 @@ async def _sqlite_probe_integer_columns(
     return out
 
 
-def _parse_qualified_sql_table(sql_table: str) -> tuple[str | None, str]:
-    """Split ``"schema.table"`` on the first dot into ``(schema, table)``."""
-    if "." in sql_table:
-        schema, _, table = sql_table.partition(".")
-        return schema or None, table
-    return None, sql_table
+async def introspect_table_columns(
+    *, client: SqlClient, table_name: str, ref: SchemaRef | None,
+) -> list[IntrospectedColumn]:
+    """A live table's columns, typed as ingestion types them."""
+    ref = ref or await default_schema_ref(client)
+    columns = await _introspect_table_columns(client=client, table_name=table_name, ref=ref)
+    return await _sqlite_probe_integer_columns(
+        client=client, sql_table=ref.qualify(table_name, dialect=dialect_of(client)), columns=columns)
 
 
 async def introspect_table_to_model(
@@ -549,7 +556,7 @@ async def introspect_table_to_model(
     columns = await _introspect_table_columns(
         client=client, table_name=table_name, ref=ref, primary_key=keys.primary_key,
     )
-    sql_table = ref.qualify(table_name)
+    sql_table = ref.qualify(table_name, dialect=dialect_of(client))
     columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     return _columns_to_model(
         name=model_name or table_name,
@@ -570,6 +577,19 @@ class IngestableObject(BaseModel):
 
     name: str
     kind: ObjectKind
+    quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
+
+    @model_validator(mode="before")
+    @classmethod
+    def _quoted_from_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "quoted" not in data:
+            return {**data, "quoted": is_quoted_name(data.get("name"))}
+        return data
+
+    @property
+    def live_name(self) -> str:
+        """``name`` in SQLAlchemy's spelling."""
+        return live_name(self.name, quoted=self.quoted)
 
 
 class SkippedTable(BaseModel):
@@ -680,6 +700,7 @@ def _resolve_scanned_collisions(
     scanned: list[tuple[SchemaRef, IngestableObject]],
     *,
     multi_schema: bool,
+    dialect: SqlDialect,
 ) -> tuple[
     dict[str, tuple[SchemaRef, IngestableObject]], list[SkippedTable]
 ]:
@@ -695,7 +716,7 @@ def _resolve_scanned_collisions(
         win_ref, win_obj = ordered[0]
         winners[model_name] = (win_ref, win_obj)
         winner_label = (
-            win_ref.qualify(win_obj.name) if multi_schema else win_obj.name
+            win_ref.qualify(win_obj.live_name, dialect=dialect) if multi_schema else win_obj.name
         )
         for ref, obj in ordered[1:]:
             label = (
@@ -735,11 +756,12 @@ async def _build_one_model(
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     ``keys_by_table`` memoizes each table's keys across the schema's objects.
     """
-    sql_table = ref.qualify(obj.name)
+    table = obj.live_name
+    sql_table = ref.qualify(table, dialect=dialect_of(client))
     keys_by_table = keys_by_table if keys_by_table is not None else {}
     model_joins = await _generate_joins(
         client=client,
-        source_table=obj.name,
+        source_table=table,
         schema=ref.token,
         table_set=table_set,
         model_name_by_table=model_name_by_table,
@@ -749,7 +771,7 @@ async def _build_one_model(
     )
     keys = keys_by_table[obj.name]
     columns = await _introspect_table_columns(
-        client=client, table_name=obj.name, ref=ref, primary_key=keys.primary_key,
+        client=client, table_name=table, ref=ref, primary_key=keys.primary_key,
     )
     columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     meta = {"internal_table": internal_tool} if internal_tool else None
@@ -763,7 +785,7 @@ async def _build_one_model(
         source_kind=obj.kind,
         hidden=internal_tool is not None,
         meta=meta,
-        description=await _safe_get_table_comment(client, obj.name, ref),
+        description=await _safe_get_table_comment(client, table, ref),
     )
 
 
@@ -910,7 +932,7 @@ async def ingest_datasource_report_async(
 
     all_objects = [obj for _, obj in scanned]
     winners, skipped = _resolve_scanned_collisions(
-        scanned, multi_schema=multi_schema
+        scanned, multi_schema=multi_schema, dialect=dialect_of(client)
     )
 
     by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
@@ -1419,8 +1441,9 @@ def _merge_one_table(
         and fresh.sql_table
         and persisted.sql_table != fresh.sql_table
     ):
-        persisted_schema, persisted_obj = split_sql_table(persisted.sql_table)
-        fresh_schema, _ = split_sql_table(fresh.sql_table)
+        dialect = dialect_for_ds_type(datasource.type)
+        persisted_schema, persisted_obj = split_sql_table(persisted.sql_table, dialect=dialect)
+        fresh_schema, _ = split_sql_table(fresh.sql_table, dialect=dialect)
         if persisted_schema is not None:
             # A differently qualified twin is a different physical table.
             return SkippedTable(
@@ -1460,18 +1483,18 @@ def _merge_one_table(
     )
 
 
-def _bare_table_name(sql_table: str) -> str:
-    """Strip an optional schema prefix from a ``schema.table`` reference."""
-    return sql_table.split(".", 1)[1] if "." in sql_table else sql_table
+def _bare_table_name(sql_table: str, *, dialect: SqlDialect) -> str:
+    """The live object a ``sql_table`` names, without its schema."""
+    return split_sql_table(sql_table, dialect=dialect)[1]
 
 
 def _sql_table_identity(
-    sql_table: str | None, *, default_schema: str | None,
+    sql_table: str | None, *, default_schema: str | None, dialect: SqlDialect,
 ) -> tuple[str | None, str] | None:
     """``(schema, object)`` identity of a ``sql_table``, unqualified → ``default_schema``."""
     if not sql_table:
         return None
-    schema, obj = split_sql_table(sql_table)
+    schema, obj = split_sql_table(sql_table, dialect=dialect)
     return (schema if schema is not None else default_schema, obj)
 
 
@@ -1486,7 +1509,8 @@ async def _stored_sanitized_identity_map(
     identities = await storage._list_all_model_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
     stored_identity: dict[str, tuple[str | None, str] | None] = {
-        m.name: _sql_table_identity(m.sql_table, default_schema=default_schema)
+        m.name: _sql_table_identity(m.sql_table, default_schema=default_schema,
+                                    dialect=dialect_for_ds_type(datasource.type))
         for m in failures.skip(await storage.load_models(data_source=datasource.name))
     }
     return stored_names, stored_identity
@@ -1498,6 +1522,7 @@ def _sanitized_rename_map(
     stored_names: set[str],
     stored_identity: dict[str, tuple[str | None, str] | None],
     default_schema: str | None,
+    dialect: SqlDialect,
 ) -> dict[str, str]:
     """Map each fresh name onto a stored sanitized spelling of the SAME live object."""
     rename_map: dict[str, str] = {}
@@ -1510,7 +1535,7 @@ def _sanitized_rename_map(
         if sanitized in fresh_by_name:
             continue  # sanitized spelling is a distinct live object — don't collapse
         fresh_identity = _sql_table_identity(
-            fresh.sql_table, default_schema=default_schema,
+            fresh.sql_table, default_schema=default_schema, dialect=dialect,
         )
         if fresh_identity is not None and stored_identity.get(sanitized) == fresh_identity:
             rename_map[name] = sanitized
@@ -1535,6 +1560,7 @@ async def _adopt_stored_sanitized_names(
     rename_map = _sanitized_rename_map(
         fresh_by_name=fresh_by_name, stored_names=stored_names,
         stored_identity=stored_identity, default_schema=default_schema,
+        dialect=dialect_for_ds_type(datasource.type),
     )
     if not rename_map:
         return fresh_by_name, {}
@@ -1596,7 +1622,8 @@ async def _scoped_models_for_validation(
     """Persisted models to validate: in-scope ``sql_table`` models plus all sql/query-backed ones."""
     return [
         m for m in failures.skip(await storage.load_models(data_source=datasource.name))
-        if not m.sql_table or _bare_table_name(m.sql_table) in in_scope_table_names
+        if not m.sql_table
+        or _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type)) in in_scope_table_names
     ]
 
 
@@ -1649,9 +1676,10 @@ def _schema_hint_message(other_schemas: list[str]) -> str | None:
     )
 
 
-def _edge_name_collision(*, table_name: str, fresh: SlayerModel, edge_owner: dict[str, str]) -> SkippedTable:
+def _edge_name_collision(*, table_name: str, fresh: SlayerModel, edge_owner: dict[str, str],
+                         dialect: SqlDialect) -> SkippedTable:
     return SkippedTable(
-        table_name=_bare_table_name(fresh.sql_table) if fresh.sql_table else table_name,
+        table_name=_bare_table_name(fresh.sql_table, dialect=dialect) if fresh.sql_table else table_name,
         kind=fresh.source_kind,
         reason=(
             f"model name '{table_name}' collides with the edge '{table_name}' declared on "
@@ -1677,7 +1705,8 @@ def _merge_fresh_tables(
         if table_name in unloadable:
             continue
         if table_name not in stored and table_name in edge_owner:
-            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner))
+            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner,
+                                                dialect=dialect_for_ds_type(datasource.type)))
             continue
         outcome = _merge_one_table(
             table_name=table_name, fresh=fresh, persisted=stored.get(table_name), datasource=datasource,
@@ -1855,7 +1884,8 @@ async def _ingest_idempotent(
         ]
     # Live object names, not model names (the two can differ).
     in_scope_table_names: set[str] = {
-        _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
+        _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type))
+        for m in fresh_models if m.sql_table
     }
 
     additions, errors, merge_skipped = await _run_additive_pass(

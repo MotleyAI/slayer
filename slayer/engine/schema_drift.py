@@ -45,6 +45,7 @@ from slayer.engine.schema_scope import (
     qualifies_tokens,
     resolve_ingest_scope,
     split_sql_table,
+    sql_table_parts,
 )
 from slayer.engine import ingestion, query_engine
 from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, StoredDocumentLoadError
@@ -64,8 +65,9 @@ from slayer.core.syntax import (
 )
 from slayer.sql import sqlite_introspect
 from slayer.sql.client import SqlClient, render_type_probe
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
+from slayer.sql.naming import render_table_name
 from slayer.ir.source_bundle import added_joins
 
 logger = logging.getLogger(__name__)
@@ -1614,20 +1616,20 @@ async def _introspect_live_object(
         return LiveTable(readable=False)
 
 
-def _live_object_keys(*, ref: SchemaRef, obj_name: str, single: bool) -> list[str]:
+def _live_object_keys(*, ref: SchemaRef, obj_name: str, single: bool, dialect: SqlDialect) -> list[str]:
     """The live-map keys of one object; the default/single-schema scope is keyed both bare and qualified so legacy and explicit models resolve."""
-    keys = [ref.qualify(obj_name)]
+    keys = [ref.qualify(obj_name, dialect=dialect)]
     if ref.is_default or single:
-        keys.append(obj_name)
-        if ref.name:
-            keys.append(f"{ref.name}.{obj_name}")
+        keys.append(render_table_name(parts=[obj_name], dialect=dialect))
+        if schema := ref.live_name:
+            keys.append(render_table_name(parts=[schema, obj_name], dialect=dialect))
     return keys
 
 
 def _key_live_object(
-    out: dict[str, LiveTable], *, ref: SchemaRef, obj_name: str, single: bool, live: LiveTable,
+    out: dict[str, LiveTable], *, ref: SchemaRef, obj_name: str, single: bool, live: LiveTable, dialect: SqlDialect,
 ) -> None:
-    first, *rest = _live_object_keys(ref=ref, obj_name=obj_name, single=single)
+    first, *rest = _live_object_keys(ref=ref, obj_name=obj_name, single=single, dialect=dialect)
     out[first] = live
     for key in rest:
         out.setdefault(key, live)
@@ -1652,7 +1654,7 @@ async def _list_live_objects(
             )
             failed.append(str(ref.token))
             continue
-        listings.append((ref, [obj.name for obj in objs]))
+        listings.append((ref, [obj.live_name for obj in objs]))
     if failed:
         # Fail closed: a partial map would report every model in the unlisted
         # schema as a WholeModelDelete — data loss under --force-clean.
@@ -1672,16 +1674,18 @@ async def _collect_live_tables(
 ) -> dict[str, LiveTable]:
     """``{key: LiveTable}`` over the listed objects, only those with a key in ``wanted`` when given."""
     single = len(listings) == 1
+    dialect = dialect_for_ds_type(datasource.type)
     out: dict[str, LiveTable] = {}
     found = 0
     for ref, names in listings:
         for name in names:
             if wanted is not None and wanted.isdisjoint(
-                _live_object_keys(ref=ref, obj_name=name, single=single)
+                _live_object_keys(ref=ref, obj_name=name, single=single, dialect=dialect)
             ):
                 continue
             found += 1
-            _key_live_object(out, ref=ref, obj_name=name, single=single, live=await lookup(ref, name))
+            _key_live_object(out, ref=ref, obj_name=name, single=single, live=await lookup(ref, name),
+                             dialect=dialect)
     # Only a whole-datasource pass can tell that every table failed.
     if wanted is None and found and not any(t.readable for t in out.values()):
         raise IntrospectionUnavailable(
@@ -1766,7 +1770,8 @@ class DriftSnapshot(BaseModel):
             raise IntrospectionUnavailable(
                 f"live schema of datasource {datasource.name!r} recently unavailable"
             )
-        wanted = {c for t in sql_tables for c in _sql_table_candidates(t)}
+        dialect = dialect_for_ds_type(datasource.type)
+        wanted = {c for t in sql_tables for c in _sql_table_candidates(t, dialect=dialect)}
 
         async def lookup(ref: SchemaRef, obj_name: str) -> LiveTable:
             return await self._table(client=client, datasource=datasource, ref=ref, obj_name=obj_name)
@@ -1784,7 +1789,7 @@ class DriftSnapshot(BaseModel):
                 await self._list(cat=cat, client=client, datasource=datasource)
             live = await collect(cat)
             unresolved = {
-                t for t in sql_tables if _resolve_live_table(sql_table=t, live_tables=live) is None
+                t for t in sql_tables if _resolve_live_table(sql_table=t, live_tables=live, dialect=dialect) is None
             }
             if not listed and not unresolved <= cat.listed_for:
                 await self._list(cat=cat, client=client, datasource=datasource)
@@ -2092,31 +2097,17 @@ async def _source_tables_resolve(
 # Datasource-level orchestrator
 
 
-def _strip_ident_quotes(ident: str) -> str:
-    """Strip surrounding double-quotes from an identifier and unescape ``""`` → ``"``."""
-    ident = ident.strip()
-    if len(ident) >= 2 and ident[0] == '"' == ident[-1]:
-        return ident[1:-1].replace('""', '"')
-    return ident
-
-
-def _sql_table_candidates(sql_table: str) -> list[str]:
-    """Live-map keys a ``sql_table`` may resolve through (full / last-two / unquoted variants); a qualified name is NEVER stripped to bare, which would mask a dropped non-default twin."""
-    parts = sql_table.split(".")
-    # Unquote per segment, not the whole string (only the object is quoted).
-    unq = [_strip_ident_quotes(p) for p in parts]
-    candidates = [sql_table, ".".join(unq)]
-    if len(parts) >= 2:
-        candidates.append(".".join(parts[-2:]))
-        candidates.append(".".join(unq[-2:]))
-    return candidates
+def _sql_table_candidates(sql_table: str, *, dialect: SqlDialect) -> list[str]:
+    """Live-map keys a ``sql_table`` may resolve through (as stored, rendered, its last two parts); a qualified name is NEVER stripped to bare, which would mask a dropped non-default twin."""
+    parts = sql_table_parts(sql_table, dialect=dialect)
+    return [sql_table, *(render_table_name(parts=parts[i:], dialect=dialect) for i in range(max(len(parts) - 2, 0) + 1))]
 
 
 def _resolve_live_table(
-    *, sql_table: str, live_tables: dict[str, LiveTable]
+    *, sql_table: str, live_tables: dict[str, LiveTable], dialect: SqlDialect,
 ) -> LiveTable | None:
     """Look up a model's ``sql_table`` in the live map."""
-    for name in _sql_table_candidates(sql_table):
+    for name in _sql_table_candidates(sql_table, dialect=dialect):
         live = live_tables.get(name)
         if live is not None:
             return live
@@ -2176,12 +2167,13 @@ async def _sqlite_probe_int_drift_for_model(
     model: SlayerModel,
     client: SqlClient,
     default_schema: str | None = None,
+    dialect: SqlDialect,
 ) -> list[tuple[str, DataType, DeleteReason]]:
     """Probe-driven INT type-drift on SQLite: ``(column, verdict, DeleteReason)`` for each INT base column the probe widens to DOUBLE/TEXT; ``default_schema`` for unqualified tables, failures skip."""
     if model.sql_table is None:
         return []
 
-    schema_name, table_name = split_sql_table(model.sql_table)
+    schema_name, table_name = split_sql_table(model.sql_table, dialect=dialect)
     if schema_name is None:
         schema_name = default_schema or None
 
@@ -2216,7 +2208,9 @@ async def _sqlite_probe_drifts_for_models(
         return {m.name: [] for m in sql_table_models}
     default_schema = datasource.schema_name or None
     return {
-        m.name: await _sqlite_probe_int_drift_for_model(model=m, client=client, default_schema=default_schema)
+        m.name: await _sqlite_probe_int_drift_for_model(
+            model=m, client=client, default_schema=default_schema, dialect=dialect_for_ds_type(datasource.type),
+        )
         for m in sql_table_models
     }
 
@@ -2270,10 +2264,11 @@ def _diff_one_sql_table_model(
     available_in_ds: set[str],
     probe_drifts: list[tuple[str, DataType, DeleteReason]],
     temporal_text: bool,
+    dialect: SqlDialect,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Per-model body of ``_collect_sql_table_diffs``: resolve live table, diff, merge probe drifts."""
     live = _resolve_live_table(
-        sql_table=model.sql_table or "", live_tables=live_tables,
+        sql_table=model.sql_table or "", live_tables=live_tables, dialect=dialect,
     )
     if live is not None and not live.readable:
         return None, set()
@@ -2304,7 +2299,7 @@ async def _collect_sql_table_diffs(
     # schema); fall back to the models' own schemas if enumeration is unavailable.
     fallback_tokens = {
         tok for m in sql_table_models
-        if (tok := split_sql_table(m.sql_table or "")[0]) is not None
+        if (tok := split_sql_table(m.sql_table or "", dialect=dialect_for_ds_type(datasource.type))[0]) is not None
     }
     try:
         if snapshot is None:
@@ -2333,7 +2328,8 @@ async def _collect_sql_table_diffs(
     )
     if findings is not None:
         for m in sql_table_models:
-            live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
+            live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables,
+                                       dialect=dialect_for_ds_type(datasource.type))
             findings.extend(list_retype_findings(model=m, live_table=live if live is not None and live.readable else None))
     return {
         m.name: _diff_one_sql_table_model(
@@ -2342,6 +2338,7 @@ async def _collect_sql_table_diffs(
             available_in_ds=available_in_ds,
             probe_drifts=probe_drifts_by_model.get(m.name, []),
             temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
+            dialect=dialect_for_ds_type(datasource.type),
         )
         for m in sql_table_models
     }

@@ -570,20 +570,20 @@ class TestScopeResolution:
         scope = await self._scope(basic_db, datasource_schema="main")
         (ref,) = scope.schemas
         assert ref.explicit is True
-        assert ref.qualify("t") == "main.t"
+        assert ref.qualify("t", dialect=DuckdbDialect()) == "main.t"
 
     async def test_multi_request_is_not_verbatim(self, basic_db) -> None:
         scope = await self._scope(basic_db, requested=["main", "openfda_rest"])
         by_name = {r.name: r for r in scope.schemas}
         assert by_name["main"].explicit is False
-        assert by_name["main"].qualify("t") == "t"               # default bare
-        assert by_name["openfda_rest"].qualify("t") == "openfda_rest.t"
+        assert by_name["main"].qualify("t", dialect=DuckdbDialect()) == "t"               # default bare
+        assert by_name["openfda_rest"].qualify("t", dialect=DuckdbDialect()) == "openfda_rest.t"
 
     async def test_single_request_is_verbatim(self, basic_db) -> None:
         scope = await self._scope(basic_db, requested=["openfda_rest"])
         (ref,) = scope.schemas
         assert ref.explicit is True
-        assert ref.qualify("t") == "openfda_rest.t"
+        assert ref.qualify("t", dialect=DuckdbDialect()) == "openfda_rest.t"
 
     async def test_resolved_tokens_are_deduplicated(self, basic_db) -> None:
         """``main`` given twice (or once bare + once as its default) collapses to
@@ -1184,7 +1184,7 @@ class TestLiveTableResolution:
     def test_three_part_resolves_via_last_two_segments(self) -> None:
         live = self._live()
         assert _resolve_live_table(
-            sql_table="cat.schema.tbl", live_tables={"schema.tbl": live}
+            sql_table="cat.schema.tbl", live_tables={"schema.tbl": live}, dialect=DuckdbDialect()
         ) is live
 
     def test_bare_model_resolves_against_the_bare_key(self) -> None:
@@ -1192,7 +1192,7 @@ class TestLiveTableResolution:
         ``_collect_live_tables`` keys bare)."""
         live = self._live()
         assert _resolve_live_table(
-            sql_table="orders", live_tables={"orders": live}
+            sql_table="orders", live_tables={"orders": live}, dialect=DuckdbDialect()
         ) is live
 
     def test_default_qualified_model_resolves_against_the_qualified_key(self) -> None:
@@ -1200,7 +1200,7 @@ class TestLiveTableResolution:
         dual-keyed (bare AND qualified) in the live map."""
         live = self._live()
         assert _resolve_live_table(
-            sql_table="main.orders", live_tables={"main.orders": live}
+            sql_table="main.orders", live_tables={"main.orders": live}, dialect=DuckdbDialect()
         ) is live
 
     def test_missing_qualified_table_does_not_fall_through_to_a_bare_twin(self) -> None:
@@ -1210,13 +1210,13 @@ class TestLiveTableResolution:
         The pre-fix ``full → last-two → last-one`` walk returned the bare twin."""
         live = self._live()
         assert _resolve_live_table(
-            sql_table="analytics.orders", live_tables={"orders": live}
+            sql_table="analytics.orders", live_tables={"orders": live}, dialect=DuckdbDialect()
         ) is None
 
     def test_quoted_identifier_is_unquoted(self) -> None:
         live = self._live()
         assert _resolve_live_table(
-            sql_table='prod."Company"', live_tables={"prod.Company": live}
+            sql_table='prod."Company"', live_tables={"prod.Company": live}, dialect=DuckdbDialect()
         ) is live
 
     async def test_configured_schema_live_map_carries_the_catalog(self, basic_db) -> None:

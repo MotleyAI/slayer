@@ -21,6 +21,7 @@ from slayer.core.query import SlayerQuery
 from slayer.cube.models import CubeProject
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
+from slayer.dbt.parser import parse_dbt_project
 from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
@@ -29,9 +30,9 @@ from slayer.osi.models import OSIDocument
 from slayer.sql.client import DelegatingSqlClient, ResultColumnType, SqlClient, TypeProbe
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2171_fixtures import column, typing_notes
+from tests._dev2171_fixtures import column, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import ds, f, flat
+from tests._osi_helpers import ds, f, flat, rel
 
 pytest.importorskip("pytest_postgresql")
 
@@ -60,6 +61,16 @@ _DOTTED_SEED = (
 )
 _COMMON_SEED = ('CREATE TABLE "order" (id INTEGER, amount INTEGER)', 'INSERT INTO "order" VALUES (1, 10)')
 _CATALOG_SEED = ("CREATE SCHEMA sales", "CREATE TABLE sales.orders (qty INTEGER)", "INSERT INTO sales.orders VALUES (7)")
+# Postgres folds an unquoted ``Sales.OrderItems`` / ``OrderItems`` to these decoys.
+_DECOY_SEED = (
+    "CREATE TABLE sales.orderitems (qty TEXT)", "INSERT INTO sales.orderitems VALUES ('t')",
+    'CREATE TABLE "OrderItems" (qty INTEGER)', 'INSERT INTO "OrderItems" VALUES (4)',
+    "CREATE TABLE orderitems (qty TEXT)", "INSERT INTO orderitems VALUES ('t')",
+    'CREATE TABLE payments (id INTEGER, orderamount INTEGER, "OrderAmount" TEXT)',
+    "INSERT INTO payments VALUES (1, 7, 'x')",
+    "CREATE TABLE custs (id INTEGER, region TEXT)", "INSERT INTO custs VALUES (1, 'n')",
+    "CREATE TABLE ords (id INTEGER, cust_id INTEGER)", "INSERT INTO ords VALUES (10, 1)",
+)
 
 
 class Live:
@@ -129,7 +140,7 @@ def _sqlite(tmp_path: Path) -> Generator[Live]:
 def _postgres(request: pytest.FixtureRequest) -> Generator[Live]:
     conn = request.getfixturevalue("postgresql")
     cur = conn.cursor()
-    for statement in (*_MIXED_SEED, *_DOTTED_SEED, *_COMMON_SEED, *_CATALOG_SEED):
+    for statement in (*_MIXED_SEED, *_DOTTED_SEED, *_COMMON_SEED, *_CATALOG_SEED, *_DECOY_SEED):
         cur.execute(statement)
     conn.commit()
     info = conn.info
@@ -144,6 +155,12 @@ def live(request: pytest.FixtureRequest, tmp_path: Path) -> Generator[Live]:
     backends = {"sqlite": lambda: _sqlite(tmp_path), "duckdb": lambda: _duckdb(tmp_path),
                 "postgres": lambda: _postgres(request)}
     with backends[request.param]() as found:
+        yield found
+
+
+@pytest.fixture
+def pg(request: pytest.FixtureRequest) -> Generator[Live]:
+    with _postgres(request) as found:
         yield found
 
 
@@ -216,21 +233,32 @@ def test_mixed_case_schema_qualified_table(live: Live) -> None:
     assert typing_notes(messages) == []
 
 
-async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live, tmp_path: Path) -> None:
-    """Postgres would fold an unquoted ``Sales.OrderItems``; probe and query both keep its case."""
-    _schemas(live)
-    models, messages = _cube(live, _qty_cube(UNQUOTED_MIXED))
-    assert _typed(models["items"], "qty") is DataType.INT
-    assert typing_notes(messages) == []
+async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
+                payload: dict[str, Any]) -> list[dict[str, Any]]:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(live.datasource)
-    await storage.save_model(models["items"])
+    for model in models:
+        await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
     try:
-        response = await engine.execute(SlayerQuery.model_validate({"source_model": "items", "dimensions": ["qty"]}))
+        return (await engine.execute(SlayerQuery.model_validate(payload))).data
     finally:
         await engine.aclose()
-    assert response.data == [{"items.qty": 4}]
+
+
+async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerModel], model: str, dimension: str) -> list[Any]:
+    rows = await _rows(live, tmp_path, models.values(), {"source_model": model, "dimensions": [dimension]})
+    return [r[f"{model}.{dimension}"] for r in rows]
+
+
+async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live, tmp_path: Path) -> None:
+    """Postgres folds an unquoted ``Sales.OrderItems`` to ``sales.orderitems``; DuckDB reads it case-insensitively."""
+    _schemas(live)
+    models, messages = _cube(live, _qty_cube(UNQUOTED_MIXED))
+    folds = live.engine.dialect.name == "postgresql"
+    assert _typed(models["items"], "qty") is (DataType.TEXT if folds else DataType.INT)
+    assert typing_notes(messages) == []
+    assert await _grouped(live, tmp_path, models, "items", "qty") == (["t"] if folds else [4])
 
 
 def test_reserved_word_table_cube(live: Live) -> None:
@@ -447,3 +475,91 @@ def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Li
     assert isinstance(found, str) and "could not be read" in found
     assert found.endswith((NotReadOnlyQueryError.__name__, ParseError.__name__)), found
     assert [s for s in live.statements if s != _PING] == []
+
+
+# ── Postgres folds unquoted identifiers (spec: importers/meaning-preservation, importers/dbt-import) ──
+
+def _importer_models(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerModel], str]:
+    """``(models, model name)`` of an import whose one model reads ``qty`` from ``table``."""
+    if importer == "cube":
+        return _cube(live, _qty_cube(table))[0], "items"
+    if importer == "dbt":
+        regular = {"name": "src", "raw_code": f"SELECT qty FROM {table}"}
+        return _dbt(live, [{"name": "m", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]}],
+                    regular_models=[regular])[0], "m"
+    return _osi(live, flat([ds("items", source=table, fields=[f("qty")])]))[0], "items"
+
+
+@pytest.mark.parametrize("importer", ["cube", "dbt", "osi"])
+@pytest.mark.parametrize(("table", "typed", "value"), [
+    (UNQUOTED_MIXED, DataType.TEXT, "t"),
+    ('"Sales"."OrderItems"', DataType.INT, 4),
+])
+async def test_postgres_reads_a_source_table_with_its_folding(pg: Live, tmp_path: Path, importer: str, table: str,
+                                                              typed: DataType, value: Any) -> None:
+    models, name = _importer_models(pg, importer, table)
+    sql_source_integer = importer == "dbt" and typed is DataType.INT
+    assert _typed(models[name], "qty") is (_probed(pg) if sql_source_integer else typed)
+    assert await _grouped(pg, tmp_path, models, name, "qty") == [value]
+
+
+async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_path: Path) -> None:
+    models, _ = _cube(pg, {"name": "payments", "sql_table": "payments", "dimensions": [
+        {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
+        {"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
+        "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]})
+    assert _typed(models["payments"], "amount") is DataType.INT
+    assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
+    (row,) = await _rows(pg, tmp_path / "measure", models.values(), {
+        "source_model": "payments", "measures": [{"formula": "total", "name": "v"}]})
+    assert row["payments.v"] == 7
+
+
+async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:
+    models, _ = _cube(pg, {"name": "recent", "dimensions": [{"name": "total", "sql": "{CUBE}.total", "type": "number"}],
+                           "sql": "WITH Recent AS (SELECT Qty AS Total FROM Sales.OrderItems) "
+                                  "SELECT Total FROM Recent ORDER BY Total"})
+    assert _typed(models["recent"], "total") is DataType.TEXT
+    assert await _grouped(pg, tmp_path, models, "recent", "total") == ["t"]
+
+
+async def test_osi_reference_to_another_datasets_field(pg: Live, tmp_path: Path) -> None:
+    models, messages = _osi(pg, flat(
+        [ds("ords", fields=[f("id"), f("cust_id"), f("up", "UPPER(Customers.Region)", datatype="String")]),
+         ds("Customers", source="custs", fields=[f("id"), f("Region", "region")])],
+        relationships=[rel("ords_customers", src="ords", to="Customers", from_columns=["cust_id"],
+                           to_columns=["id"])]))
+    assert [m for m in messages if "'up'" in m] == []
+    assert await _grouped(pg, tmp_path, models, "ords", "up") == ["N"]
+
+
+def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, include_hidden: bool = False,
+               ) -> dict[str, SlayerModel]:
+    root = tmp_path / "dbt"
+    write_yaml(root / "dbt_project.yml", {"name": "shop", "version": "1.0", "config-version": 2,
+                                          **({"quoting": quoting} if quoting is not None else {})})
+    schema: dict[str, Any] = {"version": 2, "models": [{"name": "OrderItems"}]} if include_hidden else {
+        "version": 2, "semantic_models": [{"name": "items", "model": "ref('OrderItems')",
+                                           "dimensions": [{"name": "qty", "type": "categorical"}]}]}
+    write_yaml(root / "models" / "schema.yml", schema)
+    result = DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS, sa_engine=live.engine,
+                                  include_hidden_models=include_hidden, target_dialect="postgres").convert()
+    return {m.name: m for m in result.models}
+
+
+@pytest.mark.parametrize(("quoting", "typed", "value"), [
+    (None, DataType.INT, 4),
+    ({"identifier": False}, DataType.TEXT, "t"),
+])
+async def test_dbt_relation_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
+                                                       typed: DataType, value: Any) -> None:
+    models = _dbt_files(pg, tmp_path, quoting=quoting)
+    assert _typed(models["items"], "qty") is typed
+    assert await _grouped(pg, tmp_path, models, "items", "qty") == [value]
+
+
+@pytest.mark.parametrize(("quoting", "typed"), [(None, DataType.INT), ({"identifier": False}, DataType.TEXT)])
+def test_dbt_hidden_model_lookup_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
+                                                           typed: DataType) -> None:
+    models = _dbt_files(pg, tmp_path, quoting=quoting, include_hidden=True)
+    assert _typed(models["OrderItems"], "qty") is typed

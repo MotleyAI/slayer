@@ -88,6 +88,7 @@ from slayer.sql.naming import (
     dialect_folds_case,
     expression_source_leaf,
     flat_name,
+    key_identifier,
     maybe_quote_ident,
     next_slot_result_key,
     quote_mixed_case_identifiers,
@@ -756,7 +757,7 @@ class _SemiJoinOps:
 
     def __init__(
         self, *, alias: Callable[[Tuple[str, ...]], str],
-        col: Callable[[str, str], exp.Column],
+        col: Callable[[str, str, bool], exp.Column],  # (table, name, quoted)
         table: Callable[[Any, bool], Tuple[Expression, str]],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
     ) -> None:
@@ -768,11 +769,13 @@ class _SemiJoinOps:
     def is_attached(self, hop) -> bool:
         return tuple(hop.node_path) in self.attached
 
-    def eqs(self, *, hop, parent: str, parent_name=lambda c: c) -> List[Any]:
+    def eqs(self, *, hop, parent: str, parent_name=None) -> List[Any]:
+        """``parent_name`` maps a parent key and its quoting to the spine column projecting it."""
         alias = self.alias(tuple(hop.node_path))
         return [
-            exp.EQ(this=self.col(parent, parent_name(pc)), expression=self.col(alias, hc))
-            for pc, hc in hop.join_pairs
+            exp.EQ(this=self.col(parent, parent_name(pc, pq) if parent_name else pc, pq),
+                   expression=self.col(alias, hc, hq))
+            for (pc, hc), (pq, hq) in zip(hop.join_pairs, _hop_quoting(hop))
         ]
 
     def join(self, *, inner, hop, eqs: List[Any]):
@@ -783,10 +786,15 @@ class _SemiJoinOps:
         return inner.join(relation, on=on, join_type="left" if hop.null_extended else "inner")
 
 
-def _spine_projection(*, ops: _SemiJoinOps, hops, ident):
-    """The spine's distinct outer correlation columns: ``{(parent, col): name}``
-    and their projection list."""
-    spine_cols: Dict[Tuple[str, str], str] = {}
+def _hop_quoting(hop) -> List[Tuple[bool, bool]]:
+    """Per key pair, whether each side's stored SQL quotes it."""
+    return list(hop.quoted) or [(False, False)] * len(hop.join_pairs)
+
+
+def _spine_projection(*, ops: _SemiJoinOps, hops):
+    """The spine's distinct outer correlation columns: ``{(parent, col, quoted): name}``
+    and their projection list; a column's alias is quoted as its key is."""
+    spine_cols: Dict[Tuple[str, str, bool], str] = {}
     projection: List[Any] = []
     for hop in hops:
         if not ops.is_attached(hop):
@@ -794,20 +802,20 @@ def _spine_projection(*, ops: _SemiJoinOps, hops, ident):
         parent_path = tuple(hop.node_path[:-1])
         parent = ops.alias(parent_path)
         prefix = f"{parent}__" if parent_path else ""
-        for parent_col, _hop_col in hop.join_pairs:
-            if (parent, parent_col) in spine_cols:
+        for (parent_col, _hop_col), (quoted, _) in zip(hop.join_pairs, _hop_quoting(hop)):
+            if (parent, parent_col, quoted) in spine_cols:
                 continue
-            spine_cols[(parent, parent_col)] = prefix + parent_col
-            projection.append(
-                exp.alias_(ops.col(parent, parent_col), ident(prefix + parent_col)))
+            spine_cols[(parent, parent_col, quoted)] = prefix + parent_col
+            projection.append(exp.alias_(ops.col(parent, parent_col, quoted),
+                                         key_identifier(prefix + parent_col, quoted=quoted)))
     return spine_cols, projection
 
 
-def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
+def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner):
     """Spine shape: FROM a one-row derived table projecting the outer correlation
     keys; attached hops LEFT/INNER join ON it, deeper hops ON their parent."""
     spine_alias = ops.alias(("__slayer_spine",))
-    spine_cols, projection = _spine_projection(ops=ops, hops=hops, ident=ident)
+    spine_cols, projection = _spine_projection(ops=ops, hops=hops)
     inner = inner.from_(exp.Subquery(
         this=exp.select(*projection), alias=exp.to_identifier(spine_alias),
     ))
@@ -816,7 +824,7 @@ def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner, ident):
         if ops.is_attached(hop):
             eqs = ops.eqs(
                 hop=hop, parent=spine_alias,
-                parent_name=lambda c, p=parent: spine_cols[(p, c)],
+                parent_name=lambda c, q, p=parent: spine_cols[(p, c, q)],
             )
         else:
             eqs = ops.eqs(hop=hop, parent=parent)
@@ -4522,8 +4530,9 @@ class SQLGenerator:
         return relation.relation, None, relation.join_kind
 
     def _join_key(self, *, column: Column, alias: str) -> Expression:
-        # _to_ident quotes mixed-case keys; table qualifiers are internal aliases.
-        key = exp.Column(this=self._to_ident(column.physical_name), table=exp.to_identifier(alias))
+        # Table qualifiers are internal aliases.
+        key = exp.Column(this=key_identifier(column.physical_name, quoted=column.physical_quoted),
+                         table=exp.to_identifier(alias))
         return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(column.db_type))
 
     def _hop_join(
@@ -6075,8 +6084,8 @@ class SQLGenerator:
             return combined
         ops = _SemiJoinOps(
             alias=_alias,
-            col=lambda table, name: exp.Column(
-                this=self._to_ident(name), table=exp.to_identifier(table)),
+            col=lambda table, name, quoted: exp.Column(
+                this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table)),
             table=_table,
             attached={
                 tuple(h.node_path) for h in rest
@@ -6086,7 +6095,7 @@ class SQLGenerator:
         inner = exp.select(exp.Literal.number(1))
         if any(h.null_extended for h in rest if ops.is_attached(h)):
             inner = _semi_join_spine(
-                ops=ops, hops=rest, inner=inner, ident=self._to_ident)
+                ops=ops, hops=rest, inner=inner)
         else:
             inner = _semi_join_flat(ops=ops, hops=rest, inner=inner)
         for condition in conditions:

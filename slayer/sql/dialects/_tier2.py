@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 
-from slayer.sql.dialects.base import PORTABLE_LIBRARY, NativeFn, SqlDialect
+from slayer.sql.dialects.base import PORTABLE_LIBRARY, IdentifierFolding, NativeFn, SqlDialect
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.sql.dialects.trino import PrestoFamilyDialect
@@ -38,6 +38,7 @@ class RedshiftDialect(SqlDialect):
     ilike_native: ClassVar[bool] = True
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
+    identifier_folding: ClassVar[IdentifierFolding] = "lower"
     sa_backend_names: frozenset[str] = frozenset({"redshift"})
     explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
@@ -104,6 +105,7 @@ class OracleDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = _EXTREMA
     extremum_propagates_null: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
+    identifier_folding: ClassVar[IdentifierFolding] = "upper"
     sa_backend_names: frozenset[str] = frozenset({"oracle"})
     explain_prefix: str | None = "EXPLAIN PLAN FOR"
     explain_postfix: str = ""

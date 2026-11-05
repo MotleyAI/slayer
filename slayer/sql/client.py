@@ -35,6 +35,7 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile, describe_type_name_code
 from slayer.sql.dialects.drivers import load_driver, plugin_errors
 from slayer.sql.dialects.reflection import (
+    LiveName,
     ReflectedColumn,
     ResultColumnType,
     TableKeys,
@@ -81,11 +82,12 @@ class UnparseableTypeProbeError(ValueError):
 
 
 class ObjectListing(BaseModel):
-    """The relations of one schema as the database lists them by kind (a name may repeat across kinds)."""
+    """The relations of one schema as the database lists them by kind (a name may repeat across kinds), in
+    SQLAlchemy's spelling."""
 
-    tables: list[str] = Field(default_factory=list)
-    views: list[str] = Field(default_factory=list)
-    materialized_views: list[str] = Field(default_factory=list)
+    tables: list[LiveName] = Field(default_factory=list)
+    views: list[LiveName] = Field(default_factory=list)
+    materialized_views: list[LiveName] = Field(default_factory=list)
 
 
 def _dispose_engine_quietly(engine: sa.Engine) -> None:

@@ -1,6 +1,6 @@
 """The join-key spelling contract: ``join_pairs`` entries name declared base
 columns by ``Column.name`` on each side; the physical spelling comes from one
-seam (``Column.physical_name`` / ``physical_join_pairs``)."""
+seam (``Column.physical_name`` over ``join_key_columns``)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import JoinKeyError
-from slayer.core.join_walker import edges_between, physical_join_pairs
+from slayer.core.join_walker import OrientedJoin, edges_between, join_key_columns
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -39,6 +39,10 @@ from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1902_fixtures import customers_model, orders_model, regions_model
+
+
+def _physical_pairs(*, edge: OrientedJoin, source: SlayerModel, target: SlayerModel) -> list[tuple[str, str]]:
+    return [(s.physical_name, t.physical_name) for s, t in join_key_columns(edge=edge, source=source, target=target)]
 
 
 def _orders(*columns: Column, pairs: list[list[str]], target: str = "customers") -> SlayerModel:
@@ -236,19 +240,19 @@ class TestPhysicalJoinPairs:
     def test_forward_orientation(self):
         orders, customers = orders_model(), customers_model()
         (edge,) = edges_between(source=orders, target=customers)
-        assert physical_join_pairs(edge=edge, source=orders, target=customers) == [
+        assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "customer_pk")]
 
     def test_reverse_orientation(self):
         orders, customers = orders_model(), customers_model()
         (edge,) = edges_between(source=customers, target=orders)
-        assert physical_join_pairs(edge=edge, source=customers, target=orders) == [
+        assert _physical_pairs(edge=edge, source=customers, target=orders) == [
             ("customer_pk", "cust_fk")]
 
     def test_quoted_key_unquoted(self):
         orders, customers = orders_model(), customers_model(pk_sql='"CustPK"')
         (edge,) = edges_between(source=orders, target=customers)
-        assert physical_join_pairs(edge=edge, source=orders, target=customers) == [
+        assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "CustPK")]
 
     def test_unresolvable_target_key_raises(self):
@@ -256,7 +260,7 @@ class TestPhysicalJoinPairs:
         customers = _customers()
         (edge,) = edges_between(source=orders, target=customers)
         with pytest.raises(JoinKeyError, match="'cust_key'"):
-            physical_join_pairs(edge=edge, source=orders, target=customers)
+            _physical_pairs(edge=edge, source=orders, target=customers)
 
     async def test_query_crossing_unresolvable_join_fails_before_sql(self):
         with tempfile.TemporaryDirectory() as d:

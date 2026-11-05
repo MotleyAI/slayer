@@ -25,7 +25,7 @@ import sqlglot
 from sqlalchemy import event
 
 from slayer.async_utils import run_sync
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -36,7 +36,8 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine import ingestion
 from slayer.engine.ingestion import ingest_datasource, ingest_datasource_idempotent
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, run_over_caller_engine
+from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.sql import client, engine_factory
 from slayer.sql.client import ResultColumnType
 from slayer.sql.dialects import SnowflakeDialect
@@ -1081,3 +1082,44 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
     model = run_sync(storage.get_model("inferred", data_source="sf_test"))
     typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}
     assert typed == {"ints": DataType.INT, "empty": DataType.INT}
+
+
+def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engine, sf_transient_schema,
+                                                         tmp_path) -> None:
+    '''A quoted lower-case ``"lower_items"`` is not ``LOWER_ITEMS``: ingestion and import typing name it exactly.'''
+    with sf_engine.connect() as conn:
+        conn.execute(sa.text('CREATE TABLE "lower_items" (qty NUMBER(38,0), "tags" ARRAY)'))
+        conn.execute(sa.text('INSERT INTO "lower_items" SELECT 7, ARRAY_CONSTRUCT(1, 2)'))
+        conn.commit()
+    try:
+        live = LiveDatasource(offline_reason=None, data_source="sf_test", db_type="snowflake", dialect="snowflake")
+        sql_table = f'{sf_transient_schema}."lower_items"'
+        run_over_caller_engine(sf_engine, data_source="sf_test", work=lambda client: live.collect(
+            client=client, convert=lambda: live.source(sql_table=sql_table)))
+        source = live.source(sql_table=sql_table)
+        assert isinstance(source, LiveSource) and source.column("qty") == (DataType.INT, None)
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(sf_datasource))
+        run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema))
+        model = run_sync(storage.get_model("lower_items"))
+        assert model is not None
+        assert model.sql_table == f'{sf_transient_schema}."lower_items"'
+        tags = model.get_column("tags")
+        assert tags is not None
+        assert tags.element_type is DataType.INT
+        assert tags.sql == '"tags"'
+        engine = SlayerQueryEngine(storage=storage)
+        rows = run_sync(engine.execute({"source_model": "lower_items", "dimensions": ["qty"]})).data
+        assert [r["lower_items.qty"] for r in rows] == [7]
+    finally:
+        with sf_engine.connect() as conn:
+            conn.execute(sa.text('DROP TABLE IF EXISTS "lower_items"'))
+            conn.commit()
+
+
+def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_models) -> None:
+    '''Profiling reads ``orders``/``customer_id`` as Snowflake folds them (``ORDERS``/``CUSTOMER_ID``).'''
+    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    report = run_sync(engine.detect_join_cardinality(data_source="sf_test", model="orders"))
+    (finding,) = [f for f in report.findings if f.target_model == "customers"]
+    assert finding.detected is JoinCardinality.MANY_TO_ONE

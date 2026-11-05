@@ -43,6 +43,7 @@ from slayer.mcp.server import (
 )
 from slayer.search.index import build_in_memory_corpus
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -410,10 +411,10 @@ class TestLiveNameSurvivesToTheReport:
         )
         assert entry.tool == "dlt"
 
-        # The reconstruction that used to back the idempotent report loses it.
+        # The one sql_table reader recovers it too.
         assert internal_table_rule(
-            _bare_table_name("project.dataset._dlt_loads")
-        ) is None
+            _bare_table_name("project.dataset._dlt_loads", dialect=dialect_for_ds_type("bigquery"))
+        ) == "dlt"
         # The carried live name does not.
         assert internal_table_rule(entry.table_name) == "dlt"
 

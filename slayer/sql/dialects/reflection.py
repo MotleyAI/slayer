@@ -6,11 +6,11 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
-from typing import Any, Protocol, TypeVar
+from typing import Annotated, Any, Protocol, TypeVar
 
 import sqlalchemy as sa
 import sqlalchemy.dialects.mssql as _sqla_mssql
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidatorFunctionWrapHandler, WrapValidator
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -27,14 +27,22 @@ class CatalogEngine(Protocol):
     def connect(self) -> AbstractContextManager[Any]: ...
 
 
+def _as_given(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+    return value if isinstance(value, str) else handler(value)
+
+
+#: A live name in SQLAlchemy's spelling: a ``quoted_name`` (a lower-case Snowflake / Oracle name) keeps its flag.
+LiveName = Annotated[str, WrapValidator(_as_given)]
+
+
 class TableLocation(BaseModel):
-    """One live table; an unset schema or catalog is the connection's current one."""
+    """One live table, its names in SQLAlchemy's spelling; an unset schema or catalog is the connection's current one."""
 
     model_config = ConfigDict(frozen=True)
 
-    name: str
-    schema_name: str | None = None
-    catalog: str | None = None
+    name: LiveName
+    schema_name: LiveName | None = None
+    catalog: LiveName | None = None
 
 
 class ReflectedColumn(BaseModel):
@@ -49,6 +57,8 @@ class ReflectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
+    quoted: bool = False
 
 
 class ResultColumnType(BaseModel):
@@ -460,7 +470,7 @@ def column_from_sa_type(
         db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
     return ReflectedColumn(
         name=name, type=data_type, element_type=element_type, is_float=_sa_type_is_float(sa_type), db_type=db_type,
-        comment=clean_comment(comment),
+        comment=clean_comment(comment), quoted=getattr(name, "quote", None) is True,
     )
 
 

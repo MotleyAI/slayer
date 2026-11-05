@@ -12,6 +12,39 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.models import Column, is_base_column_sql
 from slayer.sql.column_expansion import root_scope_column_ids
+from slayer.sql.dialects import SqlDialect
+from slayer.sql.naming import as_sql_dialect, denoted_name
+
+
+class UndecidableIdentifierCaseError(Exception):
+    """An import without a datasource dialect whose physical SQL holds identifiers whose meaning depends on it."""
+
+    def __init__(self, identifiers: Iterable[str]) -> None:
+        self.identifiers = list(dict.fromkeys(identifiers))
+        super().__init__(
+            f"Cannot tell which database objects the unquoted names {', '.join(map(repr, self.identifiers))} name "
+            f"without the datasource's dialect: configure the datasource (it need not be reachable), or quote the "
+            f"names in the source.")
+
+
+def physical_identifier(col: Column, *, dialect: str | None) -> exp.Identifier:
+    """The identifier a base column's SQL reads (its name when it has none)."""
+    try:
+        node = sqlglot.parse_one(col.sql, read=dialect) if col.sql is not None else None
+    except SqlglotError:  # a reserved word such as `from`
+        node = None
+    if isinstance(node, exp.Column) and isinstance(node.this, exp.Identifier):
+        return node.this
+    return exp.to_identifier(col.physical_name)
+
+
+def live_exact_name(name: str, *, dialect: SqlDialect | None) -> str:
+    """The exact name a live name in SQLAlchemy's spelling denotes (an upper-case Snowflake / Oracle name is
+    reported lowercased, a lower-case one flagged quoted)."""
+    if (dialect is not None and dialect.identifier_folding == "upper" and getattr(name, "quote", None) is not True
+            and name == name.lower()):
+        return name.upper()
+    return str(name)
 
 
 class PhysicalIndex:
@@ -19,44 +52,41 @@ class PhysicalIndex:
 
     def __init__(self, columns: Iterable[Column], *, dialect: str | None, live: Iterable[str] = ()) -> None:
         self.dialect = dialect
-        self._strategy = Dialect.get_or_raise(dialect).normalization_strategy
+        self._sql_dialect = as_sql_dialect(dialect)
+        folds = self._sql_dialect is not None and self._sql_dialect.identifier_folding != "none"
+        self._insensitive = not folds and (
+            Dialect.get_or_raise(dialect).normalization_strategy is NormalizationStrategy.CASE_INSENSITIVE)
         self.columns = list(columns)
         # Physical spellings: exact name -> whether written unquoted.
         self._reads: dict[int, tuple[str, bool]] = {
-            id(c): self._spelling(self._identifier(c)) for c in self.columns if c.is_base and c.filter is None}
-        self._known: dict[str, bool] = dict.fromkeys(live, False)
+            id(c): self._spelling(physical_identifier(c, dialect=dialect))
+            for c in self.columns if c.is_base and c.filter is None}
+        self._known: dict[str, bool] = dict.fromkeys(
+            (live_exact_name(n, dialect=self._sql_dialect) for n in live), False)
         for name, unquoted in self._reads.values():
             self._known[name] = self._known.get(name, False) or unquoted
 
-    def _identifier(self, col: Column) -> exp.Identifier:
-        try:
-            node = sqlglot.parse_one(col.sql, read=self.dialect) if col.sql is not None else None
-        except SqlglotError:  # a reserved word such as `from`
-            node = None
-        if isinstance(node, exp.Column) and isinstance(node.this, exp.Identifier):
-            return node.this
-        return exp.to_identifier(col.physical_name)
-
     def _spelling(self, ident: exp.Identifier) -> tuple[str, bool]:
-        """``(exact name, unquoted)``: an unquoted name folded per the dialect."""
-        if ident.quoted or self._strategy in (NormalizationStrategy.CASE_SENSITIVE,
-                                              NormalizationStrategy.CASE_INSENSITIVE):
-            return ident.name, not ident.quoted
-        return (ident.name.upper() if self._strategy is NormalizationStrategy.UPPERCASE else ident.name.lower()), True
+        """``(exact name, unquoted)`` as SLayer reads ``ident``."""
+        return denoted_name(ident, dialect=self._sql_dialect), not ident.quoted
 
     def _matches(self, ident: exp.Identifier, names: dict[str, bool]) -> list[str]:
-        """The names ``ident`` denotes: quoted exactly, unquoted folded (an unquoted exact spelling wins)."""
-        name, unquoted = self._spelling(ident)
-        if not unquoted or self._strategy is not NormalizationStrategy.CASE_INSENSITIVE:
-            return [n for n in names if n == name]
-        return ([n for n, u in names.items() if u and n == name]
-                or [n for n in names if n.lower() == name.lower()])
+        """The exact names ``ident`` denotes; an unquoted one also matches as written (Snowflake's ``"foo"``)."""
+        if self._insensitive and not ident.quoted:
+            return ([n for n, u in names.items() if u and n == ident.name]
+                    or [n for n in names if n.lower() == ident.name.lower()])
+        candidates = {self._spelling(ident)[0], *([] if ident.quoted else [ident.name])}
+        return [n for n in names if n in candidates]
+
+    def live_names(self, ident: exp.Identifier) -> list[str]:
+        """The exact live names ``ident`` denotes."""
+        return self._matches(ident, self._known)
 
     def _targets(self, ident: exp.Identifier) -> list[str]:
         return self._matches(ident, self._known) or [self._spelling(ident)[0]]
 
     def _named(self, ident: exp.Identifier, col: Column) -> bool:
-        return bool(self._matches(ident, {col.name: True}))
+        return bool(self._matches(ident, {self._spelling(exp.to_identifier(col.name))[0]: True}))
 
     def reader(self, ident: exp.Identifier) -> Column | None:
         """The unfiltered base column reading ``ident``'s physical column, a same-named one first."""
