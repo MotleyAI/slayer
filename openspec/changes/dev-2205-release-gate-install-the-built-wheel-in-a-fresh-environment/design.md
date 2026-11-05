@@ -58,8 +58,10 @@ present), run `poetry build`, then upload. No `slayer.*` package changes; `syste
     per-PR doc check already requires every unmarked README query to run on the demo, so a new README
     query cannot newly block a release. (default)
 12. **MCP responses are validated as payloads**: each tool call must succeed with exactly one text
-    content item that parses as JSON — a non-empty row list for `query`, an object whose `joins_to`
-    includes `customers` and `stores` for `inspect`. Server start-up and every call have timeouts. (codex)
+    content item that parses as JSON — a non-empty row list for `query`, bare or as the `data` of the
+    `{"data", "warnings"?, …}` envelope, an object whose `joins_to` includes `customers` and `stores` for
+    `inspect`. Server start-up and every call have timeouts, set by `--mcp-start-timeout` /
+    `--mcp-call-timeout`. (codex)
 13. **Extraction moves to `scripts/doc_examples.py`, which depends on Pydantic but never imports
     `slayer`**; `tests/_doc_examples.py` keeps the demo checks and imports extraction from it.
     Rejected (codex finding 6) switching to dataclasses, which the repo forbids. (codex)

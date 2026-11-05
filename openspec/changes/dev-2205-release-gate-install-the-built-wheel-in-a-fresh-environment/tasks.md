@@ -1,11 +1,11 @@
 ## 1. Tests first (pr-tests stage)
 
-- [ ] 1.1 `tests/test_doc_examples.py`: alt-text extraction (inline and reference-style images, nested
+- [x] 1.1 `tests/test_doc_examples.py`: alt-text extraction (inline and reference-style images, nested
   brackets, multi-line alt text, escaped brackets, several images, non-query alt text, an ordinary
   `[link](…)` not scanned); an alt-text query is checked and named by page and line; an alt text that
   mentions `source_model` without a query fails unless marked; a marked image is exempt; `README.md`
   yields its headline alt-text query. Verify: they fail before task 2.
-- [ ] 1.2 New `tests/test_release_gate.py`, invoking the gate as `python -m scripts.release_gate`: the
+- [x] 1.2 New `tests/test_release_gate.py`, invoking the gate as `python -m scripts.release_gate`: the
   real gate passes end-to-end (CLI and MCP legs) against the dev env's `slayer` binary, given a stand-in
   wheel whose metadata carries the dev version and a `--checkout` override pointing at a temp dir (the
   dev install is editable, so the real checkout root would fail provenance — which a separate test
@@ -14,7 +14,7 @@
   inside the checkout, MCP `isError`, MCP non-JSON / empty-list response, MCP start-up timeout, zero
   README queries — each exit non-zero with the `release gate: <check>:` line naming the check. Verify:
   they fail before task 3.
-- [ ] 1.3 Workflow-structure test: in both `publish.yml` and `publish-test.yml` the wheel-gate step runs
+- [x] 1.3 Workflow-structure test: in both `publish.yml` and `publish-test.yml` the wheel-gate step runs
   after "Build package" and before the upload step. Verify: fails before task 4.
 
 ## 2. Shared extractor with alt text

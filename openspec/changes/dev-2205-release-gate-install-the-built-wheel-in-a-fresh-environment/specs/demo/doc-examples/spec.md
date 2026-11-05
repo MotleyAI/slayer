@@ -72,8 +72,8 @@ check below passes on that install; any failure SHALL stop the upload and name t
   checked README query SHALL return at least one row, and the demo `orders` model SHALL join to
   `customers` and `stores`.
 - Through the installed `slayer mcp --demo` over stdio, started on its own empty storage, every checked
-  README query SHALL return a successful, non-empty JSON row list, and inspecting the demo `orders`
-  model SHALL report joins to `customers` and `stores`.
+  README query SHALL return a successful, non-empty JSON row list, bare or in the `data` envelope, and
+  inspecting the demo `orders` model SHALL report joins to `customers` and `stores`.
 - The gate SHALL send no usage reporting.
 
 #### Scenario: A working wheel is uploaded
