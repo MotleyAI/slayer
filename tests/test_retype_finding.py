@@ -280,8 +280,9 @@ class TestScalarAndList:
 
     async def test_no_type_name_from_a_160_client(self, duck: Duck) -> None:
         """A 1.6.0 client's category probe reports no database type name."""
+        engine = duck.engine(client_factory=_category_gateway)
         with pytest.warns(FutureWarning, match="get_result_column_types"):
-            entries = await _validate(duck.engine(client_factory=_category_gateway), "ds")
+            entries = await _validate(engine, "ds")
         found = _retypes(entries, "legacy_sql")
         _assert_live(found["span"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type=None)
 

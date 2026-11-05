@@ -181,9 +181,10 @@ async def test_osi_import_probes_through_a_1_6_0_client(shop_db: str) -> None:
 async def test_drift_validation_probes_through_a_1_6_0_client(shop_db: str) -> None:
     ds = shop_datasource(shop_db)
     gateway = FullGateway160(SlayerSQLClient(datasource=ds))
+    models = [paid_sql_model()]
     try:
         with pytest.warns(FutureWarning, match=DEPRECATION):
-            await validate_datasource(datasource=ds, models=[paid_sql_model()], client=gateway)  # pyright: ignore[reportArgumentType]
+            await validate_datasource(datasource=ds, models=models, client=gateway)  # pyright: ignore[reportArgumentType]
     finally:
         await gateway.aclose()
         engine_factory.invalidate_engine(ds)

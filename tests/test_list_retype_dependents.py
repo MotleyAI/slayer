@@ -22,6 +22,7 @@ from slayer.cli import _run_ingest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
+from slayer.engine.broken_dependents import FoundBreak, report_broken
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import IdempotentIngestResult
@@ -37,6 +38,8 @@ LIVE = (
     "INSERT INTO orders VALUES (1, 1, 10.0), (2, 2, 5.0)",
     "CREATE TABLE notes (id INTEGER, tags VARCHAR)",
     "INSERT INTO notes VALUES (1, 'x')",
+    "CREATE TABLE skills (id INTEGER, langs VARCHAR[], tools VARCHAR[])",
+    "INSERT INTO skills VALUES (1, ['go'], ['git'])",
 )
 TAGS = "contractors.tags"
 NT = ModelMeasure(name="nt", formula="count_distinct(tags)")
@@ -64,6 +67,12 @@ def notes() -> SlayerModel:
     return SlayerModel(name="notes", sql_table="notes", data_source="ds", columns=[
         Column(name="id", type=DataType.INT, primary_key=True), Column(name="tags", type=DataType.TEXT)],
         measures=[ModelMeasure(name="nn", formula="count_distinct(tags)")])
+
+
+def skills(*, measures: tuple[ModelMeasure, ...]) -> SlayerModel:
+    return SlayerModel(name="skills", sql_table="skills", data_source="ds", columns=[
+        Column(name="id", type=DataType.INT, primary_key=True), Column(name="langs", type=DataType.TEXT),
+        Column(name="tools", type=DataType.TEXT)], measures=list(measures))
 
 
 async def _seed(base: str, *, models: tuple[SlayerModel, ...],
@@ -168,6 +177,12 @@ class TestReported:
             broken = _by_key(await env.reingest())
         _assert_list_type_break(broken[("orders", "measure", "nc")])
 
+    async def test_attributed_to_the_column_that_breaks_it(self) -> None:
+        mixed = ModelMeasure(name="mixed", formula="count(langs) + count_distinct(tools)")
+        async with _env(skills(measures=(mixed,))) as env:
+            broken = _by_key(await env.reingest())
+        assert broken[("skills", "measure", "mixed")].column == "skills.tools", broken
+
     async def test_the_retype_is_saved_although_dependants_break(self) -> None:
         async with _env(contractors()) as env:
             result = await env.reingest()
@@ -203,6 +218,23 @@ class TestNotReported:
         assert ("contractors", "measure", "nt") in broken, broken
         assert ("contractors", "measure", "ghostly") not in broken, broken
 
+    async def test_a_retype_whose_save_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async with _env(contractors()) as env:
+            save = env.storage.save_model
+
+            async def refusing(model: SlayerModel, **kwargs: Any) -> None:
+                if model.name == "contractors":
+                    raise OSError("disk full")
+                await save(model, **kwargs)
+
+            monkeypatch.setattr(env.storage, "save_model", refusing)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = await env.reingest()
+        assert [e.model_name for e in result.errors] == ["contractors"], result.errors
+        assert result.broken_dependents == [], result.broken_dependents
+        assert not [w for w in caught if isinstance(w.message, SlayerBrokenDependentWarning)], caught
+
     @pytest.mark.parametrize("marker", ["notes", "label"])
     async def test_a_name_mention_that_is_no_reference_is_not_checked(self, monkeypatch: pytest.MonkeyPatch,
                                                                      marker: str) -> None:
@@ -213,6 +245,25 @@ class TestNotReported:
         assert ("contractors", "measure", "nt") in _by_key(result), result.broken_dependents
         assert not [b for b in result.broken_dependents if b.model == "notes" or b.name == "label"], (
             result.broken_dependents)
+
+
+class TestReportBroken:
+    @staticmethod
+    def _found(*, joint: bool) -> FoundBreak:
+        payload = BrokenDependentWarning(model="m", data_source="ds", dependent_kind="measure", name="x",
+                                         column="a.p", error_type="ListTypeError", error="e")
+        return FoundBreak(causes=[("a", "p"), ("b", "q")], payload=payload, joint=joint)
+
+    def test_a_joint_break_needs_every_cause_saved(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            assert report_broken([self._found(joint=True)], unsaved={"b"}) == []
+
+    def test_a_single_cause_break_names_its_first_saved_column(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            (entry,) = report_broken([self._found(joint=False)], unsaved={"a"})
+        assert entry.column == "b.q", entry
 
 
 class TestUnchecked:

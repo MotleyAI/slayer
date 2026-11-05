@@ -23,7 +23,7 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.engine import query_engine, schema_drift
-from slayer.engine.broken_dependents import broken_dependents
+from slayer.engine.broken_dependents import broken_dependents, report_broken
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
@@ -1591,7 +1591,7 @@ async def _run_additive_pass(
 
     name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
     rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
-    broken = await broken_dependents(
+    found = await broken_dependents(
         datasource=datasource, storage=storage, client=client, stored=list(stored.values()),
         retyped=[plan.models[n] for n in rest if n in stored],
     )
@@ -1602,6 +1602,7 @@ async def _run_additive_pass(
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
             errors.append(schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.model_name for e in errors}
+    broken = report_broken(found, unsaved=failed)
 
     additions = [
         schema_drift.ModelAddition(
