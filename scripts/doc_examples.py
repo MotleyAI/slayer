@@ -32,6 +32,8 @@ NOT_A_QUERY_RE = re.compile(r"^<!--\s*doc-check:\s*not-a-query\s*-->$")
 FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>[^`]*)$")
 SOURCE_MODEL_RE = re.compile(r"\bsource_model\b")
 REFERENCE_RE = re.compile(r"(?<![\w/.\-])jaffle_shop(?:\.[A-Za-z_]\w*)+")
+# HTML comments and inline code spans (which never cross a blank line), leftmost first.
+NON_IMAGE_PROSE_RE = re.compile(r"<!--.*?-->|(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.DOTALL)
 
 _UNPARSED = object()
 
@@ -129,14 +131,20 @@ def _alt_text_end(text: str, start: int) -> int | None:
     return None
 
 
+def _blank_out(match: re.Match[str]) -> str:
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+
 def _image_blocks(lines: list[str], prose: str) -> list[DocBlock]:
     """Alt texts of inline (``![alt](url)``) and reference-style (``![alt][ref]``) images in ``prose``."""
+    # Images are found in the masked text; alt text is read from the original, code spans included.
+    masked = NON_IMAGE_PROSE_RE.sub(_blank_out, prose)
     blocks: list[DocBlock] = []
-    pos = prose.find("![")
+    pos = masked.find("![")
     while pos != -1:
-        end = _alt_text_end(prose, pos + 1)
-        if end is None or pos > 0 and prose[pos - 1] == "\\" or prose[end + 1:end + 2] not in ("(", "["):
-            pos = prose.find("![", pos + 2)
+        end = _alt_text_end(masked, pos + 1)
+        if end is None or pos > 0 and masked[pos - 1] == "\\" or masked[end + 1:end + 2] not in ("(", "["):
+            pos = masked.find("![", pos + 2)
             continue
         index = prose.count("\n", 0, pos)
         line_start = prose.rfind("\n", 0, pos) + 1
@@ -144,7 +152,7 @@ def _image_blocks(lines: list[str], prose: str) -> list[DocBlock]:
             kind="image alt text", lines=lines, index=index, lang="", body=prose[pos + 2:end],
             first_body_line=index + 1, standalone=not prose[line_start:pos].strip(),
         ))
-        pos = prose.find("![", end + 1)
+        pos = masked.find("![", end + 1)
     return blocks
 
 

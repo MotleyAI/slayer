@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -199,8 +200,9 @@ def checkout(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(600)  # real demo ingest + CLI + MCP legs: ~90-120 s on CI runners
 def test_real_gate_passes_against_the_dev_install(tmp_path: Path, checkout: Path) -> None:
-    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout, timeout=900)
+    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout, timeout=540)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _failed_checks(result) == []
 
@@ -334,6 +336,26 @@ def test_import_path_inside_the_checkout_fails_provenance(tmp_path: Path, checko
     assert "provenance" in _failed_checks(result), result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    "probe_output",
+    ["not json", '{"package": null, "path": []}', '["a list"]', '{"package": "\\u0000", "path": []}'],
+)
+def test_malformed_provenance_probe_output_fails_provenance(
+    tmp_path: Path, checkout: Path, probe_output: str,
+) -> None:
+    wrapper = tmp_path / "python-wrapper"
+    wrapper.write_text(
+        f"#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then printf '%s\\n' {shlex.quote(probe_output)}; exit 0; fi\n"
+        f'exec "{sys.executable}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=str(wrapper))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout)
+    assert result.returncode != 0
+    assert "provenance" in _failed_checks(result), result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_readme_without_a_query_fails_the_gate(tmp_path: Path, checkout: Path) -> None:
     repo = tmp_path / "repo"
     shutil.copytree(REPO_ROOT / "scripts", repo / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
@@ -349,18 +371,54 @@ def test_readme_without_a_query_fails_the_gate(tmp_path: Path, checkout: Path) -
 # ---------------------------------------------------------------------------
 
 
-def _steps(workflow: str) -> list[dict[str, Any]]:
-    return yaml.safe_load((REPO_ROOT / ".github" / "workflows" / workflow).read_text())["jobs"]["publish"]["steps"]
+def _workflow(workflow: str) -> dict[str, Any]:
+    return yaml.safe_load((REPO_ROOT / ".github" / "workflows" / workflow).read_text())
+
+
+def _uses(job: dict[str, Any]) -> list[str]:
+    return [s.get("uses", "") for s in job["steps"]]
+
+
+def _step(job: dict[str, Any], prefix: str) -> tuple[int, dict[str, Any]]:
+    return next((n, s) for n, s in enumerate(job["steps"]) if s.get("uses", "").startswith(prefix))
+
+
+def _needs(job: dict[str, Any]) -> set[str]:
+    needs = job.get("needs", [])
+    return {needs} if isinstance(needs, str) else set(needs)
 
 
 @pytest.mark.parametrize("workflow", WORKFLOWS)
-def test_wheel_gate_runs_between_build_and_upload(workflow: str) -> None:
-    steps = _steps(workflow)
-    uses = [s.get("uses", "") for s in steps]
-    build = [s.get("name") for s in steps].index("Build package")
-    gate = uses.index("./.github/actions/wheel-gate")
-    upload = next(n for n, u in enumerate(uses) if u.startswith("pypa/gh-action-pypi-publish"))
-    assert build < gate < upload
+def test_build_gate_and_publish_are_separate_jobs(workflow: str) -> None:
+    jobs = _workflow(workflow)["jobs"]
+    build, gate, publish = jobs["build"], jobs["gate"], jobs["publish"]
+    build_at = [s.get("name") for s in build["steps"]].index("Build package")
+    upload_at, upload = _step(build, "actions/upload-artifact")
+    assert build_at < upload_at
+    artifact = upload["with"]["name"]
+    assert upload["with"]["path"].rstrip("/") == "dist"
+
+    assert gate["permissions"] == {"contents": "read"}
+    assert _needs(gate) == {"build"}
+    download_at, download = _step(gate, "actions/download-artifact")
+    assert download["with"] == {"name": artifact, "path": "dist/"}
+    assert download_at < _uses(gate).index("./.github/actions/wheel-gate")
+
+    assert _needs(publish) == {"build", "gate"}
+    assert publish["permissions"].get("id-token") == "write"
+    download_at, download = _step(publish, "actions/download-artifact")
+    assert download["with"] == {"name": artifact, "path": "dist/"}
+    assert download_at < _step(publish, "pypa/gh-action-pypi-publish")[0]
+
+
+@pytest.mark.parametrize("workflow", WORKFLOWS)
+def test_only_the_publish_job_can_mint_an_upload_token(workflow: str) -> None:
+    spec = _workflow(workflow)
+    assert spec.get("permissions") == {"contents": "read"}
+    for name, job in spec["jobs"].items():
+        if name != "publish":
+            assert "id-token" not in (job.get("permissions") or {}), name
+    assert all("./.github/actions/wheel-gate" not in _uses(spec["jobs"][j]) for j in ("build", "publish"))
 
 
 def test_wheel_gate_action_installs_with_uv_and_runs_the_gate() -> None:

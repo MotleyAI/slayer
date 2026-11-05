@@ -71,6 +71,11 @@ present), run `poetry build`, then upload. No `slayer.*` package changes; `syste
 15. **Failures print one `release gate: <check>: <reason>` line each and exit non-zero.** (default)
 16. **`CONTRIBUTING.md` § Publishing gains one sentence on the gate; nothing under `docs/`**, since the
     release process is not user-facing. (default)
+17. **The gate runs in its own job without `id-token: write`**: `build` uploads `dist/` as an artifact,
+    `gate` (`contents: read`) downloads and gates it, and only `publish` (`needs: [build, gate]`) gets
+    `id-token: write` and uploads that same artifact, so code run by the unlocked install never sees the
+    OIDC token. Alternative: one job with the gate step before the upload, where the install's build
+    backends and the gated code could mint a PyPI upload token. (coderabbit)
 
 ## Risks / Trade-offs
 

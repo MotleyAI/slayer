@@ -345,6 +345,32 @@ class TestAltTextExtraction:
         assert _checked(_md(*lines)) == []
         assert _failures(doc_demo_storage, *lines) == []
 
+    @pytest.mark.parametrize(
+        "lines",
+        [
+            pytest.param((f"Write `![Chart of {HYPOTHETICAL}](x.png)` for an image.",), id="inline-code"),
+            pytest.param(("Write ``![a `source_model` chart](x.png)`` for an image.",), id="double-backtick-code"),
+            pytest.param(("Write `![Before", f"{HYPOTHETICAL}](x.png)` for an image.",), id="multiline-inline-code"),
+            pytest.param((f"<!-- ![Chart of {HYPOTHETICAL}](x.png) -->",), id="html-comment"),
+            pytest.param(("<!--", "![Each query names a source_model](x.png)", "-->"), id="multiline-html-comment"),
+        ],
+    )
+    def test_image_syntax_in_inline_code_or_comment_is_not_scanned(
+        self, doc_demo_storage: YAMLStorage, lines: tuple[str, ...],
+    ) -> None:
+        assert _checked(_md(*lines)) == []
+        assert _failures(doc_demo_storage, *lines) == []
+
+    def test_inline_code_inside_alt_text_is_still_checked(self) -> None:
+        assert _checked(_md(f"![Chart of `{COUNT_JSON}`](x.png)")) == [(1, COUNT)]
+
+    def test_inline_code_before_image_keeps_it_not_standalone(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "`x` ![Each query names a source_model](x.png)") != []
+
+    def test_image_after_inline_code_keeps_its_line(self) -> None:
+        md = _md("Use `code` here.", "", f"![Chart of {COUNT_JSON}](x.png) and `![not]({HYPOTHETICAL})`")
+        assert _checked(md) == [(3, COUNT)]
+
 
 class TestAltTextChecks:
     def test_unmarked_failing_query_fails_naming_page_and_source_model_line(

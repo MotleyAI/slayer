@@ -14,8 +14,10 @@
   inside the checkout, MCP `isError`, MCP non-JSON / empty-list response, MCP start-up timeout, zero
   README queries — each exit non-zero with the `release gate: <check>:` line naming the check. Verify:
   they fail before task 3.
-- [x] 1.3 Workflow-structure test: in both `publish.yml` and `publish-test.yml` the wheel-gate step runs
-  after "Build package" and before the upload step. Verify: fails before task 4.
+- [x] 1.3 Workflow-structure test: in both `publish.yml` and `publish-test.yml` a `build` job builds and
+  uploads `dist/` as an artifact; a `gate` job with only `contents: read` downloads it and runs
+  `./.github/actions/wheel-gate`; the `publish` job, the only one with `id-token: write`, `needs` both and
+  uploads the downloaded artifact. Verify: fails before task 4.
 
 ## 2. Shared extractor with alt text
 
@@ -43,8 +45,8 @@
   "motley-slayer[all] @ file://<abs>"` into isolated `UV_TOOL_DIR` / `UV_TOOL_BIN_DIR` under
   `$RUNNER_TEMP`, then `poetry run python -m scripts.release_gate --slayer <bin>/slayer --wheel <abs>`.
   Verify: the action YAML parses and task 1.3 passes once wired in.
-- [x] 4.2 Call `./.github/actions/wheel-gate` in `publish.yml` and `publish-test.yml` between "Build
-  package" and the upload. Verify: task 1.3 passes.
+- [x] 4.2 Split `publish.yml` and `publish-test.yml` into `build` → `gate` → `publish` jobs as in task
+  1.3. Verify: task 1.3 passes.
 
 ## 5. Docs and gates
 

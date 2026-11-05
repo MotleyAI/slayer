@@ -21,7 +21,7 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from scripts.doc_examples import REPO_ROOT, DocQuery, load_page
 
@@ -41,6 +41,11 @@ class GateFailure(Exception):
         super().__init__(f"{check}: {reason}")
         self.check = check
         self.reason = reason
+
+
+class ProbeResult(BaseModel):
+    package: str
+    path: list[str]
 
 
 class Options(BaseModel):
@@ -133,9 +138,16 @@ def check_provenance(opts: Options, *, leg: Path) -> None:
     probe = _run([*_interpreter(opts.slayer), "-c", PROBE], check="provenance", leg=leg)
     if probe.returncode != 0:
         raise GateFailure("provenance", f"the install's interpreter cannot import slayer: {_error(probe)}")
-    found = json.loads(probe.stdout)
-    for label, entry in [("package", found["package"]), *(("import path entry", p) for p in found["path"])]:
-        if Path(entry).resolve().is_relative_to(opts.checkout):
+    try:
+        found = ProbeResult.model_validate_json(probe.stdout)
+    except ValidationError as exc:
+        raise GateFailure("provenance", f"unreadable probe output {probe.stdout[:200]!r}: {exc}") from exc
+    for label, entry in [("package", found.package), *(("import path entry", p) for p in found.path)]:
+        try:
+            inside = Path(entry).resolve().is_relative_to(opts.checkout)
+        except (OSError, ValueError) as exc:
+            raise GateFailure("provenance", f"{label} {entry!r} is not a usable path: {exc}") from exc
+        if inside:
             raise GateFailure("provenance", f"{label} {entry} lies inside the checkout {opts.checkout}")
 
 
