@@ -1386,6 +1386,15 @@ class DelegatingSqlClient:
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
 
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        """Deprecated: the 1.6.0 category probe; use ``get_result_column_types``."""
+        warn_deprecated(
+            "DelegatingSqlClient.get_column_types() returns 1.6.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        return type_categories(await self.inner.get_result_column_types(sql))
+
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
 
@@ -1421,3 +1430,32 @@ class DelegatingSqlClient:
 
     def close(self) -> None:
         self.inner.close()
+
+
+_CATEGORY_TYPES = {
+    "number": DataType.DOUBLE, "string": DataType.TEXT, "time": DataType.TIMESTAMP, "boolean": DataType.BOOLEAN,
+}
+
+
+class _CategoryProbeClient(DelegatingSqlClient):
+    """A client written for 1.6.0, whose type probe is ``get_column_types``: its categories read as types."""
+
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        warn_deprecated(
+            "A SQL client's get_column_types() is the 1.6.0 type probe and is no longer called in SLayer 2.0; "
+            "implement get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        categories: dict[str, str] = await self.inner.get_column_types(sql)  # pyright: ignore[reportAttributeAccessIssue]
+        return {name: ResultColumnType(type=_CATEGORY_TYPES.get(c, DataType.TEXT)) for name, c in categories.items()}
+
+
+def adapt_client(client: SqlClient) -> SqlClient:
+    """``client``, wrapped to probe through its 1.6.0 ``get_column_types`` when that is the only probe it serves."""
+    if isinstance(client, DelegatingSqlClient):
+        cls = type(client)
+        legacy = (cls.get_result_column_types is DelegatingSqlClient.get_result_column_types
+                  and cls.get_column_types is not DelegatingSqlClient.get_column_types)
+    else:
+        legacy = not hasattr(client, "get_result_column_types") and hasattr(client, "get_column_types")
+    return _CategoryProbeClient(client) if legacy else client

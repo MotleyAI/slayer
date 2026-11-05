@@ -38,6 +38,8 @@ PINNED: frozenset[tuple[str, str]] = frozenset({
     ("slayer/sql/client.py", "SlayerSQLClient.get_column_types()"),
     ("slayer/engine/query_engine.py", "SlayerQueryEngine.get_column_types()"),
     ("slayer/sql/client.py", "stops installing"),
+    ("slayer/sql/client.py", "A SQL client's get_column_types()"),
+    ("slayer/sql/client.py", "DelegatingSqlClient.get_column_types()"),
 })
 
 

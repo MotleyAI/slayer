@@ -29,6 +29,8 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 | `aclose()` | `None` | Release resources bound to the current event loop; the client stays usable. |
 | `close()` | `None` | Release everything; idempotent. |
 
+A client written for 1.6.0, whose type probe is `get_column_types(sql)` returning `number` / `string` / `time` / `boolean`, keeps working until SLayer 2.0: each probe reads those categories as DOUBLE, TEXT, TIMESTAMP and BOOLEAN and warns, as does `DelegatingSqlClient.get_column_types`.
+
 A `TableLocation(name, schema_name=None, catalog=None)` names a table; an unset part is the
 connection's current one.
 

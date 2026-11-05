@@ -64,7 +64,7 @@ from slayer.engine.syntax import (
     walk_parsed_refs,
 )
 from slayer.sql import sqlite_introspect
-from slayer.sql.client import SqlClient, build_sql_model_trial_query
+from slayer.sql.client import SqlClient, adapt_client, build_sql_model_trial_query
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.engine_factory import ClientCacheKey, client_cache_key
 from slayer.ir.source_bundle import added_joins
@@ -2430,7 +2430,7 @@ def validate_datasource(
         snapshot=snapshot, findings_out=findings_out,
     )
     if client is not None:
-        return validate(client=client)
+        return validate(client=adapt_client(client))
     return _validate_short_lived(datasource=datasource, validate=validate)
 
 

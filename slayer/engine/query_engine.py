@@ -162,6 +162,7 @@ from slayer.sql.client import (
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
+    adapt_client,
     build_sql_model_trial_query,
     classify_model_sql,
     type_categories,
@@ -1402,7 +1403,7 @@ class SlayerQueryEngine:
         client = self._sql_clients.get(key)
         if client is None:
             factory = self._client_factory
-            client = factory(datasource) if factory is not None else SlayerSQLClient(datasource=datasource)
+            client = adapt_client(factory(datasource)) if factory is not None else SlayerSQLClient(datasource=datasource)
             self._sql_clients[key] = client
         return client
 
