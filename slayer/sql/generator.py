@@ -52,8 +52,7 @@ from slayer.core.join_walker import (
     resolved_terminal,
 )
 from slayer.core.models import (
-    VALUE_PLACEHOLDER, Column, EmptyList, EmptyValue, aggregation_definition, rendered_formula,
-    reserved_value_param_message,
+    Column, EmptyList, EmptyValue, aggregation_definition, rendered_formula,
 )
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS as _EXPRESSION_SOURCE_KINDS
 from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
@@ -79,7 +78,6 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import is_stat_agg1, is_stat_agg2
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     AliasAllocator,
@@ -122,10 +120,10 @@ from slayer.sql.render.ranked import (
     ranked_ordered,
 )
 from slayer.sql.render.aggregates import (
-    DISPATCH_STAT,
-    aggregate_input,
+    AggregateSpec,
     apply_aggregate,
     is_builtin_agg,
+    render_aggregate,
     resolve_agg_entry,
 )
 from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
@@ -589,30 +587,6 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
     "second": frozenset({"second", "minute", "hour", "day", "week", "week_sunday",
                          "month", "quarter", "year"}),
 }
-
-
-def _percentile_literal(p: Expression) -> Expression:
-    """The numeric literal inside ``p`` (optionally signed / parenthesised), validated to [0, 1]."""
-    node, negative = p, False
-    while isinstance(node, (exp.Paren, exp.Neg)):
-        negative ^= isinstance(node, exp.Neg)
-        node = node.this
-    if not isinstance(node, exp.Literal) or node.is_string:
-        raise ValueError(
-            f"Aggregation 'percentile' parameter 'p' must be a numeric literal "
-            f"in [0, 1]; got {p.sql()!r}."
-        )
-    try:
-        value = Decimal(node.this)
-    except ArithmeticError:
-        value = Decimal("NaN")
-    if negative:
-        value = -value
-    if not value.is_finite() or not 0 <= value <= 1:
-        raise ValueError(
-            f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p.sql()}."
-        )
-    return node.copy()
 
 
 def _shift_preserves_bucket_starts(*, bucket: Granularity, shift: Granularity) -> bool:
@@ -1173,65 +1147,36 @@ class SQLGenerator:
             type=spec.column_type,
         )
 
-    def _resolve_agg_param(
-        self,
-        spec: AggRenderSpec,
-        *,
-        name: str,
-        agg_name: str,
-    ) -> Expression:
-        """A named parameter's bound SQL; a missing one fails closed."""
-        value = spec.agg_kwargs.get(name)
-        if value is None:
-            raise ValueError(
-                f"Aggregation '{agg_name}' requires parameter '{name}'. "
-                f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., '{agg_name}(measure, {name}=column)')."
-            )
-        # A copy: sqlglot re-parents a node on attach.
-        return value.value.copy()
-
     def _build_agg(
         self,
         spec: "AggRenderSpec | None" = None,
     ) -> tuple[Expression, bool]:
-        """Build an aggregation expression from an ``AggRenderSpec``."""
+        """Build an aggregation expression from an ``AggRenderSpec`` through the shared dispatch."""
         if spec is None:  # pragma: no cover — defensive
             raise ValueError("_build_agg requires a 'spec'.")
-        agg_name = spec.aggregation
-        if not agg_name:
-            return self._spec_value(spec), False
+        if not spec.aggregation:
+            return self._resolve_value_ast(spec), False
+        return render_aggregate(self._aggregate_spec(spec), dialect=self._dialect), True
 
-        if not is_builtin_agg(agg_name) or spec.formula:
-            return self._build_formula_agg(spec, agg_name), True
+    def _aggregate_spec(self, spec: AggRenderSpec) -> AggregateSpec:
+        """``spec`` fully resolved: its value AST (``None`` for a star) and its parameters' SQL."""
+        custom = not is_builtin_agg(spec.aggregation) or bool(spec.formula)
+        unvalued = spec.sql is None and spec.value is None
+        is_star = unvalued and (not spec.name if custom else spec.aggregation == "count")
+        return AggregateSpec(
+            aggregation=spec.aggregation,
+            value=None if is_star else self._resolve_value_ast(spec),
+            bindings={name: kwarg.value for name, kwarg in spec.agg_kwargs.items()},
+            input_type=spec.input_type,
+            element_type=spec.element_type,
+            formula=spec.formula,
+        )
 
-        entry = resolve_agg_entry(agg_name)
-        dispatch = entry.dispatch
+    def _build_median(self, inner: Expression) -> Expression:
+        return self._dialect.build_median(inner=inner)
 
-        # These builders resolve+filter-wrap their own inner and must run before the plain inner resolution (a
-        # join-discovery side effect).
-        if dispatch == DISPATCH_STAT:
-            return self._build_stat_agg(spec), True
-        if agg_name == "percentile":
-            return self._build_percentile(spec), True
-        if agg_name == "collect":
-            return self._dialect.build_collect(self._resolve_value_ast(spec), spec.element_type), True
-        if agg_name == "count_distinct_approx":
-            return self._dialect.build_approx_count_distinct(
-                col_expr=self._resolve_value_ast(spec),
-            ), True
-
-        is_star = agg_name == "count" and spec.sql is None and spec.value is None
-        inner = exp.Star() if is_star else self._spec_value(spec)
-
-        if agg_name == "median":
-            return self._build_median(
-                aggregate_input(value=inner, aggregation=agg_name, input_type=spec.input_type),
-            ), True
-
-        return apply_aggregate(
-            entry=entry, value=inner, input_type=spec.input_type, dialect=self._dialect,
-        ), True
+    def _build_percentile(self, spec: AggRenderSpec) -> Expression:
+        return render_aggregate(self._aggregate_spec(spec), dialect=self._dialect)
 
     def _empty_value_expr(self, empty: EmptyValue) -> Optional[Expression]:
         """An aggregate's empty value as SQL (``None``: NULL)."""
@@ -1245,74 +1190,11 @@ class SQLGenerator:
             entry=resolve_agg_entry("max"), value=value, input_type=input_type, dialect=self._dialect,
         )
 
-    def _spec_value(self, spec: AggRenderSpec) -> Expression:
-        """The spec's row value: its rendered AST, else its SQL expression, else its column."""
-        if spec.value is not None:
-            return spec.value.copy()
-        if spec.sql:
-            return self._resolve_sql(sql=spec.sql, name=spec.name, model_name=spec.model_name, type=spec.column_type)
-        return exp.Column(this=exp.to_identifier(spec.name), table=exp.to_identifier(spec.model_name))
-
-    def _aggregated_value(self, spec: AggRenderSpec) -> Expression:
-        """The value the spec's aggregation reads (a boolean input to a numeric aggregation as its integer)."""
-        return aggregate_input(
-            value=self._resolve_value_ast(spec), aggregation=spec.aggregation, input_type=spec.input_type,
-        )
-
-    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> Expression:
-        """Build SQL for formula-based aggregations (weighted_avg, custom)."""
-        formula = spec.formula
-        if formula is None:
-            raise ValueError(
-                f"Aggregation '{agg_name}' has no formula. "
-                f"Custom aggregations must define a formula."
-            )
-        if VALUE_PLACEHOLDER in spec.agg_kwargs:
-            raise SqlTemplateError(reserved_value_param_message(agg_name))
-        template = self._formula_template(agg_name=agg_name, formula=formula)
-        bindings = {
-            name: self._resolve_agg_param(spec, name=name, agg_name=agg_name)
-            for name in template.placeholder_names if name != VALUE_PLACEHOLDER
-        }
-        # The aggregated column; a source ``Column.filter`` is already baked in.
-        bindings[VALUE_PLACEHOLDER] = (
-            exp.Star() if spec.sql is None and spec.value is None and not spec.name
-            else self._aggregated_value(spec)
-        )
-        try:
-            return template.render(bindings)
-        except SqlTemplateError as e:
-            raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
-
     def _formula_template(self, *, agg_name: str, formula: str) -> SqlTemplate:
         try:
             return sql_template(text=formula, dialect=self.dialect)
         except SqlTemplateError as e:
             raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
-
-    def _build_median(self, inner: Expression) -> Expression:
-        """Build a median aggregation expression. Dispatches to the dialect"""
-        return self._dialect.build_median(inner=inner)
-
-    def _build_percentile(self, spec: AggRenderSpec) -> Expression:
-        """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent)."""
-        p = _percentile_literal(self._resolve_agg_param(spec, name="p", agg_name="percentile"))
-        return self._dialect.build_percentile(p=p, col_expr=self._aggregated_value(spec))
-
-    def _build_stat_agg(self, spec: AggRenderSpec) -> Expression:
-        """Build SQL for the statistical aggregations."""
-        agg_name = spec.aggregation
-        if is_stat_agg2(agg_name):
-            # Resolve other= first so a missing-required-param error outranks the dialect-unsupported one.
-            other_expr = self._resolve_agg_param(spec, name="other", agg_name=agg_name)
-            return self._dialect.build_covar_2arg(
-                agg_name=agg_name, col_expr=self._aggregated_value(spec), other_expr=other_expr,
-            )
-        if is_stat_agg1(agg_name):
-            return self._dialect.build_stat_agg_1arg(
-                agg_name=agg_name, col_expr=self._aggregated_value(spec),
-            )
-        raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
 
     def generate_from_planned(self, planned_query, *, bundle) -> str:
         """Render a typed ``PlannedQuery`` to finished SQL (public entry)."""

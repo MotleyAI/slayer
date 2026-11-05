@@ -30,6 +30,8 @@ Spec versions `1.0`, `0.1.0`, `0.1.1` and `0.2.0.dev0` parse silently; an unknow
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
 | `unique_keys` / `custom_extensions` | model/column `meta` |
 
+A `SLAYER` custom extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, measure formulas, column filters, model sources, SLayer-only columns and measures) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
+
 ### Fields
 
 A current-spec model exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the model. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible columns and a warning. Older wrapped documents keep every introspected column and overlay their fields on top.
@@ -59,6 +61,7 @@ An OSI metric holds a raw SQL aggregation, which SLayer converts into a formula:
 - `SUM(amount)` → `sum(amount)`, `COUNT(*)` → `count(*)`, `COUNT(DISTINCT id)` → `count_distinct(id)`
 - arithmetic, constants and allowlisted scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
 - `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`)
+- `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP(x)` → `stddev_samp(x)` etc., `CORR`, `COVAR_SAMP`, `COVAR_POP(x, y)` → `corr(x, other=y)` etc., and `APPROX_COUNT_DISTINCT(x)` → `count_distinct_approx(x)`
 - an aggregate operand is written inline when the formula language expresses it — `SUM(quantity * amount)` → `sum(quantity * amount)`, `CASE`/`IFF`, comparisons, `AND`/`OR`/`NOT`, `IS NULL` — and otherwise becomes a hidden helper column on its single owning dataset, typed from the database
 - `agg(x) FILTER (WHERE p)` → `agg(CASE WHEN p THEN x END)` (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); the predicate must be row-level and read only the aggregate's dataset, and groups are never removed
 

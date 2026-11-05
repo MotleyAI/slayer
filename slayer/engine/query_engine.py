@@ -2843,6 +2843,10 @@ class SlayerQueryEngine:
             default_time_dimension=inner_source_model.effective_default_time_dimension,
         )
 
+    async def expand_query_backed_model(self, model: SlayerModel) -> SlayerModel:
+        """The sql-mode model a query-backed ``model`` renders as, under its default variables."""
+        return await self._expand_query_backed_model(model=model)
+
     async def create_model_from_query(
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",

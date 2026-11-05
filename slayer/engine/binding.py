@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import difflib
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from decimal import Decimal
@@ -105,6 +105,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
     "bind_expr",
+    "bind_model_formula",
     "bind_filter",
     "bind_time_dimension",
     "collect_bind_records",
@@ -197,6 +198,16 @@ def bind_expr(
             parsed=parsed, value_key=value_key, scope=scope,
         ),
     )
+
+
+def bind_model_formula(
+    formula: str, *, model: SlayerModel, models: Sequence[SlayerModel], dialect: str,
+) -> ValueKey:
+    """``formula`` bound on ``model`` (saved measures inlined) against the ``models`` graph, reading no database."""
+    bundle = ResolvedSourceBundle(dialect=dialect, source_model=model, referenced_models=list(models))
+    return bind_expr(
+        parse_expr(formula), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True,
+    ).value_key
 
 
 def spelled_aggregate_key(
