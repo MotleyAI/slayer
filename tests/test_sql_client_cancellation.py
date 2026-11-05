@@ -81,10 +81,11 @@ class _Spy:
 
 
 class _Ticker:
-    """Records the largest gap between event-loop ticks while running."""
+    """Counts event-loop ticks and records the largest gap between them while running."""
 
     def __init__(self) -> None:
         self.max_gap = 0.0
+        self.ticks = 0
         self._task: asyncio.Task[None] | None = None
 
     async def _run(self) -> None:
@@ -93,6 +94,7 @@ class _Ticker:
             await asyncio.sleep(0.01)
             now = time.monotonic()
             self.max_gap = max(self.max_gap, now - last)
+            self.ticks += 1
             last = now
 
     async def __aenter__(self) -> _Ticker:
@@ -182,34 +184,38 @@ def _joined(spy: _Spy) -> None:
 
 async def _bounded_while_locked(
     ds: DatasourceConfig, call: Callable[[SlayerSQLClient], Any], spy: _Spy,
-) -> tuple[float, float]:
-    """Run ``call`` under ``wait_for(_TIMEOUT)`` against the locked file; return (elapsed, max loop gap)."""
+) -> tuple[float, float, int]:
+    """Run ``call`` under ``wait_for(_TIMEOUT)`` against the locked file; return (elapsed, max loop gap, ticks while pending)."""
     client = SlayerSQLClient(ds)
     try:
         with _exclusively_locked(ds):
             async with _Ticker() as ticker:
                 started = time.monotonic()
                 pending = call(client)
+                ticks_before = ticker.ticks
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(pending, _TIMEOUT)
                 elapsed = time.monotonic() - started
+                ticks_pending = ticker.ticks - ticks_before
                 await asyncio.sleep(0.05)
         _joined(spy)
-        return elapsed, ticker.max_gap
+        return elapsed, ticker.max_gap, ticks_pending
     finally:
         client.close()
 
 
 async def test_timeout_bounds_a_blocking_metadata_read(lite: DatasourceConfig, read_spy: _Spy) -> None:
-    elapsed, max_gap = await _bounded_while_locked(lite, lambda c: c.list_objects(None), read_spy)
+    elapsed, max_gap, ticks = await _bounded_while_locked(lite, lambda c: c.list_objects(None), read_spy)
     assert elapsed < _LOCKED_BOUND
     assert max_gap < _PROMPT
+    assert ticks > 0
 
 
 async def test_timeout_bounds_a_blocking_statement(lite: DatasourceConfig, statement_spy: _Spy) -> None:
-    elapsed, max_gap = await _bounded_while_locked(lite, lambda c: c.execute("SELECT * FROM t"), statement_spy)
+    elapsed, max_gap, ticks = await _bounded_while_locked(lite, lambda c: c.execute("SELECT * FROM t"), statement_spy)
     assert elapsed < _LOCKED_BOUND
     assert max_gap < _PROMPT
+    assert ticks > 0
 
 
 async def test_cancel_while_running_raises_at_once() -> None:

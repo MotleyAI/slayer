@@ -12,5 +12,5 @@
 ## 2. Implementation (pr-implement stage)
 
 - [x] 2.1 Rewrite `_run_sync_in_thread` in `slayer/sql/client.py`: explicit `ThreadPoolExecutor(max_workers=1, thread_name_prefix="slayer-blocking")`; await `run_in_executor`; in `finally`, `shutdown(wait=False, cancel_futures=True)` if the await was cancelled, else `shutdown(wait=True)`; keep the concise docstring (scoped-executor reason + cancellation never waits). Verify all of section 1 passes
-- [x] 2.2 Add one sentence to `docs/configuration/sql-clients.md` "Lifecycle and concurrency": cancelling a `SlayerSQLClient` call (e.g. with `asyncio.wait_for`) returns at once, except on a client built with `sa_engine=`, and a blocking call already running finishes in its worker thread on its own
+- [x] 2.2 Add one sentence to `docs/configuration/sql-clients.md` "Lifecycle and concurrency": cancelling a `SlayerSQLClient` call that runs in a worker thread (metadata reads, `ping`, and statements without an async driver), e.g. with `asyncio.wait_for`, returns at once unless the client was built with `sa_engine=`, and the blocking call itself finishes in its worker thread on its own
 - [x] 2.3 Run `poetry run pytest -m "not integration"`, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` and `poetry run la-arch-check`; all green
