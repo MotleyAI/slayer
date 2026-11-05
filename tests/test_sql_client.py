@@ -46,6 +46,9 @@ class TestMapTypeCode:
     def test_python_str_type_is_string(self) -> None:
         assert _map_type_code(str) == "string"
 
+    def test_other_python_type_is_string(self) -> None:
+        assert _map_type_code(bytes) == "string"
+
     # --- asyncpg OID integers (Postgres) ---
 
     def test_asyncpg_bool_oid(self) -> None:
