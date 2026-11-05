@@ -44,8 +44,10 @@ async def test_one_to_many_join_is_reversed(env) -> None:
 
 
 async def test_mirrored_joins_merge_into_one_relationship(env) -> None:
-    result = await export_models(env, customers(joins=[_to_orders(JoinCardinality.ONE_TO_MANY)]),
-                                 orders(measures=BASIC_MEASURES))
+    result = await export_models(
+        env,
+        customers(joins=[_to_orders(JoinCardinality.ONE_TO_MANY).model_copy(update={"name": "placed_orders"})]),
+        orders(measures=BASIC_MEASURES))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 

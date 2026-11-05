@@ -64,7 +64,6 @@ class ColumnContent(BaseModel):
     sql: str | None = None
     filter: str | None = None
     type: DataType | None = None
-    unique: bool = False
     hidden: bool = False
     format: NumberFormat | None = None
     granularity: GranularitySpec | None = None

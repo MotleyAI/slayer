@@ -659,6 +659,9 @@ class OsiToSlayerConverter:
         unique_keys = self._unique_keys(model, ds)
         if unique_keys:
             extra["osi_unique_keys"] = unique_keys
+        single = {key[0] for key in unique_keys if len(key) == 1}
+        for col in model.columns:
+            col.unique = col.unique or col.name in single
         doc_ctx = ai_context_to_dict(doc.ai_context)
         doc_ext = [e.model_dump() for e in doc.custom_extensions or []]
         if doc_ctx or doc.description or doc_ext:
@@ -1285,7 +1288,7 @@ class OsiToSlayerConverter:
             if model is None or column is None:
                 continue
             content = payload.column
-            column.unique, column.hidden = content.unique, content.hidden
+            column.hidden = content.hidden
             column.format, column.granularity = content.format, content.granularity
             column.allowed_aggregations = content.allowed_aggregations
             column.meta = {**(column.meta or {}), **(content.meta or {})} or None

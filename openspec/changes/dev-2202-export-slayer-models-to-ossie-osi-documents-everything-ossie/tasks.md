@@ -15,7 +15,7 @@
 ## 3. Exporter
 
 - [x] 3.1 `slayer/osi/exporter.py`: document, datasets and sources (table, sql-mode, filter wrapper, query-backed snapshot via the engine), fields (inlining, masks, descriptions, datatypes, `is_time`), keys. Verify: corresponding 1.1 tests pass.
-- [ ] 3.2 Relationships: FK direction, mirrored merge, key-proven undetermined cardinality, reported many-to-many / out-of-subset joins, name allocator. Verify: relationship tests pass.
+- [x] 3.2 Relationships: FK direction, mirrored merge, key-proven undetermined cardinality, reported many-to-many / out-of-subset joins, name allocator. Verify: relationship tests pass.
 - [x] 3.3 Metrics: bind with `bind_expr`, classify (Ossie component rule, decision 29), render portable SQL through the shared aggregate dispatch and the canonical scalar renderer, scope placement, quoting. Verify: metric tests pass.
 - [x] 3.4 Extensions: per-entity `SLAYER` payloads, SLayer-only columns/measures, foreign-extension validation, `--no-extensions` reporting and access-tag refusal, the report contract. Verify: extension/report tests pass.
 
@@ -26,9 +26,9 @@
 
 ## 5. Surfaces and docs
 
-- [ ] 5.1 CLI `slayer export-osi` in `slayer/cli.py` (YAML/JSON by suffix, report printing, errors). Verify: CLI tests pass.
+- [x] 5.1 CLI `slayer export-osi` in `slayer/cli.py` (YAML/JSON by suffix, report printing, errors). Verify: CLI tests pass.
 - [x] 5.2 Docs: `docs/osi/osi_export.md` + `zensical.toml` nav, `docs/reference/cli.md`, one sentence each in `docs/osi/osi_import.md` for extension restore and new aggregates. Verify: `tests/test_doc_examples.py` passes and the page is in the nav.
 
 ## 6. Gates
 
-- [ ] 6.1 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` all green.
+- [x] 6.1 Full unit suite (`poetry run pytest -m "not integration"`), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors), `poetry run la-arch-check` all green.

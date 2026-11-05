@@ -28,7 +28,7 @@ Spec versions `1.0`, `0.1.0`, `0.1.1` and `0.2.0.dev0` parse silently; an unknow
 | `datasets[].metrics[]` | a `ModelMeasure` on that dataset's model |
 | `metrics[]` | a `ModelMeasure` on an anchor model (see [Metrics](#metrics)) |
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
-| `unique_keys` / `custom_extensions` | model/column `meta` |
+| `unique_keys` / `custom_extensions` | model/column `meta`; a single-field unique key also sets `Column.unique` |
 
 A `SLAYER` custom extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, measure formulas, column filters, model sources, SLayer-only columns and measures) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
 

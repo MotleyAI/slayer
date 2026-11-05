@@ -424,7 +424,7 @@ class _Exporter:
         if meta.get("osi_ai_context"):
             field["ai_context"] = meta["osi_ai_context"]
         payload = ext.FieldPayload(entity=column.name, column=ext.ColumnContent(
-            sql=stored.sql, filter=stored.filter, type=stored.type, unique=stored.unique, hidden=stored.hidden,
+            sql=stored.sql, filter=stored.filter, type=stored.type, hidden=stored.hidden,
             format=stored.format, granularity=stored.granularity,
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))

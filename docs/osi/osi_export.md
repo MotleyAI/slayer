@@ -52,7 +52,7 @@ Each exported dataset, field, metric and relationship carries one custom extensi
 
 - join types, names, cardinalities and the model that declares each join
 - measure formulas, home models, labels and types
-- column formats, granularities, hidden flags, allowed aggregations and filters
+- column types, formats, granularities, hidden flags, allowed aggregations and filters
 - model sources (table or SQL plus filters, or saved queries plus variables), access tags, custom aggregations, and SLayer-only columns and measures
 
 SLayer-only columns read joined models. SLayer-only measures are transforms (`change_pct`, `cumsum`, …), `first`/`last`, windowed or partitioned aggregates, aggregates reading several models, and measures whose route to another model is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. `slayer import-osi` restores the SLayer structure only where the document is unedited; where a third party edited it, the Ossie content wins and the import report says so. Other vendors' extensions recorded on imported entities are written back unchanged.

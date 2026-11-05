@@ -9,7 +9,7 @@ from slayer.osi.exporter import OsiExportError
 from slayer.osi.models import OSIAIContextObject, explicit_description, render_description
 from tests._osi_export_fixtures import BASIC_MEASURES, customers, orders
 from tests._osi_export_helpers import convert_document, dataset, export, export_models, make_env, mentions, slayer_entries
-from tests._osi_helpers import by_name
+from tests._osi_helpers import by_name, ds, f, flat
 
 
 @pytest.fixture
@@ -52,3 +52,10 @@ async def test_duplicate_slayer_payloads_are_reported_and_ignored(env) -> None:
     imported = convert_document(env, edited)
     assert not by_name(imported)["orders"].hidden
     assert mentions(imported, "2 SLAYER extensions")
+
+
+async def test_single_field_unique_key_marks_the_column_unique(env) -> None:
+    doc = flat([ds("customers", fields=[f("id", "c_custkey"), f("email"), f("segment")], primary_key=["id"],
+                   unique_keys=[["email"], ["segment", "email"]])])
+    imported = by_name(convert_document(env, doc))["customers"]
+    assert {c.name: c.unique for c in imported.columns} == {"id": False, "email": True, "segment": False}

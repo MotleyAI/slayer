@@ -63,7 +63,8 @@ async def make_env(directory: Path, *, dialect: str = "duckdb", statements: list
 async def fresh_store(env: Env, name: str) -> Env:
     """``env``'s database with an empty storage directory ``name`` next to it."""
     other = env.model_copy(update={"store": env.store.parent / name})
-    await YAMLStorage(base_dir=str(other.store)).save_datasource(env.config)
+    original = await YAMLStorage(base_dir=str(env.store)).get_datasource(env.datasource)
+    await YAMLStorage(base_dir=str(other.store)).save_datasource(original or env.config)
     return other
 
 
@@ -81,7 +82,7 @@ async def save(env: Env, *models: SlayerModel) -> None:
     engine = _engine(env)
     try:
         for model in models:
-            await engine.save_model(model)
+            await engine.save_model(model.model_copy(update={"data_source": env.datasource}))
     finally:
         _close(engine, env)
 

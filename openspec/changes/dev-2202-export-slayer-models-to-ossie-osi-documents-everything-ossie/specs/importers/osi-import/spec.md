@@ -2,7 +2,7 @@
 
 ### Requirement: SLAYER extensions restore SLayer structure
 
-The importer SHALL read custom extensions with `vendor_name: SLAYER` and apply the SLayer content they carry: join type, name, cardinality and declaring model; measure formula, model, name, label, type and metadata; column display attributes, metadata and value/filter split; model hidden flag, access tags, default time dimension, metadata, custom aggregations, source structure, and SLayer-only columns and measures. Content that duplicates Ossie content (a measure's formula and model, a column's value/filter split, a model's source structure) SHALL be restored only when the payload's fingerprint matches the entity's Ossie content as found in the document; otherwise the Ossie content SHALL be imported as it would be without the extension, and the report SHALL hold an informational entry naming the entity. A payload that is malformed, of an unknown version, or attached to an entity it does not describe SHALL be reported and ignored, and the import SHALL NOT raise. Extensions of other vendors SHALL keep being stored on the entity as before.
+The importer SHALL read custom extensions with `vendor_name: SLAYER` and apply the SLayer content they carry: join type, name, cardinality and declaring model; measure formula, model, name, label, type and metadata; column display attributes, metadata, type and value/filter split; model hidden flag, access tags, default time dimension, metadata, custom aggregations, source structure, and SLayer-only columns and measures. Content that duplicates Ossie content (a measure's formula and model, a column's type and value/filter split, a model's source structure) SHALL be restored only when the payload's fingerprint matches the entity's Ossie content as found in the document; otherwise the Ossie content SHALL be imported as it would be without the extension, and the report SHALL hold an informational entry naming the entity. A payload that is malformed, of an unknown version, or attached to an entity it does not describe SHALL be reported and ignored, and the import SHALL NOT raise. Extensions of other vendors SHALL keep being stored on the entity as before.
 
 #### Scenario: Unedited formula restored
 - **WHEN** an exported metric `aov` with `sql: SUM(amount) / COUNT(*)` carries a `SLAYER` extension recording the formula `revenue / n` and a matching fingerprint
@@ -71,6 +71,14 @@ Columns and measures carried as SLayer-only content in a dataset's `SLAYER` exte
 #### Scenario: Approximate distinct count
 - **WHEN** a dataset-scoped metric's only expression is a DuckDB entry `APPROX_COUNT_DISTINCT(customer_id)` and the target is DuckDB
 - **THEN** the measure imports as an approximate distinct count of `customer_id`
+
+### Requirement: Single-field unique keys mark the column unique
+
+A `unique_keys` entry naming exactly one declared field SHALL set that field's column `unique`.
+
+#### Scenario: Single-field unique key
+- **WHEN** a dataset declares `unique_keys: [[email]]` and `email` is a declared field
+- **THEN** column `email` has `unique: true`
 
 ### Requirement: Explicit time role is recorded
 
