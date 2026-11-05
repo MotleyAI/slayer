@@ -20,7 +20,7 @@ _PENDING = f"v{SCHEMA_VERSION}-spool-"
 _CLAIMED = f"v{SCHEMA_VERSION}-claim-"
 _SUFFIX = ".json"
 # Schema 1 wrote unversioned ``spool-`` / ``claim-`` names.
-_NAME = re.compile(r"^(?:v(?P<version>[1-9][0-9]*)-)?(?P<state>spool|claim)-(?P<age>.+)\.json$")
+_NAME = re.compile(r"^(?:v(?P<version>[1-9]\d*)-)?(?P<state>spool|claim)-(?P<age>.+)\.json$", re.ASCII)
 MAX_FILES = 100
 MAX_BYTES = 1_000_000
 LEASE_TTL = datetime.timedelta(minutes=5)

@@ -722,6 +722,14 @@ def test_sender_leaves_newer_schema_files_untouched(usage_reporting_env) -> None
     assert all(p.read_text() == "{}" for p in newer)
 
 
+def test_disable_keeps_files_with_non_ascii_version_digits(usage_reporting_env) -> None:
+    quiet_config()
+    foreign = _legacy_spool_file(prefix="v2٢-spool-")
+    _spool_one()
+    assert cli(["usage-reporting", "disable"]).returncode == 0
+    assert spool_files() == [foreign]
+
+
 def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
     quiet_config()
     for i in range(60):

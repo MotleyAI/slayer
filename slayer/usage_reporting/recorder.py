@@ -164,6 +164,12 @@ class _Session:
         self.ok = 0
         self.err = 0
 
+    def count(self, *, ok: bool) -> None:
+        if ok:
+            self.ok += 1
+        else:
+            self.err += 1
+
     def buckets(self) -> tuple[str, str]:
         return _bucket(self.ok, _QUERY_BUCKETS, "21+"), _bucket(self.err, _QUERY_BUCKETS, "21+")
 
@@ -409,10 +415,7 @@ def record(
             _recorder.end_collected_sessions()
             live = _recorder.session(session)
             if key == _SESSION_QUERY_KEY and not dry_run:
-                if ok:
-                    live.ok += 1
-                else:
-                    live.err += 1
+                live.count(ok=ok)
         _recorder.touch()
     if ok and not dry_run and key in _FIRST_QUERY_KEYS:
         _note_first_query(paths.config)
