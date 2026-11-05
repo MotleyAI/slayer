@@ -1,9 +1,9 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 Export spec tests (`tests/test_osi_export_*.py`): one test per `importers/osi-export` scenario — schema validation, determinism, failing-client export, subset, sources, fields, datatypes/time role, keys, relationships, metrics, portable/dialect-only expressions, extension content, `--no-extensions`, complete report; verify they fail before implementation.
-- [ ] 1.2 Round-trip matrix tests on DuckDB and SQLite (design decision 28), including `docs/examples/13_osi_import/` import → export → import; verify they fail before implementation.
-- [ ] 1.3 Importer tests for every new `importers/osi-import` scenario (extension restore, fingerprint fallback, per-entity validation, source restore, SLayer-only content, new aggregates, explicit `is_time`); verify they fail before implementation.
-- [ ] 1.4 Dialect-token map tests covering every supported datasource alias (decision 22); CLI tests for both `cli/commands` scenarios; verify they fail before implementation.
+- [x] 1.1 Export spec tests (`tests/test_osi_export_*.py`): one test per `importers/osi-export` scenario — schema validation, determinism, failing-client export, subset, sources, fields, datatypes/time role, keys, relationships, metrics, portable/dialect-only expressions, extension content, `--no-extensions`, complete report; verify they fail before implementation.
+- [x] 1.2 Round-trip matrix tests on DuckDB and SQLite (design decision 28), including `docs/examples/13_osi_import/` import → export → import; verify they fail before implementation.
+- [x] 1.3 Importer tests for every new `importers/osi-import` scenario (extension restore, fingerprint fallback, per-entity validation, source restore, SLayer-only content, new aggregates, explicit `is_time`); verify they fail before implementation.
+- [x] 1.4 Dialect-token map tests covering every supported datasource alias (decision 22); CLI tests for both `cli/commands` scenarios; verify they fail before implementation.
 
 ## 2. Shared foundations
 
