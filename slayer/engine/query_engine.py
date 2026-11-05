@@ -2803,6 +2803,7 @@ class SlayerQueryEngine:
         *,
         model: SlayerModel,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
+        prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
         """Render a query-backed ``model`` as a virtual ``sql``-mode model (save-time cache,
         column-type probing): its stages run as a run-by-name statement, wrapped in a
@@ -2810,11 +2811,11 @@ class SlayerQueryEngine:
         main_query, named_queries = self._stages_of_model(
             model=model, runtime_kwarg=runtime_kwarg or {},
         )
-        # No datasource hint, so inner resolution uses the priority list — letting
+        # No hint by default, so inner resolution uses the priority list — letting
         # ``get_result_column_types`` recover from a stale persisted ``data_source``.
         rendered = await self._plan_and_render(
             query=main_query, named_queries=named_queries, runtime_kwarg=runtime_kwarg or {},
-            prefer_data_source=None, splice_chain=(model.name,), as_statement=True,
+            prefer_data_source=prefer_data_source, splice_chain=(model.name,), as_statement=True,
         )
         root_planned = rendered.planned_list[-1]
         dialect, bundle = rendered.dialect, rendered.bundle
@@ -2856,8 +2857,8 @@ class SlayerQueryEngine:
         )
 
     async def expand_query_backed_model(self, model: SlayerModel) -> SlayerModel:
-        """The sql-mode model a query-backed ``model`` renders as, under its default variables."""
-        return await self._expand_query_backed_model(model=model)
+        """The sql-mode model a query-backed ``model`` renders as, under its default variables, in its datasource."""
+        return await self._expand_query_backed_model(model=model, prefer_data_source=model.data_source)
 
     async def create_model_from_query(
         self,

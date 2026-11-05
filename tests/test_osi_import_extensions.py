@@ -85,6 +85,30 @@ async def test_edited_field_falls_back_to_its_expression(env) -> None:
     assert mentions(imported, "completed_amount", severity="info")
 
 
+async def test_edited_field_drops_its_type_dependent_attributes(env) -> None:
+    result = await export_models(env, customers(), rich_orders())
+    ordered_on = field(dataset(result.document, "orders"), "ordered_on")
+    assert ordered_on is not None
+    ordered_on.update(expression={"sql": "status"}, datatype="String")
+    restored = by_name(convert_document(env, result.document))["orders"]
+    column = restored.get_column("ordered_on")
+    assert column is not None
+    assert column.granularity is None
+    SlayerModel.model_validate(restored.model_dump())
+
+
+async def test_edited_metric_attributes_stay_on_its_model(env) -> None:
+    result = await export_models(env, customers(measures=[measure("n", "count(*)", label="Customers")]),
+                                 orders(measures=[measure("n", "count(*)", label="Orders")]))
+    for name in ("customers", "orders"):
+        n_metric = metric(dataset(result.document, name), "n")
+        assert n_metric is not None
+        n_metric["expression"] = {"sql": "COUNT(1)"}
+    models = by_name(convert_document(env, result.document))
+    labels = {name: (m.label if (m := models[name].get_measure("n")) else None) for name in ("customers", "orders")}
+    assert labels == {"customers": "Customers", "orders": "Orders"}
+
+
 async def test_restored_measure_attributes(env) -> None:
     model = orders(measures=[*BASIC_MEASURES, measure("avg_amount", "avg(amount)", label="Average",
                                                       meta={"owner": "finance"})])

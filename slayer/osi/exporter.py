@@ -131,6 +131,10 @@ class _Metric(BaseModel):
     name: str = ""
 
 
+#: ``(from_dataset, to, from_columns, to_columns)``.
+_Shape = tuple[str, str, list[str], list[str]]
+
+
 class _Relationship(BaseModel):
     """One FK-direction relationship and the SLayer joins it stands for."""
 
@@ -149,7 +153,7 @@ def _slayer_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _strip_self(tree: exp.Expr) -> exp.Expr:
-    for column in list(tree.find_all(exp.Column)):
+    for column in tree.find_all(exp.Column):
         if column.table == _SELF:
             column.set("table", None)
     return tree
@@ -181,7 +185,7 @@ _AGGREGATE_MARK = "slayer_rendered_aggregate"
 def _ossie_division(tree: Expression) -> Expression:
     """Drop the ``NULLIF(d, 0)`` the composer wraps each divisor in (Ossie ``/`` reads back as SLayer ``/``);
     a rendered aggregate's own template is kept."""
-    for div in list(tree.find_all(exp.Div)):
+    for div in list(tree.find_all(exp.Div)):  # NOSONAR(S7504) — snapshot: replace() mutates the tree mid-walk
         node: exp.Expr | None = div
         while node is not None and not node.meta.get(_AGGREGATE_MARK):
             node = node.parent
@@ -189,6 +193,15 @@ def _ossie_division(tree: Expression) -> Expression:
         if node is None and isinstance(divisor, exp.Nullif) and divisor.expression == exp.Literal.number(0):
             divisor.replace(divisor.this)
     return tree
+
+
+def _refuse_slayer_only(agg: AggregateKey) -> None:
+    if agg.agg in _SLAYER_ONLY_AGGREGATIONS:
+        raise _Refused(f"uses {agg.agg}, which has no Ossie metric form", _RESTORE)
+    windowed = (agg.partition_keys is not None or agg.locus != "target" or bool(agg.args)
+                or any(k == WINDOW_PARAM for k, _ in agg.kwargs))
+    if windowed:
+        raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
 
 
 def _outermost_aggregates(key: ValueKey) -> Iterator[AggregateKey]:
@@ -508,16 +521,8 @@ class _Exporter:
                          suggestion="Key the join on unfiltered base columns exported as fields.", model=name)
             return
         forward = (name, target, sources, targets)
-        backward = (target, name, targets, sources)
-        if join.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
-            shape = forward
-        elif join.cardinality is JoinCardinality.ONE_TO_MANY:
-            shape = backward
-        elif self._is_key(target, targets):
-            shape = forward
-        elif self._is_key(name, sources):
-            shape = backward
-        else:
+        shape = self._relationship_shape(join, forward=forward)
+        if shape is None:
             self._report(f"{label} has no cardinality and its keys are a primary or unique key of neither "
                          f"side; not exported.", severity="dropped", category="relationship", model=name,
                          suggestion="Set the join's cardinality.")
@@ -535,6 +540,20 @@ class _Exporter:
             self._lossy(f"{label} ({join.cardinality.value if join.cardinality else 'no cardinality'}, "
                         f"{join.join_type.value}{', named' if join.name else ''}) imports back as a plain "
                         f"many-to-one left join from {shape[0]!r}.", model=name)
+
+    def _relationship_shape(self, join: ModelJoin, *, forward: _Shape) -> _Shape | None:
+        """``forward`` or its reverse, whichever points from the many side; ``None`` when undeterminable."""
+        name, target, sources, targets = forward
+        backward = (target, name, targets, sources)
+        if join.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
+            return forward
+        if join.cardinality is JoinCardinality.ONE_TO_MANY:
+            return backward
+        if self._is_key(target, targets):
+            return forward
+        if self._is_key(name, sources):
+            return backward
+        return None
 
     def _bad_keys(self, side: str, other: str, keys: list[str]) -> list[str]:
         ds = self.datasets[side]
@@ -611,12 +630,7 @@ class _Exporter:
 
     def _aggregate_reader(self, ds: _Dataset, agg: AggregateKey) -> str:
         """The one model ``agg`` reads, or refused."""
-        if agg.agg in _SLAYER_ONLY_AGGREGATIONS:
-            raise _Refused(f"uses {agg.agg}, which has no Ossie metric form", _RESTORE)
-        if agg.partition_keys is not None or agg.locus != "target":
-            raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
-        if agg.args or any(k == WINDOW_PARAM for k, _ in agg.kwargs):
-            raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
+        _refuse_slayer_only(agg)
         leaves = list(_row_leaves(agg.source)) + [leaf for _, v in agg.kwargs for leaf in _row_leaves(v)]
         paths = {leaf.path for leaf in leaves} or {()}
         if len(paths) != 1:
@@ -701,24 +715,31 @@ class _Exporter:
     # ---- naming and placement ----
 
     def _name_entities(self, metrics: list[_Metric]) -> None:
+        scopes = self._field_scopes()
+        dataset_scoped = [m for m in metrics if m.scope == "dataset"]
+        for metric in (m for m in dataset_scoped if m.dataset == m.home):
+            metric.name = scopes[metric.home].allocate(metric.measure.name or "measure")
+        for metric in (m for m in dataset_scoped if m.dataset != m.home):
+            metric.name = scopes[metric.dataset].allocate(f"{metric.home}_{metric.measure.name or 'measure'}")
+        self._name_document_entities([m for m in metrics if m.scope == "model"])
+
+    def _field_scopes(self) -> dict[str, _Names]:
         scopes: dict[str, _Names] = {}
         for name, ds in self.datasets.items():
             scopes[name] = _Names()
             for field in ds.fields:
                 scopes[name].allocate(field)
-        native = [m for m in metrics if m.scope == "dataset" and m.dataset == m.home]
-        for metric in native:
-            metric.name = scopes[metric.home].allocate(metric.measure.name or "measure")
-        for metric in metrics:
-            if metric.scope == "dataset" and metric.dataset != metric.home:
-                metric.name = scopes[metric.dataset].allocate(f"{metric.home}_{metric.measure.name or 'measure'}")
+        return scopes
+
+    def _name_document_entities(self, model_metrics: list[_Metric]) -> None:
+        """Explicitly named relationships first, then model metrics, then the remaining relationships."""
         document = _Names()
-        explicit = [r for r in self.relationships if any(d.join.name for d in r.declarations)]
-        for rel in explicit:
-            rel.name = document.allocate(next(d.join.name for d in rel.declarations if d.join.name))
-        for metric in metrics:
-            if metric.scope == "model":
-                metric.name = document.allocate(metric.measure.name or "measure")
+        for rel in self.relationships:
+            explicit = next((d.join.name for d in rel.declarations if d.join.name), None)
+            if explicit:
+                rel.name = document.allocate(explicit)
+        for metric in model_metrics:
+            metric.name = document.allocate(metric.measure.name or "measure")
         for rel in self.relationships:
             if not rel.name:
                 rel.name = document.allocate(f"{rel.from_dataset}_{rel.to}")

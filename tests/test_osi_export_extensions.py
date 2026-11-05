@@ -7,7 +7,9 @@ import pytest
 from slayer.core.enums import JoinCardinality, JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin
 from slayer.ingest_report import ConversionReport, ConversionResult
+from slayer.osi import slayer_extension as ext
 from slayer.osi.exporter import OsiExportResult
+from slayer.osi.models import OSIExpression
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, to_customers,
@@ -38,6 +40,20 @@ async def test_every_entity_carries_one_versioned_slayer_extension(env) -> None:
     for entity in entities(result.document):
         assert len(slayer_entries(entity)) == 1, entity["name"]
         assert isinstance(payload(entity)["version"], int)
+
+
+def test_fingerprint_normalization_is_stable() -> None:
+    # A sqlglot upgrade that changes these renderings invalidates every exported fingerprint.
+    expression = OSIExpression.model_validate({
+        "sql": "sum(amount) filter (where status = 'completed') / nullif(count(distinct customer_id), 0)",
+        "dialects": [{"dialect": "DUCKDB", "expression": "percentile_cont(0.9) within group (order by amount)"}],
+    })
+    assert ext.expression_digest(expression) == [
+        "SUM(IFF(status = 'completed', amount, NULL)) / NULLIF(COUNT(DISTINCT customer_id), 0)",
+        [["DUCKDB", "QUANTILE_CONT(amount, 0.9 ORDER BY amount)"]],
+    ]
+    source = ext.source_digest("select o_orderkey, amount from orders where region = 'US'", reader="duckdb")
+    assert source == "SELECT o_orderkey, amount FROM orders WHERE region = 'US'"
 
 
 @pytest.mark.parametrize("name", _SLAYER_ONLY_MEASURES)

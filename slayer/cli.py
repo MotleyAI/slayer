@@ -2390,7 +2390,7 @@ async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversion
             del pending[model.name]
             try:
                 await engine.save_model(model)
-            except Exception as exc:  # noqa: BLE001 — per-model isolation, reported
+            except Exception as exc:  # noqa: BLE001 — per-model isolation; reported
                 result.warnings.append(ConversionWarning(
                     model_name=model.name, category="extension", severity="info",
                     message=f"Query-backed model {model.name!r} does not restore ({exc}); kept as a sql-mode "

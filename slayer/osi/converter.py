@@ -169,6 +169,8 @@ def _build_meta(
 
 _EXTENSION = "extension"
 _EDITED = "The Ossie content was edited after export, so it wins; re-export from SLayer to restore the rest."
+_REEXPORT = "Re-export the document from SLayer."
+_IMPORT_INPUTS = "Import every model it reads."
 
 
 class OsiConversionResult(ConversionResult):
@@ -376,19 +378,16 @@ class OsiToSlayerConverter:
         if found is not None:
             self._warn(f"Metric {metric.name!r}: {_EDITED}", model_name=home, metric_name=metric.name,
                        category=_EXTENSION, severity="info", suggestion=_EDITED)
-        self._build_measure(metric=metric, doc=doc, home=home, doc_models=doc_models)
-        if found is not None:
-            self._apply_measure_attributes(metric.name, payload=found[0])
+        measure = self._build_measure(metric=metric, doc=doc, home=home, doc_models=doc_models)
+        if found is not None and measure is not None:
+            self._apply_measure_attributes(measure, payload=found[0])
 
-    def _apply_measure_attributes(self, name: str, *, payload: ext.Payload) -> None:
+    @staticmethod
+    def _apply_measure_attributes(measure: ModelMeasure, *, payload: ext.Payload) -> None:
         assert isinstance(payload, ext.MetricPayload)
-        for model in self._models.values():
-            for measure in model.measures:
-                if measure.name == name:
-                    measure.label = payload.measure.label
-                    measure.type = payload.measure.type
-                    measure.meta = {**(measure.meta or {}), **(payload.measure.meta or {})} or None
-                    return
+        measure.label = payload.measure.label
+        measure.type = payload.measure.type
+        measure.meta = {**(measure.meta or {}), **(payload.measure.meta or {})} or None
 
     def _check_duplicate_dataset_names(self) -> None:
         seen: set[str] = set()
@@ -979,30 +978,30 @@ class OsiToSlayerConverter:
         return tree.transform(canonical, copy=False)
 
     def _build_measure(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None,
-                       doc_models: list[str]) -> None:
+                       doc_models: list[str]) -> ModelMeasure | None:
         if not _legal_measure_name(metric.name):
             self._unconv(
                 f"Metric name {metric.name!r} is not a valid SLayer identifier.",
                 metric_name=metric.name,
             )
-            return
+            return None
 
         tree = self._metric_tree(metric)
         if tree is None:
-            return
+            return None
         if not doc.legacy:
             try:
                 tree = self._canonicalize_refs(tree, doc_models=doc_models, home=home)
             except LookupError as exc:
                 self._unconv(f"Metric {metric.name!r}: {exc}.", metric_name=metric.name)
-                return
+                return None
 
         scope = [home] if home is not None else doc_models
         owner_of = self._make_owner_of(scope)
         anchor = home or self._select_anchor(metric_name=metric.name, tree=tree,
                                              doc_models=doc_models, owner_of=owner_of)
         if anchor is None:
-            return  # already reported
+            return None  # already reported
 
         # Measures and columns share one namespace on the anchor model.
         anchor_model = self._models[anchor]
@@ -1012,14 +1011,14 @@ class OsiToSlayerConverter:
                 f"model {anchor!r}.",
                 metric_name=metric.name, category="duplicate_measure",
             )
-            return
+            return None
         if self._model_has_column(model_name=anchor, column=metric.name):
             self._unconv(
                 f"Metric {metric.name!r} collides with a column name on model "
                 f"{anchor!r}.",
                 metric_name=metric.name, category="name_collision",
             )
-            return
+            return None
 
         result = convert_expression(
             tree, entity_name=metric.name, owner_of=owner_of, ref_of=self._make_ref_of(anchor=anchor),
@@ -1031,7 +1030,7 @@ class OsiToSlayerConverter:
                 f"Metric {metric.name!r}: {result.reason}",
                 metric_name=metric.name,
             )
-            return
+            return None
 
         # Build the measure before materializing columns, so a rejected metric leaves no orphans.
         try:
@@ -1049,13 +1048,14 @@ class OsiToSlayerConverter:
                 f"not a valid SLayer measure ({exc}).",
                 metric_name=metric.name,
             )
-            return
+            return None
 
         self._materialize_columns(result.materialized)
         anchor_model.measures.append(measure)
         for w in result.warnings:
             self._warn(f"Metric {metric.name!r}: {w}", metric_name=metric.name,
                        category="dialect", severity="info")
+        return measure
 
     def _select_anchor(self, metric_name: str, tree: exp.Expr, doc_models: list[str],
                        owner_of: OwnerOf) -> str | None:
@@ -1171,12 +1171,12 @@ class OsiToSlayerConverter:
         except ValueError as exc:
             self._warn(f"The SLAYER extension on the {label} is malformed or of an unknown version; ignoring it "
                        f"({exc}).", model_name=model_name, category=_EXTENSION,
-                       suggestion="Re-export the document from SLayer.")
+                       suggestion=_REEXPORT)
             return None
         if payload.kind != kind or payload.entity != entity:
             self._warn(f"The SLAYER extension on the {label} describes {payload.kind} {payload.entity!r}; "
                        f"ignoring it.", model_name=model_name, category=_EXTENSION,
-                       suggestion="Re-export the document from SLayer.")
+                       suggestion=_REEXPORT)
             return None
         return payload, ext.matches(payload, ossie=ossie)
 
@@ -1231,7 +1231,7 @@ class OsiToSlayerConverter:
         if self._model_has_name(model.name, column.name) or bad:
             reason = f"reads {bad}, which do not resolve" if bad else "collides with an imported name"
             self._warn(f"SLayer-only column {column.name!r} on {model.name!r} {reason}; skipping it.",
-                       model_name=model.name, category=_EXTENSION, suggestion="Import every model it reads.")
+                       model_name=model.name, category=_EXTENSION, suggestion=_IMPORT_INPUTS)
             return
         model.columns.append(column)
 
@@ -1242,16 +1242,16 @@ class OsiToSlayerConverter:
                 self._pending.append(_PendingMeasure(model=name, measure=measure,
                                                      label=f"SLayer-only measure {measure.name or measure.formula!r}"))
         pending, errors = list(self._pending), {}
-        progress = True
-        while pending and progress:
-            progress = False
-            for item in list(pending):
+        while pending:
+            remaining = []
+            for item in pending:
                 error = self._add_measure(item)
-                if error is None:
-                    pending.remove(item)
-                    progress = True
-                else:
+                if error is not None:
                     errors[id(item)] = error
+                    remaining.append(item)
+            if len(remaining) == len(pending):
+                break
+            pending = remaining
         for item in pending:
             self._fall_back(item, error=errors[id(item)])
 
@@ -1274,11 +1274,11 @@ class OsiToSlayerConverter:
         if item.metric is None or item.doc is None:
             self._warn(f"{item.label} on {item.model!r} does not validate ({error}); skipping it.",
                        model_name=item.model, metric_name=item.measure.name, category=_EXTENSION,
-                       suggestion="Import every model it reads.")
+                       suggestion=_IMPORT_INPUTS)
             return
         self._warn(f"{item.label}: its SLayer measure does not validate ({error}); imported from its SQL.",
                    model_name=item.model, metric_name=item.metric.name, category=_EXTENSION, severity="info",
-                   suggestion="Import every model it reads.")
+                   suggestion=_IMPORT_INPUTS)
         self._build_measure(metric=item.metric, doc=item.doc, home=item.home, doc_models=self._doc_models(item.doc))
 
     def _restore_fields(self) -> None:
@@ -1289,9 +1289,7 @@ class OsiToSlayerConverter:
             if model is None or column is None:
                 continue
             content = payload.column
-            column.hidden = content.hidden
-            column.format, column.granularity = content.format, content.granularity
-            column.allowed_aggregations = content.allowed_aggregations
+            column.hidden, column.format = content.hidden, content.format
             column.meta = {**(column.meta or {}), **(content.meta or {})} or None
             if not matched:
                 self._warn(f"Field {field!r} of {name!r}: {_EDITED}", model_name=name, category=_EXTENSION,
@@ -1301,10 +1299,12 @@ class OsiToSlayerConverter:
             if any(self._unresolvable_cross_model_refs(model=model, sql=p) for p in parts):
                 self._warn(f"Field {field!r} of {name!r}: its SLayer definition does not resolve; kept its "
                            f"expression.", model_name=name, category=_EXTENSION, severity="info",
-                           suggestion="Import every model it reads.")
+                           suggestion=_IMPORT_INPUTS)
                 continue
             column.sql, column.filter = content.sql, content.filter
             column.type = content.type or column.type
+            # Type-dependent, so restored only with the type.
+            column.granularity, column.allowed_aggregations = content.granularity, content.allowed_aggregations
 
     def _restore_sources(self) -> None:
         """Table/SQL with row filters in place; saved queries handed back for the engine to validate."""
@@ -1329,6 +1329,6 @@ class OsiToSlayerConverter:
             except ValueError as exc:
                 self._warn(f"Dataset {name!r}: its saved queries do not load ({exc}); imported as a sql-mode "
                            f"model over its source.", model_name=name, category=_EXTENSION, severity="info",
-                           suggestion="Re-export the document from SLayer.")
+                           suggestion=_REEXPORT)
                 continue
             self._query_backed.append(restored)

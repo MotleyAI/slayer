@@ -10,12 +10,13 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import Column
 from slayer.osi.source import parse_source
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, col, customers, monthly_revenue, orders, orders_columns, rich_orders, visits,
 )
 from tests._osi_export_helpers import (
     norm_value, dataset, dataset_names, eval_field, export, export_models, expression_sql, field, make_env,
-    mentions, reimport, rows, run_sql, same_sql,
+    mentions, reimport, rows, run_sql, same_sql, save,
 )
 from tests._osi_helpers import ds, f, flat
 
@@ -63,6 +64,18 @@ async def test_query_backed_model_source_is_its_generated_sql(env) -> None:
     assert "'US'" in source
     expected = [list(r.values()) for r in await rows(env, "monthly_revenue")]
     assert _values(run_sql(env, f"SELECT * FROM ({source}) AS t")) == _values(expected)
+
+
+async def test_query_backed_model_reads_its_own_datasource(env, tmp_path: Path) -> None:
+    await save(env, customers(), orders(measures=BASIC_MEASURES), monthly_revenue())
+    other = (await make_env(tmp_path / "other", datasource="aaa")).model_copy(update={"store": env.store})
+    storage = YAMLStorage(base_dir=str(env.store))
+    await storage.save_datasource(other.config)
+    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", joins=[]))
+    await storage.set_datasource_priority(["aaa", env.datasource])
+    source = dataset((await export(env)).document, "monthly_revenue")["source"]
+    assert "1000" not in source
+    assert "'US'" in source
 
 
 async def test_filter_on_joined_model_is_reported(env) -> None:
