@@ -2293,16 +2293,13 @@ async def _collect_sql_table_diffs(
         # hand --force-clean a whole tenant).
         logger.warning("validate_models: skipping drift verdict: %s", exc)
         return {}
-    probe_findings = await _sqlite_probe_drifts_for_models(
-        datasource=datasource,
-        client=client,
-        sql_table_models=sql_table_models,
-    )
     if findings is not None:
         for m in sql_table_models:
             live = _resolve_live_table(sql_table=m.sql_table or "", live_tables=live_tables)
             findings.extend(retype_findings(model=m, live_table=live if live is not None and live.readable else None))
-        findings.extend(probe_findings)
+        findings.extend(await _sqlite_probe_drifts_for_models(
+            datasource=datasource, client=client, sql_table_models=sql_table_models,
+        ))
     return {
         m.name: _diff_one_sql_table_model(model=m, live_tables=live_tables, available_in_ds=available_in_ds)
         for m in sql_table_models

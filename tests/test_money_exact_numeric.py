@@ -173,6 +173,7 @@ class TestExecutedPostgres:
                 total = await engine.execute(query=_SUM_QUERY)
                 doubled = await engine.execute(query=_DOUBLED_QUERY)
             finally:
+                await engine.aclose()
                 engine.close()
         assert sum_sql is not None
         assert "CAST(" not in sum_sql.upper(), sum_sql

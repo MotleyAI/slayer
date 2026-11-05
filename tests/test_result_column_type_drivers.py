@@ -14,11 +14,12 @@ import pytest
 import sqlalchemy.exc
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import Column, DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import info_schema_type
+from slayer.sql.render.value_expr import keeps_native_type
 from tests._ch_fake_http import route_engine
 
 _DESCRIBE_COLUMNS = (
@@ -340,6 +341,13 @@ def _is_describe(sql: str) -> bool:
 
 
 class TestSqlServerDescribe:
+    @pytest.mark.parametrize("scale", [0, 2])
+    def test_a_fallback_decimal_keeps_its_native_type(self, scale: int) -> None:
+        described = _describe("mssql", _row("m", Decimal, precision=10, scale=scale))
+        assert described is not None
+        derived = Column(name="d", sql="m * 2", type=described.type, db_type=described.db_type)
+        assert keeps_native_type(col=derived, dialect=dialect_for_ds_type("mssql")), described
+
     def test_declared_type_names(self) -> None:
         rows = [
             (False, 1, "i", True, 56, "int", 4, 10, 0),
@@ -391,8 +399,8 @@ class TestSqlServerDescribe:
         result = _probe_sync(engines, "SELECT * FROM #t", db_type="mssql")
         assert result == {
             "i": ResultColumnType(type=DataType.INT),
-            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal"),
-            "m0": ResultColumnType(type=DataType.INT, db_type="decimal"),
+            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal(10,2)"),
+            "m0": ResultColumnType(type=DataType.INT, db_type="decimal(10,0)"),
             "t": ResultColumnType(type=DataType.TIMESTAMP),
             "d": ResultColumnType(type=DataType.DATE),
             "s": ResultColumnType(type=DataType.TEXT),

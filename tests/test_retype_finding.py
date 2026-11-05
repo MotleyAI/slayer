@@ -18,11 +18,13 @@ from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.engine import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.sql import engine_factory
 from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient, SqlClient
 from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation, column_from_sa_type
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
 
@@ -370,3 +372,30 @@ class TestOneShape:
         expected = sorted(python, key=key)
         assert sorted((e for e in rest.json() if e.get("finding") == "retype"), key=key) == expected
         assert sorted((e for e in mcp if e.get("finding") == "retype"), key=key) == expected
+
+
+class TestSqliteProbe:
+    async def test_runs_only_when_findings_are_collected(self, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "s.db"
+        with transaction(db) as con:
+            con.execute("CREATE TABLE t (id INTEGER)")
+        ds = DatasourceConfig(name="s", type="sqlite", database=str(db))
+        model = SlayerModel(name="t", sql_table="t", data_source="s", columns=[_pk()])
+        calls: list[str] = []
+        probe = schema_drift._sqlite_probe_drifts_for_models
+
+        async def counting(**kwargs: Any) -> Any:
+            calls.append(kwargs["datasource"].name)
+            return await probe(**kwargs)
+
+        monkeypatch.setattr(schema_drift, "_sqlite_probe_drifts_for_models", counting)
+        client = SlayerSQLClient(datasource=ds)
+        try:
+            await schema_drift.validate_datasource(datasource=ds, models=[model], client=client)
+            uncollected = list(calls)
+            await schema_drift.validate_datasource(datasource=ds, models=[model], client=client, findings_out=[])
+        finally:
+            await client.aclose()
+            engine_factory.invalidate_engine(ds)
+        assert (uncollected, calls) == ([], ["s"])

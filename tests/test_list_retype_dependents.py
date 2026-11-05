@@ -177,6 +177,13 @@ class TestReported:
             broken = _by_key(await env.reingest())
         _assert_list_type_break(broken[("orders", "measure", "nc")])
 
+    async def test_a_namesake_in_another_datasource(self) -> None:
+        async with _env(contractors()) as env:
+            await env.storage.save_datasource(env.ds.model_copy(update={"name": "other"}))
+            await env.storage.save_model(contractors().model_copy(update={"data_source": "other"}))
+            broken = _by_key(await env.reingest())
+        _assert_list_type_break(broken[("contractors", "measure", "nt")])
+
     async def test_attributed_to_the_column_that_breaks_it(self) -> None:
         mixed = ModelMeasure(name="mixed", formula="count(langs) + count_distinct(tools)")
         async with _env(skills(measures=(mixed,))) as env:

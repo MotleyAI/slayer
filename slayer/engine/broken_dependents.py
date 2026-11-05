@@ -82,8 +82,8 @@ def _probe(dependent: _Dependent) -> Any:
     return {"source_model": dependent.model, "measures": ["*:count"]}
 
 
-async def _plan(engine: query_engine.SlayerQueryEngine, dependent: _Dependent) -> None:
-    await engine.execute(query=_probe(dependent), dry_run=True)
+async def _plan(engine: query_engine.SlayerQueryEngine, dependent: _Dependent, *, data_source: str) -> None:
+    await engine.execute(query=_probe(dependent), dry_run=True, data_source=data_source)
 
 
 def _one_retype(*, stored: SlayerModel, final: SlayerModel, column: str) -> SlayerModel:
@@ -116,7 +116,7 @@ async def broken_dependents(
         async with query_engine.short_lived_engine(ModelOverlayStorage(storage, models=[model]),
                                                    client_factory=lend) as alone:
             try:
-                await _plan(alone, dep)
+                await _plan(alone, dep, data_source=datasource.name)
             except ValueError:
                 return True
             except Exception:  # noqa: BLE001 — a cause that cannot be planned is not blamed
@@ -159,13 +159,13 @@ async def _check(
                                       name=dep.name, column="{}.{}".format(*dep.causes[0]), **fields)
 
     try:
-        await _plan(before, dep)
+        await _plan(before, dep, data_source=data_source)
     except ValueError:
         return None
     except Exception as exc:  # noqa: BLE001 — an unrunnable check is reported as unchecked
         return report(checked=False, reason=f"{type(exc).__name__}: {exc}")
     try:
-        await _plan(after, dep)
+        await _plan(after, dep, data_source=data_source)
     except ValueError as exc:
         return report(error_type=type(exc).__name__, error=str(exc))
     except Exception as exc:  # noqa: BLE001 — an unrunnable check is reported as unchecked

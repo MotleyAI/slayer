@@ -188,14 +188,16 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         """pyodbc reports Python types (the fallback when the result cannot be described), named only for
         ``Decimal``; an ODBC SQL type code is named by ODBC."""
-        code, scale = description_row[1], description_row[5]
+        code, precision, scale = description_row[1], description_row[4], description_row[5]
         if isinstance(code, int) and code in _ODBC_SQL_TYPES:
             name, data_type = _ODBC_SQL_TYPES[code]
             return ResultColumnType(type=data_type, db_type=name)
         if not isinstance(code, type):
             return None
         if issubclass(code, Decimal):
-            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE, db_type="decimal")
+            sized = isinstance(precision, int) and isinstance(scale, int)
+            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                                    db_type=f"decimal({precision},{scale})" if sized else "decimal")
         for python_type, data_type in _PYTHON_TYPES:
             if issubclass(code, python_type):
                 return ResultColumnType(type=data_type)
