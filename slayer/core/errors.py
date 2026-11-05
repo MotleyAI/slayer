@@ -110,18 +110,20 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and schema drift in the models it read explains it; carries the drifted models, their ``to_delete`` entries, and the DBAPI cause (as ``__cause__``)."""
+    """A query failed and schema drift in the models it read explains it; carries the drifted models, their
+    ``to_delete`` entries, the report-only ``findings`` and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
-        findings: list[str] | None = None,
+        findings: list[Any] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
-        notes = "".join(f" {f}" for f in findings or [])
+        self.findings = list(findings or [])
+        notes = "".join(f" {getattr(f, 'summary', f)}" for f in self.findings)
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "

@@ -20,6 +20,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     SqlDialect,
     StatAgg1Name,
     StatAgg2Name,
@@ -75,6 +76,14 @@ class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "MySQL"
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "decimal": "number", "tinyint": "boolean", "smallint": "number", "int": "number", "float": "number",
+            "double": "number", "bigint": "number", "mediumint": "number", "bit": "number", "timestamp": "time",
+            "date": "time", "time": "time", "datetime": "time", "year": "time",
+        },
+        other="string",
+    )
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"

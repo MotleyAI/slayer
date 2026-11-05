@@ -397,6 +397,12 @@ def _render_hidden_internals_section(
     return out
 
 
+def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
+    if not broken:
+        return []
+    return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
+
+
 def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
@@ -418,9 +424,11 @@ async def _render_ingest_result(
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    broken = list(getattr(result, "broken_dependents", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
-        not additions
+        not broken
+        and not additions
         and not result.to_delete
         and not result.errors
         and not skipped
@@ -455,6 +463,7 @@ async def _render_ingest_result(
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
+    lines.extend(_render_broken_dependents_section(broken))
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")

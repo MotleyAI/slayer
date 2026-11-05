@@ -51,7 +51,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, ListRetypeFinding, NarrowedAccessFinding
+from slayer.engine.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
@@ -1958,7 +1958,7 @@ def _format_validate_models_output(entries) -> str:
                 f"reads {', '.join(entry.narrowed_by)}"
             )
             continue
-        if isinstance(entry, ListRetypeFinding):
+        if isinstance(entry, RetypeFinding):
             lines.append(f"RE-TYPE: {entry.summary}")
             continue
         if entry.tool == "delete_model":
