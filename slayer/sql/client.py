@@ -112,37 +112,48 @@ def _map_type_code(type_code, db_type: str | None = None) -> str:
         # DuckDB returns DuckDBPyType objects; str() is the type name.
         type_code = str(type_code)
     if isinstance(type_code, str):
-        tc = type_code.upper()
-        # Check temporal names before numeric ones: INTERVAL contains "INT".
-        if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
-            return "time"
-        if any(t in tc for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")):
-            return "number"
-        if any(t in tc for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")):
-            return "string"
-        if "BOOL" in tc:
-            return "boolean"
-        return "string"
+        return _map_type_name(type_code)
     if isinstance(type_code, type):
-        # Check bool before int — bool subclasses int.
-        if issubclass(type_code, bool):
-            return "boolean"
-        if issubclass(type_code, (int, float)):
-            return "number"
-        if issubclass(type_code, str):
-            return "string"
-        return "string"
+        return _map_python_type(type_code)
     if isinstance(type_code, int):
-        if db_type and "mysql" in db_type.lower():
-            return _MYSQL_TYPE_MAP.get(type_code, "string")
-        if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
-            return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
-        # Snowflake already tried above; unrecognised codes default to string
-        # rather than misclassifying through the Postgres OID map.
-        if db_type and "snowflake" in db_type.lower():
-            return "string"
-        return _PG_OID_MAP.get(type_code, "string")
+        return _map_int_type_code(type_code, db_type=db_type)
     return "string"
+
+
+def _map_type_name(type_name: str) -> str:
+    tc = type_name.upper()
+    # Check temporal names before numeric ones: INTERVAL contains "INT".
+    if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
+        return "time"
+    if any(t in tc for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")):
+        return "number"
+    if any(t in tc for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")):
+        return "string"
+    if "BOOL" in tc:
+        return "boolean"
+    return "string"
+
+
+def _map_python_type(python_type: type) -> str:
+    # Check bool before int — bool subclasses int.
+    if issubclass(python_type, bool):
+        return "boolean"
+    if issubclass(python_type, (int, float)):
+        return "number"
+    return "string"
+
+
+def _map_int_type_code(type_code: int, db_type: str | None) -> str:
+    db = (db_type or "").lower()
+    if "mysql" in db:
+        return _MYSQL_TYPE_MAP.get(type_code, "string")
+    if any(t in db for t in ("mssql", "sqlserver", "tsql")):
+        return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
+    # Snowflake already tried its dialect map; unrecognised codes default to string
+    # rather than misclassifying through the Postgres OID map.
+    if "snowflake" in db:
+        return "string"
+    return _PG_OID_MAP.get(type_code, "string")
 
 
 # Postgres OIDs (from pg_type)

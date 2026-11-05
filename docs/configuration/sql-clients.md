@@ -44,8 +44,8 @@ refuses the query.
 identity, calls it concurrently from one event loop, and closes it — code that borrows a client
 never does. Synchronous SLayer calls run each whole workflow in one event loop and call `aclose()`
 at its end, so a client must keep working after `aclose()`. Cancelling a `SlayerSQLClient` call
-(e.g. with `asyncio.wait_for`) returns at once; a blocking call already running finishes in its
-worker thread on its own.
+(e.g. with `asyncio.wait_for`) returns at once, except on a client built with `sa_engine=`; a
+blocking call already running finishes in its worker thread on its own.
 
 ## A statements-only gateway
 
