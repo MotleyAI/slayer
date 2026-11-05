@@ -16,6 +16,7 @@ from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     LIST_VALUE, ListRelation, SqlDialect, anon, element_lambda, lit, operand_copy,
 )
 from slayer.sql.dialects.drivers import import_driver
@@ -130,6 +131,13 @@ class SnowflakeDialect(SqlDialect):
 
     sqlglot_name: str = "snowflake"
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "number": "number", "float": "number", "date": "time", "timestamp": "time", "timestamp_ltz": "time",
+            "timestamp_tz": "time", "timestamp_ntz": "time", "time": "time", "boolean": "boolean",
+        },
+        other="string",
+    )
     sa_backend_names: frozenset[str] = frozenset({"snowflake"})
     explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""

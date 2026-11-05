@@ -34,7 +34,7 @@ from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
 from slayer.core.join_search import blocking_pairs, shortest_route, shortest_routes
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import ResultColumnType, SqlClient
+from slayer.sql.client import ResultColumnType, SqlClient, adapt_client
 from slayer.osi.dialects import Selection, read, render, select_expression
 from slayer.osi.expression import MaterializedColumn, convert_expression, outermost_aggregates
 from slayer.osi.models import (
@@ -259,6 +259,7 @@ class OsiToSlayerConverter:
 
     async def collect_metadata(self, *, client: SqlClient) -> None:
         """Read every dataset's source and every type probe conversion needs through ``client``."""
+        client = adapt_client(client)
         self._collected = False
         if self.target_dialect is None:
             self._target = dialect_for_ds_type(client.datasource.type).sqlglot_name

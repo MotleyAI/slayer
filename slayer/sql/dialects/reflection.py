@@ -39,7 +39,8 @@ class TableLocation(BaseModel):
 
 
 class ReflectedColumn(BaseModel):
-    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list or exact-numeric)."""
+    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list or exact-numeric),
+    ``type_name`` is the database's name for every type."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -49,6 +50,7 @@ class ReflectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    type_name: str | None = None
 
 
 class ResultColumnType(BaseModel):
@@ -153,8 +155,11 @@ _TYPE_NAME_MAP = {
 
 # NUMERIC/DECIMAL are float-like only by scale.
 _FLOAT_LIKE_TYPE_NAMES = frozenset({
-    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "DOUBLE PRECISION", "FLOAT32", "FLOAT64", "MONEY", "SMALLMONEY",
+    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "DOUBLE PRECISION", "FLOAT32", "FLOAT64",
 })
+
+#: Exact numerics whose name has no DECIMAL / NUMERIC token.
+_EXACT_MONEY_TYPE_NAMES = frozenset({"MONEY", "SMALLMONEY"})
 
 # Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
 # A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
@@ -196,11 +201,12 @@ def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
 
 
 def is_exact_numeric_db_type(db_type: str | None) -> bool:
-    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers and lists excluded)."""
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family or MONEY; wrappers and lists
+    excluded)."""
     if not db_type or info_schema_list_element(db_type) is not None:
         return False
     token = db_type.split("(")[0].upper().strip()
-    return "DECIMAL" in token or "NUMERIC" in token
+    return "DECIMAL" in token or "NUMERIC" in token or token in _EXACT_MONEY_TYPE_NAMES
 
 
 def parse_info_schema_is_float(data_type_str: str) -> bool:
@@ -284,12 +290,13 @@ def column_from_type_string(
     if element is not None:
         return ReflectedColumn(
             name=name, type=DataType.ARRAY, element_type=element, db_type=unwrapped, comment=clean_comment(comment),
+            type_name=unwrapped,
         )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float,
         db_type=unwrapped if is_exact_numeric_db_type(unwrapped) else None,
-        comment=clean_comment(comment),
+        comment=clean_comment(comment), type_name=unwrapped or None,
     )
 
 
@@ -436,17 +443,16 @@ def column_from_sa_type(
     """A column read through the Inspector; ``db_type`` kept only for opaque, list and exact-numeric types."""
     data_type, element_type = sa_data_types(sa_type)
     if data_type is DataType.ARRAY:
+        list_type = list_db_type(sa_type, sa_dialect=sa_dialect)
         return ReflectedColumn(
-            name=name, type=data_type, element_type=element_type, db_type=list_db_type(sa_type, sa_dialect=sa_dialect),
-            comment=clean_comment(comment),
+            name=name, type=data_type, element_type=element_type, db_type=list_type,
+            comment=clean_comment(comment), type_name=list_type,
         )
-    db_type = (
-        _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
-        if data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) else None
-    )
+    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
     return ReflectedColumn(
-        name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=db_type,
-        comment=clean_comment(comment),
+        name=name, type=data_type, is_float=_sa_type_is_float(sa_type),
+        db_type=type_name if data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) else None,
+        comment=clean_comment(comment), type_name=type_name,
     )
 
 

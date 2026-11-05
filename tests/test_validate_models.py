@@ -1,5 +1,5 @@
 """Tests for ``validate_models`` — read-only diff between persisted SlayerModels
-and a live database schema. See DEV-1356.
+and a live database schema.
 
 Two layers are tested here:
 
@@ -108,6 +108,17 @@ def _entry_for(model_name: str, entries: list) -> object | None:
     return None
 
 
+def _delete_for(model_name: str, entries: list) -> object | None:
+    return next((e for e in entries if e.model_name == model_name
+                 and isinstance(e, (EditModelDelete, WholeModelDelete))), None)
+
+
+def _retype_for(entries: list, column: str) -> dict:
+    (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
+                  and d.get("column") == column]
+    return finding
+
+
 # ---------------------------------------------------------------------------
 # data_type_bucket
 # ---------------------------------------------------------------------------
@@ -115,7 +126,7 @@ def _entry_for(model_name: str, entries: list) -> object | None:
 
 class TestDataTypeBucket:
     def test_number_string_boolean_temporal(self) -> None:
-        # DEV-1361: DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
+        # DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
         assert data_type_bucket(DataType.DOUBLE) == "number"
         assert data_type_bucket(DataType.TEXT) == "string"
         assert data_type_bucket(DataType.BOOLEAN) == "boolean"
@@ -127,7 +138,7 @@ class TestDataTypeBucket:
         assert data_type_bucket(DataType.DOUBLE) != data_type_bucket(DataType.TEXT)
 
     def test_int_and_double_share_number_bucket(self) -> None:
-        # DEV-1361: critical invariance — drift detection must NOT flag a
+        # Critical invariance — drift detection must NOT flag a
         # persisted DOUBLE column against an INT live column (or vice versa)
         # even though they're now distinct enum members.
         assert data_type_bucket(DataType.INT) == "number"
@@ -180,7 +191,7 @@ class TestDiffSqlTableModel:
         assert any("missing" in r.reason.lower() or "not found" in r.reason.lower()
                    for r in entry.reasons)
 
-    def test_type_bucket_mismatch_drops_column(self) -> None:
+    def test_type_bucket_mismatch_keeps_column(self) -> None:
         # Persisted "amount" is NUMBER, live made it STRING.
         model = _orders_model()
         live = _live_orders(
@@ -194,12 +205,11 @@ class TestDiffSqlTableModel:
         entry, dropped = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"orders"}
         )
-        assert isinstance(entry, EditModelDelete)
-        assert "amount" in entry.remove.columns
-        assert dropped == {"amount"}
+        assert entry is None
+        assert dropped == set()
 
     def test_integer_vs_float_same_bucket(self) -> None:
-        # DEV-1361: INT and DOUBLE are now distinct enum members but share
+        # INT and DOUBLE are now distinct enum members but share
         # the ``"number"`` bucket so drift detection does not false-positive
         # when a persisted DOUBLE column is reported as INT by live
         # introspection (the v5 refinement step reconciles these without
@@ -372,7 +382,7 @@ class TestDiffSqlModel:
         assert "source tables and referenced columns exist" in entry.reasons[0].reason
         assert dropped == {c.name for c in model.columns}
 
-    def test_trial_execute_bucket_mismatch_drops_column(self) -> None:
+    def test_trial_execute_bucket_mismatch_keeps_column(self) -> None:
         model = SlayerModel(
             name="archived_orders",
             sql="SELECT id, amount FROM orders",
@@ -384,9 +394,8 @@ class TestDiffSqlModel:
         )
         live = {"id": DataType.DOUBLE, "amount": DataType.TEXT}
         entry, dropped = diff_sql_model(model=model, live_columns=live)
-        assert isinstance(entry, EditModelDelete)
-        assert "amount" in entry.remove.columns
-        assert dropped == {"amount"}
+        assert entry is None
+        assert dropped == set()
 
     def test_extra_live_columns_are_ignored(self) -> None:
         model = SlayerModel(
@@ -558,7 +567,7 @@ class TestCascadeRules:
         assert set(entry.remove.measures) >= {"total_amount", "aov"}
 
     def test_rule_2_funcstyle_joined_custom_agg_cascades(self) -> None:
-        """DEV-1500: a ``ModelMeasure.formula`` using funcstyle over a custom
+        """A ``ModelMeasure.formula`` using funcstyle over a custom
         aggregation defined on a JOINED model (``rolling_avg(customers.score)``
         where ``rolling_avg`` lives on ``customers``) must extract
         ``customers.score`` as a ref, so dropping that column cascades the
@@ -773,7 +782,7 @@ class TestCascadeRules:
         """A query-backed model whose stage filter uses Mode B DSL constructs
         (``revenue:sum > 100``, ``change(...) > 0``) must still trigger a
         cascade drop when the underlying column is dropped. Regression for
-        DEV-1378: stage filters were routed through the SQL-only ref
+        Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
         """
         orders = _orders_model()
@@ -884,7 +893,7 @@ class TestCollapseRule:
 class TestCrossDatasourceBoundary:
     def test_cascade_does_not_cross_datasource(self) -> None:
         """A cross-DS reference (model in DS A referencing model in DS B) is
-        never followed by the cascade walker — DEV-1356 keeps everything
+        never followed by the cascade walker — drift keeps everything
         within the parent model's data_source.
         """
         # Model in ds_a references customers from ds_b — this is invalid
@@ -1098,10 +1107,8 @@ class TestValidateModelsEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: validate_models — SQLite affinity probe surfaces type drift
-# when persisted INT disagrees with the value-level probe verdict, and
-# the probe-derived column drops cascade to dependent measures/derived
-# columns through the existing fixed-point cascade machinery.
+# validate_models — the SQLite affinity probe reports a re-type finding when
+# persisted INT disagrees with the value-level probe verdict.
 # ---------------------------------------------------------------------------
 
 
@@ -1119,10 +1126,8 @@ def _create_sqlite_with_mixed_storage(
 
 
 class TestValidateModelsSqliteProbe:
-    """DEV-1538: validate_models SQLite branch — the per-column probe runs
-    against each persisted INT base column and emits drift entries when the
-    probe disagrees with the persisted type. Drift entries must feed the
-    cascade machinery, not just append final-form EditModelDelete."""
+    """validate_models on SQLite: the per-column probe runs against each persisted INT base column and
+    reports a re-type finding when it disagrees with the persisted type."""
 
     @pytest.fixture
     def workspace(self):
@@ -1164,7 +1169,7 @@ class TestValidateModelsSqliteProbe:
         )
         return SlayerQueryEngine(storage=storage), db_path
 
-    async def test_surfaces_probe_drift_when_storage_widens_to_double(
+    async def test_reports_a_retype_when_storage_widens_to_double(
         self, workspace: Path
     ) -> None:
         engine, _ = await self._setup_sensordata(
@@ -1178,23 +1183,12 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        # Reason must reference the affinity probe, the column, the source
-        # type INT, the verdict DOUBLE, and the suggested remediation
-        # (re-run slayer ingest). Tightening this guards against the
-        # message drifting to a generic 'column drifted' wording.
-        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
-        assert reasons, f"missing reason for column:tempstabidx in {entry.reasons!r}"
-        msg = reasons[0].lower()
-        assert "affinity" in msg or "probe" in msg
-        assert "tempstabidx" in reasons[0]
-        assert "int" in msg
-        assert "double" in msg
-        assert "slayer ingest" in msg
+        assert _delete_for("sensordata", result) is None, result
+        finding = _retype_for(result, "tempstabidx")
+        assert (finding["stored_type"], finding["live_type"]) == ("INT", "DOUBLE"), finding
+        assert "slayer ingest" in finding["remedy"], finding
 
-    async def test_surfaces_probe_drift_when_storage_widens_to_text(
+    async def test_reports_a_retype_when_storage_widens_to_text(
         self, workspace: Path
     ) -> None:
         """Same shape as the DOUBLE drift but verdict TEXT — non-coercible
@@ -1210,13 +1204,10 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
-        assert reasons
-        msg = reasons[0].lower()
-        assert "text" in msg
+        assert _delete_for("sensordata", result) is None, result
+        finding = _retype_for(result, "tempstabidx")
+        assert (finding["stored_type"], finding["live_type"]) == ("INT", "TEXT"), finding
+        assert "slayer ingest" in finding["remedy"], finding
 
     async def test_no_drift_when_probe_agrees(
         self, workspace: Path
@@ -1303,12 +1294,9 @@ class TestValidateModelsSqliteProbe:
             entry.remove.columns if isinstance(entry, EditModelDelete) else []
         )
 
-    async def test_probe_drift_cascades_to_dependent_measure(
+    async def test_probe_retype_keeps_the_dependent_measure(
         self, workspace: Path
     ) -> None:
-        """Codex finding #4: probe-derived drops must feed the cascade
-        machinery. A ModelMeasure referencing the widened column is dropped
-        in the same validate pass."""
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
@@ -1326,17 +1314,12 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        assert "tempstabidx" in entry.remove.columns
-        # Cascade: the dependent measure is also dropped.
-        assert "stab_total" in entry.remove.measures
+        assert _delete_for("sensordata", result) is None, result
+        assert _retype_for(result, "tempstabidx")
 
-    async def test_probe_drift_cascades_to_derived_column(
+    async def test_probe_retype_keeps_the_derived_column(
         self, workspace: Path
     ) -> None:
-        """Cascade through a derived column whose sql references the
-        widened base column."""
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
@@ -1349,11 +1332,7 @@ class TestValidateModelsSqliteProbe:
             ],
         )
         result = await engine.validate_models(data_source="ds")
-        entry = _entry_for("sensordata", result)
-        assert isinstance(entry, EditModelDelete)
-        # Both the base column and the derived column are dropped.
-        assert "tempstabidx" in entry.remove.columns
-        assert "doubled" in entry.remove.columns
+        assert _delete_for("sensordata", result) is None, result
 
 
 class TestStripIdentQuotes:
@@ -1387,7 +1366,7 @@ class TestResolveLiveTable:
         ) is live
 
     def test_schema_qualified_matches_the_qualified_key(self) -> None:
-        # DEV-1758 (Codex review): the live map is keyed by the qualified form
+        # The live map is keyed by the qualified form
         # (``_collect_live_tables``), and a qualified sql_table is NO LONGER
         # stripped to a bare same-named object — that masked a dropped
         # non-default table behind its default twin. It matches the qualified

@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
-from slayer.sql.dialects.base import COMPARISON_NODES, SqlDialect, TemporalComparisonOp, iso_text
+from slayer.sql.dialects.base import COMPARISON_NODES, LegacyTypeCategories, SqlDialect, TemporalComparisonOp, iso_text
 from slayer.sql.dialects.reflection import ResultColumnType
 
 # Rows sampled to certify integers; a sample of ``PROBE_SCAN_CAP + 1`` rows is saturated.
@@ -448,6 +448,8 @@ class SqliteDialect(SqlDialect):
     sa_backend_names: frozenset[str] = frozenset({"sqlite"})
     probes_integer_affinity: bool = True
     cursor_reports_types: bool = False
+    # The cursor names no types: every column takes its SLayer type's category.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
     primary_key_inspector_only: bool = True
     explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""

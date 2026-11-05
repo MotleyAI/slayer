@@ -51,8 +51,6 @@ class TestIsExactNumericDbType:
             "",
             "DOUBLE",
             "INT",
-            "MONEY",
-            "SMALLMONEY",
             "TEXT",
             # Wrapped strings deliberately do NOT match — unwrapping is the
             # caller's job; the helper stays a pure string predicate.
@@ -148,7 +146,7 @@ class TestMeasureKeyPreservesNativeType:
 
     @pytest.mark.parametrize(
         "db_type",
-        [None, "Nullable(Decimal(18, 2))", "MONEY", "DOUBLE", "JSON"],
+        [None, "Nullable(Decimal(18, 2))", "DOUBLE", "JSON"],
     )
     def test_other_db_types_do_not_preserve(self, db_type):
         model = _model_with_amount(db_type)
