@@ -25,6 +25,7 @@ from slayer.sql.client import (
     adapt_client,
     type_categories,
 )
+from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.reflection import ReflectedColumn, TableKeys, TableLocation
 from tests._gateway_harness import DS_NAME, paid_sql_model, seed_shop, shop_datasource, shop_storage
@@ -53,7 +54,8 @@ class FullGateway160:
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
         self.probes.append(sql)
-        return type_categories(await self.inner.get_result_column_types(sql))
+        return type_categories(await self.inner.get_result_column_types(sql),
+                               dialect=dialect_for_ds_type(self.inner.datasource.type))
 
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
@@ -101,7 +103,8 @@ class ProbingGateway160(DelegatingSqlClient):
 
     async def get_column_types(self, sql: str) -> dict[str, str]:
         self.probes.append(sql)
-        return type_categories(await self.inner.get_result_column_types(sql))
+        return type_categories(await self.inner.get_result_column_types(sql),
+                               dialect=dialect_for_ds_type(self.inner.datasource.type))
 
 
 class SuperGateway160(DelegatingSqlClient):

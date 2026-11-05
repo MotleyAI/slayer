@@ -19,8 +19,12 @@ Before saving such a re-type, re-ingest SHALL check every stored definition of t
 - **THEN** its `element_type` stays `TEXT`
 
 #### Scenario: Dependants broken by the re-type are reported
-- **WHEN** a stored model with `tags: TEXT` over a live `VARCHAR[]` column has the measure `nt` = `count_distinct(tags)`, the derived column `first_tag` = `upper(tags)`, and a saved query groups by `tags`, and the datasource is re-ingested
-- **THEN** `tags` is re-typed, and `broken_dependents` names the measure `nt`, the column `first_tag` and the saved query, each with the list-type error, each also a warning, and listed by the CLI and MCP ingest output
+- **WHEN** a stored model with `tags: TEXT` over a live `VARCHAR[]` column has the measure `nt` = `count_distinct(tags)` and a saved query groups by `tags`, and the datasource is re-ingested
+- **THEN** `tags` is re-typed, and `broken_dependents` names the measure `nt` and the saved query, each with the list-type error, each also a warning, and listed by the CLI and MCP ingest output
+
+#### Scenario: Raw-SQL definitions are checked but not reported
+- **WHEN** the re-typed model has the derived column `first_tag` = `upper(tags)` and the model filter `tags = 'go'`
+- **THEN** neither is reported, since neither plans differently after the re-type
 
 #### Scenario: A dependant across a join
 - **WHEN** a model joined to-one to the re-typed model has a measure `count_distinct(contractors.tags)`

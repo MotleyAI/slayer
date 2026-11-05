@@ -12,7 +12,7 @@ logical type, and neither SHALL a row-level derived column whose own physical
 database type is an exact numeric. The generated SQL SHALL carry no lossy cast
 around the aggregate or derived column, and result values SHALL retain the
 database's exact-numeric representation. Reflection and the column-type probe
-SHALL NOT flag an exact numeric as a float.
+SHALL retain an exact numeric's raw database type.
 Database-specific nullability/cardinality wrappers around the physical type
 (e.g. ClickHouse `Nullable(...)`, `LowCardinality(...)`, arbitrarily nested)
 SHALL be transparent to this behaviour. An explicitly declared result type
@@ -49,7 +49,7 @@ result type.
 - WHEN a Postgres model column is reflected or probed as `money`, and a query
   requests `sum(amount)` and the derived column `amount * 2` with no explicit
   type
-- THEN the column is not flagged as a float, its raw type `money` is retained,
+- THEN the column is detected as exact-numeric, its raw type `money` is retained,
   neither expression is cast to a float, the statement executes, and both
   values are exact
 
@@ -57,7 +57,7 @@ result type.
 
 - WHEN a SQL Server column's type is `MONEY` or `SMALLMONEY`, as a SQLAlchemy
   type, an information-schema string or a cursor description
-- THEN it is detected as exact-numeric, not a float, and an aggregate over it
+- THEN it is detected as exact-numeric and an aggregate over it
   is emitted without a lossy float cast
 
 #### Scenario: Explicit type still casts

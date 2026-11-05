@@ -43,7 +43,7 @@ The deprecated category probes — the synchronous entry point over an engine, t
 - **THEN** it receives `number` and `string` and a deprecation warning naming the typed probe
 
 #### Scenario: Types whose classification was refined since 1.6.0
-- **WHEN** a deprecated category probe reads a Postgres or DuckDB `interval` or `time with time zone` column, or a MySQL `YEAR` or `BIT` column
+- **WHEN** a deprecated category probe reads a Postgres or DuckDB `interval` column, a DuckDB `time with time zone` column, or a MySQL `YEAR` or `BIT` column
 - **THEN** it returns `time` for the interval, time-with-time-zone and `YEAR` columns and `number` for the `BIT` column, as 1.6.0 did
 
 #### Scenario: Parity with every 1.6.0 classification
