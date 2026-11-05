@@ -433,6 +433,16 @@ def test_only_the_publish_job_can_mint_an_upload_token(workflow: str) -> None:
     assert all("./.github/actions/wheel-gate" not in _uses(spec["jobs"][j]) for j in ("build", "publish"))
 
 
+@pytest.mark.parametrize("workflow", WORKFLOWS)
+def test_no_checkout_persists_its_token(workflow: str) -> None:
+    checkouts = [
+        s for job in _workflow(workflow)["jobs"].values() for s in job["steps"]
+        if s.get("uses", "").startswith("actions/checkout")
+    ]
+    assert checkouts
+    assert all((s.get("with") or {}).get("persist-credentials") is False for s in checkouts)
+
+
 def test_wheel_gate_action_installs_with_uv_and_runs_the_gate() -> None:
     text = (REPO_ROOT / ".github" / "actions" / "wheel-gate" / "action.yml").read_text()
     action = yaml.safe_load(text)
