@@ -391,8 +391,8 @@ class TestSqlServerDescribe:
         result = _probe_sync(engines, "SELECT * FROM #t", db_type="mssql")
         assert result == {
             "i": ResultColumnType(type=DataType.INT),
-            "m": ResultColumnType(type=DataType.DOUBLE),
-            "m0": ResultColumnType(type=DataType.INT),
+            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal"),
+            "m0": ResultColumnType(type=DataType.INT, db_type="decimal"),
             "t": ResultColumnType(type=DataType.TIMESTAMP),
             "d": ResultColumnType(type=DataType.DATE),
             "s": ResultColumnType(type=DataType.TEXT),
