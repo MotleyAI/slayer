@@ -271,7 +271,8 @@ def test_the_1_6_0_classifications_are_read_only_by_type_categories() -> None:
     stray = [f"{u.file}:{u.line} in {u.scope or '<module>'}" for u in reads
              if (u.file, u.scope) != CATEGORY_READER
              and not (u.file.startswith("slayer/sql/dialects/") and not u.in_function)]
-    assert reads and not stray, "only type_categories reads the 1.6.0 classifications:\n" + "\n".join(stray)
+    assert reads
+    assert not stray, "only type_categories reads the 1.6.0 classifications:\n" + "\n".join(stray)
 
 
 def test_type_categories_is_called_only_by_the_tagged_probes() -> None:

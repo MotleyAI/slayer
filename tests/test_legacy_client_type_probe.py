@@ -159,7 +159,8 @@ async def test_a_1_6_0_client_probes_through_its_get_column_types(
         await engine.aclose()
         engine_factory.invalidate_engine(ds)
     assert types["amount"].type == DataType.DOUBLE
-    assert gateways and gateways[0].probes
+    assert gateways
+    assert gateways[0].probes
 
 
 async def test_osi_import_probes_through_a_1_6_0_client(shop_db: str) -> None:

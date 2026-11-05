@@ -519,11 +519,14 @@ class Aggregation(BaseModel):
 
 
 def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregation | None:
-    """``owner``'s declaration of ``agg``: an exact-case match, else the unique case-insensitive one; ``None`` when
-    it declares none. Several case-insensitive matches and no exact one raise ``AmbiguousAggregationError``."""
+    """``owner``'s declaration of ``agg``: an exact-case match, else the unique case-insensitive one (a built-in name
+    matches only its exact lowercase definition); ``None`` when it declares none. Several case-insensitive matches
+    and no exact one raise ``AmbiguousAggregationError``."""
     if owner is None:
         return None
     declared = owner.aggregations or []
+    if agg.lower() in BUILTIN_AGGREGATIONS:
+        return next((a for a in declared if a.name == agg.lower()), None)
     exact = next((a for a in declared if a.name == agg), None)
     if exact is not None:
         return exact

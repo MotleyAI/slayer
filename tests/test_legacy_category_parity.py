@@ -26,6 +26,7 @@ from slayer.sql.client import (
     SlayerSQLClient,
     _types_from_cursor,
     get_column_types_sync,
+    get_result_column_types_sync,
     type_categories,
 )
 from slayer.sql.dialects import dialect_for_ds_type
@@ -261,16 +262,17 @@ _VALUES: list[Any] = [None, True, 7, 2.5, "x", b"x", Decimal("1.5"), dt.date(202
                       dt.datetime(2024, 1, 2, 3, 4), dt.time(3, 4), [1, 2]]
 
 
+_VALUE_CATEGORIES = ["string", "boolean", "number", "number", "string", "string", "number", "time", "time",
+                     "string", "string"]
+
+
 @pytest.mark.parametrize("db_type", ["postgres", "mysql", "duckdb", "sqlite"])
 @pytest.mark.parametrize("description", ["none", "all-absent"])
-def test_a_value_typed_result_gets_its_1_6_0_categories(db_type: str, description: str) -> None:
+def test_a_value_typed_result_gets_its_slayer_type_categories(db_type: str, description: str) -> None:
     columns = [f"c{i}" for i in range(len(_VALUES))]
     rows = None if description == "none" else [("c", None, None, None, None, None, True)] * len(_VALUES)
-
-    def result() -> _Result:
-        return _Result(columns=columns, description=rows, rows=[tuple(_VALUES)])
-
-    assert _head(result(), db_type=db_type) == _extract_types_from_cursor_160(result(), db_type=db_type)
+    result = _Result(columns=columns, description=rows, rows=[tuple(_VALUES)])
+    assert _head(result, db_type=db_type) == dict(zip(columns, _VALUE_CATEGORIES))
 
 
 @pytest.mark.parametrize("db_type", ["postgres", "duckdb", "sqlite"])
@@ -279,11 +281,9 @@ def test_an_empty_value_typed_result_is_all_strings(db_type: str) -> None:
     assert _head(result, db_type=db_type) == {"a": "string", "b": "string"}
 
 
-def test_an_absent_type_code_beside_a_typed_one_is_a_string() -> None:
-    def result() -> _Result:
-        return _Result(columns=["a", "b"], description=[_row(23), _row(None)], rows=[(1, 2)])
-
-    assert _head(result(), db_type="postgres") == _extract_types_from_cursor_160(result(), db_type="postgres")
+def test_an_absent_type_code_beside_a_typed_one_takes_its_value_type() -> None:
+    result = _Result(columns=["a", "b"], description=[_row(23), _row(None)], rows=[(1, 2)])
+    assert _head(result, db_type="postgres") == {"a": "number", "b": "number"}
 
 
 # --- Executed through the deprecated probes ---
@@ -380,11 +380,9 @@ def test_the_sync_probe_on_sqlite(tmp_path: Path, sql: str) -> None:
         for statement in SQLITE_SEED:
             con.execute(statement)
         con.commit()
-        cursor = con.execute(f"SELECT * FROM ({sql}) AS _types LIMIT 1")
-        columns = [d[0] for d in cursor.description]
-        expected = _extract_types_from_cursor_160(
-            _Result(columns=columns, description=None, rows=cursor.fetchall()), db_type="sqlite")
     with disposable_engine(f"sqlite:///{path}") as engine:
+        expected = type_categories(get_result_column_types_sync(sql, engine=engine, db_type="sqlite"),
+                                   dialect=dialect_for_ds_type("sqlite"))
         categories = get_column_types_sync(sql, engine=engine, db_type="sqlite")
     assert categories == expected
 

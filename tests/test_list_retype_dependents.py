@@ -124,7 +124,8 @@ def _by_key(result: IdempotentIngestResult) -> dict[Key, BrokenDependentWarning]
 def _assert_list_type_break(entry: BrokenDependentWarning, *, column: str = TAGS) -> None:
     assert (entry.checked, entry.data_source, entry.column, entry.error_type) == (True, "ds", column,
                                                                                  "ListTypeError"), entry
-    assert entry.error and "tags" in entry.error, entry
+    assert entry.error, entry
+    assert "tags" in entry.error, entry
 
 
 def _refuse_planning(monkeypatch: pytest.MonkeyPatch, marker: str) -> None:
@@ -222,7 +223,8 @@ class TestUnchecked:
             broken = _by_key(await env.reingest())
         entry = broken[("contractors", "measure", "audited")]
         assert (entry.checked, entry.column, entry.error_type) == (False, TAGS, None), entry
-        assert entry.reason and "planner offline" in entry.reason, entry
+        assert entry.reason, entry
+        assert "planner offline" in entry.reason, entry
 
 
 class TestCallerClient:

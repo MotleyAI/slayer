@@ -131,15 +131,9 @@ def _types_from_cursor(result: Any, *, dialect: SqlDialect) -> dict[str, ResultC
     return {name: t or _TEXT for name, t in types.items()}
 
 
-_CATEGORIES = {
-    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
-    DataType.BOOLEAN: "boolean",
-}
-
-
-def type_categories(types: dict[str, ResultColumnType]) -> dict[str, str]:
-    """The 1.5.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
-    return {name: _CATEGORIES.get(column.type, "string") for name, column in types.items()}
+def type_categories(types: dict[str, ResultColumnType], *, dialect: SqlDialect) -> dict[str, str]:
+    """The 1.6.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
+    return {name: dialect.legacy_type_categories.category(column) for name, column in types.items()}
 
 
 # T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
@@ -462,7 +456,7 @@ def get_column_types_sync(
     )
     return type_categories(get_result_column_types_sync(
         sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
-    ))
+    ), dialect=dialect_for_ds_type(db_type))
 
 
 async def _get_result_column_types_async(
@@ -810,7 +804,7 @@ class SlayerSQLClient:
             "use get_result_column_types(), which returns SLayer types and database type names.",
             removal="2.0",
         )
-        return type_categories(await self.get_result_column_types(sql))
+        return type_categories(await self.get_result_column_types(sql), dialect=self._dialect)
 
     async def server_profile(self) -> ServerProfile:
         """The server's profile for this client's engine, probed once per engine."""
@@ -1393,7 +1387,9 @@ class DelegatingSqlClient:
             "use get_result_column_types(), which returns SLayer types and database type names.",
             removal="2.0",
         )
-        return type_categories(await self.inner.get_result_column_types(sql))
+        return type_categories(
+            await self.inner.get_result_column_types(sql), dialect=dialect_for_ds_type(self.datasource.type),
+        )
 
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
@@ -1430,6 +1426,16 @@ class DelegatingSqlClient:
 
     def close(self) -> None:
         self.inner.close()
+
+
+class BorrowedSqlClient(DelegatingSqlClient):
+    """``inner`` lent to another engine: closing it here leaves ``inner`` open."""
+
+    async def aclose(self) -> None:
+        """No-op: the lender closes ``inner``."""
+
+    def close(self) -> None:
+        """No-op: the lender closes ``inner``."""
 
 
 _CATEGORY_TYPES = {

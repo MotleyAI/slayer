@@ -78,7 +78,8 @@ class TestSqlAlchemyTypes:
     def test_column_keeps_its_raw_type(self, sa_type: Any, name: str) -> None:
         column = column_from_sa_type(name="amount", sa_type=sa_type)
         assert column.type is DataType.DOUBLE
-        assert column.db_type is not None and column.db_type.upper() == name
+        assert column.db_type is not None
+        assert column.db_type.upper() == name
         assert is_exact_numeric_db_type(column.db_type)
 
 
@@ -150,7 +151,8 @@ class TestExecutedPostgres:
         amount = model.get_column("amount")
         assert amount is not None
         assert amount.type is DataType.DOUBLE
-        assert amount.db_type is not None and amount.db_type.lower() == "money"
+        assert amount.db_type is not None
+        assert amount.db_type.lower() == "money"
 
     async def test_probed_money_keeps_its_raw_type(self, postgresql_proc: Any) -> None:
         with pg_database(postgresql_proc, statements=_LEDGER, name="money_probe") as datasource:
@@ -172,8 +174,10 @@ class TestExecutedPostgres:
                 doubled = await engine.execute(query=_DOUBLED_QUERY)
             finally:
                 engine.close()
-        assert sum_sql is not None and "CAST(" not in sum_sql.upper(), sum_sql
-        assert doubled_sql is not None and "CAST(" not in doubled_sql.upper(), doubled_sql
+        assert sum_sql is not None
+        assert "CAST(" not in sum_sql.upper(), sum_sql
+        assert doubled_sql is not None
+        assert "CAST(" not in doubled_sql.upper(), doubled_sql
         (row,) = total.data
         assert not isinstance(row["ledger.amount_sum"], float), row
         assert _money(row["ledger.amount_sum"]) == Decimal("0.30")

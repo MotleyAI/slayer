@@ -217,6 +217,36 @@ def _sqlglot_masking_lexis(sqlglot_name: str) -> SqlLexis:
     )
 
 
+_SLAYER_TYPE_CATEGORIES: Mapping[DataType, str] = {
+    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
+    DataType.BOOLEAN: "boolean",
+}
+
+
+class LegacyTypeCategories(BaseModel):
+    """A dialect's SLayer 1.6.0 category per database type name, read only by the deprecated category probes.
+
+    A name (lower-case, parenthesised parts dropped) matches ``names``, else the first ``contains`` substring
+    (upper-case), else takes ``other``; an unclassified column takes its SLayer type's category."""
+
+    model_config = ConfigDict(frozen=True)
+
+    names: Mapping[str, str] = Field(default_factory=dict)
+    contains: tuple[tuple[str, str], ...] = ()
+    other: str | None = None
+    unnamed: Mapping[DataType, str] = Field(default_factory=dict)
+
+    def category(self, column: ResultColumnType) -> str:
+        if column.db_type is not None:
+            name = " ".join(re.sub(r"\([^)]*\)", " ", column.db_type).lower().split())
+            found = self.names.get(name) or next(
+                (c for token, c in self.contains if token in column.db_type.upper()), self.other)
+            if found is not None:
+                return found
+            return _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+        return self.unnamed.get(column.type) or _SLAYER_TYPE_CATEGORIES.get(column.type, "string")
+
+
 def describe_type_name_code(
     description_row: Sequence[Any], *, overrides: Mapping[str, DataType] | None = None,
 ) -> ResultColumnType | None:
@@ -439,6 +469,9 @@ class SqlDialect(BaseModel):
 
     # Declared-INT columns may store non-integers (SQLite affinity): ingestion probes them.
     probes_integer_affinity: bool = False
+
+    # The deprecated category probes' 1.6.0 classification.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories()
 
     # Cursor metadata carries column types; when not, types are read off a row, so an empty result has none.
     cursor_reports_types: bool = True

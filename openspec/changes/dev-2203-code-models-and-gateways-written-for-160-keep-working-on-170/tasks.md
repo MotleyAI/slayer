@@ -17,14 +17,14 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 `aggregation_definition`: a built-in name in any case matches only the exact lowercase definition.
-- [ ] 2.2 Dialect 1.6.0 category declarations (Postgres, MySQL, SQL Server, Snowflake, DuckDB, SQLite as data in each dialect file, base default from the SLayer type); `type_categories(types, dialect)` and every caller (`get_column_types_sync`, `SlayerSQLClient.get_column_types`, `SlayerQueryEngine.get_column_types`, `DelegatingSqlClient.get_column_types`); extend a dialect's cursor description with the type name where parity needs it; no other reader of the 1.6.0 tables.
-- [ ] 2.3 MONEY / SMALLMONEY: out of `_FLOAT_LIKE_TYPE_NAMES`, recognised by `is_exact_numeric_db_type`.
-- [ ] 2.4 Drift: `LiveTable` keeps every column's type name; `sql`-mode live columns keep `ResultColumnType`; `RetypeFinding` replaces `ListRetypeFinding` in `REPORT_ONLY_FINDINGS`, attribution, `findings_out`, CLI (`RE-TYPE:`), MCP and REST; `_diff_sql_table_columns` / `_diff_sql_model_columns` and the SQLite storage probe emit a finding instead of a delete for a type conflict, no cascade.
-- [ ] 2.5 Dependant check in idempotent ingestion: collect re-typed columns before saving; dependants from the cascade reference walk; a read-only model-overlay storage view; a non-owning client wrapper; plan before/after via a short-lived engine; `IdempotentIngestResult.broken_dependents`; structured warning in `slayer/core/warnings.py`; CLI and MCP rendering.
+- [x] 2.1 `aggregation_definition`: a built-in name in any case matches only the exact lowercase definition.
+- [x] 2.2 Dialect 1.6.0 category declarations (Postgres, MySQL, SQL Server, Snowflake, DuckDB, SQLite as data in each dialect file, base default from the SLayer type); `type_categories(types, dialect)` and every caller (`get_column_types_sync`, `SlayerSQLClient.get_column_types`, `SlayerQueryEngine.get_column_types`, `DelegatingSqlClient.get_column_types`); extend a dialect's cursor description with the type name where parity needs it; no other reader of the 1.6.0 tables.
+- [x] 2.3 MONEY / SMALLMONEY: out of `_FLOAT_LIKE_TYPE_NAMES`, recognised by `is_exact_numeric_db_type`.
+- [x] 2.4 Drift: `LiveTable` keeps every column's type name; `sql`-mode live columns keep `ResultColumnType`; `RetypeFinding` replaces `ListRetypeFinding` in `REPORT_ONLY_FINDINGS`, attribution, `findings_out`, CLI (`RE-TYPE:`), MCP and REST; `_diff_sql_table_columns` / `_diff_sql_model_columns` and the SQLite storage probe emit a finding instead of a delete for a type conflict, no cascade.
+- [x] 2.5 Dependant check in idempotent ingestion: collect re-typed columns before saving; dependants from the cascade reference walk; a read-only model-overlay storage view; a non-owning client wrapper; plan before/after via a short-lived engine; `IdempotentIngestResult.broken_dependents`; structured warning in `slayer/core/warnings.py`; CLI and MCP rendering.
 
 ## 3. Docs
 
-- [ ] 3.1 `docs/concepts/schema-drift.md`: re-type finding for type mismatches (lists and scalars), drop the two-pass invariant, update the `sql` bullet and output shape; one sentence each.
-- [ ] 3.2 Re-ingest's `broken_dependents` in the ingestion docs; the built-in-name rule wherever `docs/concepts/` states aggregation case resolution; MONEY in any exact-numeric list in docs.
-- [ ] 3.3 Release notes (`RELEASE_NOTES_1.7.0.md`, untracked) for items 1–5.
+- [x] 3.1 `docs/concepts/schema-drift.md`: re-type finding for type mismatches (lists and scalars), drop the two-pass invariant, update the `sql` bullet and output shape; one sentence each.
+- [x] 3.2 Re-ingest's `broken_dependents` in the ingestion docs; the built-in-name rule wherever `docs/concepts/` states aggregation case resolution; MONEY in any exact-numeric list in docs.
+- [x] 3.3 Release notes (`RELEASE_NOTES_1.7.0.md`, untracked) for items 1–5.

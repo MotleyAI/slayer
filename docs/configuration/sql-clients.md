@@ -22,7 +22,7 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 | `default_schema()` | `str \| None` | The connection's default schema. |
 | `current_catalog()` | `str \| None` | The current catalog where schema tokens are catalog-qualified, else `None`. |
 | `list_objects(schema)` | `ObjectListing(tables, views, materialized_views)` | One schema's relations by kind; `None` is the connection default. |
-| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), `is_float`, `db_type` (set only for opaque and exact-numeric types), `comment`. |
+| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), `is_float`, `db_type` (set only for opaque and exact-numeric types), `comment`, `type_name` (the database's name for the type, where known). |
 | `reflect_table_keys(location)` | `TableKeys` | Primary key, foreign keys and unique key sets (never repeating the primary key). |
 | `table_comment(location)` | `str \| None` | A table's comment. |
 | `schema_description(schema, configured_schema)` | `str \| None` | A schema's own description (a BigQuery dataset's). |

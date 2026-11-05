@@ -36,7 +36,7 @@ A client whose only type probe is the 1.6.0 `get_column_types` — one without `
 
 ### Requirement: The 1.5.0 category probes keep working and warn
 
-The deprecated category probes — the synchronous entry point over an engine, the default client's probe, the query engine's per-model probe and `DelegatingSqlClient.get_column_types` — SHALL keep returning one of `number`, `string`, `time` or `boolean` per column, and SHALL emit a deprecation warning naming the typed replacement. Each column's category SHALL be the one SLayer 1.6.0 returned for the same database type on the same database: each dialect declares its 1.6.0 classification of database type names, and a column whose type the dialect does not classify falls back to its SLayer type (INT and DOUBLE as `number`; TEXT, UNKNOWN and ARRAY as `string`; DATE and TIMESTAMP as `time`; BOOLEAN as `boolean`).
+The deprecated category probes — the synchronous entry point over an engine, the default client's probe, the query engine's per-model probe and `DelegatingSqlClient.get_column_types` — SHALL keep returning one of `number`, `string`, `time` or `boolean` per column, and SHALL emit a deprecation warning naming the typed replacement. Each column's category SHALL be the one SLayer 1.6.0 returned for the same database type on the same database: each dialect declares its 1.6.0 classification of database type names, and a column whose type the dialect does not classify falls back to its SLayer type (INT and DOUBLE as `number`; TEXT, UNKNOWN and ARRAY as `string`; DATE and TIMESTAMP as `time`; BOOLEAN as `boolean`). A column whose type the database does not report (no type code: a value-typed result, SQLite's storage census) SHALL take its SLayer type's category.
 
 #### Scenario: A 1.5.0 caller
 - **WHEN** code written for 1.5.0 probes a statement with an integer and a text column through the synchronous entry point
@@ -47,5 +47,9 @@ The deprecated category probes — the synchronous entry point over an engine, t
 - **THEN** it returns `time` for the interval, time-with-time-zone and `YEAR` columns and `number` for the `BIT` column, as 1.6.0 did
 
 #### Scenario: Parity with every 1.6.0 classification
-- **WHEN** each cursor description 1.6.0 classified — every Postgres OID, MySQL field type, ODBC SQL type and Snowflake field type in its tables, DuckDB type names, SQLite value-inferred columns, an unknown code and an absent type code — is probed through a deprecated category probe
+- **WHEN** each cursor description 1.6.0 classified — every Postgres OID, MySQL field type, ODBC SQL type and Snowflake field type in its tables, DuckDB type names and an unknown code — is probed through a deprecated category probe
 - **THEN** each returns the category 1.6.0 returned for it
+
+#### Scenario: Untyped columns take their SLayer type's category
+- **WHEN** a deprecated category probe reads a result column the database reports no type for (a SQLite column, an absent type code)
+- **THEN** it returns the category of that column's typed-probe SLayer type

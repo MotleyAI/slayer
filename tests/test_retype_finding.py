@@ -195,7 +195,8 @@ def _assert_live(finding: dict[str, Any], *, stored: DataType, live: DataType, d
 
 def _assert_set_type_remedy(finding: dict[str, Any]) -> None:
     remedy = finding["remedy"]
-    assert finding["live_type"] in remedy and "type" in remedy.lower(), finding
+    assert finding["live_type"] in remedy, finding
+    assert "type" in remedy.lower(), finding
 
 
 class TestTypedBy160Reflection:
@@ -334,7 +335,8 @@ class TestQueryTime:
             engine.close()
         err = info.value
         assert "flags" not in _removed(_dump(err.to_delete), "legacy"), err.to_delete
-        assert "legacy.flags" in str(err) and "BIT" in str(err), str(err)
+        assert "legacy.flags" in str(err), str(err)
+        assert "BIT" in str(err), str(err)
         assert _carried(err, model="legacy", column="flags"), err.findings
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
@@ -342,7 +344,8 @@ class TestQueryTime:
             await pg.execute({"source_model": "pg_sql", "dimensions": ["payload"], "measures": ["*:count"]})
         err = info.value
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
-        assert "pg_sql.payload" in str(err) and "json" in str(err), str(err)
+        assert "pg_sql.payload" in str(err), str(err)
+        assert "json" in str(err), str(err)
         assert _carried(err, model="pg_sql", column="payload"), err.findings
 
 
@@ -361,7 +364,8 @@ class TestOneShape:
         def key(e: dict[str, Any]) -> tuple[str, str]:
             return e["model_name"], e["column"]
 
-        assert python and all(RETYPE_FIELDS <= set(e) for e in python), python
+        assert python, python
+        assert all(RETYPE_FIELDS <= set(e) for e in python), python
         expected = sorted(python, key=key)
         assert sorted((e for e in rest.json() if e.get("finding") == "retype"), key=key) == expected
         assert sorted((e for e in mcp if e.get("finding") == "retype"), key=key) == expected

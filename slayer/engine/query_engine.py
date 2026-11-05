@@ -1848,7 +1848,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-        findings_out: "Optional[List[schema_drift.ListRetypeFinding]]" = None,
+        findings_out: "Optional[List[schema_drift.RetypeFinding]]" = None,
     ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_model_identities()
@@ -1880,11 +1880,16 @@ class SlayerQueryEngine:
         models (a re-type finding only on a column the statement reads, when known); else return so the caller re-raises.
         Attribution errors are swallowed."""
         try:
-            found: List[schema_drift.ListRetypeFinding] = []
+            found: List[schema_drift.RetypeFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
-            findings = [f for f in found if read_columns is None or (f.model_name, f.column) in read_columns]
+            findings = found
+            if read_columns is not None and found:
+                models = [m for name in sorted(read_set)
+                          if (m := await self.storage.get_model(name, data_source=datasource.name)) is not None]
+                findings = [f for f in found
+                            if schema_drift.reads_retyped_column(models=models, finding=f, read_columns=read_columns)]
             # An "invalid_sql" entry is not drift evidence — it restates the
             # query failure itself, so the original error must propagate.
             filtered = [
@@ -1895,7 +1900,7 @@ class SlayerQueryEngine:
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
                     to_delete=filtered,
                     original=err,
-                    findings=[f.summary for f in findings],
+                    findings=findings,
                 )
         except SchemaDriftError:
             raise
@@ -1928,7 +1933,13 @@ class SlayerQueryEngine:
             "use get_result_column_types(), which returns SLayer types and database type names.",
             removal="2.0",
         )
-        return type_categories(await self.get_result_column_types(model_name, data_source=data_source))
+        types = await self.get_result_column_types(model_name, data_source=data_source)
+        model = await self.storage.get_model(model_name, data_source=data_source)
+        try:
+            ds_type = (await self._resolve_datasource(model=model)).type if model is not None else None
+        except ValueError:
+            ds_type = None
+        return type_categories(types, dialect=dialect_for_ds_type(ds_type))
 
     async def get_result_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
@@ -2752,7 +2763,7 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         models, unloadable = await self.storage.load_models(data_source=data_source)
-        retypes: List[schema_drift.ListRetypeFinding] = []
+        retypes: List[schema_drift.RetypeFinding] = []
         entries = await schema_drift.validate_datasource(
             datasource=ds, models=models, client=self.client_for(ds), findings_out=retypes,
         )

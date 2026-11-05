@@ -174,6 +174,7 @@ async def main():
         await engine.aclose()  # release the client's resources on this event loop
     # result.additions  — what was added (new models / columns / joins)
     # result.to_delete  — pending validate_models drift entries
+    # result.broken_dependents — stored definitions a list re-type broke
     # result.errors     — per-model failures (best-effort, doesn't abort)
     return result
 

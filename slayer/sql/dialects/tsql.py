@@ -17,6 +17,7 @@ from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     DottedAliasManglingMixin,
     SqlDialect,
     StatAgg1Name,
@@ -51,6 +52,27 @@ _PYTHON_TYPES: tuple[tuple[type, DataType], ...] = (
     (dt.date, DataType.DATE),
     (dt.time, info_schema_type("TIME")[0]),
 )
+
+
+# ODBC SQL type codes → (name, SLayer type).
+_ODBC_SQL_TYPES: dict[int, tuple[str, DataType]] = {
+    4: ("SQL_INTEGER", DataType.INT), 5: ("SQL_SMALLINT", DataType.INT), -6: ("SQL_TINYINT", DataType.INT),
+    -5: ("SQL_BIGINT", DataType.INT), 2: ("SQL_NUMERIC", DataType.DOUBLE), 3: ("SQL_DECIMAL", DataType.DOUBLE),
+    6: ("SQL_FLOAT", DataType.DOUBLE), 7: ("SQL_REAL", DataType.DOUBLE), 8: ("SQL_DOUBLE", DataType.DOUBLE),
+    1: ("SQL_CHAR", DataType.TEXT), 12: ("SQL_VARCHAR", DataType.TEXT), -1: ("SQL_LONGVARCHAR", DataType.TEXT),
+    -8: ("SQL_WCHAR", DataType.TEXT), -9: ("SQL_WVARCHAR", DataType.TEXT), -10: ("SQL_WLONGVARCHAR", DataType.TEXT),
+    -152: ("SQL_SS_XML", DataType.UNKNOWN), -11: ("SQL_GUID", DataType.TEXT), -7: ("SQL_BIT", DataType.BOOLEAN),
+    -2: ("SQL_BINARY", DataType.TEXT), -3: ("SQL_VARBINARY", DataType.TEXT), -4: ("SQL_LONGVARBINARY", DataType.TEXT),
+    91: ("SQL_TYPE_DATE", DataType.DATE), 92: ("SQL_TYPE_TIME", DataType.TIMESTAMP),
+    93: ("SQL_TYPE_TIMESTAMP", DataType.TIMESTAMP), -154: ("SQL_SS_TIME2", DataType.TIMESTAMP),
+    -155: ("SQL_SS_TIMESTAMPOFFSET", DataType.TIMESTAMP),
+}
+_ODBC_LEGACY_CATEGORIES = {
+    "sql_integer": "number", "sql_smallint": "number", "sql_tinyint": "number", "sql_bigint": "number",
+    "sql_numeric": "number", "sql_decimal": "number", "sql_float": "number", "sql_real": "number",
+    "sql_double": "number", "sql_bit": "boolean", "sql_type_date": "time", "sql_type_time": "time",
+    "sql_type_timestamp": "time", "sql_ss_time2": "time", "sql_ss_timestampoffset": "time",
+}
 
 
 # Caveat: a single-bracketed word-only path like ``[schema.tbl]`` false-positive mangles.
@@ -118,6 +140,15 @@ def _bit_value(predicate: Expr) -> Expression:
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
     native_lists: ClassVar[bool] = False
+    # 1.6.0 read pyodbc's Python types: only bool, int and float were not strings.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "bit": "boolean", "tinyint": "number", "smallint": "number", "int": "number", "bigint": "number",
+            "float": "number", "real": "number", **_ODBC_LEGACY_CATEGORIES,
+        },
+        other="string",
+        unnamed={DataType.DATE: "string", DataType.TIMESTAMP: "string"},
+    )
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     sa_backend_names: frozenset[str] = frozenset({"mssql"})
@@ -155,12 +186,16 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return any(int(code) in _UNDESCRIBABLE_ERRORS for code in codes)
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
-        """pyodbc reports Python types (the fallback when the result cannot be described); no type name."""
+        """pyodbc reports Python types (the fallback when the result cannot be described), named only for
+        ``Decimal``; an ODBC SQL type code is named by ODBC."""
         code, scale = description_row[1], description_row[5]
+        if isinstance(code, int) and code in _ODBC_SQL_TYPES:
+            name, data_type = _ODBC_SQL_TYPES[code]
+            return ResultColumnType(type=data_type, db_type=name)
         if not isinstance(code, type):
             return None
         if issubclass(code, Decimal):
-            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE)
+            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE, db_type="decimal")
         for python_type, data_type in _PYTHON_TYPES:
             if issubclass(code, python_type):
                 return ResultColumnType(type=data_type)

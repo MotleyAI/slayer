@@ -268,6 +268,29 @@ class LibraryNameShadowWarning(SlayerWarning):
         )
 
 
+class BrokenDependentWarning(SlayerWarning):
+    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    after (``checked=False``: the check could not run, for ``reason``)."""
+
+    kind: Literal["broken_dependent"] = "broken_dependent"
+    model: str
+    data_source: str
+    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    name: str
+    column: str
+    checked: bool = True
+    error_type: Optional[str] = None
+    error: Optional[str] = None
+    reason: Optional[str] = None
+
+    def human_message(self) -> str:
+        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        if not self.checked:
+            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+                                f"{self.reason}")
+        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -284,6 +307,7 @@ AnySlayerWarning = Annotated[
         UnloadableDocumentWarning,
         NarrowedAccessWarning,
         LibraryNameShadowWarning,
+        BrokenDependentWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -359,6 +383,17 @@ class SlayerLibraryNameShadowWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``LibraryNameShadowWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: LibraryNameShadowWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerBrokenDependentWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``BrokenDependentWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: BrokenDependentWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
