@@ -9,6 +9,8 @@ from collections.abc import Generator
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.shared.memory import create_connected_server_and_client_session
+from sqlalchemy import exc as sa_exc
 
 import slayer.engine.ingestion as ingestion_mod
 from slayer.core.enums import DataType
@@ -23,7 +25,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.ingestion import _is_id_column
-from slayer.sql.client import ResultColumnType, SlayerSQLClient
+from slayer.sql.client import DatabaseUnavailable, ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
@@ -44,6 +46,7 @@ from slayer.mcp.server import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._usage_reporting_helpers import free_port
 
 
 # create_mcp_server is expensive, so share it (and storage) session-wide and
@@ -3102,3 +3105,66 @@ class TestSaveTimeSqlValidationMcp:
         assert '"success": true' in result
         model = await storage.get_model("m", data_source="livedb")
         assert model.sql == "SELECT amount FROM orders"
+
+
+class TestDatabaseFailuresAreToolErrors:
+    """A database failure in these tools is an MCP tool error carrying the friendly text."""
+
+    @pytest.fixture
+    async def db_storage(self, tmp_path) -> YAMLStorage:
+        db = str(tmp_path / "shop.db")
+        with transaction(db) as con:
+            con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount REAL)")
+            con.execute("INSERT INTO orders VALUES (1, 2.5)")
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(DatasourceConfig(name="shop", type="sqlite", database=db))
+        await storage.save_datasource(DatasourceConfig(
+            name="down", type="postgres", host="127.0.0.1", port=free_port(), database="x", username="u", password="p",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="shop",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="broken", sql="no_such_fn(amount)", type=DataType.DOUBLE),
+            ],
+        ))
+        return storage
+
+    async def _call_tool(self, storage: YAMLStorage, name: str, arguments: dict[str, Any]):
+        server = create_mcp_server(storage=storage, _seed_help=False)
+        async with create_connected_server_and_client_session(server) as session:
+            return await session.call_tool(name, arguments)
+
+    @staticmethod
+    def _assert_database_tool_error(result) -> None:
+        assert result.isError
+        assert "Database error:" in result.content[0].text
+
+    async def test_query_rejected_by_the_database(self, db_storage: YAMLStorage) -> None:
+        result = await self._call_tool(db_storage, "query", {"query": {"source_model": "orders", "measures": ["sum(broken)"]}})
+        self._assert_database_tool_error(result)
+
+    async def test_validate_models_database_unreachable(self, db_storage: YAMLStorage) -> None:
+        self._assert_database_tool_error(await self._call_tool(db_storage, "validate_models", {"data_source": "down"}))
+
+    async def test_ingest_database_unreachable(self, db_storage: YAMLStorage) -> None:
+        self._assert_database_tool_error(
+            await self._call_tool(db_storage, "ingest_datasource_models", {"datasource_name": "down"}),
+        )
+
+    @pytest.mark.parametrize(("method", "arguments"), [
+        ("save_model", {"name": "m", "sql_table": "orders", "data_source": "down",
+                        "columns": [{"name": "id", "sql": "id", "type": "number"}]}),
+        ("create_model_from_query", {"name": "m", "query": {"source_model": "orders", "measures": ["count(*)"]}}),
+    ], ids=["table", "query"])
+    async def test_create_model_database_unreachable(
+        self, db_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, method: str, arguments: dict[str, Any],
+    ) -> None:
+        async def unreachable(*args, **kwargs):
+            try:
+                raise sa_exc.OperationalError("SELECT 1", {}, Exception("connection refused"))
+            except sa_exc.OperationalError as exc:
+                raise DatabaseUnavailable("connection refused") from exc
+
+        monkeypatch.setattr(SlayerQueryEngine, method, unreachable)
+        self._assert_database_tool_error(await self._call_tool(db_storage, "create_model", arguments))

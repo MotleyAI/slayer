@@ -19,6 +19,7 @@ import pytest
 
 from slayer import usage_reporting
 from slayer.usage_reporting import control, recorder, sender, settings, spool
+from slayer.usage_reporting.payload import Batch
 from tests._usage_reporting_helpers import (
     McpStdio,
     build_storage,
@@ -30,6 +31,7 @@ from tests._usage_reporting_helpers import (
     now_utc,
     quiet_config,
     config,
+    raw_config,
     run_python,
     run_slayer,
     show,
@@ -39,6 +41,7 @@ from tests._usage_reporting_helpers import (
     wait_for_port,
     wait_until,
     write_config,
+    write_raw_config,
 )
 
 posix_only = pytest.mark.skipif(not is_posix(), reason="POSIX signals / file modes")
@@ -639,3 +642,115 @@ def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_rep
             assert install_id not in path.read_text(errors="ignore")
     assert settings.config_path().is_relative_to(settings.config_dir())
     assert json.loads(settings.config_path().read_text())
+
+
+# --- spool files across report schema versions ---------------------------------------------------------------
+
+
+_LEGACY_BATCH = json.dumps({
+    "period": {"first": "2026-05-01", "last": "2026-05-01"},
+    "usage": {"mcp:search": {"ok": 1, "errors": {}}},
+})
+
+
+def _legacy_spool_file(*, prefix: str = "spool-", ns: int = 1, body: str = _LEGACY_BATCH) -> Path:
+    directory = settings.spool_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}{ns:020d}-{uuid.uuid4().hex[:12]}.json"
+    path.write_text(body)
+    return path
+
+
+def _schema_1_send(directory: Path) -> None:
+    """What a schema-1 sender does after a 2xx: claim ``spool-*.json``, then delete every ``claim-*.json``."""
+    for name in os.listdir(directory):
+        if name.startswith("spool-") and name.endswith(".json"):
+            (directory / name).rename(directory / ("claim-" + name.removeprefix("spool-")))
+    for name in os.listdir(directory):
+        if name.startswith("claim-") and name.endswith(".json"):
+            (directory / name).unlink()
+
+
+def test_spool_file_names_carry_the_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    (path,) = spool_files()
+    assert path.name.startswith("v2-spool-")
+
+
+def test_legacy_spool_file_sent_and_deleted(usage_reporting_env) -> None:
+    quiet_config()
+    legacy = _legacy_spool_file()
+    _spool_one()
+    make_due()
+    usage_reporting.start()
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    sent = request.json()["properties"]["usage"]
+    assert (sent["mcp:search"]["ok"], sent["mcp:query"]["ok"]) == (1, 1)
+    assert wait_until(lambda: spool_files() == [])
+    assert not legacy.exists()
+
+
+def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    _legacy_spool_file()
+    _schema_1_send(settings.spool_dir())
+    (survivor,) = spool_files()
+    assert survivor.name.startswith("v2-")
+    make_due()
+    usage_reporting.start()
+    (request,) = usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    assert request.json()["properties"]["usage"]["mcp:query"]["ok"] == 1
+    assert "mcp:search" not in request.json()["properties"]["usage"]
+
+
+def test_sender_leaves_newer_schema_files_untouched(usage_reporting_env) -> None:
+    quiet_config()
+    newer = [_legacy_spool_file(prefix="v3-spool-", body="{}"), _legacy_spool_file(prefix="v3-claim-", body="{}")]
+    _spool_one()
+    make_due()
+    usage_reporting.start()
+    assert usage_reporting_env.capture.wait_for(count=1)
+    usage_reporting.shutdown()
+    end_process()
+    assert wait_until(lambda: [p.name for p in spool_files()] == sorted(p.name for p in newer))
+    assert all(p.read_text() == "{}" for p in newer)
+
+
+def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    for i in range(60):
+        _legacy_spool_file(ns=i + 1)
+    batch = Batch.model_validate({
+        "period": {"first": "2026-05-02", "last": "2026-05-02"}, "usage": {"mcp:query": {"ok": 1}},
+    })
+    for _ in range(60):
+        spool.write(settings.spool_dir(), batch)
+    files = spool_files()
+    assert len(files) <= 100
+    assert sum(name.startswith("v2-spool-") for name in (p.name for p in files)) == 60
+    report = show()
+    assert usage(report, "mcp:query")["ok"] == 60
+    assert usage(report, "mcp:search")["ok"] == len(files) - 60
+
+
+def test_disable_purges_every_schema_version(usage_reporting_env) -> None:
+    quiet_config()
+    _spool_one()
+    for prefix in ("spool-", "claim-", "v2-claim-", "v3-spool-", "v3-claim-"):
+        _legacy_spool_file(prefix=prefix)
+    assert cli(["usage-reporting", "disable"]).returncode == 0
+    assert spool_files() == []
+
+
+def test_unknown_config_field_survives_a_start(usage_reporting_env) -> None:
+    write_raw_config(future_field={"kept": [1, 2]}, last_sent=now_utc().isoformat(), notice_shown_schema=99)
+    _spool_one()
+    stored = raw_config()
+    assert stored["install_id"]
+    assert stored["future_field"] == {"kept": [1, 2]}
