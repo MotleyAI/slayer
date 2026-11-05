@@ -8,7 +8,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel
 from sqlglot import exp
@@ -442,6 +442,8 @@ def register_sqlite_udfs(dbapi_connection) -> None:
 
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
+    native_lists: ClassVar[bool] = False
+    database_name: ClassVar[str] = "SQLite"
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
     sa_backend_names: frozenset[str] = frozenset({"sqlite"})
     probes_integer_affinity: bool = True

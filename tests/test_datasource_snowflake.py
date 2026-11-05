@@ -78,7 +78,7 @@ class TestDatasourceDelegatesToDialect:
             role="should_be_ignored",
         )
         cs = ds.get_connection_string()
-        assert cs.startswith("postgresql+psycopg2://")
+        assert cs.startswith("postgresql+psycopg://")
         assert "should_be_ignored" not in cs
 
 

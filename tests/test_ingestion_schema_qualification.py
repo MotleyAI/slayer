@@ -382,18 +382,20 @@ class TestColumnCorruption:
 
 def _duck_columns(engine: sa.Engine, *, table: str, schema: str) -> list[ReflectedColumn]:
     """DuckDB columns of ``att_main.<schema>.<table>``."""
-    return DuckdbDialect().reflect_columns(
-        sa_engine=engine, inspector=sa.inspect(engine),
-        table=table, schema=schema, catalog="att_main",
-    )
+    with engine.connect() as conn:
+        return DuckdbDialect().reflect_columns(
+            connection=conn, inspector=sa.inspect(conn),
+            table=table, schema=schema, catalog="att_main",
+        )
 
 
 def _duck_keys(engine: sa.Engine, *, table: str, schema: str) -> TableKeys:
     """DuckDB keys of ``att_main.<schema>.<table>``."""
-    return DuckdbDialect().reflect_table_keys(
-        sa_engine=engine, inspector=sa.inspect(engine),
-        table=table, schema=schema, catalog="att_main",
-    )
+    with engine.connect() as conn:
+        return DuckdbDialect().reflect_table_keys(
+            connection=conn, inspector=sa.inspect(conn),
+            table=table, schema=schema, catalog="att_main",
+        )
 
 
 class TestAttachedCatalogs:
@@ -1287,10 +1289,11 @@ class TestForcedFilterProbe:
         current catalog's columns, never the union."""
         with _open_attached(attached_paths) as engine:
             dialect = dialect_for_sa_backend(engine.dialect.name)
-            cols = dialect.reflect_columns(
-                sa_engine=engine, inspector=sa.inspect(engine),
-                table="shared", schema="main", catalog="att_main",
-            )
+            with engine.connect() as conn:
+                cols = dialect.reflect_columns(
+                    connection=conn, inspector=sa.inspect(conn),
+                    table="shared", schema="main", catalog="att_main",
+                )
             assert {c.name for c in cols} == {"m"}
 
 

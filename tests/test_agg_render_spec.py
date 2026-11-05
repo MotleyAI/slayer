@@ -1,4 +1,4 @@
-"""DEV-1452 Stage A — AggRenderSpec + ``_build_agg_render_spec_from_planned``.
+"""AggRenderSpec + ``_build_agg_render_spec_from_planned``.
 
 Decouples ``slayer/sql/generator.py``'s dialect helpers from the legacy
 ``legacy enriched-measure``. The new ``AggRenderSpec`` is the frozen Pydantic record
@@ -99,8 +99,7 @@ def _orders_model() -> SlayerModel:
             Column(name="tax", type=DataType.DOUBLE),
             Column(name="quantity", type=DataType.INT),
             # Derived time columns covering the two ColumnSqlKey shapes
-            # the explicit-time-arg resolver must handle (DEV-1452 Codex
-            # fix): bare-identifier rename and a non-trivial expression.
+            # the explicit-time-arg resolver must handle: bare-identifier rename and a non-trivial expression.
             Column(
                 name="created_at_alias",
                 sql="created_at",
@@ -183,6 +182,7 @@ class TestAggRenderSpecConstruction:
             "column_type",
             "input_type",
             "value",
+            "element_type",
         }
 
     def test_minimal_count_star(self):
@@ -551,7 +551,7 @@ class TestBuilderParametric:
 
 class TestBuilderCrossModelKwargPath:
     def test_local_source_pathed_kwarg_accepted(self):
-        # DEV-1709: a LOCAL aggregate with a structurally-crossing kwarg is
+        # A LOCAL aggregate with a structurally-crossing kwarg is
         # now a supported crossing INPUT — the widened Law-3 trigger
         # isolates the aggregate host-rooted, and inside that CTE's
         # sub-render the kwarg resolves through the host scope. The spec
@@ -579,7 +579,7 @@ class TestBuilderCrossModelKwargPath:
         assert spec is not None
 
     def test_local_source_pathed_columnsqlkey_kwarg_accepted(self):
-        # Same DEV-1709 relaxation for the ColumnSqlKey kwarg kind.
+        # Same relaxation for the ColumnSqlKey kwarg kind.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -755,7 +755,7 @@ class TestBuilderTypePropagation:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1749 — ``_build_agg`` routes classification through the single
+# ``_build_agg`` routes classification through the single
 # ``AGG_REGISTRY`` table (was: ``_AGG_FUNCTION_MAP`` + ``agg_class_map`` + the
 # ``count_distinct`` / ``median`` name-equality intercepts). Pin the merged
 # dispatch: a SIMPLE class, both former shadow-intercept specials, and the

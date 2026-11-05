@@ -79,14 +79,6 @@ class TestPostgresDescriptions:
         assert described.type == info_schema_type(described.db_type)[0]
 
 
-@pytest.mark.parametrize(("ds_type", "expected"), [
-    ("postgres", True), ("redshift", True), ("duckdb", False), ("sqlite", False), ("mysql", False),
-    ("snowflake", False), ("mssql", False),
-])
-def test_type_probe_uses_sync_driver(ds_type: str, expected: bool) -> None:
-    assert dialect_for_ds_type(ds_type).type_probe_uses_sync_driver is expected
-
-
 # ─────────────────────────────── MySQL / MariaDB ────────────────────────────
 
 def _mysql_row(code: int, length: int, scale: int = 0) -> tuple[Any, ...]:
@@ -175,7 +167,7 @@ class TestTypeNameCodes:
         ("duckdb", "DATE", DataType.DATE),
         ("duckdb", "TIMESTAMP WITH TIME ZONE", DataType.TIMESTAMP),
         ("duckdb", "INTERVAL", DataType.TEXT),
-        ("duckdb", "INTEGER[]", DataType.TEXT),
+        ("duckdb", "INTEGER[]", DataType.ARRAY),
         ("duckdb", "MAP(VARCHAR, INTEGER)", DataType.TEXT),
         ("duckdb", "JSON", DataType.TEXT),
         ("bigquery", "INTEGER", DataType.INT),
@@ -185,12 +177,12 @@ class TestTypeNameCodes:
         ("bigquery", "RECORD", DataType.TEXT),
         ("trino", "bigint", DataType.INT),
         ("trino", "decimal(10,2)", DataType.DOUBLE),
-        ("trino", "array(integer)", DataType.TEXT),
+        ("trino", "array(integer)", DataType.ARRAY),
         ("trino", "row(a integer)", DataType.TEXT),
         ("clickhouse", "Nullable(Int32)", DataType.INT),
         ("clickhouse", "UInt8", DataType.INT),
         ("clickhouse", "Date32", DataType.DATE),
-        ("clickhouse", "Array(Int32)", DataType.TEXT),
+        ("clickhouse", "Array(Int32)", DataType.ARRAY),
     ])
     def test_name(self, ds_type: str, name: str, expected: DataType) -> None:
         described = _describe(ds_type, _row("c", name))
@@ -245,11 +237,14 @@ class _Engines:
         self.log.append(sql)
         return self._respond(sql)
 
-    def sync(self) -> MagicMock:
+    def _sync_conn(self) -> MagicMock:
         conn = MagicMock()
         conn.exec_driver_sql.side_effect = lambda sql, **_kw: self._run(sql)
+        return conn
+
+    def sync(self) -> MagicMock:
         engine = MagicMock()
-        engine.connect.return_value.__enter__.return_value = conn
+        engine.connect.return_value.__enter__.return_value = self._sync_conn()
         return engine
 
     def async_(self) -> MagicMock:
@@ -258,8 +253,10 @@ class _Engines:
 
         def _connect() -> MagicMock:
             self.async_connects += 1
+            sync_conn = self._sync_conn()
             conn = MagicMock()
             conn.exec_driver_sql = AsyncMock(side_effect=_exec)
+            conn.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(sync_conn, *a, **kw))
             conn.rollback = AsyncMock()
             conn.get_raw_connection = AsyncMock()
             ctx = MagicMock()
@@ -305,21 +302,21 @@ class TestFirstRowFallback:
         }
 
 
-# ─────────────────────────── Postgres probes on the sync driver ─────────────
+# ───────────────────────── Postgres probes on the client's one driver ─────────
 
-async def test_postgres_probe_runs_on_the_sync_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_postgres_probe_runs_on_the_async_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     engines = _Engines(lambda _sql: _Result(
         keys=["x", "n"], rows=[],
         description=[_row("x", 23), _row("n", 1700, precision=12, scale=0)],
     ))
-    route_engine(monkeypatch, engines.sync())  # pyright: ignore[reportArgumentType]
+    monkeypatch.setattr(sql_client.engine_factory, "get_engine", MagicMock(side_effect=AssertionError("factory engine")))
     async_engine = engines.async_()
-    monkeypatch.setattr(sql_client, "_get_async_engine", lambda _cs: async_engine)
+    monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: async_engine)
     client = SlayerSQLClient(datasource=DatasourceConfig(
         name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d",
     ))
     result = await client.get_result_column_types("SELECT 1 AS x, 1::numeric(12,0) AS n")
-    assert engines.async_connects == 0
+    assert engines.async_connects == 1
     assert any("SELECT 1 AS x" in s for s in engines.log)
     assert result == {
         "x": ResultColumnType(type=DataType.INT, db_type="integer"),

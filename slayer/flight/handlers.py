@@ -22,6 +22,7 @@ import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer import usage_reporting
+from slayer.core.format import list_json_text
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -408,6 +409,8 @@ class FlightHandlers:
             value = row.get(engine_alias)
             if isinstance(value, decimal.Decimal):
                 value = float(value)
+            elif isinstance(value, (list, tuple)):
+                value = list_json_text(list(value))
             out[projected_name] = value
         return out
 

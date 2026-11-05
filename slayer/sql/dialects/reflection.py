@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager
 from typing import Any, Protocol, TypeVar
 
 import sqlalchemy as sa
@@ -21,10 +20,12 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-class CatalogEngine(Protocol):
-    """What a catalog read needs from an engine: connections that run statements verbatim."""
+class CatalogConnection(Protocol):
+    """What a catalog read needs: one open connection that runs statements verbatim."""
 
-    def connect(self) -> AbstractContextManager[Any]: ...
+    def exec_driver_sql(self, statement: str) -> Any: ...
+
+    def rollback(self) -> None: ...
 
 
 class TableLocation(BaseModel):
@@ -38,12 +39,13 @@ class TableLocation(BaseModel):
 
 
 class ReflectedColumn(BaseModel):
-    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque or exact-numeric)."""
+    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list or exact-numeric)."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str
     type: DataType
+    element_type: DataType | None = None
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
@@ -59,11 +61,12 @@ class ResultColumnType(BaseModel):
 
     @property
     def lossy_db_type(self) -> str | None:
-        """The type name a stored ``Column.db_type`` keeps: only where ``type`` is lossy (opaque or exact-numeric)."""
+        """The type name a stored ``Column.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
+        exact-numeric)."""
         if self.db_type is None:
             return None
         name = unwrap_clickhouse_wrapper_str(self.db_type)
-        return name if self.type.is_opaque or is_exact_numeric_db_type(name) else None
+        return name if self.type.is_opaque or self.type.is_list or is_exact_numeric_db_type(name) else None
 
 
 class ReflectedForeignKey(BaseModel):
@@ -193,8 +196,8 @@ def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
 
 
 def is_exact_numeric_db_type(db_type: str | None) -> bool:
-    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers excluded)."""
-    if not db_type:
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers and lists excluded)."""
+    if not db_type or info_schema_list_element(db_type) is not None:
         return False
     token = db_type.split("(")[0].upper().strip()
     return "DECIMAL" in token or "NUMERIC" in token
@@ -224,6 +227,8 @@ def info_schema_type(
     base = name.split("(")[0].upper().strip()
     if overrides and base in overrides:
         return overrides[base], False
+    if info_schema_list_element(name) is not None:
+        return DataType.ARRAY, False
     if _is_container_name(name):
         return DataType.TEXT, False
     if base in _OPAQUE_TYPE_NAMES:
@@ -245,6 +250,24 @@ def info_schema_type(
     return DataType.TEXT, False
 
 
+def info_schema_list_element(data_type_str: str | None) -> DataType | None:
+    """The element type of a list type string (``T[]``, ``LIST(T)``, ``ARRAY(T)``), else ``None``; a nested list
+    or record has ``UNKNOWN`` elements."""
+    text = (data_type_str or "").strip()
+    upper = text.upper()
+    if upper == "ARRAY":  # an untyped list (Snowflake), or a catalog that names no element type
+        return DataType.UNKNOWN
+    if upper.endswith("[]"):
+        inner = text[:-2].strip()
+    elif upper.startswith(("LIST(", "ARRAY(", "ARRAY<")) and upper.endswith((")", ">")):
+        inner = text[min(i for i in (text.find("("), text.find("<")) if i >= 0) + 1:-1].strip()
+    else:
+        return None
+    if info_schema_list_element(inner) is not None or inner.upper().startswith(("STRUCT", "MAP", "UNION", "ROW")):
+        return DataType.UNKNOWN
+    return info_schema_type(unwrap_clickhouse_wrapper_str(inner))[0]
+
+
 def result_column_type_of_name(
     name: str, *, overrides: Mapping[str, DataType] | None = None,
 ) -> ResultColumnType:
@@ -255,8 +278,13 @@ def result_column_type_of_name(
 def column_from_type_string(
     *, name: str, data_type: str | None, comment: str | None = None, overrides: Mapping[str, DataType] | None = None,
 ) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept only for exact numerics."""
+    """A column read from a catalog type string; ``db_type`` kept for a list and for exact numerics."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
+    element = info_schema_list_element(unwrapped)
+    if element is not None:
+        return ReflectedColumn(
+            name=name, type=DataType.ARRAY, element_type=element, db_type=unwrapped, comment=clean_comment(comment),
+        )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float,
@@ -283,8 +311,59 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
     return current
 
 
+#: Element types that are records or containers: a list of them has opaque elements.
+_OPAQUE_ELEMENT_TYPE_NAMES = frozenset({"STRUCT", "RECORD", "TUPLE", "MAP", "OBJECT", "VARIANT", "ROW", "JSON"})
+
+
+def _sa_list_item(sa_type: sa.types.TypeEngine) -> tuple[bool, sa.types.TypeEngine | None]:
+    """``(is a list, its item type)``; the item is ``None`` for an untyped (Snowflake semi-structured) list."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    if isinstance(sa_type, sa.ARRAY):
+        dimensions = getattr(sa_type, "dimensions", None)
+        return True, None if dimensions is not None and dimensions > 1 else sa_type.item_type
+    if type(sa_type).__name__.upper() != "ARRAY":
+        return False, None
+    item = getattr(sa_type, "item_type", None)
+    if item is not None:  # ClickHouse Array(T)
+        return True, item
+    return True, getattr(sa_type, "value_type", None)  # Snowflake ARRAY / ARRAY(T)
+
+
+def _sa_element_type(item: sa.types.TypeEngine | None) -> DataType:
+    """A list item's SLayer type: a scalar's own, ``UNKNOWN`` for a nested list, a record or no item type."""
+    if item is None or _sa_list_item(item)[0]:
+        return DataType.UNKNOWN
+    if type(_unwrap_clickhouse_wrappers(item)).__name__.upper() in _OPAQUE_ELEMENT_TYPE_NAMES:
+        return DataType.UNKNOWN
+    return _sa_type_to_data_type(item)
+
+
+def sa_data_types(sa_type: sa.types.TypeEngine) -> tuple[DataType, DataType | None]:
+    """``(type, element type)`` of a SQLAlchemy type; the element type is set only for a list."""
+    is_list, item = _sa_list_item(sa_type)
+    if is_list:
+        return DataType.ARRAY, _sa_element_type(item)
+    return _sa_type_to_data_type(sa_type), None
+
+
+def list_db_type(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str:
+    """A list's raw database type with its element (``INTEGER[]``, ``ARRAY<STRING>``)."""
+    unwrapped = _unwrap_clickhouse_wrappers(sa_type)
+    if sa_dialect is not None:
+        try:
+            return unwrapped.compile(dialect=sa_dialect)
+        except Exception:  # noqa: BLE001 — a type its dialect cannot spell keeps the generic form
+            logger.debug("list type %r does not compile on %s", unwrapped, sa_dialect.name)
+    item = _sa_list_item(unwrapped)[1]
+    if item is None:
+        return _raw_db_type_str(unwrapped) or "ARRAY"
+    return f"{type(_unwrap_clickhouse_wrappers(item)).__name__.upper()}[]"
+
+
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    if _sa_list_item(sa_type)[0]:
+        return DataType.ARRAY
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
     if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
         return DataType.TEXT
@@ -307,9 +386,8 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Most unmapped types (bytea) are comparable and "
-            "work as TEXT; add genuinely non-comparable ones to "
-            "_OPAQUE_TYPE_NAMES and the rest to _TYPE_NAME_MAP.",
+            "DataType.TEXT. Add a non-comparable type to _OPAQUE_TYPE_NAMES "
+            "and a mappable one to _TYPE_NAME_MAP.",
             type_name,
             str(sa_type),
         )
@@ -352,9 +430,16 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     return False
 
 
-def column_from_sa_type(*, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None) -> ReflectedColumn:
-    """A column read through the Inspector; ``db_type`` kept only for opaque and exact-numeric types."""
-    data_type = _sa_type_to_data_type(sa_type)
+def column_from_sa_type(
+    *, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None, sa_dialect: Any = None,
+) -> ReflectedColumn:
+    """A column read through the Inspector; ``db_type`` kept only for opaque, list and exact-numeric types."""
+    data_type, element_type = sa_data_types(sa_type)
+    if data_type is DataType.ARRAY:
+        return ReflectedColumn(
+            name=name, type=data_type, element_type=element_type, db_type=list_db_type(sa_type, sa_dialect=sa_dialect),
+            comment=clean_comment(comment),
+        )
     db_type = (
         _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
         if data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) else None
@@ -426,16 +511,27 @@ def info_schema_comments_query(
     )
 
 
-def fetch(sa_engine: CatalogEngine | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
-    """Run one catalog query verbatim (no bind parameters) and return its rows."""
-    if sa_engine is None:
-        raise ValueError("no engine to read the catalog with")
+def fetch(connection: CatalogConnection | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
+    """Run one catalog query verbatim (no bind parameters) on ``connection`` and return its rows."""
+    if connection is None:
+        raise ValueError("no connection to read the catalog with")
     sql = statement.sql(dialect=dialect, normalize_functions=False)
-    with sa_engine.connect() as conn:
-        return [tuple(row) for row in conn.exec_driver_sql(sql).fetchall()]
+    return [tuple(row) for row in connection.exec_driver_sql(sql).fetchall()]
 
 
-def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -> _T:
+def recover(connection: CatalogConnection | None) -> None:
+    """End a failed read's transaction so the next read on ``connection`` runs (Postgres aborts it)."""
+    if connection is None:
+        return
+    try:
+        connection.rollback()
+    except Exception:  # noqa: BLE001 — the next read reports a dead connection itself
+        logger.debug("Rolling back after a failed catalog read failed", exc_info=True)
+
+
+def best_effort(
+    read: Callable[[], _T], *, connection: CatalogConnection | None, default: _T, table: str, what: str,
+) -> _T:
     """One key read; a failure is logged at WARNING and yields ``default`` (unsupported reads stay quiet)."""
     try:
         return read()
@@ -444,6 +540,7 @@ def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -
         return default
     except Exception as exc:  # noqa: BLE001 — a key read never sinks the table
         logger.warning("Reading the %s of table %r failed: %s", what, table, exc)
+        recover(connection)
         return default
 
 

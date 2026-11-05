@@ -53,12 +53,15 @@ class Recorder:
             raise self.reject_exc
         return self._result()
 
-    def sync_engine(self) -> MagicMock:
+    def _sync_conn(self) -> MagicMock:
         conn = MagicMock()
         conn.exec_driver_sql.side_effect = lambda sql, **_kw: self._run(sql)
         conn.rollback.side_effect = lambda: self.log.append(ROLLBACK)
+        return conn
+
+    def sync_engine(self) -> MagicMock:
         engine = MagicMock()
-        engine.connect.return_value.__enter__.return_value = conn
+        engine.connect.return_value.__enter__.return_value = self._sync_conn()
         return engine
 
     def async_engine(self) -> MagicMock:
@@ -68,8 +71,10 @@ class Recorder:
         async def _rollback() -> None:
             self.log.append(ROLLBACK)
 
+        sync_conn = self._sync_conn()
         conn = MagicMock()
         conn.exec_driver_sql = AsyncMock(side_effect=_exec)
+        conn.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(sync_conn, *a, **kw))
         conn.rollback = AsyncMock(side_effect=_rollback)
         conn.get_raw_connection = AsyncMock()
         ctx = MagicMock()
@@ -82,7 +87,7 @@ class Recorder:
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         route_engine(monkeypatch, self.sync_engine())  # pyright: ignore[reportArgumentType]
         async_engine = self.async_engine()
-        monkeypatch.setattr(sql_client, "_get_async_engine", lambda _cs: async_engine)
+        monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: async_engine)
 
     def statements(self) -> list[str]:
         return [s for s in self.log if s != ROLLBACK]

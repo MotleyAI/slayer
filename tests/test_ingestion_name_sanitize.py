@@ -4,9 +4,10 @@ from __future__ import annotations
 import logging
 import tempfile
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
@@ -377,6 +378,9 @@ class TestIdleRelease:
 
         class _ExplodingEngine:
             pool = _ExplodingPool()
+
+            def connect(self) -> nullcontext[MagicMock]:
+                return nullcontext(MagicMock())
 
         monkeypatch.setattr(
             "slayer.sql.engine_factory.get_engine",

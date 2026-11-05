@@ -19,11 +19,11 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.engine.url import make_url
 
 from slayer.core.enums import DataType
 from slayer.sql import client
 from slayer.sql.client import ResultColumnType
-from slayer.sql.dialects import dialect_for_ds_type
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +168,9 @@ class TestSnowflakeAsyncRouting:
     """snowflake-connector-python is sync only; SlayerSQLClient must NOT
     treat it as an async-capable driver."""
 
-    def test_snowflake_has_no_async_driver(self) -> None:
-        assert dialect_for_ds_type("snowflake").async_driver is None
-
-    def test_async_connection_string_returns_none_for_snowflake(self) -> None:
-        cs = "snowflake://?connection_name=default"
-        assert client._async_connection_string(connection_string=cs, db_type="snowflake") is None
+    def test_snowflake_url_is_not_async_capable(self) -> None:
+        pytest.importorskip("snowflake.sqlalchemy")
+        assert not make_url("snowflake://?connection_name=default").get_dialect(_is_async=True).is_async
 
 
 # ---------------------------------------------------------------------------
