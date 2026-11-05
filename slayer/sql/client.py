@@ -264,11 +264,19 @@ async def _run_sync_in_thread(func, *args, **kwargs):
 
     Scoped executor, not the default one: pytest-asyncio can hang on default-
     executor threads after SQLite tests; this one shuts down immediately.
+    Cancellation never waits: the worker is abandoned and finishes on its own.
     """
     loop = asyncio.get_running_loop()
     call = functools.partial(func, *args, **kwargs)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="slayer-blocking")
+    cancelled = False
+    try:
         return await loop.run_in_executor(executor, call)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
 
 
 def _build_type_probe_sql(sql: str, db_type: str | None) -> str:

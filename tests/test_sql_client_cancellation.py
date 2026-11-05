@@ -20,6 +20,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.sql import client as client_module
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
+from slayer.storage.sqlite_conn import open_connection, transaction
 
 # Seconds a blocked call waits for its release before giving up (the stall a broken fix shows).
 _BOUND = 5.0
@@ -124,10 +125,9 @@ async def _cancelled(task: asyncio.Task[Any]) -> float:
 @pytest.fixture
 def lite(tmp_path: Path) -> Iterator[DatasourceConfig]:
     path = tmp_path / "lite.db"
-    with contextlib.closing(sqlite3.connect(path)) as conn:
+    with transaction(path) as conn:
         conn.execute("CREATE TABLE t (id INTEGER)")
         conn.execute("INSERT INTO t VALUES (1)")
-        conn.commit()
     ds = DatasourceConfig(name="lite", type="sqlite", connection_string=f"sqlite:///{path}")
     try:
         yield ds
@@ -139,13 +139,12 @@ def lite(tmp_path: Path) -> Iterator[DatasourceConfig]:
 def _exclusively_locked(ds: DatasourceConfig) -> Iterator[None]:
     """Hold the datasource's SQLite file under ``BEGIN EXCLUSIVE`` from another connection."""
     path = ds.get_connection_string().removeprefix("sqlite:///")
-    conn = sqlite3.connect(path, isolation_level=None)
-    try:
+    with open_connection(path, isolation_level=None) as conn:
         conn.execute("BEGIN EXCLUSIVE")
-        yield
-    finally:
-        conn.rollback()
-        conn.close()
+        try:
+            yield
+        finally:
+            conn.rollback()
 
 
 @pytest.fixture
@@ -190,8 +189,9 @@ async def _bounded_while_locked(
         with _exclusively_locked(ds):
             async with _Ticker() as ticker:
                 started = time.monotonic()
+                pending = call(client)
                 with pytest.raises(TimeoutError):
-                    await asyncio.wait_for(call(client), _TIMEOUT)
+                    await asyncio.wait_for(pending, _TIMEOUT)
                 elapsed = time.monotonic() - started
                 await asyncio.sleep(0.05)
         _joined(spy)
@@ -220,7 +220,8 @@ async def test_cancel_while_running_raises_at_once() -> None:
         assert await _cancelled(task) < _PROMPT
     finally:
         call.finish()
-    assert call.thread is not None and not call.thread.is_alive()
+    assert call.thread is not None
+    assert not call.thread.is_alive()
 
 
 async def test_cancel_before_start_never_runs_the_call() -> None:
@@ -248,7 +249,8 @@ async def test_abandoned_outcome_is_dropped(outcome: dict[str, Any]) -> None:
     finally:
         call.finish()
         loop.set_exception_handler(previous)
-    assert call.thread is not None and not call.thread.is_alive()
+    assert call.thread is not None
+    assert not call.thread.is_alive()
     assert reported == []
 
 
@@ -272,7 +274,8 @@ def test_abandoned_outcome_is_dropped_after_loop_closed(
         assert time.monotonic() - started < _PROMPT
     finally:
         call.finish()
-    assert call.thread is not None and not call.thread.is_alive()
+    assert call.thread is not None
+    assert not call.thread.is_alive()
     assert reported == []
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
@@ -280,8 +283,9 @@ def test_abandoned_outcome_is_dropped_after_loop_closed(
 async def test_close_right_after_a_cancellation(lite: DatasourceConfig, read_spy: _Spy) -> None:
     client = SlayerSQLClient(lite)
     with _exclusively_locked(lite):
+        pending = client.list_objects(None)
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(client.list_objects(None), _TIMEOUT)
+            await asyncio.wait_for(pending, _TIMEOUT)
         started = time.monotonic()
         client.close()
         assert time.monotonic() - started < _PROMPT
@@ -333,7 +337,8 @@ async def test_uncancelled_call_returns_its_result_and_leaves_no_worker() -> Non
     call = _Blocking(result=42)
     call.release.set()
     assert await client_module._run_sync_in_thread(call) == 42
-    assert call.thread is not None and not call.thread.is_alive()
+    assert call.thread is not None
+    assert not call.thread.is_alive()
 
 
 async def test_uncancelled_call_raises_its_own_error_and_leaves_no_worker() -> None:
@@ -343,7 +348,8 @@ async def test_uncancelled_call_raises_its_own_error_and_leaves_no_worker() -> N
     with pytest.raises(RuntimeError) as raised:
         await client_module._run_sync_in_thread(call)
     assert raised.value is error
-    assert call.thread is not None and not call.thread.is_alive()
+    assert call.thread is not None
+    assert not call.thread.is_alive()
 
 
 async def test_uncancelled_ping_answers(lite: DatasourceConfig, ping_spy: _Spy) -> None:
@@ -352,4 +358,5 @@ async def test_uncancelled_ping_answers(lite: DatasourceConfig, ping_spy: _Spy) 
         assert await client.ping() is None
     finally:
         client.close()
-    assert ping_spy.threads and not ping_spy.threads[0].is_alive()
+    assert ping_spy.threads
+    assert not ping_spy.threads[0].is_alive()
