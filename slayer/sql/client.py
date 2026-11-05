@@ -131,15 +131,9 @@ def _types_from_cursor(result: Any, *, dialect: SqlDialect) -> dict[str, ResultC
     return {name: t or _TEXT for name, t in types.items()}
 
 
-_CATEGORIES = {
-    DataType.INT: "number", DataType.DOUBLE: "number", DataType.DATE: "time", DataType.TIMESTAMP: "time",
-    DataType.BOOLEAN: "boolean",
-}
-
-
-def type_categories(types: dict[str, ResultColumnType]) -> dict[str, str]:
-    """The 1.5.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
-    return {name: _CATEGORIES.get(column.type, "string") for name, column in types.items()}
+def type_categories(types: dict[str, ResultColumnType], *, dialect: SqlDialect) -> dict[str, str]:
+    """The 1.6.0 categories (``number`` / ``string`` / ``time`` / ``boolean``) of typed probe results."""
+    return {name: dialect.legacy_type_categories.category(column) for name, column in types.items()}
 
 
 # T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
@@ -462,7 +456,7 @@ def get_column_types_sync(
     )
     return type_categories(get_result_column_types_sync(
         sql, engine=engine, db_type=db_type, datasource_name=datasource_name,
-    ))
+    ), dialect=dialect_for_ds_type(db_type))
 
 
 async def _get_result_column_types_async(
@@ -810,7 +804,7 @@ class SlayerSQLClient:
             "use get_result_column_types(), which returns SLayer types and database type names.",
             removal="2.0",
         )
-        return type_categories(await self.get_result_column_types(sql))
+        return type_categories(await self.get_result_column_types(sql), dialect=self._dialect)
 
     async def server_profile(self) -> ServerProfile:
         """The server's profile for this client's engine, probed once per engine."""
@@ -1386,6 +1380,17 @@ class DelegatingSqlClient:
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         return await self.inner.get_result_column_types(sql)
 
+    async def get_column_types(self, sql: str) -> dict[str, str]:
+        """Deprecated: the 1.6.0 category probe; use ``get_result_column_types``."""
+        warn_deprecated(
+            "DelegatingSqlClient.get_column_types() returns 1.6.0 type categories and is removed in SLayer 2.0; "
+            "use get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        return type_categories(
+            await self.inner.get_result_column_types(sql), dialect=dialect_for_ds_type(self.datasource.type),
+        )
+
     async def server_profile(self) -> ServerProfile:
         return await self.inner.server_profile()
 
@@ -1421,3 +1426,44 @@ class DelegatingSqlClient:
 
     def close(self) -> None:
         self.inner.close()
+
+
+class BorrowedSqlClient(DelegatingSqlClient):
+    """``inner`` lent to another engine: closing it here leaves ``inner`` open."""
+
+    async def aclose(self) -> None:
+        """No-op: the lender closes ``inner``."""
+
+    def close(self) -> None:
+        """No-op: the lender closes ``inner``."""
+
+
+_CATEGORY_TYPES = {
+    "number": DataType.DOUBLE, "string": DataType.TEXT, "time": DataType.TIMESTAMP, "boolean": DataType.BOOLEAN,
+}
+
+
+class _CategoryProbeClient(DelegatingSqlClient):
+    """A client written for 1.6.0, whose type probe is ``get_column_types``: its categories read as types."""
+
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        warn_deprecated(
+            "A SQL client's get_column_types() is the 1.6.0 type probe and is no longer called in SLayer 2.0; "
+            "implement get_result_column_types(), which returns SLayer types and database type names.",
+            removal="2.0",
+        )
+        categories: dict[str, str] = await self.inner.get_column_types(sql)  # pyright: ignore[reportAttributeAccessIssue]
+        return {name: ResultColumnType(type=_CATEGORY_TYPES.get(c, DataType.TEXT)) for name, c in categories.items()}
+
+
+def adapt_client(client: SqlClient) -> SqlClient:
+    """``client``, wrapped to probe through its 1.6.0 ``get_column_types`` when that is the only probe it serves."""
+    if isinstance(client, DelegatingSqlClient):
+        cls = type(client)
+        legacy = (cls.get_result_column_types is DelegatingSqlClient.get_result_column_types
+                  and cls.get_column_types is not DelegatingSqlClient.get_column_types)
+    else:
+        typed = getattr(client, "get_result_column_types", None)
+        stub = typed is None or getattr(typed, "__func__", None) is SqlClient.get_result_column_types
+        legacy = stub and hasattr(client, "get_column_types")
+    return _CategoryProbeClient(client) if legacy else client

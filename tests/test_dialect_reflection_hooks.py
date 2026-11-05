@@ -161,7 +161,7 @@ class TestCatalogQueryEmission:
         assert order is not None
         assert "ordinal_position" in order.sql().lower()
         assert cols == [ReflectedColumn(
-            name="id", type=DataType.INT, is_float=False, db_type=None, comment=None,
+            name="id", type=DataType.INT, is_float=False, db_type=None, comment=None, type_name="INTEGER",
         )]
 
     def test_base_columns_query_without_catalog_has_no_catalog_predicate(self) -> None:

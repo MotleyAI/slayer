@@ -1,4 +1,4 @@
-"""Tests for idempotent ``ingest_datasource_idempotent``. See DEV-1356.
+"""Tests for idempotent ``ingest_datasource_idempotent``.
 
 The function:
 
@@ -315,7 +315,7 @@ class TestSkipNonSqlTableModes:
 
 
 class TestCombinedReturnShape:
-    async def test_type_drift_surfaces_in_to_delete_not_additions(
+    async def test_type_drift_is_neither_an_addition_nor_a_delete(
         self, workspace: Path
     ) -> None:
         storage, ds, db_path = await _setup(workspace)
@@ -343,12 +343,11 @@ class TestCombinedReturnShape:
         # surface the bucket mismatch.
         addition = _addition_for("orders", result.additions)
         assert addition is None or "amount" not in addition.new_columns
-        # And the to_delete payload lists the bucket-mismatched column.
-        orders_drops = [
-            e for e in result.to_delete if e.model_name == "orders"
-        ]
-        assert orders_drops, "expected validate_models to flag orders.amount"
-        assert isinstance(orders_drops[0], (EditModelDelete, WholeModelDelete))
+        # Nor a delete: a type mismatch on an existing column is a re-type finding.
+        assert not any(
+            isinstance(e, WholeModelDelete) or (isinstance(e, EditModelDelete) and "amount" in e.remove.columns)
+            for e in result.to_delete if e.model_name == "orders"
+        ), result.to_delete
 
 
 class TestErrorIsolation:
@@ -378,7 +377,7 @@ class TestErrorIsolation:
 
 
 class TestMemoryEmbeddingRefresh:
-    """DEV-1416: `_refresh_datasource_embeddings` must walk memories whose
+    """`_refresh_datasource_embeddings` must walk memories whose
     entities are rooted at the datasource, in addition to models and the
     datasource doc. Failures attribute to the offending memory by id."""
 
@@ -664,7 +663,7 @@ class TestExcludeTables:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: idempotent re-ingest widens persisted INT → DOUBLE / TEXT when
+# Idempotent re-ingest widens persisted INT → DOUBLE / TEXT when
 # the live SQLite probe disagrees with the SA-declared affinity.
 # ---------------------------------------------------------------------------
 
@@ -693,7 +692,7 @@ async def _persist_int_model(
     label: str | None = None,
 ) -> None:
     """Persist a model with the target column hard-coded as type=INT,
-    simulating a pre-DEV-1538 ingest."""
+    simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
@@ -721,7 +720,7 @@ async def _persist_int_model(
 
 
 class TestSqliteProbeWideningOnReingest:
-    """DEV-1538: re-ingest widens persisted INT → probe verdict (DOUBLE/TEXT)
+    """Re-ingest widens persisted INT → probe verdict (DOUBLE/TEXT)
     when the SQLite affinity probe disagrees with the SA-declared type."""
 
     async def test_widens_persisted_int_to_double(self, workspace: Path) -> None:
@@ -839,7 +838,7 @@ class TestSqliteProbeWideningOnReingest:
     async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
         self, workspace: Path
     ) -> None:
-        """DEV-1538: the widening branch must NOT fire on non-SQLite datasources
+        """The widening branch must NOT fire on non-SQLite datasources
         even when the fresh live schema disagrees with persisted (e.g. a DBA
         ran ``ALTER COLUMN qty TYPE DOUBLE`` on Postgres). On non-SQLite the
         additive contract stays strict — drift surfaces via ``slayer
