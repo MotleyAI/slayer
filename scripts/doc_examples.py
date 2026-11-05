@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import bisect
 import json
 import re
 import shlex
@@ -29,12 +30,11 @@ SHELL_LANGS = {"bash", "sh", "shell", "zsh", "console", "shell-session"}
 
 MARKER_RE = re.compile(r'^!!!\s+note\s+"Illustrative schema"\s*$')
 NOT_A_QUERY_RE = re.compile(r"^<!--\s*doc-check:\s*not-a-query\s*-->$")
-FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>[^`]*)$")
+FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}+|~{3,}+)(?P<info>[^`]*)$")
 SOURCE_MODEL_RE = re.compile(r"\bsource_model\b")
 REFERENCE_RE = re.compile(r"(?<![\w/.\-])jaffle_shop(?:\.[A-Za-z_]\w*)+")
-# HTML comments and inline code spans (which never cross a blank line), leftmost first.
 LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:", re.MULTILINE)
-NON_IMAGE_PROSE_RE = re.compile(r"<!--.*?-->|(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.DOTALL)
+BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
 
 _UNPARSED = object()
 
@@ -132,8 +132,57 @@ def _alt_text_end(text: str, start: int) -> int | None:
     return None
 
 
-def _blank_out(match: re.Match[str]) -> str:
-    return re.sub(r"[^\n]", " ", match.group(0))
+def _run_length(text: str, start: int) -> int:
+    end = start
+    while end < len(text) and text[end] == "`":
+        end += 1
+    return end - start
+
+
+class _ProseMask:
+    """Blanks out HTML comments and inline code spans (which never cross a blank line), keeping offsets."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.blank_lines = [m.start() for m in BLANK_LINE_RE.finditer(text)]
+        self.last_close = text.rfind("-->")
+        # (paragraph end, opener length) pairs already known to have no closing run.
+        self.unclosed: set[tuple[int, int]] = set()
+
+    def masked(self) -> str:
+        out = list(self.text)
+        i = 0
+        while i < len(self.text):
+            end = self._span_end(i)
+            if end is None:
+                i += 1
+                continue
+            out[i:end] = [c if c == "\n" else " " for c in self.text[i:end]]
+            i = end
+        return "".join(out)
+
+    def _span_end(self, start: int) -> int | None:
+        text = self.text
+        if text.startswith("<!--", start):
+            return text.find("-->", start + 4) + 3 if start + 4 <= self.last_close else None
+        if text[start] == "`" and (start == 0 or text[start - 1] not in "`\\"):
+            return self._code_span_end(start)
+        return None
+
+    def _code_span_end(self, start: int) -> int | None:
+        n = _run_length(self.text, start)
+        k = bisect.bisect_left(self.blank_lines, start)
+        limit = self.blank_lines[k] if k < len(self.blank_lines) else len(self.text)
+        if (limit, n) in self.unclosed:
+            return None
+        j = start + n
+        while (k := self.text.find("`", j, limit)) != -1:
+            m = _run_length(self.text, k)
+            if m == n:
+                return k + m
+            j = k + m
+        self.unclosed.add((limit, n))
+        return None
 
 
 def _label(text: str) -> str:
@@ -143,7 +192,7 @@ def _label(text: str) -> str:
 def _image_blocks(lines: list[str], prose: str) -> list[DocBlock]:
     """Alt texts of inline (``![alt](url)``), reference (``![alt][ref]``) and shortcut (``![alt]``) images."""
     # Images are found in the masked text; alt text is read from the original, code spans included.
-    masked = NON_IMAGE_PROSE_RE.sub(_blank_out, prose)
+    masked = _ProseMask(prose).masked()
     labels = {_label(m[1]) for m in LINK_DEFINITION_RE.finditer(masked)}
     blocks: list[DocBlock] = []
     pos = masked.find("![")
@@ -306,6 +355,18 @@ def _callee_name(func: ast.expr) -> str | None:
     return None
 
 
+def _node_literal(node: ast.AST) -> Any:
+    """The value of a ``SlayerQuery(...)`` call or a dict/list display, else ``_UNPARSED``."""
+    try:
+        if isinstance(node, ast.Call) and _callee_name(node.func) == "SlayerQuery" and not node.args:
+            return {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg is not None}
+        if isinstance(node, (ast.Dict, ast.List)):
+            return ast.literal_eval(node)
+    except (ValueError, SyntaxError, TypeError):
+        pass
+    return _UNPARSED
+
+
 def _python_literals(body: str) -> list[tuple[int, Any]]:
     tree = ast.parse(body)
     starts = [0]
@@ -313,26 +374,11 @@ def _python_literals(body: str) -> list[tuple[int, Any]]:
         starts.append(starts[-1] + len(line))
     found: list[tuple[int, Any]] = []
 
-    def offset(node: ast.expr) -> int:
-        return starts[node.lineno - 1]
-
     def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.Call) and _callee_name(node.func) == "SlayerQuery" and not node.args:
-            try:
-                kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg is not None}
-            except (ValueError, SyntaxError, TypeError):
-                pass
-            else:
-                found.append((offset(node), kwargs))
-                return
-        if isinstance(node, (ast.Dict, ast.List)):
-            try:
-                value = ast.literal_eval(node)
-            except (ValueError, SyntaxError, TypeError):
-                pass
-            else:
-                found.append((offset(node), value))
-                return
+        value = _node_literal(node)
+        if value is not _UNPARSED and isinstance(node, ast.expr):
+            found.append((starts[node.lineno - 1], value))
+            return
         for child in ast.iter_child_nodes(node):
             visit(child)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
@@ -17,6 +18,7 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
+from scripts import release_gate
 from tests._doc_examples import load_page
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -307,6 +309,16 @@ def test_mcp_start_timeout_stops_the_gate(tmp_path: Path, checkout: Path) -> Non
                    extra=("--mcp-start-timeout", "3"), timeout=120)
     assert result.returncode != 0
     assert "mcp start" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_mcp_server_that_cannot_spawn_is_a_named_failure(tmp_path: Path, checkout: Path) -> None:
+    opts = release_gate.Options(
+        slayer=tmp_path / "missing-slayer", wheel=tmp_path / "x.whl", checkout=checkout,
+        mcp_start_timeout=5, mcp_call_timeout=5,
+    )
+    failures = asyncio.run(release_gate.mcp_leg(opts, [], leg=tmp_path))
+    assert [f.check for f in failures] == ["mcp start"]
+    assert failures[0].reason
 
 
 @pytest.mark.parametrize(("hang", "check"), [("query_hang", "mcp query"), ("inspect_hang", "mcp joins")])

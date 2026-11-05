@@ -221,39 +221,46 @@ def _tool_text(result: Any) -> str:
     return texts[0]
 
 
-async def _call(session: ClientSession, *, tool: str, arguments: dict[str, Any], timeout: float) -> str:
-    result = await session.call_tool(tool, arguments, read_timeout_seconds=timedelta(seconds=timeout))
+async def _call(session: ClientSession, opts: Options, *, tool: str, arguments: dict[str, Any]) -> str:
+    result = await session.call_tool(tool, arguments, read_timeout_seconds=timedelta(seconds=opts.mcp_call_timeout))
     return _tool_text(result)
 
 
 async def mcp_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFailure]:
     params = StdioServerParameters(command=str(opts.slayer), args=["mcp", "--demo"], env=_child_env(leg), cwd=leg)
     failures: list[GateFailure] = []
-    start = timedelta(seconds=opts.mcp_start_timeout)
-    async with stdio_client(params) as (read, write), ClientSession(read, write, read_timeout_seconds=start) as session:
-        try:
+    started = False
+    try:
+        async with stdio_client(params) as (read, write), ClientSession(
+            read, write, read_timeout_seconds=timedelta(seconds=opts.mcp_start_timeout),
+        ) as session:
             await session.initialize()
-        except Exception as exc:  # noqa: BLE001 — any start-up failure stops the leg
-            return [GateFailure("mcp start", f"{type(exc).__name__}: {exc}")]
-        for q in queries:
-            try:
-                text = await _call(session, tool="query", arguments={"query": q.query, "format": "json"},
-                                   timeout=opts.mcp_call_timeout)
-                reason = rows_failure(text)
-            except Exception as exc:  # noqa: BLE001 — any call failure is the check's failure
-                reason = f"{type(exc).__name__}: {exc}"
-            if reason is not None:
-                failures.append(GateFailure("mcp query", f"README.md:{q.line}: {reason}"))
+            started = True
+            await _mcp_checks(session, opts, queries, failures=failures)
+    except Exception as exc:  # noqa: BLE001 — any server lifecycle failure stops the leg
+        failures.append(GateFailure("mcp transport" if started else "mcp start", f"{type(exc).__name__}: {exc}"))
+    return failures
+
+
+async def _mcp_checks(
+    session: ClientSession, opts: Options, queries: list[DocQuery], *, failures: list[GateFailure],
+) -> None:
+    for q in queries:
         try:
-            text = await _call(session, tool="inspect",
-                               arguments={"entity_type": "model", "reference": "orders", "format": "json"},
-                               timeout=opts.mcp_call_timeout)
-            reason = joins_failure(text)
-        except Exception as exc:  # noqa: BLE001
+            text = await _call(session, opts, tool="query", arguments={"query": q.query, "format": "json"})
+            reason = rows_failure(text)
+        except Exception as exc:  # noqa: BLE001 — any call failure is the check's failure
             reason = f"{type(exc).__name__}: {exc}"
         if reason is not None:
-            failures.append(GateFailure("mcp joins", reason))
-    return failures
+            failures.append(GateFailure("mcp query", f"README.md:{q.line}: {reason}"))
+    try:
+        text = await _call(session, opts, tool="inspect",
+                           arguments={"entity_type": "model", "reference": "orders", "format": "json"})
+        reason = joins_failure(text)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+    if reason is not None:
+        failures.append(GateFailure("mcp joins", reason))
 
 
 def run_gate(opts: Options, *, workdir: Path) -> list[GateFailure]:

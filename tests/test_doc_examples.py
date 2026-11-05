@@ -370,6 +370,16 @@ class TestAltTextExtraction:
         assert _checked(_md(*lines)) == []
         assert _failures(doc_demo_storage, *lines) == []
 
+    def test_unclosed_backtick_does_not_hide_an_image_after_a_blank_line(self) -> None:
+        md = _md("A stray ` here.", "", f"![Chart of {COUNT_JSON}](x.png) and `x`")
+        assert _checked(md) == [(3, COUNT)]
+
+    @pytest.mark.timeout(20)
+    def test_many_unclosed_openers_scan_in_near_linear_time(self) -> None:
+        runs = " ".join("`" * (k % 7 + 1) for k in range(60_000))
+        md = _md("<!-- " * 60_000, runs, f"![Chart of {COUNT_JSON}](x.png)")
+        assert _checked(md) == [(3, COUNT)]
+
     def test_inline_code_inside_alt_text_is_still_checked(self) -> None:
         assert _checked(_md(f"![Chart of `{COUNT_JSON}`](x.png)")) == [(1, COUNT)]
 
