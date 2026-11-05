@@ -513,6 +513,20 @@ async def test_send_mid_session_carries_no_session_row(store: str, usage_reporti
     assert session_rows(show()) == [("2-5", "0", 1)]
 
 
+async def test_send_on_the_last_call_keeps_the_session_row(store: str, usage_reporting_env) -> None:
+    quiet_config(last_sent=_T0)
+    usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
+    usage_reporting.start()
+    server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
+    async with create_connected_server_and_client_session(server) as session:
+        usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=25))
+        await session.call_tool("query", {"query": _QUERY})
+        (request,) = usage_reporting_env.capture.wait_for(count=1)
+    end_process()
+    assert request.json()["properties"]["mcp_sessions"] == []
+    assert session_rows(show()) == [("1", "0", 1)]
+
+
 _FORK_SCRIPT = """
 import asyncio, gc, os
 from mcp.shared.memory import create_connected_server_and_client_session

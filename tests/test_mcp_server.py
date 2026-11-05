@@ -3128,6 +3128,10 @@ class TestDatabaseFailuresAreToolErrors:
                 Column(name="broken", sql="no_such_fn(amount)", type=DataType.DOUBLE),
             ],
         ))
+        await storage.save_model(SlayerModel(
+            name="remote", sql_table="remote", data_source="down",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        ))
         return storage
 
     async def _call_tool(self, storage: YAMLStorage, name: str, arguments: dict[str, Any]):

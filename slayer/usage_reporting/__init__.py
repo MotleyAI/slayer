@@ -2,9 +2,11 @@
 
 from slayer.usage_reporting.recorder import (
     HttpError,
+    action,
     counting,
     flush,
     is_active,
+    mark_dry_run,
     observe_datasources,
     observe_executed,
     observe_mcp_client,
@@ -19,9 +21,11 @@ from slayer.usage_reporting.recorder import (
 
 __all__ = [
     "HttpError",
+    "action",
     "counting",
     "flush",
     "is_active",
+    "mark_dry_run",
     "observe_datasources",
     "observe_executed",
     "observe_mcp_client",

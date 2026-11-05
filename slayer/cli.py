@@ -1751,6 +1751,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         query = json.loads(query_input)
         if isinstance(query, list) and not query:
             raise SystemExit("Query list cannot be empty.")
+    if args.dry_run:
+        usage_reporting.mark_dry_run()
     usage_reporting.observe_query(query)
     result = engine.execute_sync(
         query=query,
