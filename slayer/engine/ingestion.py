@@ -44,6 +44,7 @@ from slayer.engine.schema_scope import (
     SkippedSchema,
     default_schema_ref,
     is_quoted_name,
+    live_key,
     live_name,
     resolve_ingest_scope,
     schema_ref_from_token,
@@ -662,23 +663,23 @@ async def list_ingestable_objects(
 
     view_list = listing.views if include_views else []
     matview_list = listing.materialized_views if include_views else []
-    view_names, matview_names = set(view_list), set(matview_list)
+    view_names, matview_names = {live_key(n) for n in view_list}, {live_key(n) for n in matview_list}
 
     def _resolve_kind(name: str, default: ObjectKind) -> ObjectKind:
-        if name in matview_names:
+        if live_key(name) in matview_names:
             return "materialized_view"
-        if name in view_names:
+        if live_key(name) in view_names:
             return "view"
         return default
 
     objects: list[IngestableObject] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, bool]] = set()
 
     def _add(names: list[str], kind: ObjectKind) -> None:
         for name in names:
-            if name in seen:
+            if live_key(name) in seen:
                 continue
-            seen.add(name)
+            seen.add(live_key(name))
             objects.append(
                 IngestableObject(name=name, kind=_resolve_kind(name, kind))
             )

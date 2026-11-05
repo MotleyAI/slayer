@@ -34,7 +34,8 @@ from slayer.sql import engine_factory
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
-    column, cube_issues, cube_report_messages, run_cli, source_column, stored_model, typing_notes, write_yaml,
+    column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model, typing_notes,
+    write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
 from tests._osi_helpers import by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, seed_db
@@ -170,6 +171,12 @@ def test_unparseable_mixed_case_source_query_drops_its_model() -> None:
     assert [i for i in cube_issues(result, "broken") if "identifier" in i.message.lower()]
 
 
+def test_unread_cube_sql_beside_its_table_is_not_folded() -> None:
+    result = _cube({"name": "orders", "sql_table": "Orders", "sql": "SELECT Qty +* 2",
+                    "dimensions": [{"name": "id", "sql": "{CUBE}.id", "type": "number"}]})
+    assert _models(result)["orders"].sql_table == "orders"
+
+
 def test_unparseable_mixed_case_table_name_drops_its_model() -> None:
     result = _cube({"name": "broken", "sql_table": "Sales.Order Items",
                     "dimensions": [{"name": "qty", "sql": "{CUBE}.qty", "type": "number"}]})
@@ -242,6 +249,43 @@ def test_offline_mixed_case_dbt_is_refused(semantic_model: dict[str, Any], raw_c
     with pytest.raises(UndecidableIdentifierCaseError) as raised:
         converter.convert()
     assert named in str(raised.value)
+
+
+def _dbt(*semantic_models: dict[str, Any], regular: list[dict[str, Any]], dialect: str | None) -> DbtToSlayerConverter:
+    project = DbtProject.model_validate({"semantic_models": list(semantic_models), "regular_models": regular})
+    return DbtToSlayerConverter(project=project, data_source=DS, target_dialect=dialect)
+
+
+def test_offline_mixed_case_sql_no_semantic_model_reads_is_ignored() -> None:
+    result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "qty", "type": "categorical"}]},
+                  regular=[{"name": "unused", "raw_code": "SELECT Qty FROM orders"}], dialect=None).convert()
+    assert models_of(result)["items"].sql_table == "orders"
+
+
+def test_regular_model_config_block_is_stripped_before_folding() -> None:
+    result = _dbt({"name": "items", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]},
+                  regular=[{"name": "src", "raw_code": "{{ config(materialized='table') }}\nSELECT Qty FROM orders"}],
+                  dialect="postgres").convert()
+    sql = models_of(result)["items"].sql
+    assert sql is not None
+    assert _columns_read(sql) == {"qty"}
+
+
+def test_declared_type_matches_the_folded_column() -> None:
+    result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
+                  regular=[{"name": "orders", "columns": [{"name": "Qty", "data_type": "integer"}]}],
+                  dialect="postgres").convert()
+    assert column(models_of(result)["items"], "Qty").type is DataType.INT
+
+
+def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -> None:
+    converter = _dbt({"name": "items", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]},
+                     regular=[{"name": "src", "raw_code": "SELECT qty FROM orders WHERE x = {{ var('limit') }}"}],
+                     dialect="duckdb")
+    with disposable_engine(f"duckdb:///{tmp_path / 'shop.duckdb'}") as engine:
+        run_over_caller_engine(engine, data_source=DS, work=lambda client: converter.collect_metadata(client=client))
+    messages = [w.message for w in converter.convert().warnings if w.category == "sql_inline"]
+    assert [m for m in messages if "var('limit')" in m]
 
 
 def _cube_project(directory: Path, cube: dict[str, Any]) -> Path:
@@ -346,6 +390,25 @@ def test_osi_candidates_differing_in_case(osi_db: Path) -> None:
 def test_osi_field_matches_a_live_column_case_insensitively_on_duckdb(osi_db: Path) -> None:
     assert _osi_sql(osi_db, f("pick", "OrderAmount * 5"), target="duckdb") == "OrderAmount * 5"
     assert _osi_sql(osi_db, f("bare", "OrderAmount"), target="duckdb") is not None
+
+
+def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Snowflake columns ``"foo"`` and ``BAR``, as SQLAlchemy reflects them."""
+    reflected = [{"name": quoted_name("foo", True), "type": sa.INTEGER()}, {"name": "bar", "type": sa.INTEGER()}]
+    monkeypatch.setattr(Inspector, "get_columns", lambda _self, _table, schema=None, **_kw: list(reflected))
+    db = seed_db(directory=tmp_path, dialect="sqlite", statements=["CREATE TABLE t (x INTEGER)"])
+    result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
+        ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
+    fields = cols(by_name(result)["t"])
+    assert fields["foo"].sql == '"foo"'
+    assert fields["exact"].sql == '"foo"'
+    assert fields["upper"].sql == "bar"
+
+
+def test_osi_self_qualified_field_keeps_its_dataset_name(osi_db: Path) -> None:
+    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([
+        ds("Orders", source="orders", fields=[f("id"), f("double", "Orders.OrderAmount * 2")])])))
+    assert cols(by_name(result)["Orders"])["double"].sql == "Orders.orderamount * 2"
 
 
 def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,

@@ -68,6 +68,11 @@ def is_quoted_name(name: object) -> bool:
     return getattr(name, "quote", None) is True
 
 
+def live_key(name: str) -> tuple[str, bool]:
+    """A live name's identity: SQLAlchemy reports Snowflake's ``FOO`` and ``"foo"`` alike, the quote flag apart."""
+    return str(name), is_quoted_name(name)
+
+
 def live_name(name: str, *, quoted: bool) -> str:
     """``name`` in SQLAlchemy's spelling, a ``quoted_name`` when ``quoted``."""
     return quoted_name(name, True) if quoted else name

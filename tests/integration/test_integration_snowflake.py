@@ -1097,7 +1097,8 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         run_over_caller_engine(sf_engine, data_source="sf_test", work=lambda client: live.collect(
             client=client, convert=lambda: live.source(sql_table=sql_table)))
         source = live.source(sql_table=sql_table)
-        assert isinstance(source, LiveSource) and source.column("qty") == (DataType.INT, None)
+        assert isinstance(source, LiveSource)
+        assert source.column("qty") == (DataType.INT, None)
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
         run_sync(ingest_datasource_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema))
@@ -1109,7 +1110,10 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         assert tags.element_type is DataType.INT
         assert tags.sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
-        rows = run_sync(engine.execute({"source_model": "lower_items", "dimensions": ["qty"]})).data
+        try:
+            rows = run_sync(engine.execute({"source_model": "lower_items", "dimensions": ["qty"]})).data
+        finally:
+            engine.close()
         assert [r["lower_items.qty"] for r in rows] == [7]
     finally:
         with sf_engine.connect() as conn:
@@ -1120,6 +1124,9 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
 def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_models) -> None:
     '''Profiling reads ``orders``/``customer_id`` as Snowflake folds them (``ORDERS``/``CUSTOMER_ID``).'''
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
-    report = run_sync(engine.detect_join_cardinality(data_source="sf_test", model="orders"))
+    try:
+        report = run_sync(engine.detect_join_cardinality(data_source="sf_test", model="orders"))
+    finally:
+        engine.close()
     (finding,) = [f for f in report.findings if f.target_model == "customers"]
     assert finding.detected is JoinCardinality.MANY_TO_ONE

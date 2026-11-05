@@ -145,15 +145,22 @@ def stored_identifier(word: str, *, dialect: SqlDialect) -> str:
     return ascii_lower(word) if dialect.identifier_folding == "lower" else word.lower()
 
 
-def _logical_identifiers(tree: Expr, qualifiers: Collection[str]) -> set[int]:
-    """Ids of the identifiers of columns qualified by one of ``qualifiers`` (an unquoted one matching in any case)."""
-    folded = {q.lower() for q in qualifiers}
+def _qualified_by(table: exp.Identifier, qualifiers: Collection[str]) -> bool:
+    """Whether ``table`` is one of ``qualifiers`` (an unquoted one matching in any case)."""
+    return table.name in qualifiers if table.quoted else table.name.lower() in {q.lower() for q in qualifiers}
+
+
+def _logical_identifiers(tree: Expr, qualifiers: Collection[str], kept: Collection[str] = ()) -> set[int]:
+    """Ids of the identifiers of columns qualified by one of ``qualifiers``, and of each ``kept`` qualifier."""
     out: set[int] = set()
     for col in tree.find_all(exp.Column):
         table = col.args.get("table")
-        if isinstance(table, exp.Identifier) and (
-                table.name in qualifiers if table.quoted else table.name.lower() in folded):
+        if not isinstance(table, exp.Identifier):
+            continue
+        if _qualified_by(table, qualifiers):
             out.update(id(i) for i in col.find_all(exp.Identifier))
+        elif _qualified_by(table, kept):
+            out.add(id(table))
     return out
 
 
@@ -183,12 +190,13 @@ def _fold_spans(tree: Expr, *, shift: int, origin: list[int | None], text: str,
 
 def fold_source_identifiers(
     sql: str, *, dialect: SqlDialect | None, masks: Sequence[re.Pattern[str]] = (), read: str | None = None,
-    table: bool = False, logical_qualifiers: Collection[str] = (),
+    table: bool = False, logical_qualifiers: Collection[str] = (), kept_qualifiers: Collection[str] = (),
 ) -> FoldedSql:
     """``sql`` with each unquoted identifier read by ``dialect``'s folding, the rest byte-identical.
 
     ``masks`` match logical references kept as written; ``read`` is the sqlglot dialect to parse with (default:
-    ``dialect``'s); ``table`` reads ``sql`` as a table name; columns qualified by ``logical_qualifiers`` are kept.
+    ``dialect``'s); ``table`` reads ``sql`` as a table name; columns qualified by ``logical_qualifiers`` are kept, and
+    a ``kept_qualifiers`` qualifier is kept while its column folds.
     ``dialect=None`` folds nothing and reports the identifiers whose meaning depends on it."""
     if dialect is not None and dialect.identifier_folding == "none":
         return FoldedSql(text=sql)
@@ -205,7 +213,8 @@ def fold_source_identifiers(
         return FoldedSql(text=sql, unreadable=bool(words))
     tree, shift = parsed
     spans = [s for s in _fold_spans(tree, shift=shift, origin=origin, text=masked,
-                                    logical=_logical_identifiers(tree, logical_qualifiers)) if _has_upper(s[2])]
+                                    logical=_logical_identifiers(tree, logical_qualifiers, kept_qualifiers))
+             if _has_upper(s[2])]
     if dialect is None:
         return FoldedSql(text=sql, undecidable=list(dict.fromkeys(name for _, _, name in spans)))
     for start, end, name in reversed(spans):

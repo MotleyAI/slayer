@@ -63,7 +63,7 @@ jobs:
 
       - name: Run Snowflake integration tests
         if: steps.gate.outputs.skip != 'true'
-        timeout-minutes: 15
+        timeout-minutes: 25
         # SLAYER_SNOWFLAKE_CONNECTION names the profile in the TOML the
         # integration suite should use. The default in the test file is
         # `slayer_test` — match the section header in

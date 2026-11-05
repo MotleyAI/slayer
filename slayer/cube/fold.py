@@ -81,14 +81,15 @@ def fold_cube(cube: CubeCube, refs: list[CubeFilterParamRef], *, dialect: SqlDia
         issues.append(CubeConversionIssue(category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                                           cube=cube.name, member=member, message=message))
 
-    for field, table in (("sql_table", True), ("sql", False)):
-        text = getattr(cube, field)
-        if text:
-            folded = folder.fold(text, table=table)
-            if folded is None:
-                issue(None, _unreadable(f"Cube {cube.name!r} (its {field})", text))
-                return FoldedCube(cube=None, refs=folded_refs, issues=issues, undecidable=folder.undecidable)
-            setattr(cube, field, folded)
+    # Only the source conversion reads: ``sql_table`` over ``sql``.
+    field = "sql_table" if cube.sql_table else "sql"
+    text = getattr(cube, field)
+    if text:
+        folded = folder.fold(text, table=field == "sql_table")
+        if folded is None:
+            issue(None, _unreadable(f"Cube {cube.name!r} (its {field})", text))
+            return FoldedCube(cube=None, refs=folded_refs, issues=issues, undecidable=folder.undecidable)
+        setattr(cube, field, folded)
 
     def readable(member: str, holders: Sequence[Any], whens: Sequence[dict[str, Any]] = ()) -> bool:
         """Fold ``holders`` in place; ``False`` (reported) when one cannot be read."""

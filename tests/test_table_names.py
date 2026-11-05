@@ -20,7 +20,8 @@ from slayer.engine.ingestion import (
     IntrospectedColumn, _columns_to_model, ingest_datasource_idempotent, list_ingestable_objects,
 )
 from slayer.engine.introspect_utils import table_location
-from slayer.engine.schema_drift import _list_live_objects
+from slayer.engine import schema_drift
+from slayer.engine.schema_drift import DriftSnapshot, LiveTable, _list_live_objects
 from slayer.engine.schema_scope import SchemaRef, is_quoted_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.physical import PhysicalIndex
@@ -212,6 +213,35 @@ async def test_listed_objects_keep_their_quoting() -> None:
         's."lower_items"', "s.orders"]
     ((_, names),) = await _list_live_objects([SchemaRef(name="s")], client=client, datasource=datasource)
     assert [is_quoted_name(n) for n in names] == [True, False]
+
+
+class _TwinsClient(DelegatingSqlClient):
+    """Test double: Snowflake's table ``FOO`` and view ``"foo"``, both reported ``foo``."""
+
+    async def list_objects(self, schema: str | None) -> ObjectListing:
+        return ObjectListing(tables=["foo"], views=[quoted_name("foo", True)])
+
+
+async def test_listed_folded_and_exact_twins_stay_two_objects() -> None:
+    client = _TwinsClient(inner=SlayerSQLClient(datasource=DatasourceConfig(name=DS, type="snowflake")))
+    objects = await list_ingestable_objects(client=client, ref=SchemaRef(name="s"))
+    assert [(o.name, o.quoted, o.kind) for o in objects] == [("foo", False, "table"), ("foo", True, "view")]
+
+
+async def test_drift_snapshot_reads_folded_and_exact_twins_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    read: list[bool] = []
+
+    async def introspect(*, obj_name: str, **_kwargs: Any) -> LiveTable:
+        read.append(is_quoted_name(obj_name))
+        return LiveTable(columns={})
+
+    monkeypatch.setattr(schema_drift, "_introspect_live_object", introspect)
+    snapshot, ref = DriftSnapshot(created_at=0.0), SchemaRef(name="s")
+    datasource = DatasourceConfig(name=DS, type="snowflake")
+    client = _TwinsClient(inner=SlayerSQLClient(datasource=datasource))
+    for name in ("foo", quoted_name("foo", True), "foo"):
+        await snapshot._table(client=client, datasource=datasource, ref=ref, obj_name=name)
+    assert read == [False, True]
 
 
 def test_table_location_keeps_the_quoting_of_its_names() -> None:

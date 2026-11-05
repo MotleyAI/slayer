@@ -53,7 +53,7 @@ from slayer.dbt.models import (
     DbtSemanticModel,
 )
 from slayer.dbt.relations import RelationNames
-from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs
+from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs, strip_config
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.query_engine import run_over_caller_engine
 from slayer.engine.schema_scope import requested_schema_ref
@@ -378,7 +378,7 @@ class DbtToSlayerConverter:
             undecidable.extend(found.undecidable)
             return None if found.unreadable else found.text
 
-        unreadable_sql = self._fold_regular_sql(fold)
+        unreadable_sql = self._fold_regular_sql(fold, only=self._inlined_models())
         for rm in self.project.regular_models:
             if rm.config_quoting:
                 self._fold_warnings.append(ConversionWarning(
@@ -401,11 +401,22 @@ class DbtToSlayerConverter:
         self._sources = {sm.name: self._model_source(sm) for sm in semantic_models}
         self._undecidable = [*undecidable, *self._relations.undecidable]
 
-    def _fold_regular_sql(self, fold: Callable[[str], str | None]) -> set[str]:
-        """Fold each regular model's SQL in place; the names whose SQL does not parse."""
+    def _inlined_models(self) -> set[str]:
+        """The regular models whose SQL a semantic model inlines, transitively."""
+        used: set[str] = set()
+        for sm in self.project.semantic_models:
+            ref_name = sm.model or sm.name
+            if ref_name in self._regular_models_sql:
+                used |= {ref_name} | referenced_models(self._regular_models_sql[ref_name], self._regular_models_sql)
+        return used
+
+    def _fold_regular_sql(self, fold: Callable[[str], str | None], *, only: set[str]) -> set[str]:
+        """Fold each of the ``only`` regular models' SQL in place, config blocks stripped; those that do not parse."""
         unreadable: set[str] = set()
         for name, raw in self._regular_models_sql.items():
-            folded = fold(raw)
+            if name not in only:
+                continue
+            folded = fold(strip_config(raw))
             if folded is None:
                 unreadable.add(name)
             else:
@@ -419,10 +430,14 @@ class DbtToSlayerConverter:
         if self._sql_dialect is None:
             undecidable.append(member.name)
             return member
-        folded_name = stored_identifier(member.name, dialect=self._sql_dialect)
-        if folded_name != member.name and self._sql_dialect.identifier_folding != "none":
-            return member.model_copy(update={"expr": folded_name})
-        return member
+        folded_name = self._folded_name(member.name)
+        return member.model_copy(update={"expr": folded_name}) if folded_name != member.name else member
+
+    def _folded_name(self, name: str) -> str:
+        """``name`` as the datasource reads it unquoted."""
+        if self._sql_dialect is None or self._sql_dialect.identifier_folding == "none":
+            return name
+        return stored_identifier(name, dialect=self._sql_dialect)
 
     def _folded_members(self, sm: DbtSemanticModel, *, fold: Callable[[str], str | None],
                         undecidable: list[str]) -> DbtSemanticModel:
@@ -672,7 +687,10 @@ class DbtToSlayerConverter:
         return True
 
     def _declared_type(self, *, sm: DbtSemanticModel, physical: str | None) -> Typed | None:
-        raw = self._declared.get(sm.model or sm.name, {}).get(physical) if physical is not None else None
+        if physical is None:
+            return None
+        declared = self._declared.get(sm.model or sm.name, {})
+        raw = declared.get(physical) or next((t for c, t in declared.items() if self._folded_name(c) == physical), None)
         if raw is None:
             return None
         found = declared_type(raw, dialect=self._dialect)
@@ -689,7 +707,7 @@ class DbtToSlayerConverter:
             return self._relations.ref(ref_name), None
         resolved, warnings = resolve_refs(self._regular_models_sql[ref_name], self._regular_models_sql,
                                           relation=self._relations.ref, source_relation=self._relations.source)
-        self._warnings.extend(
+        self._fold_warnings.extend(
             ConversionWarning(model_name=sm.name, category="sql_inline", severity="info", message=message)
             for message in warnings
         )

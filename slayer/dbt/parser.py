@@ -75,6 +75,25 @@ def _collect_yaml_paths(directory: str) -> list[str]:
     return paths
 
 
+def _parent_project_file(project_path: str) -> str | None:
+    """The ``dbt_project.yml`` beside a ``models`` directory given as the project path, read from its listing."""
+    with os.scandir(Path(project_path).resolve().parent) as entries:
+        return next((e.path for e in entries if e.name == "dbt_project.yml" and e.is_file()), None)
+
+
+def _models_directory_quoting(project_path: str) -> dict[str, Any]:
+    """The ``quoting:`` of the project whose ``model-paths`` directory ``project_path`` is; ``{}`` otherwise."""
+    path = _parent_project_file(project_path)
+    data = _load_yaml(path) if path is not None else None
+    if data is None:
+        return {}
+    model_paths = data.get("model-paths") or ["models"]
+    if Path(project_path).resolve().name not in {str(p).strip("/") for p in model_paths}:
+        return {}
+    found = data.get("quoting")
+    return found if isinstance(found, dict) else {}
+
+
 def _collect_sql_files(directory: str) -> dict[str, str]:
     """Recursively collect .sql file bodies keyed by filename stem.
 
@@ -137,11 +156,14 @@ def parse_dbt_project(
     if not yaml_paths:
         logger.warning("No YAML files found in %s", project_path)
 
+    project_file = Path(project_path) / "dbt_project.yml"
+    if not any(Path(path) == project_file for path in yaml_paths):
+        quoting = _models_directory_quoting(project_path)
     for path in yaml_paths:
         data = _load_yaml(path)
         if data is None:
             continue
-        if Path(path) == Path(project_path) / "dbt_project.yml" and isinstance(data.get("quoting"), dict):
+        if Path(path) == project_file and isinstance(data.get("quoting"), dict):
             quoting = data["quoting"]
         all_semantic_models.extend(_semantic_models(data.get("semantic_models", []), path=path))
         declared.update((m.name, m) for m in _declared_models(data.get("models"), path=path))

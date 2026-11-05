@@ -82,6 +82,11 @@ def _source_relation(source: str, table: str) -> str:
     return render_table_name(parts=[source, table], dialect=_DEFAULT_DIALECT)
 
 
+def strip_config(sql: str) -> str:
+    """``sql`` without its ``{{ config(...) }}`` blocks."""
+    return _CONFIG_RE.sub("", sql)
+
+
 def referenced_models(sql: str, regular_models_sql: dict[str, str], _seen: frozenset[str] = frozenset()) -> set[str]:
     """The regular models ``sql`` inlines, transitively."""
     found: set[str] = set()
@@ -139,7 +144,7 @@ def resolve_refs(
         return sql, warnings
 
     # 1. Strip {{ config(...) }} — pure metadata, no SQL.
-    resolved = _CONFIG_RE.sub("", sql)
+    resolved = strip_config(sql)
 
     # 2. Resolve {{ ref(...) }} calls.
     def replace_ref(match: "re.Match[str]") -> str:

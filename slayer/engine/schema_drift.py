@@ -42,6 +42,7 @@ from slayer.engine.schema_scope import (
     SchemaRef,
     default_schema_ref,
     is_system_schema,
+    live_key,
     qualifies_tokens,
     resolve_ingest_scope,
     split_sql_table,
@@ -1753,7 +1754,7 @@ class DriftSnapshot(BaseModel):
     unavailable: bool = False
     unreachable: str | None = None
     catalog: _Catalog | None = None
-    tables: dict[tuple[SchemaRef, str], LiveTable] = Field(default_factory=dict)
+    tables: dict[tuple[SchemaRef, tuple[str, bool]], LiveTable] = Field(default_factory=dict)
     sql_trials: dict[str, _SqlTrial] = Field(default_factory=dict)
     lock: asyncio.Lock = Field(default_factory=asyncio.Lock)
 
@@ -1827,9 +1828,10 @@ class DriftSnapshot(BaseModel):
     async def _table(
         self, *, client: SqlClient, datasource: DatasourceConfig, ref: SchemaRef, obj_name: str,
     ) -> LiveTable:
-        live = self.tables.get((ref, obj_name))
+        key = (ref, live_key(obj_name))
+        live = self.tables.get(key)
         if live is None:
-            live = self.tables[(ref, obj_name)] = await _introspect_live_object(
+            live = self.tables[key] = await _introspect_live_object(
                 client=client, ref=ref, obj_name=obj_name, datasource=datasource,
             )
         return live

@@ -538,7 +538,8 @@ class OsiToSlayerConverter:
             return None
         folded = fold_source_identifiers(selection.candidate.text, dialect=self._dialect,
                                          read=reader_for(selection.candidate.dialect),
-                                         logical_qualifiers=self._dataset_names - {ds.name})
+                                         logical_qualifiers=self._dataset_names - {ds.name},
+                                         kept_qualifiers={ds.name})
         candidate = selection.candidate.model_copy(update={"text": folded.text})
         try:
             tree = read(candidate)
@@ -596,8 +597,9 @@ class OsiToSlayerConverter:
     def _source_columns(self, ds_name: str, ident: exp.Identifier) -> list[Column]:
         """The source columns of ``ds_name`` that ``ident`` names, matched with the datasource dialect's rules."""
         columns = [c for c in self._physical[ds_name].values() if c.is_base]
-        exact = {live_exact_name(c.physical_name, dialect=self._dialect): c for c in columns}
-        index = PhysicalIndex([], dialect=self._target, live=[c.physical_name for c in columns])
+        live = [live_name(c.physical_name, quoted=c.physical_quoted) for c in columns]
+        exact = {live_exact_name(n, dialect=self._dialect): c for n, c in zip(live, columns)}
+        index = PhysicalIndex([], dialect=self._target, live=live)
         return [exact[n] for n in index.live_names(ident)]
 
     def _bare_field_column(self, *, field: OSIField, ds: OSIDataset, bare: exp.Identifier,
@@ -612,8 +614,8 @@ class OsiToSlayerConverter:
             )
             return None
         # A copy keeps the source's type, db_type, key flag and DB comment.
-        col = source.model_copy(deep=True, update={"name": field.name,
-                                                   "sql": None if bare.name == field.name else sql})
+        kept = source.sql if source.physical_quoted else None if bare.name == field.name else sql
+        col = source.model_copy(deep=True, update={"name": field.name, "sql": kept})
         return col, source.type
 
     def _derived_field_column(self, *, field: OSIField, ds: OSIDataset, model: SlayerModel, sql: str,

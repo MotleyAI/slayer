@@ -74,6 +74,18 @@ def test_project_turns_identifier_quoting_off(tmp_path: Path) -> None:
     assert _relation(models_of(result)["items"], dialect="postgres") == ["orderitems"]
 
 
+def test_models_directory_reads_the_project_quoting(tmp_path: Path) -> None:
+    _import(tmp_path, dialect="postgres", semantic_models=[ITEMS], quoting={"identifier": False})
+    project = parse_dbt_project(str(tmp_path / "dbt" / "models"))
+    assert project.quoting == {"identifier": False}
+
+
+def test_a_directory_outside_the_model_paths_ignores_the_parent_project(tmp_path: Path) -> None:
+    _import(tmp_path, dialect="postgres", semantic_models=[ITEMS], quoting={"identifier": False})
+    write_yaml(tmp_path / "dbt" / "other" / "schema.yml", {"version": 2, "semantic_models": [ITEMS]})
+    assert parse_dbt_project(str(tmp_path / "dbt" / "other")).quoting == {}
+
+
 async def test_snowflake_default_folds(tmp_path: Path) -> None:
     items = models_of(_import(tmp_path, dialect="snowflake", semantic_models=[ITEMS]))["items"]
     assert await _generated_relation(items, dialect="snowflake") == [("orderitems", False)]
