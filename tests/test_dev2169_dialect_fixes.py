@@ -114,7 +114,8 @@ async def test_postgres_list_operands_share_one_array_type(expr: str, array_type
 ])
 def test_postgres_array_type_codes_are_lists(oid: int, pg_type: str) -> None:
     described = describe_pg_cursor_column(("c", oid, None, None, None, None, None))
-    assert described is not None and described.type is DataType.ARRAY, pg_type
+    assert described is not None, pg_type
+    assert described.type is DataType.ARRAY, pg_type
 
 
 # --------------------------------------------------------------------------- #

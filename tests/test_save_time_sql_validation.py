@@ -141,7 +141,8 @@ class TestSchemaDriftReusesSharedBuilder:
             model=_sql_model("SELECT id FROM orders"),
             client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
         )
-        assert live is not None and live.columns == {"id": DataType.INT}
+        assert live is not None
+        assert live.columns == {"id": DataType.INT}
 
 
 class TestRejectAndAccept:

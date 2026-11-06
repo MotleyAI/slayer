@@ -205,9 +205,7 @@ def bind_expr(
     )
     return BoundExpr(
         value_key=value_key,
-        routed_dotted=_canonical_if_routed(
-            parsed=parsed, value_key=value_key, scope=scope,
-        ),
+        routed_dotted=_canonical_if_routed(parsed=parsed, value_key=value_key),
     )
 
 
@@ -247,7 +245,7 @@ def bind_time_dimension(
         )
     bound_col = _resolve_column_ref(parsed, scope=scope, bundle=bundle)
     column_type, upstream = _column_facts(bound_col, scope=scope, bundle=bundle)
-    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col, scope=scope)
+    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         column_type=column_type,
@@ -327,7 +325,6 @@ def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
     value_key: ValueKey,
-    scope: ModelScope | StageSchema,
 ) -> Optional[str]:
     """Full canonical dotted path when a ``DottedRef``'s bound path differs from
     its typed hop path (auto-routed or respelled) — or the canonical name of a
