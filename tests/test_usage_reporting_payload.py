@@ -14,6 +14,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import Implementation
+from pydantic import ValidationError
 
 import slayer.cli
 from slayer import usage_reporting
@@ -23,7 +24,7 @@ from slayer.core.formula import ALL_TRANSFORMS
 from slayer.flight.translator import TranslationError
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.usage_reporting.payload import SCHEMA_VERSION, VERSION_PATTERN, UsageReport
+from slayer.usage_reporting.payload import SCHEMA_VERSION, VERSION_PATTERN, Batch, UsageReport, merge
 from tests._usage_reporting_helpers import (
     HOSTILE,
     SENT,
@@ -35,6 +36,7 @@ from tests._usage_reporting_helpers import (
     enum_values,
     make_due,
     quiet_config,
+    session_rows,
     show,
     usage,
     usage_key_vocabulary,
@@ -345,3 +347,80 @@ def test_period_holds_dates_only(usage_reporting_env) -> None:
     report = show()
     assert report["period"] == {"first": "2026-03-01", "last": "2026-03-02"}
     assert not re.search(r"\d{2}:\d{2}", json.dumps(report))
+
+
+# --- schema 2: session histogram and first successful query ---------------------------------
+
+
+def _batch(*rows: tuple[str, str, int]) -> Batch:
+    return Batch.model_validate({
+        "mcp_sessions": [{"queries_ok": ok, "queries_err": err, "sessions": n} for ok, err, n in rows],
+    })
+
+
+def test_schema_version_is_2(usage_reporting_env) -> None:
+    quiet_config()
+    usage_reporting.start()
+    usage_reporting.record(surface="mcp", token="query")
+    end_process()
+    assert SCHEMA_VERSION == 2
+    assert show()["schema"] == 2
+
+
+def test_first_query_ok_is_a_date_or_null() -> None:
+    schema = UsageReport.model_json_schema()
+    node = _resolve(schema, schema["properties"]["first_query_ok"])
+    kinds = {_resolve(schema, branch).get("type"): _resolve(schema, branch) for branch in node["anyOf"]}
+    assert set(kinds) == {"string", "null"}
+    assert kinds["string"]["format"] == "date"
+
+
+@pytest.mark.parametrize("bucket", ["0", "1", "2-5", "6-20", "21+"])
+def test_session_buckets_are_vocabulary(bucket: str) -> None:
+    assert session_rows(_batch((bucket, bucket, 1)).model_dump()) == [(bucket, bucket, 1)]
+
+
+@pytest.mark.parametrize("bucket", ["3", "21", "", SENT])
+def test_session_bucket_outside_vocabulary_rejected(bucket: str) -> None:
+    with pytest.raises(ValidationError):
+        _batch((bucket, "0", 1))
+
+
+def test_merge_sums_equal_bucket_pairs() -> None:
+    merged = merge([_batch(("1", "0", 2), ("0", "0", 1)), _batch(("1", "0", 3))])
+    assert sorted(session_rows(merged.model_dump())) == [("0", "0", 1), ("1", "0", 5)]
+
+
+def test_merge_orders_rows_by_bucket_rank() -> None:
+    merged = merge([
+        _batch(("21+", "0", 1), ("6-20", "21+", 1), ("2-5", "1", 1)),
+        _batch(("6-20", "2-5", 1), ("1", "0", 1), ("0", "6-20", 1)),
+    ])
+    assert session_rows(merged.model_dump()) == [
+        ("0", "6-20", 1), ("1", "0", 1), ("2-5", "1", 1), ("6-20", "2-5", 1), ("6-20", "21+", 1), ("21+", "0", 1),
+    ]
+
+
+def test_schema_1_spool_file_loads() -> None:
+    legacy = json.dumps({
+        "period": {"first": "2026-03-01", "last": "2026-03-01"},
+        "usage": {"mcp:query": {"ok": 1, "errors": {}}},
+        "mcp_clients": [{"client": "cursor", "major": 1, "sessions": 1}],
+    })
+    batch = Batch.model_validate_json(legacy)
+    assert batch.mcp_sessions == []
+    assert batch.usage["mcp:query"].ok == 1
+
+
+async def test_new_fields_never_carry_a_sentinel(sentinel_store: str) -> None:
+    usage_reporting.start()
+    server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
+    client = Implementation(name=HOSTILE, version=HOSTILE)
+    async with create_connected_server_and_client_session(server, client_info=client) as session:
+        await session.call_tool("query", {"query": {"source_model": f"{SENT}_model", "measures": [f"sum({SENT}_col)"]}})
+        await session.call_tool("query", {"query": {"source_model": HOSTILE, "measures": ["count(*)"]}})
+    end_process()
+    report = show()
+    assert report["first_query_ok"]
+    assert session_rows(report) == [("1", "1", 1)]
+    assert_clean_everywhere()
