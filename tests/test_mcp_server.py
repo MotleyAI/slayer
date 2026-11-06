@@ -10,6 +10,7 @@ from collections.abc import Generator
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import TextContent
 from sqlalchemy import exc as sa_exc
 
 import slayer.engine.ingestion as ingestion_mod
@@ -3150,6 +3151,18 @@ class TestDatabaseFailuresAreToolErrors:
 
     async def test_validate_models_database_unreachable(self, db_storage: YAMLStorage) -> None:
         self._assert_database_tool_error(await self._call_tool(db_storage, "validate_models", {"data_source": "down"}))
+
+    async def test_validate_models_rejected_sql_is_a_finding(self, db_storage: YAMLStorage) -> None:
+        await db_storage.save_model(SlayerModel(
+            name="bad", sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", data_source="shop",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        ))
+        result = await self._call_tool(db_storage, "validate_models", {"data_source": "shop"})
+        assert not result.isError
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        causes = {entry.get("model_name"): entry.get("cause") for entry in json.loads(content.text)}
+        assert causes["bad"] == "invalid_sql"
 
     async def test_ingest_database_unreachable(self, db_storage: YAMLStorage) -> None:
         self._assert_database_tool_error(

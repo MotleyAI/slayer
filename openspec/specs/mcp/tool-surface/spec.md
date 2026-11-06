@@ -246,7 +246,7 @@ persisted unchanged.
 - **THEN** it sorts by that expression exactly as before
 
 ### Requirement: Database failures are tool errors
-When the database fails during the `query`, `create_model`, `validate_models` or `ingest_datasource_models` tool, the tool call SHALL fail as an MCP tool error (`isError: true`) whose text carries the friendly database-error message ("Database error: …"), never return that message as a successful result.
+When a database failure stops the `query`, `create_model`, `validate_models` or `ingest_datasource_models` tool from completing, the tool call SHALL fail as an MCP tool error (`isError: true`) whose text carries the friendly database-error message ("Database error: …"), never return that message as a successful result. A database rejection the tool reports as one of its own findings is not such a failure.
 
 #### Scenario: Query hits a database failure
 - **WHEN** a `query` call fails because the database rejects the generated SQL
@@ -255,3 +255,7 @@ When the database fails during the `query`, `create_model`, `validate_models` or
 #### Scenario: Model creation hits a database failure
 - **WHEN** `create_model`, `validate_models` or `ingest_datasource_models` fails because the database is unreachable
 - **THEN** the result has `isError: true` and its text holds the "Database error:" message
+
+#### Scenario: Rejected model SQL is a validation finding
+- **WHEN** `validate_models` runs against a reachable database that rejects a SQL model's own SQL
+- **THEN** the result is not an error and reports that model with an `invalid_sql` finding
