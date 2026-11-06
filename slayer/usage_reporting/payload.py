@@ -16,7 +16,7 @@ UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
     "cli:validate-models", "cli:recommend-root-model",
-    "cli:import-dbt", "cli:import-cube", "cli:import-osi",
+    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
     "cli:models.list", "cli:models.show", "cli:models.create", "cli:models.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",

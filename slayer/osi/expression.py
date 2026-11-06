@@ -30,6 +30,11 @@ from slayer.engine.syntax import parse_expr
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
+_STAT_AGG: dict[type[exp.Expr], str] = {
+    exp.Stddev: "stddev_samp", exp.StddevSamp: "stddev_samp", exp.StddevPop: "stddev_pop",
+    exp.Variance: "var_samp", exp.VariancePop: "var_pop",
+}
+_STAT_AGG2: dict[type[exp.Expr], str] = {exp.Corr: "corr", exp.CovarSamp: "covar_samp", exp.CovarPop: "covar_pop"}
 _AGG_NODES = (exp.Filter, exp.AggFunc, exp.WithinGroup)
 
 _BINARY_OPS: dict[type[exp.Expr], str] = {
@@ -173,6 +178,12 @@ class _Converter:
             return self._materialize(operand)
         return text
 
+    def _param_ref(self, operand: exp.Expr) -> str:
+        """An aggregation parameter binds only a column: a bare one, else a materialized one."""
+        if isinstance(operand, exp.Column):
+            return self._column_ref(operand.table or None, operand.name)
+        return self._materialize(operand)
+
     # ---- SQL AST -> formula syntax ----
 
     def _inline(self, node: exp.Expr) -> str:  # NOSONAR(S3776) — one flat dispatch over SQL node kinds
@@ -281,6 +292,17 @@ class _Converter:
 
         if isinstance(node, exp.Count):
             return self._count_ref(node, mask=mask)
+
+        if type(node) in _STAT_AGG or isinstance(node, exp.ApproxDistinct):
+            if isinstance(node.this, exp.Distinct) or node.args.get("accuracy") is not None:
+                raise _Unconvertible(f"{node.key.upper()} with DISTINCT or an accuracy is not supported")
+            agg = _STAT_AGG.get(type(node), "count_distinct_approx")
+            return functional_agg_text(source=self._operand_ref(self._masked(node.this, mask)), suffix=agg)
+
+        if type(node) in _STAT_AGG2:
+            value = self._operand_ref(self._masked(node.this, mask))
+            other = self._param_ref(self._masked(node.expression, mask))
+            return f"{_STAT_AGG2[type(node)]}({value}, other={other})"
 
         raise _Unconvertible(f"unsupported aggregation {node.sql_name()!r}")
 
