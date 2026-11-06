@@ -142,9 +142,7 @@ class TestEmptyBaseGrainPlanNode:
             "the host-local filter was not recorded on the node, so the "
             "renderer would have to re-walk the masks to find it."
         )
-        known = {m.slot_id for m in planned.masks} | {
-            mf.id for mf in planned.mode_a_filters
-        }
+        known = {m.slot_id for m in planned.masks}
         assert set(ids) <= known, (
             f"node references unknown filter ids: {set(ids) - known}"
         )

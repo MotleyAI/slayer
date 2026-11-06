@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.errors import UnanalyzableAggregationParameterError
@@ -27,6 +29,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.ir.planned import MaskTyping, RankedProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.sql.generator import SQLGenerator
 
 from tests._engine_helpers import plan_as_producer
 
@@ -313,7 +316,7 @@ class TestHostModelFiltersInteractions:
     """Host ``SlayerModel.filters`` apply inside the sub-plan; the known limit (no aggregate-measure refs) raises ``ValueError``."""
 
     def test_host_model_filter_lands_inside_filtered_local_sub_plan(self):
-        """A host ``model.filters`` entry must appear in the sub-plan's Mode-A carrier."""
+        """Every read of the host's table, the combined sub-plan's included, is its filtered dataset."""
         host = SlayerModel(
             name="claim_amount", data_source="test", sql_table="Claim_Amount",
             columns=[
@@ -341,16 +344,15 @@ class TestHostModelFiltersInteractions:
             dimensions=["id"],
         )
         planned = plan_query(query=q, bundle=bundle)
-        (attach,) = [
-            a for a in planned.regroup_attach_plans
-            if a.attach_phase == "combined"
-        ]
-        sub = attach.producer_plan
-        sub_filter_texts = [mf.text for mf in sub.mode_a_filters]
-        assert "amount > 0" in sub_filter_texts, (
-            f"Host model filter must land inside the host-rooted sub-plan; "
-            f"got sub-plan filter texts {sub_filter_texts!r}"
-        )
+        assert [a for a in planned.regroup_attach_plans if a.attach_phase == "combined"]
+        sql = SQLGenerator(dialect="postgres").generate_from_planned(planned, bundle=bundle)
+        reads = [t for t in sqlglot.parse_one(sql, read="postgres").find_all(exp.Table) if t.name == "Claim_Amount"]
+        assert reads, sql
+        for table in reads:
+            select = table.parent_select
+            assert select is not None and isinstance(select.parent, exp.Subquery), sql
+            where = select.args.get("where")
+            assert where is not None and "amount > 0" in where.sql(dialect="postgres").lower(), sql
 
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
