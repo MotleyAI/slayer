@@ -225,6 +225,14 @@ def _render_list_value(
             f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
             f"For 'no filter' semantics, use a sentinel default."
         )
+    joined = ", ".join(_list_elements(name=name, value=value, escape=escape, backslash_escapes=backslash_escapes))
+    # sql must NOT have a trailing comma (``IN (1, 2,)`` is a syntax error).
+    return f"{joined}," if escape == "python" else joined
+
+
+def _list_elements(
+    name: str, value: "list | tuple", escape: Literal["sql", "python"], *, backslash_escapes: bool,
+) -> list[str]:
     rendered: list[str] = []
     for element in value:
         if isinstance(element, str):
@@ -247,9 +255,59 @@ def _render_list_value(
                 f"Variable '{name}' list element must be a string, number, or bool, "
                 f"got {type(element).__name__}"
             )
-    joined = ", ".join(rendered)
-    # sql must NOT have a trailing comma (``IN (1, 2,)`` is a syntax error).
-    return f"{joined}," if escape == "python" else joined
+    return rendered
+
+
+#: Functions whose arguments are lists: a list variable there binds as a list literal.
+_LIST_ARG_FUNCTIONS = frozenset({"contains_any", "contains_all"})
+_CALL_NAME_RE = re.compile(r"([A-Za-z_]\w*)\s*$")
+
+
+def _string_end(text: str, i: int) -> int:
+    """The index after the quoted literal opening at ``text[i]`` (backslash escapes skipped)."""
+    quote, j = text[i], i + 1
+    while j < len(text) and text[j] != quote:
+        j += 2 if text[j] == "\\" else 1
+    return j + 1
+
+
+def _is_whole_list_argument(text: str, *, match: re.Match, open_calls: list[list]) -> bool:
+    """Whether placeholder ``match`` is the whole second argument of the innermost open list function."""
+    if not open_calls or open_calls[-1][0] not in _LIST_ARG_FUNCTIONS or open_calls[-1][1] != 1:
+        return False
+    return text[:match.start()].rstrip().endswith(",") and text[match.end():].lstrip().startswith(")")
+
+
+def _track_bracket(text: str, *, i: int, open_calls: list[list]) -> None:
+    """Advance the open-call stack past ``text[i]``."""
+    char = text[i]
+    if char in "([":
+        name = _CALL_NAME_RE.search(text, 0, i) if char == "(" else None
+        open_calls.append([name.group(1).lower() if name else None, 0])
+    elif char in ")]" and open_calls:
+        open_calls.pop()
+    elif char == "," and open_calls:
+        open_calls[-1][1] += 1
+
+
+def _list_slot_starts(text: str) -> frozenset[int]:
+    """Offsets of the ``{name}`` placeholders that are a list function's whole list argument."""
+    starts: set[int] = set()
+    open_calls: list[list] = []  # [function name, argument index] per open bracket
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] in "'\"":
+            i = _string_end(text, i)
+            continue
+        match = _VAR_PATTERN.match(text, i)
+        if match is not None and match.group(1) is not None:
+            if _is_whole_list_argument(text, match=match, open_calls=open_calls):
+                starts.add(i)
+            i = match.end()
+            continue
+        _track_bracket(text, i=i, open_calls=open_calls)
+        i += 1
+    return frozenset(starts)
 
 
 def _render_variable_value(
@@ -357,9 +415,11 @@ def _contains_block_delimiter(text: str) -> bool:
 
 
 def _make_var_replacer(
-    filter_str: str, variables: dict, escape: Literal["sql", "python"], backslash_escapes: bool
+    filter_str: str, variables: dict, escape: Literal["sql", "python"], backslash_escapes: bool,
+    list_slots: frozenset[int] = frozenset(),
 ):
-    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens."""
+    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}`` tokens; a list variable at an
+    offset in ``list_slots`` renders as a list literal."""
 
     def _replace(match: re.Match) -> str:
         full = match.group(0)
@@ -374,9 +434,14 @@ def _make_var_replacer(
                     f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
                     f"Available variables: {sorted(variables.keys())}"
                 )
+            value = variables[valid_name]
+            if match.start() in list_slots and isinstance(value, (list, tuple)):
+                return "[" + ", ".join(_list_elements(
+                    name=valid_name, value=value, escape=escape, backslash_escapes=backslash_escapes,
+                )) + "]"
             return _render_variable_value(
                 name=valid_name,
-                value=variables[valid_name],
+                value=value,
                 escape=escape,
                 backslash_escapes=backslash_escapes,
             )
@@ -398,7 +463,8 @@ def substitute_variables(
 ) -> str:
     """Substitute ``{var}`` placeholders in a filter or raw-SQL string (``{{``/``}}`` → literal
     braces). ``escape`` (keyword-only) picks the regime; ``backslash_escapes`` is the fail-closed
-    dialect signal for ``"sql"``. A ``list``/``tuple`` renders an auto-quoted ``IN``-list body."""
+    dialect signal for ``"sql"``. A ``list``/``tuple`` renders an auto-quoted ``IN``-list body, or a list literal as a
+    list function's list argument."""
     if escape not in ("sql", "python"):
         raise ValueError(
             f"Invalid escape mode {escape!r}; expected 'sql' or 'python'."
@@ -414,7 +480,8 @@ def substitute_variables(
     # python mode ignores the signal (Mode-B escaping is dialect-independent).
     effective_backslash_escapes = bool(backslash_escapes) if escape == "sql" else False
     _replace = _make_var_replacer(
-        filter_str, variables, escape, effective_backslash_escapes
+        filter_str, variables, escape, effective_backslash_escapes,
+        list_slots=_list_slot_starts(filter_str) if escape == "python" else frozenset(),
     )
 
     # Optional blocks are Mode-A only; Mode-B rejects them outright.
@@ -1266,6 +1333,7 @@ class SlayerQuery(BaseModel):
             "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1.\n"
             "- Anti-join: rooted at customers, orders.id is null keeps the customers without "
             "orders.\n"
+            "- A list tags: contains(tags, 'x') or tags.value = 'x'.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
             "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
@@ -1327,7 +1395,8 @@ class SlayerQuery(BaseModel):
             "What happens when an aggregation is sliced by a dimension not "
             "attributable to it: broadcast (default — repeat the value across "
             "the cells, with a warning) | associate (aggregate per cell over "
-            "the distinct associated entities) | error (refuse)."
+            "the distinct associated entities, e.g. per list element "
+            "tags.value) | error (refuse)."
         ),
     )
 

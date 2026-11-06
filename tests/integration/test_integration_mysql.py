@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 import sqlalchemy as sa
+from sqlalchemy.engine.url import make_url
 from tests._dev1737_fixtures import (
     DateCase,
     all_models,
@@ -48,8 +49,10 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, ModelExtension, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql import client as client_module
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
@@ -1592,3 +1595,113 @@ def test_every_mysql_alias_failure_is_quoted(mysql_container) -> None:
     finally:
         conn.close()
         _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_probe_ds(mysql_container):
+    db_name = _create_module_db(mysql_container)
+    conn = _admin_connect(mysql_container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE flags (b BOOL, t TINYINT, b1 BIT(1), b8 BIT(8), n INT, d DECIMAL(10,2)) ENGINE=InnoDB"
+            )
+    finally:
+        conn.close()
+    yield _ds_config(mysql_container, db_name)
+    _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+async def test_typed_probe_boolean_and_tiny_integers(mysql_probe_ds: DatasourceConfig) -> None:
+    client = SlayerSQLClient(datasource=mysql_probe_ds)
+    try:
+        types = await client.get_result_column_types("SELECT b, t, b1, b8, n, d FROM flags")
+    finally:
+        await client.aclose()
+        client.close()
+    assert {name: column.type for name, column in types.items()} == {
+        "b": DataType.BOOLEAN, "t": DataType.INT, "b1": DataType.BOOLEAN, "b8": DataType.TEXT,
+        "n": DataType.INT, "d": DataType.DOUBLE,
+    }
+    assert all(column.db_type for column in types.values())
+
+
+# ---------------------------------------------------------------------------
+# One driver per client
+# ---------------------------------------------------------------------------
+
+_FLAG_TYPES = {
+    "b": DataType.BOOLEAN, "t": DataType.INT, "b1": DataType.BOOLEAN, "b8": DataType.TEXT,
+    "n": DataType.INT, "d": DataType.DOUBLE,
+}
+
+
+def _aiomysql(ds: DatasourceConfig) -> DatasourceConfig:
+    url = make_url(ds.get_connection_string()).set(drivername="mysql+aiomysql")
+    return DatasourceConfig(name=ds.name, type="mysql", connection_string=url.render_as_string(hide_password=False))
+
+
+def _refuse(what: str) -> Any:
+    def _refused(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError(f"{what} built")
+
+    return _refused
+
+
+async def _every_operation(client: SlayerSQLClient) -> tuple[list[str], dict[str, DataType], list[dict[str, Any]]]:
+    await client.ping()
+    columns = [c.name for c in await client.reflect_columns(TableLocation(name="flags"))]
+    types = await client.get_result_column_types("SELECT b, t, b1, b8, n, d FROM flags")
+    rows = (await client.execute("SELECT COUNT(*) AS n FROM flags")).rows
+    return columns, {name: column.type for name, column in types.items()}, rows
+
+
+@pytest.mark.integration
+async def test_default_pymysql_builds_no_async_engine(
+    mysql_probe_ds: DatasourceConfig, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "create_async_engine", _refuse("async engine"))
+    client = SlayerSQLClient(datasource=mysql_probe_ds)
+    try:
+        columns, types, rows = await _every_operation(client)
+    finally:
+        await client.aclose()
+        client.close()
+    assert columns == ["b", "t", "b1", "b8", "n", "d"]
+    assert types == _FLAG_TYPES
+    assert rows == [{"n": 0}]
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::FutureWarning")
+async def test_aiomysql_url_serves_every_operation(
+    mysql_probe_ds: DatasourceConfig, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_factory, "get_engine", _refuse("factory engine"))
+    client = SlayerSQLClient(datasource=_aiomysql(mysql_probe_ds))
+    try:
+        columns, types, rows = await _every_operation(client)
+    finally:
+        await client.aclose()
+        client.close()
+    assert columns == ["b", "t", "b1", "b8", "n", "d"]
+    assert types == _FLAG_TYPES
+    assert rows == [{"n": 0}]
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings(
+    "ignore::FutureWarning", "error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning",
+)
+async def test_aiomysql_sync_bridge_after_async_use(mysql_probe_ds: DatasourceConfig, tmp_path) -> None:
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
+    client = engine.client_for(_aiomysql(mysql_probe_ds))
+    try:
+        first = await client.execute("SELECT 1 AS x")
+        bridged = engine.run_sync(client.execute("SELECT 1 AS x"))
+        after = await client.execute("SELECT 1 AS x")
+    finally:
+        await engine.aclose()
+        engine.close()
+    assert first.rows == bridged.rows == after.rows == [{"x": 1}]

@@ -1,4 +1,4 @@
-"""Tests for slayer.core.enums.DataType — sqlglot-aligned shape (DEV-1361)."""
+"""Tests for slayer.core.enums.DataType — sqlglot-aligned shape."""
 
 import pytest
 from sqlglot import exp
@@ -15,7 +15,7 @@ class TestDataTypeShape:
 
     def test_exact_member_set(self) -> None:
         assert {m.name for m in DataType} == {
-            "TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN",
+            "TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN", "ARRAY",
         }
 
     def test_no_legacy_string_member(self) -> None:
@@ -47,7 +47,7 @@ class TestDataTypeValuesMatchSqlglot:
 
     @pytest.mark.parametrize(
         "name",
-        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN"],
+        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN", "ARRAY"],
     )
     def test_value_equals_sqlglot_name(self, name: str) -> None:
         assert getattr(DataType, name).value == name
@@ -84,15 +84,15 @@ class TestDefaultAggregationsByType:
         assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
     def test_text_set_unchanged(self) -> None:
-        # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
+        # Mirror of the old STRING set, plus count_distinct_approx
         # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TEXT] == frozenset({
             "count", "count_distinct", "count_distinct_approx",
-            "first", "last", "min", "max",
+            "first", "last", "min", "max", "collect",
         })
 
     def test_no_pseudo_type_keys(self) -> None:
         # No leftover entries keyed by the dropped pseudo-types.
         for key in DEFAULT_AGGREGATIONS_BY_TYPE.keys():
             assert isinstance(key, DataType)
-            assert key.name in {"TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"}
+            assert key.name in {"TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "ARRAY"}

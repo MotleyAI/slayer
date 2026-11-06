@@ -15,19 +15,21 @@ A client implements `slayer.sql.client.SqlClient`. Every method is `async` excep
 |---|---|---|
 | `datasource` | `DatasourceConfig` | The datasource the client serves. |
 | `execute(sql)` | `ExecutionResult(rows=[{column: value}, ...])` | Run a rendered statement **verbatim** — `:name` and `%` are literal text. A statement that returns no rows (DDL) yields `rows=[]`. |
-| `get_column_types(sql)` | `{column: "number" \| "string" \| "time" \| "boolean"}` | The result columns' types, without fetching data. |
+| `get_result_column_types(sql)` | `{column: ResultColumnType(type, db_type)}` | Each result column's SLayer `type` (`DataType`) and the database's type name (`db_type`, `None` only when the driver names none), without fetching data beyond what certifying integers needs. |
 | `server_profile()` | `ServerProfile` | Server facts SLayer gates features on (ClickHouse); `ServerProfile()` when there are none. |
 | `ping()` | `None` | Raise unless the database answers. |
 | `list_schemas()` | `list[str]` | Visible schema tokens (catalog-qualified, `catalog.schema`, on DuckDB). |
 | `default_schema()` | `str \| None` | The connection's default schema. |
 | `current_catalog()` | `str \| None` | The current catalog where schema tokens are catalog-qualified, else `None`. |
 | `list_objects(schema)` | `ObjectListing(tables, views, materialized_views)` | One schema's relations by kind; `None` is the connection default. |
-| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), `is_float`, `db_type` (set only for opaque and exact-numeric types), `comment`. |
+| `reflect_columns(location)` | `list[ReflectedColumn]` | A table's columns in order: `name`, SLayer `type` (`DataType`), `is_float`, `db_type` (set only for opaque and exact-numeric types), `comment`, `type_name` (the database's name for the type, where known). |
 | `reflect_table_keys(location)` | `TableKeys` | Primary key, foreign keys and unique key sets (never repeating the primary key). |
 | `table_comment(location)` | `str \| None` | A table's comment. |
 | `schema_description(schema, configured_schema)` | `str \| None` | A schema's own description (a BigQuery dataset's). |
 | `aclose()` | `None` | Release resources bound to the current event loop; the client stays usable. |
 | `close()` | `None` | Release everything; idempotent. |
+
+A client written for 1.6.0, whose type probe is `get_column_types(sql)` returning `number` / `string` / `time` / `boolean`, keeps working until SLayer 2.0: each probe reads those categories as DOUBLE, TEXT, TIMESTAMP and BOOLEAN and warns, as does `DelegatingSqlClient.get_column_types`.
 
 A `TableLocation(name, schema_name=None, catalog=None)` names a table; an unset part is the
 connection's current one.
@@ -44,9 +46,9 @@ refuses the query.
 identity, calls it concurrently from one event loop, and closes it — code that borrows a client
 never does. Synchronous SLayer calls run each whole workflow in one event loop and call `aclose()`
 at its end, so a client must keep working after `aclose()`. Cancelling a `SlayerSQLClient` call
-that runs in a worker thread (metadata reads, `ping`, and statements without an async driver), e.g.
-with `asyncio.wait_for`, returns at once unless the client was built with `sa_engine=`; the blocking
-call itself finishes in its worker thread on its own.
+that runs in a worker thread (every call over a driver without async support, or over psycopg on
+Windows' default event loop), e.g. with `asyncio.wait_for`, returns at once unless the client was
+built with `sa_engine=`; the blocking call itself finishes in its worker thread on its own.
 
 ## A statements-only gateway
 
@@ -56,7 +58,7 @@ The smallest gateway routes only the statements and keeps the default client for
 ```python
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -65,8 +67,8 @@ class GatewayClient(DelegatingSqlClient):
         # Send ``sql`` to your gateway here; this one runs it on the wrapped client.
         return await self.inner.execute(sql)
 
-    async def get_column_types(self, sql: str) -> dict[str, str]:
-        return await self.inner.get_column_types(sql)
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        return await self.inner.get_result_column_types(sql)
 
 
 def client_factory(datasource: DatasourceConfig) -> GatewayClient:

@@ -1,6 +1,6 @@
-"""Shared Jaffle Shop demo build helpers for integration tests (DEV-1815).
+"""Shared Jaffle Shop demo setup for integration tests.
 
-The demo DuckDB is built once per session; each server fixture copies that
+The demo DuckDB is built once per run (``shared_demo_duckdb``); each server fixture copies that
 prebuilt file into its own fresh storage dir. ``ensure_demo_datasource``'s
 reuse fast-path then skips the expensive jafgen build, while per-dir ingest
 still runs so each copy keeps correct in-dir datasource paths and full
@@ -11,18 +11,20 @@ from __future__ import annotations
 
 import argparse
 import shutil
+from pathlib import Path
 
 from slayer.cli import _prepare_demo, _resolve_storage
 from slayer.demo.jaffle_shop import build_jaffle_shop, resolve_demo_db_path
 
-DEMO_YEARS = 2
+NOTEBOOK_DEMO_DIR = Path(__file__).resolve().parents[2] / "docs" / "examples" / "jaffle_data"
+NOTEBOOK_DEMO_DB = NOTEBOOK_DEMO_DIR / "demo" / "jaffle_shop.duckdb"
+NOTEBOOK_DEMO_YEARS = 3
 
 
-def build_shared_demo_duckdb(dest_dir: str, *, years: int = DEMO_YEARS) -> str:
-    """Build the Jaffle Shop DuckDB once at ``<dest_dir>/demo/jaffle_shop.duckdb``."""
-    db_path = resolve_demo_db_path(dest_dir)
-    build_jaffle_shop(db_path=db_path, years=years)
-    return db_path
+def build_notebook_demo_db() -> None:
+    """Build the example notebooks' demo DuckDB, or reuse a current one with dates shifted to today."""
+    NOTEBOOK_DEMO_DB.parent.mkdir(parents=True, exist_ok=True)
+    build_jaffle_shop(db_path=str(NOTEBOOK_DEMO_DB), years=NOTEBOOK_DEMO_YEARS)
 
 
 def prepare_demo_storage(*, base_dir: str, prebuilt_duckdb: str | None = None):

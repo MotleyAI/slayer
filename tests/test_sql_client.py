@@ -1,4 +1,4 @@
-"""Tests for SQL client helpers (type code mapping, retry-warning formatting)."""
+"""Tests for SQL client helpers (cursor type descriptions, retry-warning formatting)."""
 
 import logging
 import sqlite3
@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql.client import (
@@ -15,87 +16,24 @@ from slayer.sql.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
-    _get_column_types_sync,
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
-    _map_type_code,
     _read_only_transaction_sql,
+    ResultColumnType,
     build_sql_model_trial_query,
     classify_model_sql,
+    get_result_column_types_sync,
 )
+from slayer.sql.dialects import dialect_for_ds_type
 
-from tests._engine_helpers import disposable_engine
+from tests._engine_helpers import disposable_engine, plant_async_engine
 
 
-class TestMapTypeCode:
-    """_map_type_code must correctly classify type codes from all driver families."""
+class TestDuckdbDriverTypeObjects:
+    """DuckDB describes its columns with ``DuckDBPyType`` objects, read by name."""
 
-    # --- Python type branch (SQLite/some drivers) ---
-
-    def test_python_bool_type_is_boolean(self) -> None:
-        """bool is a subclass of int; must be classified as boolean, not number."""
-        assert _map_type_code(bool) == "boolean"
-
-    def test_python_int_type_is_number(self) -> None:
-        assert _map_type_code(int) == "number"
-
-    def test_python_float_type_is_number(self) -> None:
-        assert _map_type_code(float) == "number"
-
-    def test_python_str_type_is_string(self) -> None:
-        assert _map_type_code(str) == "string"
-
-    def test_other_python_type_is_string(self) -> None:
-        assert _map_type_code(bytes) == "string"
-
-    # --- asyncpg OID integers (Postgres) ---
-
-    def test_asyncpg_bool_oid(self) -> None:
-        assert _map_type_code(16) == "boolean"
-
-    def test_asyncpg_int4_oid(self) -> None:
-        assert _map_type_code(23) == "number"
-
-    def test_asyncpg_int8_oid(self) -> None:
-        assert _map_type_code(20) == "number"
-
-    def test_asyncpg_float8_oid(self) -> None:
-        assert _map_type_code(701) == "number"
-
-    def test_asyncpg_numeric_oid(self) -> None:
-        assert _map_type_code(1700) == "number"
-
-    def test_asyncpg_text_oid(self) -> None:
-        assert _map_type_code(25) == "string"
-
-    def test_asyncpg_varchar_oid(self) -> None:
-        assert _map_type_code(1043) == "string"
-
-    def test_asyncpg_timestamp_oid(self) -> None:
-        assert _map_type_code(1114) == "time"
-
-    def test_asyncpg_timestamptz_oid(self) -> None:
-        assert _map_type_code(1184) == "time"
-
-    def test_asyncpg_date_oid(self) -> None:
-        assert _map_type_code(1082) == "time"
-
-    # --- String branch (DuckDB) ---
-
-    def test_duckdb_integer(self) -> None:
-        assert _map_type_code("INTEGER") == "number"
-
-    def test_duckdb_varchar(self) -> None:
-        assert _map_type_code("VARCHAR") == "string"
-
-    def test_duckdb_boolean(self) -> None:
-        assert _map_type_code("BOOLEAN") == "boolean"
-
-    def test_duckdb_timestamp(self) -> None:
-        assert _map_type_code("TIMESTAMP") == "time"
-
-    def test_duckdb_driver_type_objects(self) -> None:
+    def test_driver_type_objects(self) -> None:
         duckdb = pytest.importorskip("duckdb")
         connection = duckdb.connect()
         try:
@@ -105,92 +43,13 @@ class TestMapTypeCode:
         finally:
             connection.close()
 
-        assert {column[0]: _map_type_code(type_code=column[1], db_type="duckdb") for column in description} == {
-            "i": "number",
-            "b": "boolean",
-            "t": "time",
-            "iv": "time",
+        dialect = dialect_for_ds_type("duckdb")
+        assert {column[0]: dialect.describe_cursor_column(column) for column in description} == {
+            "i": ResultColumnType(type=DataType.INT, db_type="INTEGER"),
+            "b": ResultColumnType(type=DataType.BOOLEAN, db_type="BOOLEAN"),
+            "t": ResultColumnType(type=DataType.TIMESTAMP, db_type="TIMESTAMP WITH TIME ZONE"),
+            "iv": ResultColumnType(type=DataType.TEXT, db_type="INTERVAL"),
         }
-
-    # --- Dialect-aware OID mapping ---
-
-    def test_pg_oid_16_is_boolean(self) -> None:
-        """Postgres OID 16 = bool."""
-        assert _map_type_code(16, db_type="postgresql") == "boolean"
-
-    def test_mysql_type_16_is_number(self) -> None:
-        """MySQL field type 16 = BIT (not boolean)."""
-        assert _map_type_code(16, db_type="mysql") == "number"
-
-    def test_mysql_float_oid(self) -> None:
-        """MySQL MYSQL_TYPE_FLOAT = 4."""
-        assert _map_type_code(4, db_type="mysql") == "number"
-
-    def test_mysql_decimal_oid(self) -> None:
-        """MySQL MYSQL_TYPE_DECIMAL = 0."""
-        assert _map_type_code(0, db_type="mysql") == "number"
-
-    @pytest.mark.xfail(strict=True, reason="mariadb type codes fall through to the Postgres OID map; fix in DEV-1975")
-    @pytest.mark.parametrize(
-        ("type_code", "category"),
-        [(3, "number"), (246, "number"), (10, "time"), (12, "time"), (16, "number")],
-    )
-    def test_mariadb_uses_mysql_type_codes(self, type_code: int, category: str) -> None:
-        assert _map_type_code(type_code, db_type="mariadb") == category
-
-    # --- SQL Server / pyodbc ODBC SQL type codes ---
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_integer_odbc_code_is_number(self, db_type: str) -> None:
-        # SQL_INTEGER
-        assert _map_type_code(4, db_type=db_type) == "number"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_bigint_odbc_code_is_number(self, db_type: str) -> None:
-        # SQL_BIGINT
-        assert _map_type_code(-5, db_type=db_type) == "number"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_varchar_odbc_code_is_string(self, db_type: str) -> None:
-        # SQL_VARCHAR
-        assert _map_type_code(12, db_type=db_type) == "string"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_timestamp_odbc_code_is_time(self, db_type: str) -> None:
-        # SQL_TYPE_TIMESTAMP
-        assert _map_type_code(93, db_type=db_type) == "time"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_bit_odbc_code_is_boolean(self, db_type: str) -> None:
-        # SQL_BIT
-        assert _map_type_code(-7, db_type=db_type) == "boolean"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_datetimeoffset_odbc_code_is_time(self, db_type: str) -> None:
-        # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
-        assert _map_type_code(-154, db_type=db_type) == "time"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_time2_odbc_code_is_time(self, db_type: str) -> None:
-        # SQL_SS_TIME2 (time with fractional seconds)
-        assert _map_type_code(-155, db_type=db_type) == "time"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_xml_odbc_code_is_string(self, db_type: str) -> None:
-        # SQL_SS_XML
-        assert _map_type_code(-152, db_type=db_type) == "string"
-
-    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
-    def test_tsql_guid_odbc_code_is_string(self, db_type: str) -> None:
-        # SQL_GUID (uniqueidentifier)
-        assert _map_type_code(-11, db_type=db_type) == "string"
-
-    def test_tsql_does_not_fall_through_to_pg_oid_map(self) -> None:
-        # Postgres OID 4 maps to nothing in PG map — it's SQL_INTEGER in ODBC.
-        # Without the tsql branch it would return "string" (PG fallback).
-        # With the tsql branch it correctly returns "number".
-        assert _map_type_code(4, db_type="mssql") == "number"
-        assert _map_type_code(4) == "string"  # Postgres fallback (OID 4 not in PG map)
 
 
 def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.OperationalError:
@@ -585,12 +444,13 @@ class TestClientDiscardsEngineOnAuthFailure:
         invalidate.assert_not_called()
         assert client._sync_engine is engine
 
-    async def test_async_engine_is_disposed_too(self) -> None:
-        """Native-async dialects hold a second pool ``invalidate_engine`` knows
-        nothing about."""
-        client = self._client()
+    async def test_async_engine_is_disposed_too(self, monkeypatch) -> None:
+        """An async driver's pool is one ``invalidate_engine`` knows nothing about."""
+        client = sql_client.SlayerSQLClient(
+            datasource=DatasourceConfig(name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d"),
+        )
         async_engine = AsyncMock()
-        client._async_engine = async_engine
+        plant_async_engine(monkeypatch, client, async_engine)
         with (
             patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
             patch("slayer.sql.engine_factory.invalidate_engine"),
@@ -598,22 +458,22 @@ class TestClientDiscardsEngineOnAuthFailure:
             with pytest.raises(Exception, match="invalid_grant"):
                 await client.execute("SELECT 1")
         async_engine.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        plant_async_engine(monkeypatch, client, AsyncMock())
 
-    async def test_get_column_types_also_discards(self) -> None:
+    async def test_get_result_column_types_also_discards(self) -> None:
         """Runs its own SQL on the same cached engine, so it needs the same
         cleanup ``execute`` gets."""
         client = self._client()
         client._sync_engine = object()
         with (
             patch.object(
-                sql_client.SlayerSQLClient, "_get_column_types",
+                sql_client.SlayerSQLClient, "_get_result_column_types",
                 side_effect=Exception("invalid_grant"),
             ),
             patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
         ):
             with pytest.raises(Exception, match="invalid_grant"):
-                await client.get_column_types("SELECT 1")
+                await client.get_result_column_types("SELECT 1")
         invalidate.assert_called_once_with(client.datasource)
         assert client._sync_engine is None
 
@@ -868,8 +728,8 @@ class TestProbeRollsBack:
                 return real_rollback(self)
 
             with patch.object(sa.Connection, "rollback", _spy_rollback):
-                types = _get_column_types_sync(
+                types = get_result_column_types_sync(
                     "SELECT a, b FROM t", db_type="sqlite", engine=eng,
                 )
-            assert types == {"a": "number", "b": "string"}
+            assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
             assert "rollback" in seen

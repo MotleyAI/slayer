@@ -1,7 +1,6 @@
 """Integration test for the Jaffle Shop DuckDB loader."""
 
 import shutil
-from pathlib import Path
 
 import pytest
 
@@ -15,13 +14,8 @@ from slayer.demo.jaffle_shop import (
     verify,
 )
 
-# Cached 3-year demo DB maintained by tests/integration/test_notebooks.py's
-# session-scoped _ensure_jaffle_db fixture. Reusing it avoids ~10s of
-# `jafgen` subprocess time per pytest invocation.
-_CACHED_JAFFLE_DB = (
-    Path(__file__).resolve().parent.parent.parent
-    / "docs" / "examples" / "jaffle_data" / "demo" / "jaffle_shop.duckdb"
-)
+from tests.integration._demo_build import NOTEBOOK_DEMO_DB
+
 
 
 @pytest.fixture(scope="module")
@@ -33,8 +27,8 @@ def jaffle_db(tmp_path_factory):
     tmpdir = tmp_path_factory.mktemp("jaffle")
     db_path = tmpdir / "test_jaffle.duckdb"
 
-    if _CACHED_JAFFLE_DB.exists():
-        shutil.copy(_CACHED_JAFFLE_DB, db_path)
+    if NOTEBOOK_DEMO_DB.exists():
+        shutil.copy(NOTEBOOK_DEMO_DB, db_path)
         conn = duckdb.connect(str(db_path))
     else:
         data_dir = generate_data(output_dir=str(tmpdir), years=1)

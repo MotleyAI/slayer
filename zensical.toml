@@ -59,6 +59,7 @@ nav = [
   ]},
   { "OSI" = [
     { "Importing OSI configs" = "osi/osi_import.md" },
+    { "Exporting to OSI" = "osi/osi_export.md" },
   ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },
@@ -117,6 +118,10 @@ nav = [
       "examples/15_duckdb/duckdb.md",
       { "Notebook (Python)" = "examples/15_duckdb/duckdb_python_nb.ipynb" },
       { "Notebook (CLI)" = "examples/15_duckdb/duckdb_cli_nb.ipynb" },
+    ]},
+    { "List Columns" = [
+      "examples/16_list_columns/list_columns.md",
+      { "Notebook" = "examples/16_list_columns/list_columns_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},

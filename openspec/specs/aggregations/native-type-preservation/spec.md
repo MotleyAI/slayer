@@ -10,12 +10,18 @@ inferred logical type, unless the query explicitly requests a type.
 ### Requirement: Inferred aggregates over exact-numeric columns preserve native precision
 
 When a column's physical database type is an exact numeric (its pre-parenthesis
-type token contains `DECIMAL` or `NUMERIC`, case-insensitive — covering
-`DECIMAL`, `NUMERIC`, ClickHouse `Decimal32/64/128/256`, BigQuery
-`BIGNUMERIC`), an aggregate over it whose result type was inferred (not
+type token contains `DECIMAL` or `NUMERIC`, or is `MONEY` or `SMALLMONEY`,
+case-insensitive — covering `DECIMAL`, `NUMERIC`, ClickHouse
+`Decimal32/64/128/256`, BigQuery `BIGNUMERIC`, Postgres `money` and SQL Server
+`MONEY` / `SMALLMONEY`), an aggregate over it whose result type was inferred (not
 explicitly declared in the query or model) SHALL NOT be cast to the inferred
-logical type. The generated SQL SHALL carry no lossy cast around the aggregate
-and result values SHALL retain the database's exact-numeric representation.
+logical type, and neither SHALL a row-level derived column whose own physical
+database type is an exact numeric. The generated SQL SHALL carry no lossy cast
+around the aggregate or derived column, and result values SHALL retain the
+database's exact-numeric representation. Reflection and the column-type probe
+SHALL retain an exact numeric's raw database type; where the driver reports only
+an exact-numeric value type, the probe SHALL name it `decimal(<precision>,<scale>)`,
+or `decimal` when either is unknown.
 Database-specific nullability/cardinality wrappers around the physical type
 (e.g. ClickHouse `Nullable(...)`, `LowCardinality(...)`, arbitrarily nested)
 SHALL be transparent to this behaviour. An explicitly declared result type
@@ -47,6 +53,22 @@ result type.
 - THEN the column is detected as exact-numeric, its raw type is retained, and
   the aggregate is emitted without a lossy float cast
 
+#### Scenario: Money columns are exact
+
+- WHEN a Postgres model column is reflected or probed as `money`, and a query
+  requests `sum(amount)` and the derived column `amount * 2` with no explicit
+  type
+- THEN the column is detected as exact-numeric, its raw type `money` is retained,
+  neither expression is cast to a float, the statement executes, and both
+  values are exact
+
+#### Scenario: SQL Server money variants are exact
+
+- WHEN a SQL Server column's type is `MONEY` or `SMALLMONEY`, as a SQLAlchemy
+  type, an information-schema string or a cursor description
+- THEN it is detected as exact-numeric and an aggregate over it
+  is emitted without a lossy float cast
+
 #### Scenario: Explicit type still casts
 
 - WHEN a query declares an explicit result type (e.g. `type: DOUBLE`) on a
@@ -57,7 +79,7 @@ result type.
 #### Scenario: Non-exact-numeric columns are unaffected
 
 - WHEN a column's physical type is not an exact numeric (e.g. `DOUBLE`, `INT`,
-  `MONEY`)
+  `REAL`)
 - THEN aggregate cast behaviour is unchanged from the inferred logical type's
   rules
 
@@ -67,6 +89,14 @@ result type.
   a query requests `sum(amount)` with no explicit type
 - THEN the generated SQL keeps the inferred float cast and the result value is
   a float even when every stored value is integral
+
+#### Scenario: A wide exact integer derived column keeps its value
+
+- WHEN a Postgres model's derived column of type INT with physical type
+  `NUMERIC(38,0)` computes a value above 2⁶³ and a query selects it with no
+  explicit type
+- THEN the generated SQL carries no cast around the column and the exact
+  value is returned
 
 ### Requirement: Declared temporal casts are suppressed on dialects without native temporal storage
 

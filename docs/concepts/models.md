@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Columns
 
-A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A column is the unit of structure on the model. The same column entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A list column is the exception: it is never a group-by key and aggregates only with `count`; its elements group and aggregate through `<column>.value`. What the column *carries* is its identity (name), how to compute it from the source (`sql`), what data type to expect, and a handful of policy fields (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Fields
 
@@ -76,8 +76,9 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
-| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date` |
-| `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting and `min` / `max`; members of a composite key are ordinary columns |
+| `type` | string | No | `string` | `string`, `number`, `boolean`, `time`, `date`, `ARRAY` |
+| `element_type` | string | With `ARRAY` | — | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only `length` and NULL tests); an `sql`-mode model's undeclared one is `UNKNOWN` |
+| `primary_key` | bool | No | `false` | A model's sole primary key is an identifier, restricted to counting, `min` / `max` and `collect`; members of a composite key are ordinary columns |
 | `unique` | bool | No | `false` | Single-column uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one joins |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | `NumberFormat` used by response metadata |
@@ -100,6 +101,7 @@ A column's `sql` is rendered into the executed statement, which reaches the data
 | `boolean` | True/false | BOOLEAN |
 | `time` | Timestamp | TIMESTAMP, DATETIME |
 | `date` | Date only | DATE |
+| `ARRAY` | A list of scalars, its elements its non-NULL elements; re-ingest re-types a non-list column whose live type is a list, keeping its description, label and meta and only `count` among its aggregations | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 ### Aggregation eligibility
 
@@ -111,6 +113,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
 | `boolean` | the `number` set |
 | `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
+| `ARRAY` | count (non-NULL lists); aggregate its elements through `skills.value`, see [list columns](queries.md#list-columns) |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
@@ -278,6 +281,7 @@ Aggregations are the operators that turn a column expression into a value: `sum`
 | `var_samp` / `var_pop` | `var_samp(latency)` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` | Pearson correlation between two columns |
 | `covar_samp` / `covar_pop` | `covar_samp(price, other=quantity)` | Sample / population covariance |
+| `collect` | `collect(name)` | The distinct non-NULL values as a sorted list; `[]` when there are none |
 
 `count(*)` is always available with no measure definition. `*` means "all rows" and is **only** valid with `count` — `sum(*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
@@ -306,7 +310,7 @@ aggregations:
     formula: "avg(CASE WHEN {value} BETWEEN {low} AND {high} THEN {value} END)"
 ```
 
-Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names.
+Use at query time: `weighted_avg(price, weight=quantity)`, `trimmed_mean(revenue, low=10, high=1000)`. An aggregation entry can also override a built-in's default parameters without redefining the SQL, or give a built-in other than `first`/`last` a `formula`, which then replaces its SQL. Like columns and measures, aggregations accept an optional `meta` dict for caller bookkeeping. A formula that does not parse as SQL is rejected when the model is saved, and so is a parameter whose default `sql` is empty, whose name is `value` (which always stands for the aggregated column) or `window` (the trailing-window argument), or that the formula never references; a query argument the aggregation does not accept is rejected, listing the accepted names. A built-in aggregation's name, in any case, resolves only to an aggregation named exactly that built-in's lowercase name. An aggregation may take a function's name (`upper`, `round`, `contains`), which then means the aggregation over the model's own columns in every spelling, announced with a `library_name_shadow` warning on save, load and every response that uses it, while transform and date-function names stay reserved.
 
 A placeholder inside a quoted string literal (`SUM({value}) * CAST('{n}' AS DOUBLE)`) splices its parameter's value and so needs a literal one, a number or a string; write a literal brace there as `{{` or `}}`.
 
@@ -527,7 +531,7 @@ Unresolved placeholders raise a clear error at execute time, naming the model an
 
 ### What gets cached
 
-For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
+For a query-backed model the engine caches `model.columns` (final-stage output columns — a discoverability snapshot); each cached column produced by a time dimension records its `granularity`, so a finer time dimension over the model is the same typed error as over a stage column. The cache is populated **only** on save through `engine.save_model` (REST `POST`/`PUT /models`, MCP `create_model`/`edit_model`). **Read operations never write storage** — `engine.execute`, `inspect`, `get_result_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. Writing a query-backed model directly to storage outside the engine leaves the cache stale until the next engine save.
 
 You **cannot** supply `columns` yourself when creating a query-backed model — they are engine-managed, and any user-supplied value is rejected with a clear error.
 

@@ -6,20 +6,25 @@ against the FROM scope, not the SELECT list.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
-from typing import ClassVar, Literal
+from collections.abc import Sequence
+from decimal import Decimal
+from typing import Any, ClassVar, Literal
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     DottedAliasManglingMixin,
     SqlDialect,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
 
 # sqlglot's tsql transpiler emits names (VAR_SAMP, VARIANCE_POP) T-SQL lacks.
@@ -28,6 +33,45 @@ _TSQL_STAT_NAMES: dict[str, str] = {
     "stddev_pop": "STDEVP",
     "var_samp": "VAR",
     "var_pop": "VARP",
+}
+
+
+# ``timestamp`` is rowversion here, not a temporal type.
+_TYPE_NAME_OVERRIDES = {"TIMESTAMP": DataType.TEXT}
+
+# ``sp_describe_first_result_set``'s "metadata could not be determined" errors.
+_UNDESCRIBABLE_ERRORS = range(11500, 11542)
+_NATIVE_ERROR_RE = re.compile(r"\((\d+)\)\s*\(SQL\w*\)")
+
+# pyodbc ``type_code`` Python types → SLayer types; ``Decimal`` is read by scale.
+_PYTHON_TYPES: tuple[tuple[type, DataType], ...] = (
+    (bool, DataType.BOOLEAN),
+    (int, DataType.INT),
+    (float, DataType.DOUBLE),
+    (dt.datetime, DataType.TIMESTAMP),
+    (dt.date, DataType.DATE),
+    (dt.time, info_schema_type("TIME")[0]),
+)
+
+
+# ODBC SQL type codes → (name, SLayer type).
+_ODBC_SQL_TYPES: dict[int, tuple[str, DataType]] = {
+    4: ("SQL_INTEGER", DataType.INT), 5: ("SQL_SMALLINT", DataType.INT), -6: ("SQL_TINYINT", DataType.INT),
+    -5: ("SQL_BIGINT", DataType.INT), 2: ("SQL_NUMERIC", DataType.DOUBLE), 3: ("SQL_DECIMAL", DataType.DOUBLE),
+    6: ("SQL_FLOAT", DataType.DOUBLE), 7: ("SQL_REAL", DataType.DOUBLE), 8: ("SQL_DOUBLE", DataType.DOUBLE),
+    1: ("SQL_CHAR", DataType.TEXT), 12: ("SQL_VARCHAR", DataType.TEXT), -1: ("SQL_LONGVARCHAR", DataType.TEXT),
+    -8: ("SQL_WCHAR", DataType.TEXT), -9: ("SQL_WVARCHAR", DataType.TEXT), -10: ("SQL_WLONGVARCHAR", DataType.TEXT),
+    -152: ("SQL_SS_XML", DataType.UNKNOWN), -11: ("SQL_GUID", DataType.TEXT), -7: ("SQL_BIT", DataType.BOOLEAN),
+    -2: ("SQL_BINARY", DataType.TEXT), -3: ("SQL_VARBINARY", DataType.TEXT), -4: ("SQL_LONGVARBINARY", DataType.TEXT),
+    91: ("SQL_TYPE_DATE", DataType.DATE), 92: ("SQL_TYPE_TIME", DataType.TIMESTAMP),
+    93: ("SQL_TYPE_TIMESTAMP", DataType.TIMESTAMP), -154: ("SQL_SS_TIME2", DataType.TIMESTAMP),
+    -155: ("SQL_SS_TIMESTAMPOFFSET", DataType.TIMESTAMP),
+}
+_ODBC_LEGACY_CATEGORIES = {
+    "sql_integer": "number", "sql_smallint": "number", "sql_tinyint": "number", "sql_bigint": "number",
+    "sql_numeric": "number", "sql_decimal": "number", "sql_float": "number", "sql_real": "number",
+    "sql_double": "number", "sql_bit": "boolean", "sql_type_date": "time", "sql_type_time": "time",
+    "sql_type_timestamp": "time", "sql_ss_time2": "time", "sql_ss_timestampoffset": "time",
 }
 
 
@@ -95,6 +139,17 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
+    native_lists: ClassVar[bool] = False
+    # 1.6.0 read pyodbc's Python types: only bool, int and float were not strings.
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "bit": "boolean", "tinyint": "number", "smallint": "number", "int": "number", "bigint": "number",
+            "float": "number", "real": "number", **_ODBC_LEGACY_CATEGORIES,
+        },
+        other="string",
+        unnamed={DataType.DATE: "string", DataType.TIMESTAMP: "string"},
+    )
+    database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     sa_backend_names: frozenset[str] = frozenset({"mssql"})
     explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
@@ -110,6 +165,43 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     dotted_alias_re: ClassVar[re.Pattern[str]] = _TSQL_DOTTED_ALIAS_RE
     alias_quote_open: ClassVar[str] = "["
     alias_quote_close: ClassVar[str] = "]"
+
+    def describe_result_statement(self, probe: exp.National) -> Expression:
+        """``EXEC sp_describe_first_result_set @tsql = N'…'`` (sqlglot's ``exp.Execute`` spells it ``EXECUTE``)."""
+        argument = exp.EQ(this=exp.Parameter(this=exp.var("tsql")), expression=probe)
+        return exp.Command(this="EXEC", expression=f"sp_describe_first_result_set {argument.sql(dialect=self.sqlglot_name)}")
+
+    def read_result_description(self, rows: list[dict[str, Any]]) -> dict[str, ResultColumnType]:
+        """A CLR user-defined type has no ``system_type_name``: unnamed TEXT, like an unknown Postgres OID."""
+        return {
+            row["name"]: (
+                result_column_type_of_name(row["system_type_name"], overrides=_TYPE_NAME_OVERRIDES)
+                if row["system_type_name"] else ResultColumnType(type=DataType.TEXT)
+            )
+            for row in rows if not row.get("is_hidden")
+        }
+
+    def result_undescribable(self, exc: BaseException) -> bool:
+        codes = _NATIVE_ERROR_RE.findall(str(getattr(exc, "orig", None) or exc))
+        return any(int(code) in _UNDESCRIBABLE_ERRORS for code in codes)
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        """pyodbc reports Python types (the fallback when the result cannot be described), named only for
+        ``Decimal``; an ODBC SQL type code is named by ODBC."""
+        code, precision, scale = description_row[1], description_row[4], description_row[5]
+        if isinstance(code, int) and code in _ODBC_SQL_TYPES:
+            name, data_type = _ODBC_SQL_TYPES[code]
+            return ResultColumnType(type=data_type, db_type=name)
+        if not isinstance(code, type):
+            return None
+        if issubclass(code, Decimal):
+            sized = isinstance(precision, int) and isinstance(scale, int)
+            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                                    db_type=f"decimal({precision},{scale})" if sized else "decimal")
+        for python_type, data_type in _PYTHON_TYPES:
+            if issubclass(code, python_type):
+                return ResultColumnType(type=data_type)
+        return ResultColumnType(type=DataType.TEXT)
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,

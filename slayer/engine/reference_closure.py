@@ -24,6 +24,7 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     InKey,
+    ArrayLiteralKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
@@ -204,7 +205,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 # Values a key tree carries INLINE — plain data, never references.
 _INLINE_SCALARS = (str, int, float, bool, Decimal)
-_LEAF_KINDS = (LiteralKey, StarKey, ColumnKey, ColumnSqlKey)
+_LEAF_KINDS = (LiteralKey, ArrayLiteralKey, StarKey, ColumnKey, ColumnSqlKey)
 
 
 class UnhandledValueKindError(SlayerError, TypeError):

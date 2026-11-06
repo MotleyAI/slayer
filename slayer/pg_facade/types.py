@@ -27,6 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from slayer.core.enums import DataType
+from slayer.core.format import list_json_text
 from slayer.pg_facade.protocol import (
     OID_BOOL,
     OID_DATE,
@@ -45,6 +46,8 @@ DATATYPE_TO_OID: dict[DataType, int] = {
     DataType.TIMESTAMP: OID_TIMESTAMP,
     # Opaque columns go out as text — see slayer.core.enums.DataType.is_opaque.
     DataType.UNKNOWN: OID_TEXT,
+    # Lists go out as their JSON array text.
+    DataType.ARRAY: OID_TEXT,
 }
 
 # Postgres binary date/timestamp epoch.
@@ -76,6 +79,8 @@ def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
     """
     if value is None:
         return None
+    if isinstance(value, (list, tuple)):
+        return list_json_text(list(value)).encode()
     # OID-driven coercion runs first so a datetime in a DATE column is
     # narrowed to a date before the per-Python-type dispatch below.
     if oid == OID_DATE and isinstance(value, _dt.datetime):

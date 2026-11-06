@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import difflib
 import os
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal
-from typing import Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
+from functools import partial
+from typing import Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
 
@@ -17,6 +21,7 @@ from slayer.core.errors import (
     GranularityCallError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
+    ListTypeError,
     MeasureCycleError,
     MeasureRecursionLimitError,
     PartitionKeyError,
@@ -45,8 +50,10 @@ from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
-from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys
+from slayer.core.keys import DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, ColumnKey, ColumnSqlKey, Grain, InKey, LiteralKey, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, ValueKey, boolean_valued, column_leaf, column_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
+    LIST_ELEMENT_COLUMN,
+    resolved_terminal,
     aggregation_owner,
     canonical_path,
     terminal_model,
@@ -56,11 +63,15 @@ from slayer.core.join_walker import (
 )
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
+    Aggregation,
     SlayerModel,
     aggregation_definition,
+    builtin_semantics,
     is_identifier,
     reserved_value_param_message,
+    shadows_library_function,
 )
+from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine import dimension_routing
 from slayer.engine.key_metadata import scope_column_type
 from slayer.engine.param_binding import bind_aggregation_params
@@ -70,6 +81,7 @@ from slayer.core.time_points import is_time_point
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
+    ArrayLit,
     Arith,
     BoolOp,
     Cmp,
@@ -82,6 +94,7 @@ from slayer.engine.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    aggregation_reading,
     canonical_measure_text,
     parse_expr,
     placeholder_names,
@@ -92,9 +105,32 @@ from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
     "bind_expr",
+    "bind_model_formula",
     "bind_filter",
     "bind_time_dimension",
+    "collect_bind_records",
 ]
+
+
+class BindRecords(BaseModel):
+    """What binding a statement resolved through, beyond its keys: library functions its models' aggregations
+    shadowed."""
+
+    shadows: Dict[Tuple[str, str, str], LibraryNameShadowWarning] = {}
+
+
+_bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
+
+
+@contextmanager
+def collect_bind_records() -> Iterator[BindRecords]:
+    """Collect the records of every binding inside the block."""
+    records = BindRecords()
+    token = _bind_records.set(records)
+    try:
+        yield records
+    finally:
+        _bind_records.reset(token)
 
 
 _DEFAULT_MEASURE_DEPTH = 32
@@ -162,6 +198,16 @@ def bind_expr(
             parsed=parsed, value_key=value_key, scope=scope,
         ),
     )
+
+
+def bind_model_formula(
+    formula: str, *, model: SlayerModel, models: Sequence[SlayerModel], dialect: str,
+) -> ValueKey:
+    """``formula`` bound on ``model`` (saved measures inlined) against the ``models`` graph, reading no database."""
+    bundle = ResolvedSourceBundle(dialect=dialect, source_model=model, referenced_models=list(models))
+    return bind_expr(
+        parse_expr(formula), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True,
+    ).value_key
 
 
 def spelled_aggregate_key(
@@ -350,93 +396,116 @@ def _bind(
     # boundary — a measure is legal at value level but not inside an aggregation.
     # ``dim_alias_map`` rides every edge but resolves ONLY inside an
     # aggregation's ``partition_by``.
-    if isinstance(parsed, Literal):
-        return LiteralKey(value=normalize_scalar(parsed.value))
-
-    if isinstance(parsed, Ref):
-        return _resolve_ref(
-            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
-
-    if isinstance(parsed, DottedRef):
-        return _resolve_dotted(
-            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
-            measure_ctx=measure_ctx,
-        )
-
-    if isinstance(parsed, StarSource):
-        return StarKey()
-
+    leaf = _bind_leaf(parsed, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx)
+    if leaf is not None:
+        return leaf
+    sub = partial(
+        _bind, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+        measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
+    )
     if isinstance(parsed, AggCall):
         return _bind_agg_call(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
     if isinstance(parsed, TransformCall):
         return _bind_transform(
             parsed, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
     if isinstance(parsed, ScalarCall):
         return _bind_scalar(
             parsed, scope=scope, bundle=bundle, in_filter=in_filter,
             alias_map=alias_map, measure_ctx=measure_ctx,
             dim_alias_map=dim_alias_map,
         )
-
-    if isinstance(parsed, Arith):
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            ),
-        )
-
-    if isinstance(parsed, UnaryOp):
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),),
-        )
-
     if isinstance(parsed, Cmp):
-        time_point = _time_point_comparison(parsed, units=bundle.granularities)
-        if time_point is not None:
-            operand, op, point, literal_on_left = time_point
-            return TimePointCmpKey(
-                op=op, point=point, literal_on_left=literal_on_left,
-                operand=_bind(operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            )
-        # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
-        # column + literal-tuple handle for the generator).
-        if parsed.op in _MEMBERSHIP_OP:
-            return _bind_in(
-                parsed,
-                scope=scope, bundle=bundle, in_filter=in_filter,
-                alias_map=alias_map, measure_ctx=measure_ctx,
-                dim_alias_map=dim_alias_map,
-            )
-        return ArithmeticKey(
-            op=parsed.op,
-            operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map),
-            ),
+        return _bind_cmp(
+            parsed, sub=sub, scope=scope, bundle=bundle, in_filter=in_filter,
+            alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-
+    if isinstance(parsed, Arith):
+        return ArithmeticKey(op=parsed.op, operands=(sub(parsed.left), sub(parsed.right)))
+    if isinstance(parsed, UnaryOp):
+        return ArithmeticKey(op=parsed.op, operands=(sub(parsed.operand),))
     if isinstance(parsed, BoolOp):
-        operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map, measure_ctx=measure_ctx, dim_alias_map=dim_alias_map)
-            for v in parsed.operands
-        )
-        return ArithmeticKey(op=parsed.op, operands=operands)
-
+        return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
+    if isinstance(parsed, ArrayLit):
+        return _bind_array_literal(parsed, sub=sub)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_leaf(
+    parsed: ParsedExpr,
+    *,
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    measure_ctx: Optional[MeasureResolutionCtx],
+) -> Optional[ValueKey]:
+    """A literal, reference or ``*`` leaf bound; ``None`` for a composite node."""
+    if isinstance(parsed, Literal):
+        return LiteralKey(value=normalize_scalar(parsed.value))
+    if isinstance(parsed, StarSource):
+        return StarKey()
+    if isinstance(parsed, Ref):
+        return _resolve_ref(
+            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
+    if isinstance(parsed, DottedRef):
+        return _resolve_dotted(
+            parsed.parts, scope=scope, bundle=bundle, alias_map=alias_map,
+            measure_ctx=measure_ctx,
+        )
+    return None
+
+
+def _bind_cmp(
+    parsed: Cmp,
+    *,
+    sub: Callable[[ParsedExpr], ValueKey],
+    scope: ModelScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    in_filter: bool,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    measure_ctx: Optional[MeasureResolutionCtx],
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> ValueKey:
+    time_point = _time_point_comparison(parsed, units=bundle.granularities)
+    if time_point is not None:
+        operand, op, point, literal_on_left = time_point
+        return TimePointCmpKey(op=op, point=point, literal_on_left=literal_on_left, operand=sub(operand))
+    # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
+    # column + literal-tuple handle for the generator).
+    if parsed.op in _MEMBERSHIP_OP:
+        return _bind_in(
+            parsed,
+            scope=scope, bundle=bundle, in_filter=in_filter,
+            alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    return ArithmeticKey(op=parsed.op, operands=(sub(parsed.left), sub(parsed.right)))
+
+
+def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
+    """A literal list: every element a literal (its NULL / type-family rules are the checker's)."""
+    values = []
+    for element in parsed.elements:
+        key = sub(element)
+        if isinstance(key, ArithmeticKey) and key.op == "-" and len(key.operands) == 1 \
+                and isinstance(key.operands[0], LiteralKey) and isinstance(key.operands[0].value, Decimal):
+            key = LiteralKey(value=-key.operands[0].value)
+        if not isinstance(key, LiteralKey):
+            raise ListTypeError(
+                summary=f"Every element of the list literal `{canonical_measure_text(parsed)}` must be a literal; "
+                f"`{canonical_measure_text(element)}` is not.",
+                suggestion="Compare a list with another list column through contains_any / contains_all instead.",
+            )
+        values.append(key)
+    return ArrayLiteralKey(values=tuple(values))
 
 
 def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> None:
@@ -637,10 +706,26 @@ def _walk_join_chain(
     if miss.kind == "unloaded":
         assert miss.target is not None
         raise _target_not_in_bundle(parts=parts, target=miss.target)
+    _reject_opaque_elements(host=host, hop_path=hop_path, index=miss.index, parts=parts, models_by_name=models_by_name)
     return _route_edgeless_hop(
         host=host, hop=miss.token, hop_path=hop_path, leaf=leaf, parts=parts,
         models_by_name=models_by_name,
     )
+
+
+def _reject_opaque_elements(
+    *, host: SlayerModel, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
+    models_by_name: Dict[str, SlayerModel],
+) -> None:
+    """A hop naming a list of opaque elements: they have no element access."""
+    owner = resolved_terminal(root=host, path=hop_path[:index], models_by_name=models_by_name)
+    column = owner.get_column(hop_path[index]) if owner is not None else None
+    if column is not None and column.type is DataType.ARRAY:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="ModelScope",
+            scope_summary=f"list column {column.name!r} holds opaque (UNKNOWN) elements, which have no element access",
+            suggestion="Declare the column's element_type, or use length() / IS NULL on the list.",
+        )
 
 
 def _route_edgeless_hop(
@@ -733,14 +818,7 @@ def _resolve_dotted(
             return alias_map[dotted_text]
 
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_COLUMN)
 
     assert isinstance(scope, ModelScope)
     if scope.source_model is None:
@@ -776,6 +854,23 @@ def _resolve_dotted(
         original_parts=original_parts, scope=scope, bundle=bundle,
         measure_ctx=measure_ctx,
     )
+
+
+def _stage_list_scope(
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str,
+) -> ModelScope:
+    """The stage's model scope for ``L.value`` / ``L.*`` over its list column ``L``; any other dotted ref is illegal."""
+    head = scope.resolve_flat_name(parts[0]) if len(parts) == 2 and parts[1] == leaf else None
+    if head is None or head.type != DataType.ARRAY or bundle.source_model is None:
+        raise IllegalScopeReferenceError(
+            name=".".join(parts),
+            scope_kind="StageSchema",
+            reason=(
+                "downstream stages see a flat schema — dotted refs are not legal "
+                "bar a list column's elements (L.value, L.*). Use the flat column name."
+            ),
+        )
+    return ModelScope(source_model=bundle.source_model)
 
 
 def _resolve_terminal_leaf(
@@ -923,14 +1018,7 @@ def _resolve_dotted_star(
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
     if isinstance(scope, StageSchema):
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are "
-                "not legal. Use the flat column name."
-            ),
-        )
+        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*")
     assert isinstance(scope, ModelScope)
     host = scope.source_model
     if host is None:
@@ -1005,12 +1093,6 @@ def _not_an_aggregation_source(bound: ValueKey, *, agg: str) -> AggregationNotAl
     )
 
 
-# Scalar functions whose result is certainly text, for the best-effort
-# expression type inference.
-_TEXT_RESULT_SCALARS = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim", "replace", "substr",
-    "substring", "concat",
-})
 # Null-handling / min-max scalars whose result class follows their arguments.
 _ARG_CLASS_SCALARS = frozenset({
     "coalesce", "ifnull", "nullif", "greatest", "least",
@@ -1020,7 +1102,7 @@ def _expression_is_confidently_text(key, *, model: Optional[SlayerModel]) -> boo
     if isinstance(key, str):
         return True
     if isinstance(key, ScalarCallKey):
-        if key.name in _TEXT_RESULT_SCALARS:
+        if key.name in TEXT_RESULT_SCALARS:
             return True
         if key.name in _ARG_CLASS_SCALARS:
             return any(
@@ -1100,6 +1182,10 @@ def _bind_agg_call(
 ) -> AggregateKey | TransformKey | TimeTruncKey:
     """Bind an ``AggCall`` (a granularity callee is a row-level bucket); ``first`` / ``last`` dispatch by the bound operand's
     type — attached → the series transform, row grain → the ranked aggregation."""
+    if parsed.library_error is not None and _owner_definition(
+        parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is None:
+        raise ValueError(parsed.library_error)
     granularity = _callee_granularity(parsed.agg, bundle=bundle)
     if granularity is not None:
         return _bind_granularity_call(parsed, scope=scope, bundle=bundle, granularity=granularity)
@@ -1109,7 +1195,8 @@ def _bind_agg_call(
             parsed.source, scope=scope, bundle=bundle, alias_map=alias_map,
             measure_ctx=measure_ctx, dim_alias_map=dim_alias_map,
         )
-        if is_attached_source(operand):
+        owner, _leaf = _resolve_agg_owner(operand, bundle)
+        if is_attached_source(operand) and builtin_semantics(aggregation_definition(owner=owner, agg=parsed.agg)):
             return _bind_transform_params(
                 op=op, inp=operand, args=parsed.args, kwargs=parsed.kwargs,
                 scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
@@ -1144,7 +1231,7 @@ def _bind_agg_source(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
             dim_alias_map=dim_alias_map,
         )
-        if isinstance(bound, SqlFragmentKey):
+        if isinstance(bound, (SqlFragmentKey, ArrayLiteralKey)):
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):
@@ -1236,13 +1323,44 @@ def _bind_agg(
             scope=scope, bundle=bundle, in_filter=False,
         ),
     )
+    owner, _leaf = _resolve_agg_owner(source, bundle)
     return AggregateKey(
         source=source,
         agg=effective_agg,
         args=args,
         kwargs=kwargs,
         partition_keys=partition_keys,
+        builtin=builtin_semantics(aggregation_definition(owner=owner, agg=effective_agg)),
     )
+
+
+def _owner_definition(
+    parsed: AggCall, *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> Optional[Aggregation]:
+    """The aggregation ``parsed.agg`` its column-reading source's owner declares, else ``None``."""
+    if not any(parsed.agg.lower() == a.name.lower() for m in _bundle_models(bundle) for a in m.aggregations):
+        return None
+    try:
+        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    except (ValueError, LookupError):
+        return None
+    if not any(isinstance(k, (ColumnKey, ColumnSqlKey)) for k in walk_value_keys(source)):
+        return None
+    owner, _leaf = _resolve_agg_owner(source, bundle)
+    return aggregation_definition(owner=owner, agg=parsed.agg)
+
+
+def _bundle_models(bundle: ResolvedSourceBundle) -> List[SlayerModel]:
+    return [*bundle.models_by_name.values(), *([bundle.source_model] if bundle.source_model is not None else [])]
+
+
+def _record_shadow(*, owner: SlayerModel, definition: Aggregation, written: str) -> None:
+    records = _bind_records.get()
+    if records is not None and shadows_library_function(definition):
+        records.shadows[(owner.name, definition.name, written)] = LibraryNameShadowWarning(
+            model=owner.name, aggregation=definition.name, function=written,
+        )
 
 
 def _resolve_agg_owner(
@@ -1312,8 +1430,9 @@ def _fold_positional_agg_args(
     if not args:
         return args, kwargs
     names = _declared_agg_param_names(agg=agg, source=source, bundle=bundle)
+    owner, _leaf = _resolve_agg_owner(source, bundle)
     if not names:
-        if agg not in RANKED_AGGREGATIONS:
+        if agg not in RANKED_AGGREGATIONS or not builtin_semantics(aggregation_definition(owner=owner, agg=agg)):
             raise ValueError(
                 f"Aggregation {agg!r} takes no parameters; got {len(args)} "
                 f"positional value(s)."
@@ -1390,7 +1509,10 @@ def _validate_agg_eligibility(
         return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS, bundle=bundle)
     # Alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (owner_model.aggregations or [])}
-    effective = agg if agg in custom_names else normalize_aggregation_name(agg)
+    definition = aggregation_definition(owner=owner_model, agg=agg)
+    if definition is not None:
+        _record_shadow(owner=owner_model, definition=definition, written=agg)
+    effective = definition.name if definition is not None else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
     _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names, bundle=bundle)
     col = None if leaf is None else next((c for c in owner_model.columns if c.name == leaf), None)
@@ -1399,6 +1521,11 @@ def _validate_agg_eligibility(
     reason = _column_agg_refusal(
         col=col, columns=owner_model.columns, agg=effective, custom=effective in custom_names,
     )
+    if reason is not None and col.type is DataType.ARRAY:
+        raise ListTypeError(
+            summary=f"`{col.name}` is a list: an aggregation over a list is only count; {effective}() cannot take it.",
+            suggestion=f"Aggregate its elements: {effective}({col.name}.value).",
+        )
     if reason is not None:
         raise AggregationNotAllowedError(column=col.name, agg=effective, reason=reason)
     return effective
@@ -1682,7 +1809,15 @@ def _bind_scalar(
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     measure_ctx: Optional[MeasureResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
-) -> ScalarCallKey:
+) -> ValueKey:
+    reading = aggregation_reading(parsed)
+    if reading is not None and _owner_definition(
+        reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is not None:
+        return _bind_agg_call(
+            reading, scope=scope, bundle=bundle, alias_map=alias_map, measure_ctx=measure_ctx,
+            dim_alias_map=dim_alias_map,
+        )
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: direct ParsedExpr construction bypasses the parser.
         raise UnknownFunctionError(

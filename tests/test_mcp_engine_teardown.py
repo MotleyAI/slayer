@@ -197,15 +197,11 @@ class TestToolsReuseClosureEngine:
 
 
 class TestAcloseDisposesCachedClients:
-    async def test_aclose_disposes_async_engine_sync_pool_survives(
+    async def test_aclose_releases_client_sync_pool_survives(
         self, workspace: Path, monkeypatch,
     ) -> None:
-        """After a ``query`` caches a client, ``server._slayer_engine.aclose()``
-        disposes the (fake) async engine while leaving the sqlite StaticPool
-        sync engine intact, and a follow-up query still returns the same rows.
-        File-backed sqlite stands in for ``:memory:`` — the client-cache logic
-        is identical and ``:memory:`` can't be probed past DEV-1538 introspect.
-        """
+        """``server._slayer_engine.aclose()`` releases the cached client, leaves its StaticPool intact,
+        and a follow-up query returns the same rows (file-backed sqlite stands in for ``:memory:``)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
@@ -215,11 +211,10 @@ class TestAcloseDisposesCachedClients:
         client = next(iter(engine._sql_clients.values()))
         sync_engine_before = client._sync_engine
 
-        # sqlite never opens an async engine; inject a tracked one so the real
-        # aclose loop (engine -> client -> dispose) is exercised.
-        fake = MagicMock(name="fake_async_engine")
-        fake.dispose = AsyncMock(name="dispose")
-        client._async_engine = fake
+        # sqlite opens no async engine; spy on the client's release so the real
+        # aclose loop (engine -> client) is exercised.
+        aclose = AsyncMock(wraps=client.aclose)
+        monkeypatch.setattr(client, "aclose", aclose)
 
         # Guard: aclose must NOT dispose the sync StaticPool engine — that's
         # what pins the (potential :memory:) connection holding the data.
@@ -228,8 +223,7 @@ class TestAcloseDisposesCachedClients:
 
         await engine.aclose()
 
-        fake.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        aclose.assert_awaited_once()
         assert client in engine._sql_clients.values()  # client kept
         assert client._sync_engine is sync_engine_before  # StaticPool untouched
         sync_dispose_spy.assert_not_called()
@@ -266,7 +260,7 @@ class TestSqlModeDriftClientReachable:
     reaches it (otherwise it leaks an asyncpg pool on Postgres)."""
 
     async def test_validate_models_caches_sql_mode_client_and_aclose_disposes_it(
-        self, workspace: Path,
+        self, workspace: Path, monkeypatch,
     ) -> None:
         """A ``validate_models`` call with no prior query must cache the
         ``sql``-mode drift client on the shared engine, and a subsequent
@@ -284,17 +278,14 @@ class TestSqlModeDriftClientReachable:
             "reach it, so the pool leaks"
         )
 
-        # Prove teardown actually disposes this cached client (sqlite opens no
-        # async engine, so inject a tracked one — the Postgres leak path).
+        # Prove teardown actually releases this cached client (the Postgres leak path).
         client = engine._sql_clients[key]
-        fake = MagicMock(name="fake_async_engine")
-        fake.dispose = AsyncMock(name="dispose")
-        client._async_engine = fake
+        aclose = AsyncMock(wraps=client.aclose)
+        monkeypatch.setattr(client, "aclose", aclose)
 
         await engine.aclose()
 
-        fake.dispose.assert_awaited_once()
-        assert client._async_engine is None
+        aclose.assert_awaited_once()
 
     async def test_query_then_validate_reuses_same_client(
         self, workspace: Path,

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL, make_url
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.base import (
+    ListRelation, SqlDialect, anon, element_lambda, is_not_null, lit, non_null_elements, unnest_elements,
+)
 
 if TYPE_CHECKING:
     from slayer.core.models import DatasourceConfig
@@ -55,6 +57,40 @@ class PrestoFamilyDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
+    native_lists: ClassVar[bool] = True
+    database_name: ClassVar[str] = "Presto"
+
+    def list_length(self, values: Expression) -> Expression:
+        return anon("CARDINALITY", non_null_elements(values))
+
+    def list_relation(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
+        distinct: bool = False,
+    ) -> ListRelation:
+        kept = non_null_elements(values)
+        return ListRelation(relation=unnest_elements(anon("ARRAY_DISTINCT", kept) if distinct else kept, alias=alias))
+
+    def list_contains(self, values: Expression, value: Expression) -> Expression:
+        return anon("CONTAINS", non_null_elements(values), value)
+
+    def list_exists(
+        self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
+    ) -> Expression:
+        """``any_match(values, e -> predicate(e))``: Trino rejects a correlated subquery over ``UNNEST``."""
+        matched = anon("any_match", non_null_elements(values), element_lambda(predicate, alias=alias))
+        return exp.Coalesce(this=matched, expressions=[exp.false()])
+
+    def list_overlaps(self, values: Expression, other: Expression) -> Expression:
+        return anon("ARRAYS_OVERLAP", non_null_elements(values), non_null_elements(other))
+
+    def list_contains_all(self, values: Expression, other: Expression) -> Expression:
+        missing = anon("ARRAY_EXCEPT", non_null_elements(other), values)
+        return exp.EQ(this=anon("CARDINALITY", missing), expression=lit(0))
+
+    def build_collect(self, value: Expression, element: Optional[DataType]) -> Expression:
+        kept = exp.Filter(this=exp.ArrayAgg(this=exp.Distinct(expressions=[value.copy()])),
+                          expression=exp.Where(this=is_not_null(value)))
+        return exp.Coalesce(this=anon("ARRAY_SORT", kept), expressions=[self.empty_list()])
 
     _EXTRACT_FIELDS: ClassVar[dict[DatePart, str]] = {
         **SqlDialect._EXTRACT_FIELDS,
@@ -122,6 +158,7 @@ class TrinoDialect(PrestoFamilyDialect):
     sa_backend_names: frozenset[str] = frozenset({"trino"})
     url_scheme: str | None = "trino"
     install_extra: str | None = "trino"
+    database_name: ClassVar[str] = "Trino"
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """``query_max_run_time`` as a client-session property: sent with the next statement only."""

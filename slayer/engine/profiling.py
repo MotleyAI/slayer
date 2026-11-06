@@ -36,6 +36,7 @@ _ALL_NULL = "all NULL"
 _TTL_SECONDS = 3600.0
 _BREAKER_THRESHOLD = 3
 _SAMPLE_FIELDS = frozenset({"sampled", "sampled_values", "distinct_count"})
+_COUNT = "_count"
 
 # Injectable for tests.
 _clock: Callable[[], float] = time.monotonic
@@ -111,20 +112,31 @@ def _first_line(exc: BaseException) -> str:
     return text.splitlines()[0] if text else type(exc).__name__
 
 
+def _profile_type(column: Column) -> DataType | None:
+    """The type a column is profiled as: a list's element type (its elements are sampled), else its own."""
+    return column.element_type if column.type is DataType.ARRAY else column.type
+
+
+def _values_ref(column: Column) -> str:
+    """The reference whose values profile ``column``: a list's ``<column>.value``."""
+    return f"{column.name}.value" if column.type is DataType.ARRAY else column.name
+
+
 def _is_sample_cached(column: Column, *, model: SlayerModel) -> bool:
     """True when the persisted sample needs no re-profile; never-profiled columns count as cached."""
     if not _is_profilable(column, model=model):
         return True
-    if column.type in _CATEGORICAL_TYPES:
+    if _profile_type(column) in _CATEGORICAL_TYPES:
         return column.sampled_values is not None
     return column.sampled is not None
 
 
 def _is_profilable(column: Column, *, model: SlayerModel) -> bool:
+    kind = _profile_type(column)
     return (
         not column.hidden
         and not is_identifier(column=column, columns=model.columns)
-        and (column.type in _CATEGORICAL_TYPES or column.type in _NUMERIC_TEMPORAL_TYPES)
+        and (kind in _CATEGORICAL_TYPES or kind in _NUMERIC_TEMPORAL_TYPES)
     )
 
 
@@ -136,21 +148,23 @@ def _is_table_backed(model: SlayerModel) -> bool:
 async def _profile_categorical(
     *, model: SlayerModel, column: Column, engine: SlayerQueryEngine,
 ) -> _Sample:
-    """Top values by frequency (value asc tie-break) in one scan; raises on query failure."""
+    """Top values (a list's elements) by frequency (value asc tie-break) in one scan; raises on query failure."""
+    ref = _values_ref(column)
+    counted = f"count({column.name}.*)" if column.type is DataType.ARRAY else "count(*)"
     q = SlayerQuery.model_validate({
         "source_model": model.name,
-        "dimensions": [{"name": column.name}],
-        "measures": [{"formula": "count(*)"}],
+        "dimensions": [ref],
+        "measures": [{"formula": counted, "name": _COUNT}],
         "order": [
-            {"column": "_count", "direction": "desc"},
-            {"column": column.name, "direction": "asc"},
+            {"column": _COUNT, "direction": "desc"},
+            {"column": ref, "direction": "asc"},
         ],
         # +2 so one NULL row cannot push a non-overflow result over the cap.
         "limit": _MAX_CATEGORICAL_VALUES + 2,
     })
     r = await engine.execute(query=q, data_source=model.data_source or None)
-    value_key = f"{model.name}.{column.name}"
-    count_key = f"{model.name}._count"
+    value_key = f"{model.name}.{ref}"
+    count_key = f"{model.name}.{_COUNT}"
     pairs = [(row.get(value_key), row.get(count_key)) for row in r.data if row.get(value_key) is not None]
     pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
     values = [str(v) for v, _ in pairs]
@@ -169,11 +183,15 @@ async def _profile_categorical(
 async def _profile_numeric_temporal(
     *, model: SlayerModel, columns: list[Column], engine: SlayerQueryEngine,
 ) -> list[_Sample]:
-    """One batched min/max query; raises on query failure."""
+    """One batched min/max query (a list's over its elements); raises on query failure."""
     # Untyped on purpose: a typed CAST coerces SQLite date strings to NUMERIC.
-    ext_columns = [{"name": f"_slayer_range_{c.name}", "sql": c.sql or c.name} for c in columns]
+    ext_columns = [
+        {"name": f"_slayer_range_{c.name}", "sql": c.sql or c.name} for c in columns if c.type is not DataType.ARRAY
+    ]
     measures = [
-        {"formula": f"{agg}(_slayer_range_{c.name})"} for c in columns for agg in ("min", "max")
+        {"formula": f"{agg}({_values_ref(c) if c.type is DataType.ARRAY else f'_slayer_range_{c.name}'})",
+         "name": f"_slayer_range_{c.name}_{agg}"}
+        for c in columns for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({
         "source_model": {"source_name": model.name, "columns": ext_columns},
@@ -236,7 +254,7 @@ class _Run:
         return _clock() + _TTL_SECONDS
 
     async def run(self, targets: list[_Target]) -> None:
-        for t in (t for t in targets if t.column.type in _CATEGORICAL_TYPES):
+        for t in (t for t in targets if _profile_type(t.column) in _CATEGORICAL_TYPES):
             if self.model_failed:
                 return
             try:
@@ -245,7 +263,7 @@ class _Run:
                 await self._on_failure(target=t, exc=exc)
                 continue
             await self._on_success(target=t, sample=sample)
-        numeric = [t for t in targets if t.column.type in _NUMERIC_TEMPORAL_TYPES]
+        numeric = [t for t in targets if _profile_type(t.column) in _NUMERIC_TEMPORAL_TYPES]
         if numeric and not self.model_failed:
             await self._run_numeric(numeric)
         if not self.model_failed:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -287,6 +289,157 @@ class TestMarkersAndGuard:
 
     def test_resolving_demo_reference_passes(self, doc_demo_storage: YAMLStorage) -> None:
         assert _failures(doc_demo_storage, "Run `slayer inspect jaffle_shop.orders.order_total`.") == []
+
+
+# ---------------------------------------------------------------------------
+# Image alt text: checked with the code-block rules
+# ---------------------------------------------------------------------------
+
+COUNT_JSON = json.dumps(COUNT)
+STORES_COUNT = {"source_model": "stores", "measures": ["count(*)"]}
+
+
+def _checked(markdown: str) -> list[tuple[int, Any]]:
+    return [(q.line, q.query) for q in parse_page(path="page.md", text=markdown).checked_queries()]
+
+
+class TestAltTextExtraction:
+    def test_inline_image(self) -> None:
+        assert _checked(_md("# T", "", f"![Chart of {COUNT_JSON}](images/x.png)")) == [(3, COUNT)]
+
+    def test_inline_image_with_title(self) -> None:
+        assert _checked(_md(f'![Chart of {COUNT_JSON}](images/x.png "Title")')) == [(1, COUNT)]
+
+    def test_reference_style_image(self) -> None:
+        md = _md(f"![Chart of {COUNT_JSON}][chart]", "", "[chart]: images/x.png")
+        assert _checked(md) == [(1, COUNT)]
+
+    def test_shortcut_reference_image(self, doc_demo_storage: YAMLStorage) -> None:
+        md = _md('![Chart of {"source_model": "orders"}]', "", '[chart of {"source_model":  "orders"}]: x.png')
+        assert _checked(md) == [(1, {"source_model": "orders"})]
+        lines = ("![Each query names a source_model]", "", "  [EACH query names a source_model]: x.png")
+        assert len(_failures(doc_demo_storage, *lines)) == 1
+
+    def test_bracketed_text_without_a_definition_is_not_an_image(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, "![Each query names a source_model]", "", "[other]: x.png") == []
+
+    def test_nested_brackets_in_alt_text(self) -> None:
+        assert _checked(_md(f"![A [boxed] chart of {COUNT_JSON}](images/x.png)")) == [(1, COUNT)]
+
+    def test_multiline_alt_text_names_the_source_model_line(self) -> None:
+        md = _md("![Before the query", '{"source_model": "orders",', ' "measures": ["count(*)"]}', "after](x.png)")
+        assert _checked(md) == [(2, COUNT)]
+
+    def test_escaped_bracket_does_not_end_alt_text(self) -> None:
+        assert _checked(_md(f"![A note \\] then {COUNT_JSON}](images/x.png)")) == [(1, COUNT)]
+
+    def test_several_images(self) -> None:
+        md = _md(
+            f"![First {COUNT_JSON}](a.png) and ![second {json.dumps(STORES_COUNT)}](b.png)",
+            "",
+            f"![Third {COUNT_JSON}](c.png)",
+        )
+        assert _checked(md) == [(1, COUNT), (1, STORES_COUNT), (3, COUNT)]
+
+    def test_non_query_alt_text_yields_nothing(self) -> None:
+        assert _checked(_md("![The SLayer architecture diagram](images/arch.png)")) == []
+
+    def test_ordinary_link_is_not_scanned(self, doc_demo_storage: YAMLStorage) -> None:
+        lines = (f"See [the query {HYPOTHETICAL}](page.md) and [source_model docs](ref.md).",)
+        assert _checked(_md(*lines)) == []
+        assert _failures(doc_demo_storage, *lines) == []
+
+    def test_html_img_alt_is_not_scanned(self, doc_demo_storage: YAMLStorage) -> None:
+        lines = (f"<img src=\"x.png\" alt='{HYPOTHETICAL}'>",)
+        assert _checked(_md(*lines)) == []
+        assert _failures(doc_demo_storage, *lines) == []
+
+    @pytest.mark.parametrize(
+        "lines",
+        [
+            pytest.param((f"Write `![Chart of {HYPOTHETICAL}](x.png)` for an image.",), id="inline-code"),
+            pytest.param(("Write ``![a `source_model` chart](x.png)`` for an image.",), id="double-backtick-code"),
+            pytest.param(("Write `![Before", f"{HYPOTHETICAL}](x.png)` for an image.",), id="multiline-inline-code"),
+            pytest.param((f"<!-- ![Chart of {HYPOTHETICAL}](x.png) -->",), id="html-comment"),
+            pytest.param(("<!--", "![Each query names a source_model](x.png)", "-->"), id="multiline-html-comment"),
+        ],
+    )
+    def test_image_syntax_in_inline_code_or_comment_is_not_scanned(
+        self, doc_demo_storage: YAMLStorage, lines: tuple[str, ...],
+    ) -> None:
+        assert _checked(_md(*lines)) == []
+        assert _failures(doc_demo_storage, *lines) == []
+
+    def test_unclosed_backtick_does_not_hide_an_image_after_a_blank_line(self) -> None:
+        md = _md("A stray ` here.", "", f"![Chart of {COUNT_JSON}](x.png) and `x`")
+        assert _checked(md) == [(3, COUNT)]
+
+    @pytest.mark.timeout(20)
+    def test_many_unclosed_openers_scan_in_near_linear_time(self) -> None:
+        runs = " ".join("`" * (k % 7 + 1) for k in range(60_000))
+        md = _md("<!-- " * 60_000, runs, f"![Chart of {COUNT_JSON}](x.png)")
+        assert _checked(md) == [(3, COUNT)]
+
+    def test_inline_code_inside_alt_text_is_still_checked(self) -> None:
+        assert _checked(_md(f"![Chart of `{COUNT_JSON}`](x.png)")) == [(1, COUNT)]
+
+    def test_inline_code_before_image_keeps_it_not_standalone(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "`x` ![Each query names a source_model](x.png)") != []
+
+    def test_image_after_inline_code_keeps_its_line(self) -> None:
+        md = _md("Use `code` here.", "", f"![Chart of {COUNT_JSON}](x.png) and `![not]({HYPOTHETICAL})`")
+        assert _checked(md) == [(3, COUNT)]
+
+
+class TestAltTextChecks:
+    def test_unmarked_failing_query_fails_naming_page_and_source_model_line(
+        self, doc_demo_storage: YAMLStorage,
+    ) -> None:
+        failures = _failures(doc_demo_storage, "Text.", "", "![Before", f"{HYPOTHETICAL}](x.png)")
+        assert len(failures) == 1
+        assert failures[0].startswith("page.md:4: ")
+
+    def test_alt_text_mentioning_source_model_without_query_fails(self, doc_demo_storage: YAMLStorage) -> None:
+        failures = _failures(doc_demo_storage, "Text.", "", "![Each query names a source_model](x.png)")
+        assert len(failures) == 1
+        assert failures[0].startswith("page.md:3: ")
+
+    def test_not_a_query_comment_exempts_image_from_guard(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, NOT_A_QUERY, "![Each query names a source_model](x.png)") == []
+
+    def test_marked_image_is_exempt_and_next_image_is_checked(self, doc_demo_storage: YAMLStorage) -> None:
+        failures = _failures(
+            doc_demo_storage,
+            MARKER,
+            "    This chart uses a hypothetical `website_visits` column.",
+            "",
+            f"![Chart of {HYPOTHETICAL}](x.png)",
+            "",
+            f"![Chart of {HYPOTHETICAL}](y.png)",
+        )
+        assert [f.split(": ")[0] for f in failures] == ["page.md:6"]
+
+    def test_marked_image_without_query_passes_the_guard(self, doc_demo_storage: YAMLStorage) -> None:
+        assert _failures(doc_demo_storage, MARKER, "", "![Each query names a source_model](x.png)") == []
+
+
+def test_readme_yields_its_headline_alt_text_query() -> None:
+    headline = {
+        "source_model": "orders",
+        "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+        "dimensions": ["stores.name", "month(ordered_at)"],
+    }
+    assert headline in [q.query for q in load_page("README.md").checked_queries()]
+
+
+def test_shared_extractor_never_imports_slayer() -> None:
+    probe = (
+        "import sys; from scripts import doc_examples; "
+        "assert doc_examples.load_page('README.md').checked_queries(); "
+        "sys.exit(any(m == 'slayer' or m.startswith('slayer.') for m in sys.modules))"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,8 @@ or orders.status = 'ok'`) renders its semi-join from a one-row derived table
 carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
 ClickHouse, BigQuery and older MySQL reject it with the engine's own error.
 
+On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed DOUBLE (named `numeric`), even at scale 0.
+
 BigQuery CI coverage has two layers, both in the `bigquery-example` job of
 `.github/workflows/ci.yml`: the example's `verify.py` exercises query
 execution against the public dataset (basic projection, joins, time-grain
@@ -37,6 +39,9 @@ a temporary dataset with table/column/dataset descriptions in the billing
 project, asserting comment import and idempotent re-ingest semantics, then
 deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
+
+[List columns](concepts/queries.md#list-columns), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
+On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version; a filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later.
 
 ## Tier 2 — code-covered
 
@@ -106,7 +111,8 @@ there (every other Tier 1 database's comments are imported — see
 SQLite has a much smaller built-in math/stat catalog than the other supported
 engines. SLayer registers Python aggregate and scalar UDFs on every new SQLite
 connection via SQLAlchemy's `connect` event (see
-`slayer/sql/dialects/sqlite.py`).
+`slayer/sql/dialects/sqlite.py`). An asynchronous SQLite driver cannot take them, so a
+`sqlite+aiosqlite://` URL is refused with an `UnsupportedDriverError`; use `sqlite://`.
 
 **Aggregate UDFs:**
 
@@ -283,6 +289,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
+- **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0 and `IS NULL` is false where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`. The
   `BigqueryDialect.explain_prefix` is `None`, so `engine.execute(...,
   explain=True)` returns the dry-run SQL unchanged rather than an execution

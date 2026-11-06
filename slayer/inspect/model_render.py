@@ -15,7 +15,7 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from slayer.core.enums import DataType
 from slayer.core.join_edges import edge_reference
 from slayer.core.join_walker import OrientedJoin, canonical_token, neighbors
-from slayer.core.models import Column, SlayerModel, is_identifier
+from slayer.core.models import Column, SlayerModel, column_type_text, is_identifier
 from slayer.core.query import (
     SlayerQuery,
     extract_model_variables,
@@ -25,6 +25,7 @@ from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import compact_description_from_learning
+from slayer.sql.client import ResultColumnType
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
@@ -193,9 +194,9 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
 
 
 def _render_column_type(column: Column) -> str:
-    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker."""
+    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker, a list its operations."""
     if not column.type.is_opaque:
-        return str(column.type)
+        return column_type_text(column)
     detail = column.db_type or "unrecognized DB type"
     return f"{column.type} ({detail}; not queryable)"
 
@@ -222,7 +223,7 @@ def _choose_sample_dims(
 def _choose_sample_agg(
     column: Column,
     *,
-    measure_types: dict[str, str],
+    measure_types: dict[str, ResultColumnType],
 ) -> str | None:
     """Pick a sample aggregation for ``column``, or ``None`` to skip it.
 
@@ -231,6 +232,8 @@ def _choose_sample_agg(
     """
     if column.type.is_opaque:
         return None
+    if column.type is DataType.ARRAY:
+        return "count"
     allowed = column.allowed_aggregations
     if allowed is not None and "avg" not in allowed:
         if not allowed:
@@ -238,8 +241,7 @@ def _choose_sample_agg(
         safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
         return safe if safe else allowed[0]
     inferred = measure_types.get(column.name)
-    inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
-    if inferred_norm and inferred_norm != "number":
+    if inferred is not None and inferred.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
     if column.type not in (DataType.INT, DataType.DOUBLE):
         return "count_distinct"
@@ -249,7 +251,7 @@ def _choose_sample_agg(
 def _build_sample_query_args(
     model: SlayerModel,
     num_rows: int,
-    measure_types: dict[str, str] | None = None,
+    measure_types: dict[str, ResultColumnType] | None = None,
 ) -> dict[str, Any]:
     """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier column."""
     measure_types = measure_types or {}
@@ -611,9 +613,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         }
 
     # Informs the sample query's avg vs count_distinct choice.
-    measure_types: dict[str, str] = {}
+    measure_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        measure_types = await engine.get_column_types(
+        measure_types = await engine.get_result_column_types(
             model_name=model.name,
             data_source=model.data_source or None,
         )
@@ -876,6 +878,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
+                    **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                     # Opaque columns only (see _render_column_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}

@@ -23,7 +23,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.ingestion import _is_id_column
-from slayer.sql.client import SlayerSQLClient
+from slayer.sql.client import ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.inspect.model_render import (
     _choose_sample_agg,
@@ -429,7 +429,8 @@ class TestMdCodeSpan:
         assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
-            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+            model=model, num_rows=3,
+            measure_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
         assert "avg(amount)" in formulas
@@ -1328,7 +1329,7 @@ class TestBuildSampleQueryArgs:
         opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
         assert _choose_sample_agg(opaque, measure_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.
-        assert _choose_sample_agg(opaque, measure_types={"loc": "string"}) is None
+        assert _choose_sample_agg(opaque, measure_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
 
         model = SlayerModel(
             name="places", sql_table="places", data_source="ds",
@@ -1588,6 +1589,22 @@ class TestEditModel:
         model = await storage.get_model("orders")
         total = next(c for c in model.columns if c.name == "total")
         assert total.allowed_aggregations == ["sum", "avg"]
+
+    async def test_upsert_list_column_with_element_type(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "columns": [{"name": "tags", "sql": "tags", "type": "ARRAY", "element_type": "TEXT"}],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+        stored = await storage.get_model("orders")
+        assert stored is not None
+        tags = next(c for c in stored.columns if c.name == "tags")
+        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_upsert_existing_column(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting an existing column updates it instead of erroring."""
@@ -2939,7 +2956,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2959,7 +2976,7 @@ class TestDataProfileRetryScope:
         outer = self
 
         class _Engine:
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):
@@ -2982,7 +2999,7 @@ class TestDataProfileRetryScope:
             def __init__(self) -> None:
                 self.dimensioned_seen = False
 
-            async def get_column_types(self, **kwargs):
+            async def get_result_column_types(self, **kwargs):
                 return {}
 
             async def execute(self, *, query, **kwargs):

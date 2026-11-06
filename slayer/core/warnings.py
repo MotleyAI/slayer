@@ -3,9 +3,28 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Annotated, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+
+_caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
+
+
+@contextmanager
+def announced_by_caller() -> Iterator[None]:
+    """Inside the block the caller (a query response, a save) announces stored-document advisories, so loads do not."""
+    token = _caller_announces.set(True)
+    try:
+        yield
+    finally:
+        _caller_announces.reset(token)
+
+
+def caller_announces() -> bool:
+    return _caller_announces.get()
 
 
 class SlayerWarning(BaseModel):
@@ -234,6 +253,44 @@ class NarrowedAccessWarning(SlayerWarning):
         )
 
 
+class LibraryNameShadowWarning(SlayerWarning):
+    """Model ``model``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+
+    kind: Literal["library_name_shadow"] = "library_name_shadow"
+    model: str
+    aggregation: str
+    function: str
+
+    def human_message(self) -> str:
+        return (
+            f"model {self.model!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
+            f"columns is that aggregation, not the library function {self.function.lower()}()"
+        )
+
+
+class BrokenDependentWarning(SlayerWarning):
+    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    after (``checked=False``: the check could not run, for ``reason``)."""
+
+    kind: Literal["broken_dependent"] = "broken_dependent"
+    model: str
+    data_source: str
+    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    name: str
+    column: str
+    checked: bool = True
+    error_type: Optional[str] = None
+    error: Optional[str] = None
+    reason: Optional[str] = None
+
+    def human_message(self) -> str:
+        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        if not self.checked:
+            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+                                f"{self.reason}")
+        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -249,6 +306,8 @@ AnySlayerWarning = Annotated[
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
         NarrowedAccessWarning,
+        LibraryNameShadowWarning,
+        BrokenDependentWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -313,6 +372,28 @@ class SlayerStatementTimeoutSkippedWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``StatementTimeoutSkippedWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: StatementTimeoutSkippedWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerLibraryNameShadowWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``LibraryNameShadowWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: LibraryNameShadowWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerBrokenDependentWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``BrokenDependentWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: BrokenDependentWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

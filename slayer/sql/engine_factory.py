@@ -10,8 +10,8 @@ from collections import OrderedDict
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
-from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.exc import ArgumentError, NoSuchModuleError
 from sqlalchemy.pool import QueuePool, StaticPool
 
 from slayer.core.models import DatasourceConfig
@@ -167,15 +167,24 @@ def _attach_register_udfs_listener(
     )
 
 
+def _names_async_driver(url: URL) -> bool:
+    """Whether ``url`` names an async driver (an unknown one is judged at engine build)."""
+    try:
+        return url.get_dialect().is_async
+    except NoSuchModuleError:
+        return False
+
+
 def _is_in_memory_sqlite(connection_string: str) -> bool:
-    """True iff the connection string is a SQLite in-memory database (URI forms included)."""
+    """True iff the connection string is a SQLite in-memory database (URI forms included) on a sync driver;
+    an async one goes to the engine build, which refuses it."""
     if connection_string == _MEMORY_DB_NAME:
         return True
     try:
         url = make_url(connection_string)
     except ArgumentError:
         return False
-    if not url.drivername.startswith("sqlite"):
+    if not url.drivername.startswith("sqlite") or _names_async_driver(url):
         return False
     database = url.database
     if not database or database == _MEMORY_DB_NAME:

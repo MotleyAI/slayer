@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field
+from sqlglot import exp
 
 from slayer.async_utils import marked_coroutine_function, run_sync
 from slayer.core.deprecation import warn_deprecated
@@ -22,6 +23,7 @@ from slayer.core.models import (
 )
 from slayer.core.join_edges import edge_reference
 from slayer.engine import query_engine, schema_drift
+from slayer.engine.broken_dependents import broken_dependents, report_broken
 from slayer.engine.cardinality import infer_structural_cardinality
 from slayer.engine.fk_edges import FkEdgePlan, plan_fk_edges
 from slayer.engine.internal_tables import internal_table_rule
@@ -65,6 +67,7 @@ class IntrospectedColumn(BaseModel):
 
     name: str
     type: DataType
+    element_type: DataType | None = None
     primary_key: bool = False
     is_float: bool = False
     db_type: str | None = None
@@ -234,9 +237,9 @@ async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: Schem
 
 
 def _introspected_column(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, exact NUMERIC/DECIMAL)."""
+    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL)."""
     return IntrospectedColumn(
-        name=name, type=col.type, primary_key=primary_key, is_float=col.is_float,
+        name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
         db_type=col.db_type, comment=col.comment,
     )
 
@@ -253,11 +256,36 @@ async def _introspect_table_columns(
         primary_key = (await reflect_table_keys(client=client, table_name=table_name, ref=ref)).primary_key
     pk_columns = set(primary_key)
     # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
-    return [
+    columns = [
         _introspected_column(col, name=col.name, primary_key=col.name in pk_columns)
         for col in await reflect_columns(client=client, table_name=table_name, ref=ref)
         if "." not in col.name
     ]
+    return [await _inferred_elements(c, client=client, table_name=table_name, ref=ref) for c in columns]
+
+
+async def _inferred_elements(
+    column: IntrospectedColumn, *, client: SqlClient, table_name: str, ref: SchemaRef | None,
+) -> IntrospectedColumn:
+    """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
+    if column.type is not DataType.ARRAY or column.element_type is not DataType.UNKNOWN:
+        return column
+    dialect = dialect_of(client)
+    table = exp.Table(
+        this=exp.to_identifier(table_name),
+        db=exp.to_identifier(ref.name) if ref and ref.name else None,
+        catalog=exp.to_identifier(ref.catalog) if ref and ref.catalog else None,
+    )
+    query = dialect.list_element_types_query(table=table, column=exp.to_identifier(column.name))
+    if query is None:
+        return column
+    try:
+        result = await client.execute(query.sql(dialect=dialect.sqlglot_name))
+    except Exception:  # noqa: BLE001 — an unreadable table keeps its elements opaque
+        logger.warning("Could not infer the element type of %s.%s", table_name, column.name, exc_info=True)
+        return column
+    names = [next(iter(row.values()), None) for row in result.rows]
+    return column.model_copy(update={"element_type": dialect.list_element_type(names)})
 
 
 # --- Model generation from introspected columns ---
@@ -297,6 +325,7 @@ def _columns_to_model(
                 name=column_name,
                 sql=col.name,
                 type=col.type,
+                element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
                 primary_key=col.primary_key,
                 unique=(col.name in unique_set),
@@ -1023,6 +1052,26 @@ class AdditiveMergeResult(BaseModel):
         )
 
 
+def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
+    """A stored non-list column whose live column is a list, re-typed to it (system P14's exception); a stored list's
+    UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
+    if fresh.type is not DataType.ARRAY:
+        return None
+    if persisted.type is not DataType.ARRAY:
+        return persisted.model_copy(update={
+            "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
+            # Scalar-only settings; a temporal granularity would fail the list's validation.
+            "granularity": None, "format": None,
+            # A list's only aggregation is count.
+            "allowed_aggregations": [a for a in persisted.allowed_aggregations or () if a == "count"] or None,
+        })
+    inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
+    known = fresh.element_type is not None and not fresh.element_type.is_opaque
+    if persisted.type is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and inferred and known:
+        return persisted.model_copy(update={"element_type": fresh.element_type})
+    return None
+
+
 def _merge_one_column(
     *,
     persisted_col: Column,
@@ -1040,6 +1089,9 @@ def _merge_one_column(
     unique_filled = False
     described = False
     if fresh_col is not None:
+        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        if retyped is not None:
+            merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
             merged_col = merged_col.model_copy(update={"unique": True})
             unique_filled = True
@@ -1116,8 +1168,8 @@ def _additive_merge_existing(
 ) -> AdditiveMergeResult:
     """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    Exceptions: SQLite INT→DOUBLE/TEXT widening, empty-field gap-fills, and a
-    non-None ``source_kind`` refresh.
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, a non-list column re-typed to its live list, empty-field
+    gap-fills, and a non-None ``source_kind`` refresh.
     """
     persisted_names = {c.name for c in persisted.columns}
     # A live column is the persisted column it is the physical spelling of, else the one named like it.
@@ -1518,10 +1570,13 @@ async def _run_additive_pass(
     default_schema_name: str | None,
     default_objects: set[str] | None,
     failures: DocumentLoadFailures,
+    client: SqlClient,
 ):
-    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped)``.
+    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped,
+    broken_dependents)``.
 
-    Every name is computed before the first save, and name-only updates save first.
+    Every name is computed before the first save, and name-only updates save first; the stored definitions a
+    list re-type breaks are checked before it is saved.
     """
     loaded, unloaded = await storage.load_models(data_source=datasource.name)
     stored = {m.name: m for m in failures.skip((loaded, unloaded))}
@@ -1536,6 +1591,10 @@ async def _run_additive_pass(
 
     name_only = [n for n, v in plan.named.items() if not plan.added.get(n) and not (n in merges and merges[n].changed)]
     rest = [n for n in merges if n not in name_only and (merges[n].changed or plan.added.get(n) or plan.named.get(n))]
+    found = await broken_dependents(
+        datasource=datasource, storage=storage, client=client, stored=list(stored.values()),
+        retyped=[plan.models[n] for n in rest if n in stored],
+    )
     errors: list[schema_drift.IngestionError] = []
     for name in [*name_only, *rest]:
         try:
@@ -1543,6 +1602,7 @@ async def _run_additive_pass(
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
             errors.append(schema_drift.IngestionError(model_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.model_name for e in errors}
+    broken = report_broken(found, unsaved=failed)
 
     additions = [
         schema_drift.ModelAddition(
@@ -1554,7 +1614,7 @@ async def _run_additive_pass(
         schema_drift.ModelAddition(model_name=n, data_source=datasource.name, named_joins=plan.named[n])
         for n in name_only if n not in merges and n not in failed
     )
-    return additions, errors, merge_skipped
+    return additions, errors, merge_skipped, broken
 
 
 @marked_coroutine_function
@@ -1651,13 +1711,14 @@ async def _ingest_idempotent(
         _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
     }
 
-    additions, errors, merge_skipped = await _run_additive_pass(
+    additions, errors, merge_skipped, broken = await _run_additive_pass(
         fresh_by_name=fresh_by_name,
         datasource=datasource,
         storage=storage,
         default_schema_name=default_schema_name,
         default_objects=default_objects,
         failures=failures,
+        client=client,
     )
 
     # Fill-if-empty, checked against the freshly-loaded STORED config, not the caller's copy.
@@ -1721,6 +1782,7 @@ async def _ingest_idempotent(
         datasource_described=datasource_described,
         schema_hint=_schema_hint_message(scan.other_schemas),
         skipped_schemas=list(scan.skipped_schemas),
+        broken_dependents=broken,
     )
 
 
@@ -1906,6 +1968,13 @@ def _print_ingest_drift_and_errors(
             "  --surface-internals ingests NEW internals visible; use "
             f"{_unhide_hint(data_source)} to unhide an existing one."
         ),
+        out=out,
+    )
+    broken = getattr(result, "broken_dependents", None) or []
+    _print_report_section(
+        entries=broken,
+        header=f"\nBroken by a list re-type ({len(broken)}):",
+        line=lambda e: e.human_message(),
         out=out,
     )
     errors = getattr(result, "errors", None) or []

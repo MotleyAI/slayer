@@ -10,6 +10,7 @@ from slayer.core.enums import (
     FLOAT_PLAIN_AGGREGATIONS,
     FLOAT_SOURCE_UNIT_AGGREGATIONS,
     INTEGER_AGGREGATIONS,
+    LIST_AGGREGATIONS,
     PRESERVING_AGGREGATIONS,
     classify_aggregation,
 )
@@ -17,8 +18,6 @@ from slayer.core.keys import AggregateKey, ColumnKey, StarKey
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import FieldMetadata
 
-# DEV-1485 Stage D: imported through ``query_engine`` while the legacy
-# ``_query_as_model`` re-exported it; now imported from its owning module.
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.query_engine import ResponseAttributes
 from slayer.mcp.server import _format_attributes
@@ -74,7 +73,7 @@ class TestInferAggregatedFormat:
         assert fmt.type == NumberFormatType.INTEGER
 
     def test_avg_inherits_currency(self, model):
-        # DEV-1788: avg-family now inherits the source column's units (was FLOAT).
+        # avg-family now inherits the source column's units (was FLOAT).
         fmt = _infer_aggregated_format(model=model, measure_name="revenue", aggregation="avg")
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -163,7 +162,7 @@ class TestMcpFormatMeta:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1788 shared classifier drift guard.
+# Shared classifier drift guard.
 #
 # ``aggregated_type`` (slot DataType) and ``_infer_aggregated_format`` (display
 # NumberFormat) both read the single ``classify_aggregation`` classifier, so the
@@ -246,6 +245,7 @@ class TestSharedClassifier:
             PRESERVING_AGGREGATIONS,
             FLOAT_SOURCE_UNIT_AGGREGATIONS,
             FLOAT_PLAIN_AGGREGATIONS,
+            LIST_AGGREGATIONS,
         ]
         union = set().union(*sets)
         assert union == BUILTIN_AGGREGATIONS

@@ -397,13 +397,9 @@ class TestModeAUnchanged:
 
 
 class TestScalarCollidingCustomAggNames:
-    @pytest.mark.parametrize("bad", ["round", "iif", "coalesce"])
-    def test_scalar_name_rejected(self, bad: str) -> None:
-        with pytest.raises(ValueError) as ei:
-            Aggregation(name=bad, formula="AVG({value})")
-        msg = str(ei.value)
-        assert bad in msg
-        assert "scalar" in msg.lower()
+    @pytest.mark.parametrize("name", ["round", "iif", "coalesce"])
+    def test_scalar_name_accepted(self, name: str) -> None:
+        assert Aggregation(name=name, formula="AVG({value})").name == name
 
     def test_transform_name_still_rejected(self) -> None:
         with pytest.raises(ValueError, match="cumsum"):

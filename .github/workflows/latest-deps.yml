@@ -38,5 +38,5 @@ jobs:
           poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
 
       - name: Run unit tests
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25

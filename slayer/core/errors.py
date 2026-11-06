@@ -110,20 +110,24 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and schema drift in the models it read explains it; carries the drifted models, their ``to_delete`` entries, and the DBAPI cause (as ``__cause__``)."""
+    """A query failed and schema drift in the models it read explains it; carries the drifted models, their
+    ``to_delete`` entries, the report-only ``findings`` and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
+        findings: list[Any] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
+        self.findings = list(findings or [])
+        notes = "".join(f" {getattr(f, 'summary', f)}" for f in self.findings)
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s). Original error: {original}"
+            f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
@@ -246,6 +250,21 @@ class MissingDriverError(SlayerError, ImportError):
             suggestion=hint,
         ))
         self.name = missing
+
+
+class UnsupportedDriverError(SlayerError):
+    """A datasource's URL names a driver SLayer cannot serve the type through; ``hint`` names one it can."""
+
+    def __init__(self, *, datasource_name: str, ds_type: str | None, driver: str, reason: str, hint: str) -> None:
+        self.datasource_name = datasource_name
+        self.ds_type = ds_type
+        self.driver = driver
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Datasource {datasource_name!r} (type {ds_type!r}) cannot use driver {driver!r}: {reason}",
+            suggestion=hint,
+        ))
 
 
 class ModelSqlValidationError(SlayerError, ValueError):
@@ -428,6 +447,11 @@ class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
 
 
+class ListTypeError(QueryTypeError):
+    """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
+    database without native lists."""
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 
@@ -597,6 +621,21 @@ class AmbiguousReferenceError(SlayerError, ValueError):
             cls_name=type(self).__name__,
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
+        ))
+
+
+class AmbiguousAggregationError(SlayerError):
+    """A call matches several of its model's aggregations case-insensitively and none exactly."""
+
+    def __init__(self, *, model: str, call: str, candidates: List[str]) -> None:
+        self.model = model
+        self.call = call
+        self.candidates = sorted(candidates)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Aggregation call {call!r} is ambiguous on model {model!r}: it matches "
+            f"{', '.join(self.candidates)} case-insensitively.",
+            suggestion="Spell the call exactly as one of them.",
         ))
 
 

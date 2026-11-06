@@ -151,7 +151,7 @@ A provable out-of-scope reference raises `ScopeLeakError` from `slayer/sql/scope
 
 ## Publishing
 
-Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`), and the release tag must match the package version. To publish to TestPyPI, run the "Publish to TestPyPI" workflow manually (`.github/workflows/publish-test.yml`). Both use OIDC trusted publishing, so no API tokens are needed.
+Publishing a GitHub release publishes to PyPI (`.github/workflows/publish.yml`), and the release tag must match the package version. To publish to TestPyPI, run the "Publish to TestPyPI" workflow manually (`.github/workflows/publish-test.yml`). Both use OIDC trusted publishing, so no API tokens are needed. Before uploading, both install the built wheel with `[all]` into a fresh `uv tool` environment and run the README's queries through its CLI and MCP server (`scripts/release_gate.py`); any failure stops the upload.
 
 ## Pull Requests
 

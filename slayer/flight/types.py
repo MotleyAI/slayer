@@ -37,6 +37,8 @@ _DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     # forward map is intentionally lossy here: UNKNOWN -> utf8 -> TEXT does
     # not round-trip back to UNKNOWN.
     DataType.UNKNOWN: pa.utf8(),
+    # Lists travel as their JSON array text.
+    DataType.ARRAY: pa.utf8(),
 }
 
 

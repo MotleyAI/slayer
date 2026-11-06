@@ -63,22 +63,21 @@ def grain_alias_column(*, alias: str, table: str) -> exp.Column:
 class AttachedValue(BaseModel):
     """An attached producer's answer column; a cell the producer lacks reads ``empty_value``."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     cte_name: str
     column_name: str
-    empty_value: int | None
+    #: The rendered empty value (``None``: NULL).
+    empty: Optional[Expression] = None
 
     def column(self) -> exp.Column:
         return grain_alias_column(alias=self.column_name, table=self.cte_name)
 
     def value(self) -> Expression:
         """The value every consumer reads (never the bare column)."""
-        if self.empty_value is None:
+        if self.empty is None:
             return self.column()
-        return exp.Coalesce(
-            this=self.column(), expressions=[exp.Literal.number(self.empty_value)],
-        )
+        return exp.Coalesce(this=self.column(), expressions=[self.empty.copy()])
 
 
 def build_grain_joinback_condition(

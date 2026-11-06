@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +25,7 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
+from slayer.sql.client import DelegatingSqlClient, ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1965_fixtures import cumsum_chain, gen, outer_order, parse
@@ -543,12 +544,12 @@ class _EchoTypesClient(DelegatingSqlClient):
     async def execute(self, sql: str) -> ExecutionResult:  # noqa: ARG002  # NOSONAR(S7503)
         return ExecutionResult(rows=[])
 
-    async def get_column_types(self, sql: str) -> dict:
-        parsed = sqlglot.parse_one(sql, dialect="bigquery")
-        return {name: "DOUBLE" for name in parsed.named_selects}
+    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery"))
+        return {name: ResultColumnType(type=DataType.DOUBLE) for name in parsed.named_selects}
 
 
-async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> None:
     """The mangled type-probe keys are decoded back."""
     tmp = tempfile.TemporaryDirectory()
     try:
@@ -567,7 +568,7 @@ async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
         engine._sql_clients[client_cache_key(ds)] = _EchoTypesClient(datasource=ds)
-        types = await engine.get_column_types("orders")
+        types = await engine.get_result_column_types("orders")
         # Without the decode fix, the mangled probe keys never match the dotted
         # ``full`` lookups and this is empty for BigQuery.
         assert types, f"expected a non-empty type map, got {types!r}"

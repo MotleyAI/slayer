@@ -2,11 +2,62 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any, ClassVar, Optional
 
+from pydantic import Field
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
-from slayer.sql.dialects.base import SqlDialect
-from slayer.sql.dialects.reflection import TableLocation, all_of, call, col, eq_literal, relation
+from slayer.core.enums import DataType
+from slayer.sql.dialects.base import LegacyTypeCategories, ListFn, SqlDialect, is_empty_array, lit
+from slayer.sql.dialects.reflection import (
+    ResultColumnType,
+    TableLocation,
+    all_of,
+    call,
+    col,
+    eq_literal,
+    relation,
+    result_column_type_of_name,
+)
+
+_NUMERIC_OID = 1700
+
+# ``pg_type`` OIDs → canonical type names.
+_PG_TYPE_NAMES: dict[int, str] = {
+    16: "boolean", 17: "bytea", 18: '"char"', 20: "bigint", 21: "smallint", 23: "integer", 25: "text",
+    26: "oid", 114: "json", 142: "xml", 650: "cidr", 700: "real", 701: "double precision", 790: "money",
+    869: "inet", 1000: "boolean[]", 1005: "smallint[]", 1007: "integer[]", 1009: "text[]",
+    1015: "character varying[]", 1016: "bigint[]", 1021: "real[]", 1022: "double precision[]",
+    1042: "character", 1043: "character varying", 1082: "date", 1083: "time",
+    1114: "timestamp without time zone", 1184: "timestamp with time zone", 1186: "interval",
+    1231: "numeric[]", 1266: "time with time zone", 1560: "bit", 1562: "bit varying", 1700: "numeric",
+    2950: "uuid", 3802: "jsonb",
+    199: "json[]", 1001: "bytea[]", 1014: "character[]", 1115: "timestamp without time zone[]", 1182: "date[]",
+    1185: "timestamp with time zone[]", 2951: "uuid[]", 3807: "jsonb[]",
+}
+
+
+def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnType | None:
+    """A psycopg description row by OID; ``numeric`` carries its typmod; an unknown OID is unnamed TEXT."""
+    code = description_row[1]
+    if not isinstance(code, int):
+        return None
+    name = _PG_TYPE_NAMES.get(code)
+    if name is None:
+        return ResultColumnType(type=DataType.TEXT)
+    precision, scale = description_row[4], description_row[5]
+    if code == _NUMERIC_OID and precision is not None and scale is not None:
+        name = f"numeric({precision},{scale})"
+    return result_column_type_of_name(name)
+
+
+#: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
+_CANONICAL_ARRAYS = {
+    DataType.TEXT: "TEXT[]", DataType.INT: "BIGINT[]", DataType.DOUBLE: "DOUBLE PRECISION[]",
+    DataType.BOOLEAN: "BOOLEAN[]", DataType.DATE: "DATE[]", DataType.TIMESTAMP: "TIMESTAMP[]",
+}
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
@@ -46,9 +97,42 @@ class PostgresDialect(SqlDialect):
     # NAMEDATALEN: 63 usable bytes; over-length names are SILENTLY truncated.
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
-    url_scheme: str | None = "postgresql+psycopg2"
-    async_driver: str | None = "asyncpg"
+    url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
+    extra_drivers: dict[str, str] = Field(
+        default_factory=lambda: {"psycopg": "psycopg", "psycopg2": "psycopg2-binary", "asyncpg": "asyncpg"},
+    )
+    refused_loops: dict[str, frozenset[str]] = Field(
+        default_factory=lambda: {"psycopg": frozenset({"ProactorEventLoop"})},
+    )
+    database_name: ClassVar[str] = "Postgres"
+    native_lists: ClassVar[bool] = True
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "boolean": "boolean", "bigint": "number", "smallint": "number", "integer": "number", "oid": "number",
+            "real": "number", "double precision": "number", "numeric": "number", "money": "number",
+            "date": "time", "time": "time", "timestamp without time zone": "time",
+            "timestamp with time zone": "time", "interval": "time",
+        },
+        other="string",
+    )
+
+    def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
+        return describe_pg_cursor_column(description_row)
+
+    def build_list_call(
+        self, fn: ListFn, args: tuple[Expression, ...], *, element: Optional[DataType] = None,
+    ) -> Expression:
+        """``&&`` / ``@>`` need one array type on both sides: each list is read as its element's canonical one."""
+        array = _CANONICAL_ARRAYS.get(element) if element is not None else None
+        if fn in ("contains_any", "contains_all") and array and not is_empty_array(args[1]):
+            to = exp.DataType.build(array, dialect=self.sqlglot_name)
+            args = tuple(exp.Cast(this=a.copy(), to=to.copy()) for a in args)
+        return super().build_list_call(fn, args, element=element)
+
+    def empty_list(self) -> Expression:
+        """``'{}'``: an empty ``ARRAY[]`` has no type to take."""
+        return lit("{}")
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         scope = (

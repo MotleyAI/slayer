@@ -30,6 +30,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.format import list_json_text
 from slayer.core.granularity import CustomGranularity
 from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
 from slayer.core.query import QueryRefinement, SlayerQuery
@@ -396,6 +397,12 @@ def _render_hidden_internals_section(
     return out
 
 
+def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
+    if not broken:
+        return []
+    return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
+
+
 def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
@@ -417,9 +424,11 @@ async def _render_ingest_result(
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    broken = list(getattr(result, "broken_dependents", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
-        not additions
+        not broken
+        and not additions
         and not result.to_delete
         and not result.errors
         and not skipped
@@ -454,6 +463,7 @@ async def _render_ingest_result(
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
+    lines.extend(_render_broken_dependents_section(broken))
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")
@@ -950,7 +960,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         columns: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Columns to upsert by name; only the given fields change. {"name", "type", "sql", '
+                'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
                 '"label", "granularity"}; type string, number, time, date or boolean; unique marks '
                 "single-column uniqueness other than the primary key (used for join cardinality); set "
@@ -1879,7 +1889,8 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     for row in data:
         values = []
         for c in columns:
-            v = str(row.get(c, ""))
+            cell = row.get(c, "")
+            v = list_json_text(cell) if isinstance(cell, list) else str(cell)
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
             values.append(v)
