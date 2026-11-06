@@ -1,10 +1,7 @@
-"""Shared conversion-report types for semantic-layer importers (DEV-1643).
+"""Shared conversion-report types for semantic-layer importers and the Ossie exporter.
 
-``ConversionWarning`` / ``ConversionResult`` were originally defined in
-``slayer.dbt.converter``; they are extracted here so both the dbt importer and
-the OSI importer (``slayer.osi.converter``) can reuse them without importing
-each other. ``slayer.dbt.converter`` re-exports them for back-compat, so the
-class objects are shared (identity-equal) across both import paths.
+``slayer.dbt.converter`` re-exports ``ConversionWarning`` / ``ConversionResult``
+for back-compat, so the class objects are shared across both import paths.
 """
 
 from collections import defaultdict
@@ -32,22 +29,17 @@ class ConversionWarning(BaseModel):
     suggestion: str | None = None
 
 
-class ConversionResult(BaseModel):
-    """Result of converting a semantic-layer project into SLayer models."""
-    models: list[SlayerModel] = Field(default_factory=list)
-    unconverted_metrics: list[ConversionWarning] = Field(default_factory=list)
+class ConversionReport(BaseModel):
+    """A list of report entries, rendered grouped by category."""
     warnings: list[ConversionWarning] = Field(default_factory=list)
 
-    def _all_entries(self) -> list[ConversionWarning]:
-        return list(self.unconverted_metrics) + list(self.warnings)
+    @property
+    def entries(self) -> list[ConversionWarning]:
+        return list(self.warnings)
 
     def render_report(self) -> str:
-        """Render the conversion report grouped by category.
-
-        Each category becomes a heading with a count; each entry lists its
-        entity, severity, reason, and (when present) the documented workaround.
-        """
-        entries = self._all_entries()
+        """Each category as a heading with a count; each entry with its entity, severity, reason and workaround."""
+        entries = self.entries
         if not entries:
             return "No conversion issues."
         by_cat: dict[str, list[ConversionWarning]] = defaultdict(list)
@@ -67,7 +59,17 @@ class ConversionResult(BaseModel):
 
     def tally(self) -> tuple[int, int]:
         """``(unconverted, dropped)`` counts by severity for the CLI summary."""
-        entries = self._all_entries()
+        entries = self.entries
         unconverted = sum(1 for e in entries if e.severity == "unconverted")
         dropped = sum(1 for e in entries if e.severity == "dropped")
         return unconverted, dropped
+
+
+class ConversionResult(ConversionReport):
+    """Result of converting a semantic-layer project into SLayer models."""
+    models: list[SlayerModel] = Field(default_factory=list)
+    unconverted_metrics: list[ConversionWarning] = Field(default_factory=list)
+
+    @property
+    def entries(self) -> list[ConversionWarning]:
+        return [*self.unconverted_metrics, *self.warnings]

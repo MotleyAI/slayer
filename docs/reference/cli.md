@@ -293,6 +293,23 @@ slayer import-osi ./model.yaml --datasource my_postgres --dialect SNOWFLAKE
 | `--dialect` | No | OSI expression dialect to read (default `ANSI_SQL`); falls back to another SQL dialect when the requested one is absent |
 | `--storage` | No | Storage path |
 
+### `slayer export-osi`
+
+Export a datasource's models as an Ossie (OSI) document. See [Exporting to OSI](../osi/osi_export.md).
+
+```bash
+slayer export-osi --datasource my_postgres --out shop.osi.yaml
+slayer export-osi --datasource my_postgres --models orders customers --out shop.osi.json --no-extensions
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--datasource` | Yes | SLayer datasource whose models to export |
+| `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
+| `--models` | No | Export only these models (an unknown name fails with no file written) |
+| `--no-extensions` | No | Omit the `SLAYER` custom extensions; SLayer-only content is reported instead of exported |
+| `--storage` | No | Storage path |
+
 ### `slayer models`
 
 Manage models.
