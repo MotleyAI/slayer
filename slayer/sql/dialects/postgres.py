@@ -15,6 +15,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    LIST_ELEMENT,
     LegacyTypeCategories,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
@@ -28,6 +29,8 @@ from slayer.sql.dialects.base import (
     as_text,
     case,
     is_empty_array,
+    is_not_null,
+    is_null,
     lit,
     operand_copy,
     pad_fill,
@@ -78,6 +81,8 @@ def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnTyp
 #: The first Postgres major version with ``pg_input_is_valid``.
 _PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
 #: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
+#: The element-set subquery's one relation: a fixed name, so every copy of the expression reads alike.
+_SET_RELATION = "__slayer_s"
 _CANONICAL_ARRAYS = {
     DataType.TEXT: "TEXT[]", DataType.INT: "BIGINT[]", DataType.DOUBLE: "DOUBLE PRECISION[]",
     DataType.BOOLEAN: "BOOLEAN[]", DataType.DATE: "DATE[]", DataType.TIMESTAMP: "TIMESTAMP[]",
@@ -280,7 +285,24 @@ class PostgresDialect(SqlDialect):
         return super().build_list_call(fn, args, each=each, element=element)
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("CARDINALITY", anon("ARRAY_REMOVE", values, exp.Null()))
+        return anon("CARDINALITY", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        """``ARRAY(SELECT DISTINCT e FROM UNNEST(x) e … ORDER BY e)``, ``x`` read as its element's canonical array
+        type so lists of one family compare; both CASE branches carry that type."""
+        array = _CANONICAL_ARRAYS.get(element) if element is not None else None
+        to = exp.DataType.build(array, dialect=self.sqlglot_name) if array else None
+        typed = exp.Cast(this=values.copy(), to=to.copy()) if to is not None else values.copy()
+        e = exp.column(LIST_ELEMENT)
+        rows = (exp.select(e).distinct().from_(exp.Unnest(
+            expressions=[typed],
+            alias=exp.TableAlias(this=exp.to_identifier(_SET_RELATION), columns=[exp.to_identifier(LIST_ELEMENT)])))
+            .where(is_not_null(e.copy())).order_by(e.copy()))
+        absent: Expression = exp.Cast(this=exp.Null(), to=to.copy()) if to is not None else exp.Null()
+        return case((is_null(values), absent), default=exp.Array(expressions=[rows]))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         found = exp.EQ(this=operand_copy(value), expression=exp.Any(this=exp.Paren(this=values.copy())))

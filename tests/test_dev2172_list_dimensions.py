@@ -1,5 +1,4 @@
-"""A list is refused as a group key but projected once per record by a raw-rows query
-(spec: models/list-columns)."""
+"""A raw-rows query projects a list once per record (spec: models/list-columns)."""
 
 from __future__ import annotations
 
@@ -43,7 +42,7 @@ class TestRawRows:
             resp = await engine.execute({"source_model": "assignments", "dimensions": ["id", "contractors.skills"],
                                          "distinct_dimension_values": False})
         assert _lists(resp.data, key="assignments.id", value="assignments.contractors.skills") == {
-            a: SKILLS[c] for a, c in ASSIGNMENTS}
+            a: SKILLS.get(c) for a, c in ASSIGNMENTS}
 
     @pytest.mark.parametrize("distinct", [False, True])
     async def test_ordering_by_a_list_is_refused(self, distinct: bool) -> None:
@@ -55,18 +54,6 @@ class TestRawRows:
 
 
 class TestGrouping:
-    @pytest.mark.parametrize("body", [
-        {"dimensions": ["skills"]},
-        {"dimensions": ["skills"], "measures": ["count(*)"]},
-        {"dimensions": [{"name": "s", "expression": "skills"}]},
-        {"dimensions": [{"name": "s", "expression": "skills"}], "measures": ["count(*)"]},
-    ])
-    async def test_list_as_a_group_key_names_its_elements(self, body: dict[str, Any]) -> None:
-        request = query(**body)
-        async with list_engine() as engine:
-            with pytest.raises(ListTypeError, match=r"skills\.value"):
-                await engine.execute(request)
-
     async def test_computed_dimension_checks_keep_their_precedence(self) -> None:
         """A raw-rows computed dimension holding an aggregation is refused for that, before any list rule."""
         body = query(dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],

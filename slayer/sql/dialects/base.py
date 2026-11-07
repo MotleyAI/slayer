@@ -1232,7 +1232,7 @@ class SqlDialect(BaseModel):
         lists' shared element type, when known."""
         values = args[0]
         if fn == "length":
-            return case((is_null(values), exp.Null()), default=self.list_length(values))
+            return case((is_null(values), exp.Null()), default=self.list_length(self.build_list_set(values, element)))
         other = args[1]
         if is_empty_array(other):
             return case((is_null(values), exp.Null()), default=exp.false() if fn == "contains_any" else exp.true())
@@ -1260,7 +1260,19 @@ class SqlDialect(BaseModel):
         return exp.Not(this=self.list_exists(other, alias=alias, element=element, predicate=missing))
 
     def list_length(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """The size of element set ``values``."""
         self.refuse("length")
+
+    def build_list_set(
+        self, values: Expression, element: Optional[DataType],  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The element set of ``values``: its distinct non-NULL elements sorted as ``collect`` sorts them; NULL stays
+        NULL."""
+        self.refuse("list_set")
+
+    def build_list_key(self, values: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
+        """What grouping, comparison, distinct counting, partitioning and join-backs read of element set ``values``."""
+        self.refuse("list_key")
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains")

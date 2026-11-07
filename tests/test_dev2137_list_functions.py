@@ -21,7 +21,7 @@ from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev2101_fixtures import emit
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
-from tests._dev2137_fixtures import list_engine, measure, num, query
+from tests._dev2137_fixtures import as_list, list_engine, measure, num, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -88,7 +88,7 @@ class TestContainsAnyAll:
 class TestLength:
     async def test_element_counts(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(skills)")).items()}
-        assert got == {"Ann": 3, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
+        assert got == {"Ann": 2, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
 
     async def test_character_count_unchanged(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(name)")).items()}
@@ -98,7 +98,7 @@ class TestLength:
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("sum(length(skills))", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 5
+        assert num(resp.data[0]["contractors.n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("count(*)", "n")], dimensions=["team"],
@@ -123,9 +123,9 @@ class TestArrayLiterals:
         assert "1" in msg, msg
 
     async def test_a_literal_as_a_dimension(self, engine) -> None:
-        with pytest.raises(SlayerError) as info:
-            await _values(engine, "['go', 'sql']")
-        assert "list" in str(info.value).lower() or "ARRAY" in str(info.value), str(info.value)
+        got = await _values(engine, "['go', 'sql']")
+        assert got
+        assert all(as_list(v) == ["go", "sql"] for v in got.values()), got
 
     async def test_a_literal_as_an_equality_operand(self, engine) -> None:
         with pytest.raises(SlayerError):

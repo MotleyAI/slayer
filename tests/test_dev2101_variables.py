@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from slayer.core.errors import ListTypeError
 from slayer.core.query import ComputedDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2101_fixtures import EXEC_BACKENDS, by_key, ids, m, make_exec_engine, num, q, single
@@ -92,8 +93,9 @@ class TestStructureIsNeverInjected:
                         variables={"min": "1 OR 1 = 1"})
 
     async def test_list_outside_the_in_slot(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "literal values", dimensions=["id"], filters=["amount > {xs}"],
-                        variables={"xs": [1, 2]})
+        body = q(dimensions=["id"], filters=["amount > {xs}"], variables={"xs": [1, 2]})
+        with pytest.raises(ListTypeError):
+            await engine.execute(body)
 
     @pytest.mark.parametrize("kw", [
         {"measures": ["{f}(amount)"], "variables": {"f": "sum"}},

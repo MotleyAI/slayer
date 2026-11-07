@@ -22,6 +22,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     ColumnTypeFn,
     InKey,
+    ListSetKey,
     LiteralKey,
     ScalarCallKey,
     SqlFragmentKey,
@@ -57,11 +58,13 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     group_is_operands,
     group_unary_operand,
     iif_case_chain,
+    list_keyed,
     numeric_parts,
     render_arithmetic,
     render_array_literal,
     render_cast,
     render_in_predicate,
+    render_list_set,
     render_modulo,
     render_null_safe,
     render_date_call,
@@ -413,15 +416,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
-        if key.op in NULL_SAFE_COMPARISON_OPS:
-            return render_null_safe(
-                op=key.op, operands=[render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
-            )
-        op = key.op.lower()
-        operands = numeric_parts(
-            key=key, parts=[render_value_key(key=o, ctx=ctx) for o in key.operands],
-            column_type=_known_column_types(ctx),
+        rendered = list_keyed(
+            key.operands, [render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
         )
+        if key.op in NULL_SAFE_COMPARISON_OPS:
+            return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
+        op = key.op.lower()
+        operands = numeric_parts(key=key, parts=rendered, column_type=_known_column_types(ctx))
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -461,6 +462,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return render_cast(
             key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
             direct=ctx.aliases is None or not _slot_available(key.source, ctx.aliases),
+        )
+
+    if isinstance(key, ListSetKey):
+        return render_list_set(
+            key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
+            column_type=_known_column_types(ctx),
+            column_element=ctx.scope.column_element if ctx.scope is not None else None,
         )
 
     if isinstance(key, AggregateKey):

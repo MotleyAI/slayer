@@ -1280,15 +1280,22 @@ class SlayerQuery(BaseModel):
             'entity_type="memory").'
         ),
     )
+    # The effective variables a whole-``IN`` placeholder left unwritten by binding reads (``parse_bound_expr``).
+    _bound_variables: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def bound_variables(self) -> dict[str, Any]:
+        return self._bound_variables
+
     variables: dict[str, Any] | None = Field(
         default=None,
         description=(
             "{placeholder} values scoped to this query object / stage; the "
             "tool-level variables argument overrides. A placeholder binds a literal value only: "
             "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
-            "a list as the whole right-hand side of IN (status in ({statuses})) or as a "
-            "list-function argument (an empty list only there). A placeholder in a name position "
-            "is an error."
+            "a list as the whole right-hand side of IN (status in ({statuses}); over a list column, one "
+            "list: tags in ({wanted})) or as a list literal anywhere else (tags = {wanted}, a "
+            "list-function argument). A placeholder in a name position is an error."
         ),
     )
     order: OrderField = Field(

@@ -27,6 +27,7 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
+    ListSetKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -83,6 +84,7 @@ def _samples() -> dict:
         ),
         CastKey: CastKey(source=ColumnKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INT),
         ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
+        ListSetKey: ListSetKey(source=ColumnKey(path=(), leaf="tags")),
     }
 
 

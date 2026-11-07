@@ -185,9 +185,3 @@ class TestRowCounts:
         got = {r[0]: (r[1], None if r[2] is None else json.loads(r[2])) for r in rows}
         assert got == {c["id"]: (c["name"], c["skills"]) for c in CONTRACTORS}
         assert len(rows) == len(CONTRACTORS)
-
-    @pytest.mark.parametrize("sql", ["SELECT skills, COUNT(*) FROM contractors GROUP BY skills",
-                                     "SELECT DISTINCT skills FROM contractors"])
-    def test_grouping_on_a_list_names_its_elements(self, servers: Servers, wire: str, sql: str) -> None:
-        with pytest.raises(Exception, match=r"skills\.value"):
-            WIRES[wire](servers, sql)

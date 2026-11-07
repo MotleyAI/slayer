@@ -81,6 +81,7 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     CastKey,
+    ListSetKey,
     SCALAR_SPECS,
     ScalarCallKey,
     StarKey,
@@ -97,6 +98,7 @@ from slayer.core.keys import (
     source_anchor_path,
     transform_operand_grain,
     walk_value_keys,
+    list_set_key,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.refs import dotted_key_display, key_display
@@ -110,7 +112,7 @@ from slayer.ir.planned import MaskTyping, ModeAFilter
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
-from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, bound_filter_from_key
+from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, WholeListRead, bound_filter_from_key
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
@@ -1096,6 +1098,8 @@ def _operand_display(k: object) -> str:
         return _key_display(k)
     if isinstance(k, ArrayLiteralKey):
         return f"[{', '.join(_operand_display(v) for v in k.values)}]"
+    if isinstance(k, ListSetKey):
+        return _operand_display(k.source)
     return str(k)
 
 
@@ -1506,6 +1510,12 @@ _LIST_COMPARISONS: Mapping[str, Optional[str]] = MappingProxyType({
     "==": "contains", "!=": "contains", "<": None, "<=": None, ">": None, ">=": None,
     **dict.fromkeys(NULL_SAFE_COMPARISON_OPS),
 })
+#: Comparisons that, between two lists, compare their element sets.
+_SET_COMPARISONS = frozenset({"==", "!=", *NULL_SAFE_COMPARISON_OPS})
+#: Comparison operators as Mode B writes them.
+_WRITTEN_OPS: Mapping[str, str] = MappingProxyType({"==": "=", "!=": "<>"})
+#: The aggregations a list-valued source takes.
+_LIST_SOURCE_AGGREGATIONS = frozenset({"count", "count_distinct"})
 _TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
     DataType.TEXT: "text", DataType.INT: "number", DataType.DOUBLE: "number", DataType.BOOLEAN: "boolean",
     DataType.DATE: "time", DataType.TIMESTAMP: "time",
@@ -1556,6 +1566,10 @@ def _list_construct(key: ValueKey, *, typing: ListTyping) -> Optional[str]:
         return f"{key.agg}()"
     if isinstance(key, (ColumnKey, StarKey)) and typing.element_access(key):
         return f"Element access `{_operand_display(key)}`"
+    if _reads_sets(key, typing=typing):
+        return "Comparing lists"
+    if isinstance(key, AggregateKey) and key.agg.lower() == "count_distinct" and typing.is_list(key.source):
+        return "count_distinct() over a list"
     return None
 
 
@@ -1575,26 +1589,64 @@ def _check_list_literal(key: ArrayLiteralKey) -> None:
         )
 
 
+def _reads_sets(key: object, *, typing: ListTyping) -> bool:
+    """An equality comparison between two lists, which compares their element sets."""
+    return (isinstance(key, ArithmeticKey) and key.op in _SET_COMPARISONS and len(key.operands) == 2
+            and all(typing.is_list(o) for o in key.operands))
+
+
 def _check_list_comparison(key: ArithmeticKey, *, typing: ListTyping) -> None:
     if key.op not in _LIST_COMPARISONS or len(key.operands) != 2:
         return
     offender = next((o for o in key.operands if typing.is_list(o)), None)
     if offender is None:
         return
+    if _reads_sets(key, typing=typing):
+        _check_comparable_sets(*key.operands, typing=typing)
+        return
+    shown, op = _operand_display(offender), _WRITTEN_OPS.get(key.op, key.op)
+    if key.op not in _SET_COMPARISONS:
+        raise ListTypeError(
+            summary=f"`{shown}` is a list, which has no order: it cannot be compared with {op}.",
+            suggestion=f"Compare whole lists with = or <>, or its elements through {_list_display(offender)}.",
+        )
     remedy = _LIST_COMPARISONS[key.op]
-    hint = (f"Test membership with {remedy}({_operand_display(offender)}, x), or compare its elements "
+    hint = (f"Test membership with {remedy}({shown}, x), compare it with another list, or compare its elements "
             f"through {_list_display(offender)}.") if remedy else f"Compare its elements through {_list_display(offender)}."
-    raise ListTypeError(
-        summary=f"`{_operand_display(offender)}` is a list and cannot be compared with {key.op}.", suggestion=hint,
-    )
+    raise ListTypeError(summary=f"`{shown}` is a list and cannot be compared with a scalar by {op}.", suggestion=hint)
+
+
+def _check_comparable_sets(left: ValueKey, right: ValueKey, *, typing: ListTyping) -> None:
+    """Two lists compare as sets when their elements are known and of one type family."""
+    for side in (left, right):
+        _check_known_elements(side, typing=typing, reading="compared as a set")
+    left_type, right_type = typing.element(left), typing.element(right)
+    if left_type is not None and right_type is not None and (
+            _TYPE_FAMILIES.get(left_type) != _TYPE_FAMILIES.get(right_type)):
+        a, b = left_type.value, right_type.value
+        raise ListTypeError(
+            summary=f"`{_operand_display(left)}` and `{_operand_display(right)}` hold {a} and {b} elements, which "
+            f"cannot be compared.",
+            suggestion=f"Compare lists of one element type, or cast one list's elements (CAST(x AS {a}[])).",
+        )
+
+
+def _check_known_elements(key: ValueKey, *, typing: ListTyping, reading: str) -> None:
+    element = typing.element(key)
+    if element is not None and element.is_opaque:
+        raise ListTypeError(
+            summary=f"`{_operand_display(key)}` holds opaque (UNKNOWN) elements, which cannot be {reading}.",
+            suggestion="Declare the column's element_type.",
+        )
 
 
 def _check_list_in(key: InKey, *, typing: ListTyping) -> None:
     if typing.is_list(key.column):
         column = _operand_display(key.column)
         raise ListTypeError(
-            summary=f"`{column}` is a list and cannot be an IN operand.",
-            suggestion=f"Use contains_any({column}, [...]), or filter {_list_display(key.column)} IN (...).",
+            summary=f"`{column}` is a list and cannot be IN a list of scalars.",
+            suggestion=f"Use contains_any({column}, [...]), compare whole lists with {column} IN ([...], [...]), "
+            f"or filter {_list_display(key.column)} IN (...).",
         )
 
 
@@ -1622,13 +1674,13 @@ def _check_list_call(key: ScalarCallKey, *, typing: ListTyping) -> None:
         raise ListTypeError(
             summary=f"{key.name}([]): [] has no element type here.", suggestion="Give the empty list a typed operand.",
         )
-    if key.name == "length":
-        return
     if element is not None and element.is_opaque:
         raise ListTypeError(
-            summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot compare.",
+            summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot read.",
             suggestion="Declare the column's element_type.",
         )
+    if key.name == "length":
+        return
     other = key.args[1]
     other_type = typing.element(other) if key.name != "contains" else value_type(other, column_type=typing.column_type)
     if not _same_family(element, other_type):
@@ -1662,12 +1714,14 @@ def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
     agg = key.agg.lower()
     source = key.source
     if typing.is_list(source):
-        if agg == "count":
+        if agg == "count_distinct":
+            _check_known_elements(source, typing=typing, reading="counted as distinct sets")
+        if agg in _LIST_SOURCE_AGGREGATIONS:
             return
         remedy = f"{key.agg}({_list_display(source)})" if isinstance(source, (ColumnKey, ColumnSqlKey)) else None
         raise ListTypeError(
-            summary=f"`{_operand_display(source)}` is a list: an aggregation over a list is only count; {key.agg}() "
-            f"cannot take it.",
+            summary=f"`{_operand_display(source)}` is a list: an aggregation over a list is only count or "
+            f"count_distinct; {key.agg}() cannot take it.",
             suggestion=f"Aggregate its elements: {remedy}." if remedy else "Aggregate the list's elements instead.",
         )
     if list_valued(key, column_type=typing.column_type):
@@ -1699,12 +1753,17 @@ def check_list_operands(*, roots: Sequence[ValueKey], typing: ListTyping) -> Non
 
 
 def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping, will_group_by: bool) -> None:
-    """A list is never a group key: its elements are, through ``L.value``."""
-    if will_group_by and typing.is_list(key):
+    """A list groups by its element set, on a database with lists and over known elements."""
+    if not (will_group_by and typing.is_list(key)):
+        return
+    if not typing.native_lists:
         raise ListTypeError(
-            summary=f"Dimension {name!r} is a list, which cannot be grouped on.",
-            suggestion=f"Group by its elements: {_list_display(key)}.",
+            summary=f"Grouping by the list dimension {name!r} needs a database with native lists; "
+            f"{typing.database} has none.",
+            suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
+            "ClickHouse, Trino or Presto).",
         )
+    _check_known_elements(key, typing=typing, reading="grouped on")
 
 
 def check_list_order_key(*, key: ValueKey, typing: ListTyping) -> None:
@@ -1714,6 +1773,54 @@ def check_list_order_key(*, key: ValueKey, typing: ListTyping) -> None:
             summary=f"Order key {_list_display(key)} is a list, which has no sort order.",
             suggestion="Order by a scalar column, or by length(...) of the list.",
         )
+
+
+def canonical_list_reads(key: ValueKey, *, typing: ListTyping) -> ValueKey:
+    """``key`` with every equality-reading position of a list reading its element set (semantics Axiom 3.2): both
+    sides of a comparison between lists, a ``count_distinct`` source and a partition key."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: canonical_list_reads(c, typing=typing)))
+    if _reads_sets(rebuilt, typing=typing):
+        assert isinstance(rebuilt, ArithmeticKey)
+        left, right = _numbers_as_doubles(*rebuilt.operands, typing=typing)
+        return rebuilt.model_copy(update={"operands": (list_set_key(left), list_set_key(right))})
+    if not isinstance(rebuilt, (AggregateKey, TransformKey)):
+        return rebuilt
+    update: Dict[str, Any] = {}
+    if isinstance(rebuilt, AggregateKey) and rebuilt.agg.lower() == "count_distinct" and typing.is_list(rebuilt.source):
+        update["source"] = list_set_key(cast(ValueKey, rebuilt.source))
+    keys = rebuilt.partition_keys
+    if keys is not None and any(typing.is_list(k) for k in keys):
+        update["partition_keys"] = Grain.of(list_set_key(k) if typing.is_list(k) else k for k in keys)
+    return rebuilt.model_copy(update=update) if update else rebuilt
+
+
+def canonical_list_dimension(key: ValueKey, *, typing: ListTyping, will_group_by: bool) -> ValueKey:
+    """A grouped list dimension groups by its element set."""
+    return list_set_key(key) if will_group_by and typing.is_list(key) else key
+
+
+def _numbers_as_doubles(left: ValueKey, right: ValueKey, *, typing: ListTyping) -> Tuple[ValueKey, ValueKey]:
+    """An INT list compared with a DOUBLE list is read as a DOUBLE list."""
+    types = typing.element(left), typing.element(right)
+    if set(types) != {DataType.INT, DataType.DOUBLE}:
+        return left, right
+    widened = [
+        CastKey(source=k, type_text="DOUBLE[]", data_type=DataType.ARRAY, element_type=DataType.DOUBLE)
+        if t is DataType.INT else k
+        for k, t in zip((left, right), types)
+    ]
+    return widened[0], widened[1]
+
+
+def whole_list_reads(*, dimensions: Sequence[ValueKey], roots: Sequence[ValueKey]) -> List[WholeListRead]:
+    """One read per grouped list dimension and per list counted by ``count_distinct``, each (operation, list) once."""
+    reads = [WholeListRead(operation="group", list=key_display(d)) for d in dimensions if isinstance(d, ListSetKey)]
+    reads += [
+        WholeListRead(operation="count_distinct", list=key_display(k.source))
+        for root in roots for k in walk_value_keys(root)
+        if isinstance(k, AggregateKey) and k.agg.lower() == "count_distinct" and isinstance(k.source, ListSetKey)
+    ]
+    return list(dict.fromkeys(reads))
 
 
 def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
@@ -1771,7 +1878,7 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
                 a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
-    if isinstance(key, CastKey):
+    if isinstance(key, (CastKey, ListSetKey)):
         return [key.source]
     if isinstance(key, TimePointCmpKey):
         return [key.operand]

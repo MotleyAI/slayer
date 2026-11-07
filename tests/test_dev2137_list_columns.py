@@ -188,9 +188,6 @@ def _names_the_list_type(msg: str) -> bool:
 
 
 class TestEligibility:
-    async def test_list_as_a_dimension(self, engine) -> None:
-        await _refused(engine, names=("skills.value",), dimensions=["skills"])
-
     @pytest.mark.parametrize(("filter_", "remedy"), [
         ("skills = 'go'", "contains"), ("skills <> 'go'", "contains"), ("skills IN ('go', 'sql')", "contains_any"),
     ])
@@ -198,14 +195,10 @@ class TestEligibility:
         await _refused(engine, names=(remedy,), measures=[measure("count(*)", "n")], filters=[filter_])
 
     @pytest.mark.parametrize("filter_", [
-        "skills < 'go'", "skills >= 'go'", "skills BETWEEN 'a' AND 'z'", "skills IS DISTINCT FROM required",
+        "skills < 'go'", "skills >= 'go'", "skills BETWEEN 'a' AND 'z'",
     ])
     async def test_other_comparisons_refused(self, engine, filter_: str) -> None:
         await _refused(engine, names=("skills",), measures=[measure("count(*)", "n")], filters=[filter_])
-
-    async def test_distinct_count_of_a_list(self, engine) -> None:
-        await _refused(engine, names=("count_distinct(skills.value)",),
-                       measures=[measure("count_distinct(skills)", "n")])
 
     @pytest.mark.parametrize("agg", ["min", "max", "first", "last", "count_distinct_approx"])
     async def test_other_builtins_refused(self, engine, agg: str) -> None:
@@ -275,11 +268,11 @@ def _grids_model() -> SlayerModel:
 
 
 class TestOpaqueElements:
-    async def test_length_runs_and_element_access_refused(self) -> None:
+    async def test_length_and_element_access_refused(self) -> None:
         async with contractors_engine(models=[contractors_model(), _grids_model()], extra=GRIDS) as e:
-            resp = await e.execute({"source_model": "grids", "dimensions": [
-                "id", {"expression": "length(grid)", "name": "n"}]})
-            assert {int(r["grids.id"]): r["grids.n"] for r in resp.data} == {1: 2, 2: None}
+            with pytest.raises(SlayerError, match="UNKNOWN"):
+                await e.execute({"source_model": "grids", "dimensions": [
+                    "id", {"expression": "length(grid)", "name": "n"}]})
             with pytest.raises(SlayerError, match="UNKNOWN"):
                 await e.execute({"source_model": "grids", "dimensions": ["grid.value"]})
             with pytest.raises(SlayerError, match="grid"):
@@ -364,12 +357,20 @@ class TestReingest:
         assert (skills.db_type or "").upper() == "VARCHAR[]"
 
     async def test_retyping_keeps_only_the_count_aggregation(self) -> None:
-        stale = Column(name="skills", type=DataType.TEXT, allowed_aggregations=["count", "count_distinct"])
+        stale = Column(name="skills", type=DataType.TEXT, allowed_aggregations=["count", "max"])
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(stale))
         skills = loaded.get_column("skills")
         assert skills is not None
         assert (skills.type, skills.allowed_aggregations) == (DataType.ARRAY, ["count"])
+
+    async def test_retyping_keeps_a_distinct_count(self) -> None:
+        stale = Column(name="skills", type=DataType.TEXT, allowed_aggregations=["count", "count_distinct", "min"])
+        with _duckdb_file(*LIVE) as (ds, tmp):
+            loaded = await _reingest(ds, tmp, _stored(stale))
+        skills = loaded.get_column("skills")
+        assert skills is not None
+        assert (skills.type, skills.allowed_aggregations) == (DataType.ARRAY, ["count", "count_distinct"])
 
     async def test_a_users_element_type_survives(self) -> None:
         mine = Column(name="scores", type=DataType.ARRAY, element_type=DataType.TEXT)

@@ -222,7 +222,13 @@ class SnowflakeDialect(SqlDialect):
         return kinds.pop() if len(kinds) == 1 else DataType.TEXT
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("ARRAY_SIZE", anon("ARRAY_COMPACT", _semi_structured(values)))
+        return anon("ARRAY_SIZE", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        return anon("ARRAY_SORT", anon("ARRAY_DISTINCT", anon("ARRAY_COMPACT", _semi_structured(values))))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         found = exp.Cast(this=operand_copy(value), to=exp.DataType.build("VARIANT"))
