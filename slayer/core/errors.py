@@ -141,6 +141,18 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class ModelFilterCycleError(SlayerError, ValueError):
+    """A model's filters read its own dataset; carries the ordered model ``cycle``."""
+
+    def __init__(self, cycle: Sequence[str]) -> None:
+        self.cycle: list[str] = list(cycle)
+        super().__init__(
+            f"Circular model filters: {' → '.join(self.cycle)}. A model's filters read the "
+            f"filtered dataset of every model they join, so these models' datasets depend on "
+            f"themselves; drop the filter that closes the cycle."
+        )
+
+
 class DerivedColumnFanningError(SlayerError, ValueError):
     """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``reference``."""
 

@@ -10012,7 +10012,9 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
-        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        # Once inside customers_v2's filtered dataset, once for the measure source.
+        assert cm_body.count("LEFT JOIN regions AS regions") == 2, cm_body
+        assert cm_body.index("LEFT JOIN regions AS regions") < cm_body.index(") AS customers_v2"), cm_body
         assert "SUM(regions.population)" in cm_body, cm_body
 
     async def test_filter_and_source_cross_different_depths(self, storage) -> None:
@@ -10029,7 +10031,9 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
-        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        # Once inside customers_v2's filtered dataset, once for the measure source.
+        assert cm_body.count("LEFT JOIN regions AS regions") == 2, cm_body
+        assert cm_body.index("LEFT JOIN regions AS regions") < cm_body.index(") AS customers_v2"), cm_body
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "SUM(regions__countries.gdp)" in cm_body, cm_body
 

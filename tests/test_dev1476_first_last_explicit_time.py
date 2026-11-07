@@ -355,7 +355,8 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
         measures=[{"formula": "customers.amount:last"}],
     ))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
-    assert set(by_region) == {"NA"}, resp.sql
+    # Orders of a deleted customer read the filtered-out target as NULL.
+    assert set(by_region) == {"NA", None}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
     # The newer (999.0) row is deleted; ranking should skip it and surface
     # the older active row's amount (100.0). A NULL here is the regression.

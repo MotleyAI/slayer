@@ -660,8 +660,8 @@ class TestCrossModelConsistency:
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
-        # The host's ``amount >= {floor}`` stays host-local, so the cross-model count is over
-        # all 3 customers; {floor} is substituted wherever it is emitted, and nowhere left raw.
+        # The host's ``amount >= {floor}`` restricts the customers-rooted count to customers with a
+        # passing order; {floor} is substituted wherever it is emitted, and nowhere left raw.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -674,14 +674,13 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "orders.customers.id_count") == 3
+            assert _sum(resp, "orders.customers.id_count") == 2
             assert "{floor}" not in resp.sql  # no un-substituted placeholder
         finally:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # A filter constrains the scope whose root it references, so the host's
-        # ``amount >= {floor}`` stays out of the customers-rooted CTE.
+        # The host's model filter restricts the customers-rooted count exactly as the same query filter does.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -694,8 +693,8 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            # The host model filter stays host-local: all 3 customers counted.
-            assert _sum(resp, "orders.customers.id_count") == 3
+            # The host's model filter restricts the customers-rooted count.
+            assert _sum(resp, "orders.customers.id_count") == 2
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql

@@ -25,7 +25,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 
-from tests._engine_helpers import _engine_generate, _where_text
+from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
 def _make_planets_model(*, with_window_column: bool = False) -> SlayerModel:
@@ -144,7 +144,7 @@ class TestSqlModeRuntime:
     """Mode A SQL filters (``Column.filter`` /
     ``SlayerModel.filters``) must not just construct cleanly — they
     have to flow through enrichment without the DSL parser rejecting
-    arbitrary SQL function calls. Before the fix the construction
+    arbitrary SQL function calls. Once, the construction
     tests passed but the engine failed at first query against any
     such model.
     """
@@ -164,11 +164,11 @@ class TestSqlModeRuntime:
             source_model="m",
             measures=[ModelMeasure(formula="amount:sum")],
         )
-        # Bug: this raised "Unknown filter function
-        # 'json_extract'" at enrichment time. Post-fix, it renders — the
-        # Mode A model filter survives into the emitted WHERE clause.
+        # This once raised "Unknown filter function 'json_extract'" at enrichment
+        # time; it renders — the Mode A model filter survives into the WHERE of
+        # the model's filtered dataset.
         sql = await _engine_generate(query=query, model=model)
-        assert "json_extract" in _where_text(sql).lower(), (
+        assert "json_extract" in _dataset_where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
 
@@ -546,7 +546,7 @@ class TestStrictResolution:
 
 
 # ---------------------------------------------------------------------------
-# Predicate-promotion drop
+# Predicate-promotion drop (reversed)
 # ---------------------------------------------------------------------------
 
 

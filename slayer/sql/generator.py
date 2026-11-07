@@ -29,6 +29,7 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     BUILTIN_AGGREGATION_PARAM_ORDER,
     DataType,
+    JoinType,
     TimeGranularity,
 )
 from pydantic import BaseModel, ConfigDict
@@ -36,6 +37,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.errors import (
     AggregationNotAllowedError,
     MaterialisationStageError,
+    ModelFilterCycleError,
     QueryBackedCycleError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
@@ -50,6 +52,8 @@ from slayer.core.join_walker import (
     join_key_columns,
     model_column_element,
     model_column_type,
+    physical_join_pairs,
+    provably_to_one,
     resolved_terminal,
 )
 from slayer.core.models import (
@@ -66,6 +70,7 @@ from slayer.sql.column_expansion import (
 from slayer.ir.planned import (
     MaskTyping,
     RankedGrainMember,
+    SemiJoinHop,
     SpineFactor,
     StageKind,
     ValueSlot,
@@ -354,14 +359,13 @@ _FORCE_MASK_FALLBACK = False
 
 
 class _LoweredFilter(BaseModel):
-    """One mask (typed expression) or Mode-A text with its render placement."""
+    """One mask with its render placement."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str
     phase: Phase
-    text: Optional[str] = None
-    expression: Optional[BoundExpr] = None
+    expression: BoundExpr
 
 
 class _LoweredPositions(BaseModel):
@@ -405,8 +409,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
     """Placement from the planner stage (D5): field → base WHERE; measure →
     HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
     a combined-attached dual-role value), the outer wrapper at DERIVED or when
-    any transform is present. Mode-A
-    texts render in the base WHERE between the date-range and user masks."""
+    any transform is present."""
     slots_by_id = {s.id: s for s in _plan_slots(planned_query)}
     slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
     combined_attached = _combined_attached_slot_ids(planned_query, slot_id_by_key)
@@ -439,15 +442,7 @@ def _lower_positions(planned_query) -> _LoweredPositions:
             expression=BoundExpr(value_key=slot.key),
         )
 
-    n_date = planned_query.n_date_range_masks
-    entries: List[_LoweredFilter] = [
-        _lower_mask(m) for m in planned_query.masks[:n_date]
-    ]
-    entries.extend(
-        _LoweredFilter(id=mf.id, phase=Phase.ROW, text=mf.text)
-        for mf in planned_query.mode_a_filters
-    )
-    entries.extend(_lower_mask(m) for m in planned_query.masks[n_date:])
+    entries = [_lower_mask(m) for m in planned_query.masks]
 
     order = _lower_order_entries(
         planned_query=planned_query,
@@ -878,6 +873,7 @@ class SQLGenerator:
     def __init__(
         self, dialect: "str | SqlDialect" = "postgres",
         force_unfused: bool = False,
+        force_association_filters: bool = False,
     ):
         if isinstance(dialect, SqlDialect):
             self._dialect: SqlDialect = dialect
@@ -885,6 +881,10 @@ class SQLGenerator:
             self._dialect = get_dialect(dialect)
         # Synthetic fusion blocker for lowering-soundness parity tests.
         self._force_unfused = force_unfused
+        # Never inline a model filter's joined reads (lowering-soundness parity tests).
+        self._force_association_filters = force_association_filters
+        # Models whose filtered datasets are being emitted (innermost last).
+        self._gen_filter_stack: Tuple[str, ...] = ()
         self._gen_allocator: Optional[AliasAllocator] = None
         self._gen_rendered_producers: Optional[
             Dict[Any, Tuple[str, Dict[str, str]]]
@@ -4357,15 +4357,13 @@ class SQLGenerator:
             parent_name, column = source_model.list_of
             parent = bundle.models_by_name[parent_name]
             parent_alias = self._join_alias(root=source_relation, path=(column,))
-            base_from = self._emit_relation(model=parent, alias=parent_alias)
+            base_from = self._emit_relation(model=parent, alias=parent_alias, bundle=bundle)
             joins.append(self._list_join(
                 parent=parent, column=column, parent_alias=parent_alias, alias=source_relation, bundle=bundle,
             ))
             emitted_aliases.add(parent_alias)
         else:
-            base_from = self._build_from_clause_from_planned(
-                source_model=source_model, source_relation=source_relation,
-            )
+            base_from = self._emit_relation(model=source_model, alias=source_relation, bundle=bundle)
         if not joined_paths:
             return base_from, joins
         for path in joined_paths:
@@ -4416,7 +4414,7 @@ class SQLGenerator:
         return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(column.db_type))
 
     def _hop_join(
-        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str, bundle=None,
+        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str, bundle,
         distinct_lists: bool = False,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
@@ -4438,7 +4436,7 @@ class SQLGenerator:
                 edge=edge, source=prev_model, target=next_model,
             )
         ]
-        join_expr = self._emit_relation(model=next_model, alias=next_alias)
+        join_expr = self._emit_relation(model=next_model, alias=next_alias, bundle=bundle)
         if not join_on_parts:
             return join_expr, None, "CROSS"  # the population's product with its spine
         on_expr = exp.and_(*join_on_parts) if len(join_on_parts) > 1 else join_on_parts[0]
@@ -4727,11 +4725,6 @@ class SQLGenerator:
         for fp in _lower_positions(planned_query).filters:
             if fp.phase != Phase.POST:
                 continue
-            if fp.expression is None:
-                raise ValueError(
-                    f"POST-phase mask id={fp.id!r} has no typed "
-                    f"expression; text-only POST filters are not supported.",
-                )
             rendered = render_value_key(
                 key=fp.expression.value_key,
                 ctx=self._alias_render_ctx(
@@ -5161,36 +5154,6 @@ class SQLGenerator:
             available_alias_by_slot_id.setdefault(slot.id, oa)
         return cp_value_cte_name
 
-    def _mode_a_scope(
-        self, *, source_model, source_relation: str, bundle,
-    ) -> ScopeFrame:
-        """An ephemeral :class:`ScopeFrame` for a Mode-A entry whose call site"""
-        return ScopeFrame(
-            scope_id=f"_modea_{source_relation}",
-            root_model=source_model,
-            root_relation=source_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=self._new_allocator(),
-        )
-
-    def _enter_mode_a_predicate(
-        self,
-        *,
-        sql: str,
-        scope: Optional[ScopeFrame] = None,
-        source_model=None,
-        source_relation: Optional[str] = None,
-        bundle=None,
-        location: Optional[str] = None,
-        owner_path: Tuple[str, ...] = (),
-    ) -> Expression:
-        """Enter a Mode-A PREDICATE through the door and hand back its AST."""
-        if scope is None:
-            assert source_relation is not None, "a Mode-A predicate needs a scope or a source relation"
-            scope = self._mode_a_scope(source_model=source_model, source_relation=source_relation, bundle=bundle)
-        return scope.enter_predicate(sql, location=location, owner_path=tuple(owner_path))
-
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
@@ -5278,32 +5241,47 @@ class SQLGenerator:
         )
 
 
-    def _build_from_clause_from_planned(
-        self,
-        *,
-        source_model,
-        source_relation: str,
-    ) -> Expression:
-        return self._emit_relation(model=source_model, alias=source_relation)
-
-    def _emit_relation(self, *, model, alias: str) -> Expression:
+    def _emit_relation(self, *, model, alias: str, bundle) -> Expression:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
-        hop): a stage relation must be one the statement declared it reads."""
+        hop, list parent), always as its filtered dataset (python.sql P16)."""
         if is_spine(model):
             return self._spine_relation(alias=alias)
+        filters = list(model.filters or [])
+        if not filters:
+            relation = self._backing_relation(model=model, alias=alias)
+        else:
+            if model.name in self._gen_filter_stack:
+                stack = self._gen_filter_stack
+                raise ModelFilterCycleError([*stack[stack.index(model.name):], model.name])
+            allocator = self._gen_allocator or self._new_allocator()
+            # Scoped to the derived table, so a filter naming its host (even in a subquery) reads this row.
+            rows = model.name
+            backing = self._backing_relation(model=model, alias=rows)
+            self._gen_filter_stack = (*self._gen_filter_stack, model.name)
+            try:
+                relation = self._filtered_dataset(
+                    model=model, filters=filters, backing=backing, rows=rows, alias=alias,
+                    allocator=allocator, bundle=bundle,
+                )
+            finally:
+                self._gen_filter_stack = self._gen_filter_stack[:-1]
+        if model.sql_table in self._gen_stage_relations:
+            return relation
+        return _stamp_model(relation, model=model)
+
+    def _backing_relation(self, *, model, alias: str) -> Expression:
+        """``model``'s rows before its filters; a stage relation must be one the statement declared it reads."""
         if model.list_of is not None:
             raise ValueError(f"List child {model.name!r} is read inside its parent's rows, never as a relation.")
         if model.sql_table:
-            if model.sql_table in self._gen_stage_relations:
-                if model.sql_table not in self._gen_stage_reads:
-                    raise ValueError(
-                        f"stage relation {model.sql_table!r} is emitted by a statement that "
-                        f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
-                    )
-                return self._to_table(model.sql_table, alias=alias)
-            return _stamp_model(self._to_table(model.sql_table, alias=alias), model=model)
+            if model.sql_table in self._gen_stage_relations and model.sql_table not in self._gen_stage_reads:
+                raise ValueError(
+                    f"stage relation {model.sql_table!r} is emitted by a statement that "
+                    f"does not declare reading it (declared: {sorted(self._gen_stage_reads)})"
+                )
+            return self._to_table(model.sql_table, alias=alias)
         if model.sql:
-            return _stamp_model(self._embed_model_sql(sql=model.sql, alias=alias), model=model)
+            return self._embed_model_sql(sql=model.sql, alias=alias)
         if model.name in self._gen_splice_failures:
             raise self._gen_splice_failures[model.name]
         if model.name in self._gen_splice_chain:
@@ -5313,6 +5291,93 @@ class SQLGenerator:
             f"Model {model.name!r} has neither sql_table nor sql: a query-backed "
             f"model reaches the renderer only as its spliced stages."
         )
+
+    def _filtered_dataset(
+        self, *, model, filters: List[str], backing: Expression, rows: str, alias: str,
+        allocator: AliasAllocator, bundle,
+    ) -> Expression:
+        """``(SELECT rows.* FROM backing AS rows [joins] WHERE …) AS alias``: an entry crossing only
+        proven to-one hops inlines its joins; the others restrict together by one correlated ``EXISTS``."""
+        limit = self._dialect.max_identifier_bytes
+
+        def path_alias(path: Tuple[str, ...]) -> str:
+            return allocator.alias_for(root=rows, path=path, limit=limit)
+
+        inlined: Dict[Tuple[str, ...], list] = {}
+        associated: Dict[Tuple[str, ...], list] = {}
+        conditions: List[Expression] = []
+        association: List[Expression] = []
+        for text in filters:
+            frame = self._scope_frame(model=model, relation=rows, bundle=bundle, allocator=allocator)
+            predicate = frame.enter_predicate(text, location=f"model filter {text!r} on model {model.name!r}")
+            paths = _prefix_closed(frame.join_paths.as_list())
+            chains = {p: self._oriented_hop_chain(source_model=model, path=p, bundle=bundle) for p in paths}
+            proven = all(
+                not is_lateral_edge(edge) and provably_to_one(edge=edge, target_model=target)
+                for chain in chains.values() for edge, target in chain
+            )
+            if paths and (self._force_association_filters or not proven):
+                associated.update(chains)
+                association.append(_grouped(predicate))
+                continue
+            inlined.update(chains)
+            conditions.append(_grouped(predicate))
+        associated_predicate = _conjunction(association)
+        if associated_predicate is not None:
+            conditions.append(_stamp_association(self._association_exists(
+                model=model, chains=associated, predicate=associated_predicate,
+                path_alias=path_alias, bundle=bundle,
+            ), model=model))
+        joins = []
+        for path, chain in inlined.items():
+            edge, target = chain[-1]
+            joins.append(self._hop_join(
+                edge=edge, prev_model=chain[-2][1] if len(chain) > 1 else model, next_model=target,
+                current_alias=path_alias(path[:-1]), next_alias=path_alias(path), bundle=bundle,
+            ))
+        select = exp.select(exp.Column(this=exp.Star(), table=exp.to_identifier(rows))).from_(backing)
+        select = _apply_joins(select=select, joins=joins).where(_conjunction(conditions))
+        return exp.Subquery(this=select, alias=exp.to_identifier(alias))
+
+    def _association_exists(
+        self, *, model, chains, predicate: Expression, path_alias: Callable[[Tuple[str, ...]], str], bundle,
+    ) -> Expression:
+        """``EXISTS`` over the null-extending joins the associated filter entries read, keyed on the row's own columns."""
+        hops = []
+        for path, chain in chains.items():
+            edge, target = chain[-1]
+            if is_unrelated_edge(edge):
+                raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
+            prev = chain[-2][1] if len(chain) > 1 else model
+            lateral = is_lateral_edge(edge)
+            declared_left = edge.join_type is JoinType.LEFT
+            hops.append(SemiJoinHop(
+                target_model=target.name, node_path=path, declared_left=declared_left,
+                null_extended=declared_left, lateral=edge.lateral if lateral else None,
+                join_pairs=() if lateral else tuple(physical_join_pairs(edge=edge, source=prev, target=target)),
+            ))
+        node_models = {(): model, **{p: chain[-1][1] for p, chain in chains.items()}}
+
+        def table(hop, leading: bool) -> Tuple[Expression, str]:
+            if hop.lateral is None:
+                return self._emit_relation(
+                    model=node_models[tuple(hop.node_path)], alias=path_alias(hop.node_path), bundle=bundle,
+                ), "CROSS"
+            parent_path = tuple(hop.node_path[:-1])
+            relation = self._list_relation(
+                parent=node_models[parent_path], column=hop.lateral, parent_alias=path_alias(parent_path),
+                alias=path_alias(hop.node_path), bundle=bundle, leading=leading,
+            )
+            return relation.relation, relation.join_kind
+
+        ops = _SemiJoinOps(
+            alias=path_alias,
+            col=lambda table_alias, name: exp.Column(this=self._to_ident(name), table=exp.to_identifier(table_alias)),
+            table=table,
+            attached={tuple(h.node_path) for h in hops if len(h.node_path) == 1},
+        )
+        inner = _semi_join_spine(ops=ops, hops=hops, inner=exp.select(exp.Literal.number(1)), ident=self._to_ident)
+        return exp.Exists(this=inner.where(predicate))
 
     def _spine_relation(self, *, alias: str) -> Expression:
         """The spine as its bucket series: one row per bucket overlapping the bounds."""
@@ -5501,22 +5566,11 @@ class SQLGenerator:
         for fp in filters:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
-            if fp.expression is not None:
-                for p in self._value_key_join_paths(
-                    key=fp.expression.value_key, source_model=scope.root_model,
-                    source_relation=scope.root_relation, bundle=scope.bundle,
-                ):
-                    scope.join_paths.add(p)
-            elif fp.text is not None:
-                # Discover joins from BOTH the un-inlined placeholder text and the inline-expanded text — each surfaces
-                # joins the other hides (see ScopeFrame._enter's dual-scan).
-                self._enter_mode_a_predicate(
-                    sql=fp.text, scope=scope,
-                    location=(
-                        f"SlayerModel.filters on model "
-                        f"{scope.root_model.name!r}"
-                    ),
-                )
+            for p in self._value_key_join_paths(
+                key=fp.expression.value_key, source_model=scope.root_model,
+                source_relation=scope.root_relation, bundle=scope.bundle,
+            ):
+                scope.join_paths.add(p)
 
     def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_model, source_relation: str, bundle,
@@ -5901,8 +5955,6 @@ class SQLGenerator:
             )
         return model
 
-    def _hop_table_expr(self, *, hop_model, alias: str) -> Expression:
-        return self._emit_relation(model=hop_model, alias=alias)
 
     def _build_semi_join_exists(
         self, *, group, source_model, source_relation: str, bundle, allocator,
@@ -5924,8 +5976,9 @@ class SQLGenerator:
 
         def _table(hop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
-                return self._hop_table_expr(
-                    hop_model=self._hop_model(name=hop.target_model, bundle=bundle), alias=_alias(hop.node_path),
+                return self._emit_relation(
+                    model=self._hop_model(name=hop.target_model, bundle=bundle), alias=_alias(hop.node_path),
+                    bundle=bundle,
                 ), "CROSS"
             parent_path = tuple(hop.node_path[:-1])
             relation = self._list_relation(
@@ -6046,38 +6099,19 @@ class SQLGenerator:
             if having and dimension_values is None:
                 continue
             target_parts = having_parts if having else where_parts
-            if fp.expression is not None:
-                ctx = self._filter_render_context(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                    slot_by_key=slot_by_key,
-                    aliases_by_slot_id=aliases_by_slot_id,
-                    regroup_env=regroup_env,
-                )
-                if having:
-                    ctx = ctx.model_copy(update={
-                        "scope": None, "dimension_values": dimension_values,
-                    })
-                rendered = render_value_key(key=fp.expression.value_key, ctx=ctx)
-                target_parts.append(_grouped(rendered))
-            elif fp.text is not None:
-                # Mode-A filter: qualify bare refs with the source relation; a non-trivial derived reference is
-                # inline-expanded and pulls its crossed joins into the FROM.
-                target_parts.append(_grouped(self._enter_mode_a_predicate(
-                    sql=fp.text,
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                    location=(
-                        f"SlayerModel.filters on model {source_model.name!r}"
-                    ),
-                )))
-            else:
-                raise ValueError(
-                    f"Lowered filter id={fp.id!r} has neither expression "
-                    f"nor text (planner gap).",
-                )
+            ctx = self._filter_render_context(
+                source_model=source_model,
+                source_relation=source_relation,
+                bundle=bundle,
+                slot_by_key=slot_by_key,
+                aliases_by_slot_id=aliases_by_slot_id,
+                regroup_env=regroup_env,
+            )
+            if having:
+                ctx = ctx.model_copy(update={
+                    "scope": None, "dimension_values": dimension_values,
+                })
+            target_parts.append(_grouped(render_value_key(key=fp.expression.value_key, ctx=ctx)))
 
         return _conjunction(where_parts), _conjunction(having_parts)
 
@@ -6501,6 +6535,28 @@ def read_models(statement: Expression) -> Set[str]:
     }
 
 
+_ASSOCIATION_STAMP = "slayer_association"
+
+
+def _stamp_association(exists: Expression, *, model) -> Expression:
+    """Mark ``exists`` as restricting ``model``'s rows by a correlated subquery."""
+    exists.meta[_ASSOCIATION_STAMP] = model.name
+    return exists
+
+
+def association_models(statement: Expression) -> Set[str]:
+    """Models whose filters ``statement`` restricts by a correlated ``EXISTS``."""
+    return {
+        stamp for node in statement.find_all(exp.Exists)
+        if (stamp := node.meta.get(_ASSOCIATION_STAMP)) is not None
+    }
+
+
+def _prefix_closed(paths: Iterable[Tuple[str, ...]]) -> List[Tuple[str, ...]]:
+    """``paths`` with every prefix, each parent before its children."""
+    return list(dict.fromkeys(path[:i] for path in paths for i in range(1, len(path) + 1)))
+
+
 def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
     return dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
 
@@ -6508,14 +6564,16 @@ def _as_dialect(dialect: "str | SqlDialect") -> SqlDialect:
 @overload
 def generate_planned_stages(
     planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
-    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ..., type_probe: Literal[False] = ...,
+    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ...,
+    associated: "Optional[Set[str]]" = ..., type_probe: Literal[False] = ...,
 ) -> str: ...
 
 
 @overload
 def generate_planned_stages(
     planned_queries, *, bundle, dialect: "str | SqlDialect" = ..., projection_aliases: "Sequence[str]" = ...,
-    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ..., type_probe: Literal[True],
+    kept_stages: "Optional[Set[str]]" = ..., read_set: "Optional[Set[str]]" = ...,
+    associated: "Optional[Set[str]]" = ..., type_probe: Literal[True],
 ) -> TypeProbe: ...
 
 
@@ -6527,11 +6585,13 @@ def generate_planned_stages(
     projection_aliases: "Sequence[str]" = (),
     kept_stages: "Optional[Set[str]]" = None,
     read_set: "Optional[Set[str]]" = None,
+    associated: "Optional[Set[str]]" = None,
     type_probe: bool = False,
 ) -> "str | TypeProbe":
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; spliced
     stages nothing reaches are pruned, the stage relations emitted land in ``kept_stages``,
-    the models the statement reads in ``read_set``. ``type_probe`` bounds it by the dialect's type probe
+    the models the statement reads in ``read_set``, those whose filters it restricts by a
+    correlated subquery in ``associated``. ``type_probe`` bounds it by the dialect's type probe
     and mints it as a :class:`TypeProbe`."""
     kept: Set[str] = set()
     statement = _build_planned_stages_ast(
@@ -6541,13 +6601,18 @@ def generate_planned_stages(
         kept_stages.update(kept)
     if read_set is not None:
         read_set.update(read_models(statement))
+    filter_associations = association_models(statement)
+    if associated is not None:
+        associated.update(filter_associations)
     if type_probe:
         statement = _as_dialect(dialect).type_probe(statement)
     spine_sizes = [p.spine.size for p in planned_queries if p.spine is not None]
     if spine_sizes:
         _as_dialect(dialect).attach_sequence_setting(statement, size=max(spine_sizes))
     # Semi-join pushdown emits a correlated EXISTS; attached unconditionally so SQL never depends on server state.
-    if any(plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)):
+    if filter_associations or any(
+        plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)
+    ):
         _as_dialect(dialect).attach_correlated_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.

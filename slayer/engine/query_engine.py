@@ -74,7 +74,7 @@ from slayer.core.query import (
     render_probe_text,
 )
 from slayer.core.join_search import blocking_pairs, shortest_routes, unreachable_target
-from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach
+from slayer.engine.column_dependency import check_definition_ambiguity, check_definition_reach, check_model_filters
 from slayer.engine.population import (
     ambiguity_resolved_path,
     determined_path,
@@ -180,6 +180,7 @@ from slayer.sql.generator import (
     _build_planned_stages_ast,
     _finish_statement,
     _user_authored_exemptions,
+    association_models,
     generate_planned_stages,
     read_models,
 )
@@ -703,6 +704,8 @@ class _Rendered(BaseModel):
     model: SlayerModel
     # Models whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
+    # Models whose filters the statement restricts by a correlated subquery.
+    associated: Set[str] = PydanticField(default_factory=set)
     element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
@@ -841,15 +844,21 @@ class SlayerQueryEngine:
         return sql_dialect.model_copy(update={"server_profile": profile})
 
     async def _require_correlated_subqueries(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str, associated: Set[str],
     ) -> None:
-        """Fail closed when this user cannot run the semi-join pushdown's correlated ``EXISTS``."""
+        """Fail closed when this user cannot run a correlated ``EXISTS``: a semi-join pushdown, or a
+        model filter read across an unproven hop."""
         sql_dialect = get_dialect(dialect)
         if not sql_dialect.correlated_subqueries_gated:
             return
         texts = _semi_join_filter_texts(planned_list)
         named = f" (filter(s): {', '.join(repr(t) for t in texts)})" if texts else ""
-        lead = f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
+        lead = (
+            f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
+            if texts or not associated else
+            f"This query reads model(s) {sorted(associated)} whose filters read a joined model across a hop not "
+            f"proven to-one, restricted by a correlated EXISTS."
+        )
         try:
             profile = await self.client_for(datasource).server_profile()
         except Exception as exc:
@@ -1109,9 +1118,10 @@ class SlayerQueryEngine:
         assert sql is not None
         planned_list = rendered.planned_list
         root_planned = planned_list[-1]
-        if any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
+        if rendered.associated or any(plan_has_semi_join_filters(p) for p in rendered.emitted_list):
             await self._require_correlated_subqueries(
                 dialect=dialect, datasource=datasource, planned_list=rendered.emitted_list, sql=sql,
+                associated=rendered.associated,
             )
         # Forced-filter rewrite before dry-run / explain / execute so all three
         # (and the cache key) see the policy-rewritten SQL; no-op without a policy.
@@ -1286,12 +1296,14 @@ class SlayerQueryEngine:
         sql: Optional[str] = None
         statement: Optional[Any] = None
         reads: Set[str] = set(bundle.splice_chain)
+        associated: Set[str] = set()
         with collect_stale_spellings() as render_stale_spellings:
             if as_statement:
                 statement = _build_planned_stages_ast(
                     planned_list, bundle=bundle, dialect=render_dialect, kept_stages=kept,
                 )
                 reads |= read_models(statement)
+                associated |= association_models(statement)
             else:
                 sql = generate_planned_stages(
                     planned_queries=planned_list, bundle=bundle, dialect=render_dialect,
@@ -1300,6 +1312,7 @@ class SlayerQueryEngine:
                     projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
                     kept_stages=kept,
                     read_set=reads,
+                    associated=associated,
                 )
 
         # Warnings come from the stages the SQL emits (a spliced stage nothing reads is pruned).
@@ -1327,8 +1340,8 @@ class SlayerQueryEngine:
         ]))))
         return _Rendered(
             sql=sql, statement=statement, dialect=dialect, datasource=datasource, bundle=bundle,
-            planned_list=planned_list, emitted_list=plans, model=model, reads=reads, warnings=warnings,
-            population=population, population_inferred=population_inferred,
+            planned_list=planned_list, emitted_list=plans, model=model, reads=reads, associated=associated,
+            warnings=warnings, population=population, population_inferred=population_inferred,
         )
 
     async def _infer_populations(
@@ -3056,6 +3069,7 @@ class SlayerQueryEngine:
         models_by_name = {k: v for k, v in loaded.items() if v is not None}
         check_definition_reach(model=model, reachable=models_by_name)
         check_definition_ambiguity(model=model, reachable=models_by_name)
+        check_model_filters(model=model, reachable=models_by_name)
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(

@@ -22,7 +22,7 @@ Key terms used throughout SLayer documentation and code.
 
 **ModelExtension** — Extends a model inline on a query with extra `columns`, `measures` (named formulas), `joins`, or `filters` — without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
 
-**Model filter** — A WHERE filter defined on a model, always applied to every query on that model (e.g., `"deleted_at IS NULL"`).
+**Model filter** — A WHERE filter defined on a model, applied wherever the model's rows are read, including as a join target (e.g., `"deleted_at IS NULL"`).
 
 **Query-as-model** — Using a query's result as the source for another query, or saving it as a permanent model. Useful for materializing complex aggregations.
 

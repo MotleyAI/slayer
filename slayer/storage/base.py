@@ -26,7 +26,7 @@ from slayer.core.errors import (
     StoredDocumentLoadError,
     UnknownGranularityError,
 )
-from slayer.engine.column_dependency import validate_derived_columns, warn_broken_dependents
+from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
 from slayer.core.join_walker import edges_between
 from slayer.core.models import (
     DatasourceConfig,
@@ -505,7 +505,7 @@ class StorageBackend(ABC):
         self._forget_raw(data_source=model.data_source, name=model.name)
 
     async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
-        """Reserved-name and case-collision rejection, derived-column well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
+        """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
         if model.name == TIME_SPINE_MODEL:
             raise ReservedModelNameError(name=model.name)
         if self._ids_collide_as_filenames:
@@ -515,6 +515,7 @@ class StorageBackend(ABC):
         loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+        check_model_filters(model=model, reachable=peers)
         self._validate_join_edges(model, peers=peers, identities=await self._list_all_model_identities())
         await self._validate_aggregations(model)
         await self._validate_column_granularities(model)

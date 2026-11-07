@@ -78,11 +78,6 @@ class ResolvedSourceBundle(BaseModel):
         child = self.models_by_name.get(name)
         return child if child is not None and child.list_of is not None else None
 
-    def saved_joins(self, name: str) -> List[ModelJoin]:
-        """The declared joins of stored query-backed model ``name``; none for any other stage."""
-        saved = self.query_backed.get(name)
-        return list(saved.joins) if saved is not None else []
-
     def factor_free(self, model: SlayerModel) -> SlayerModel:
         """``model`` as stored: a population without its product hops."""
         if model.unrelated_datasets:
@@ -202,9 +197,10 @@ def model_from_stage_schema(
     sql: Optional[str] = None,
     column_sql: Optional[Dict[str, str]] = None,
     default_time_dimension: Optional[str] = None,
-    joins: Optional[List[ModelJoin]] = None,
+    saved: Optional[SlayerModel] = None,
 ) -> SlayerModel:
-    """The model a stage's output is read as: over its CTE (``sql=None``) or over ``sql``.
+    """The model a stage's output is read as: over its CTE (``sql=None``) or over ``sql``,
+    with the joins and filters of ``saved``, the stored query-backed model it reads as.
 
     A single-column grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
     """
@@ -232,7 +228,7 @@ def model_from_stage_schema(
             for c in schema.columns
         ],
     )
-    joins = joins or []
+    joins = list(saved.joins) if saved is not None else []
     # Joins attach after the rename (validators skip model_copy), so check their keys here.
     _check_join_keys(model_name=name, columns=model.columns, joins=joins)
     # A minted stage identity carries the reserved prefix the name validator rejects.
@@ -240,6 +236,7 @@ def model_from_stage_schema(
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
         "joins": joins,
+        "filters": list(saved.filters) if saved is not None else [],
     }).with_spelling(schema.display_name if schema.display_name != name else None)
 
 
@@ -260,7 +257,7 @@ def stage_bundle_with_siblings(
     """
     synths = [
         model_from_stage_schema(
-            name=n, schema=s, data_source=data_source, joins=bundle.saved_joins(n),
+            name=n, schema=s, data_source=data_source, saved=bundle.query_backed.get(n),
         )
         for n, s in sibling_schemas.items()
     ]
