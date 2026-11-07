@@ -11,13 +11,13 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 In `slayer/engine/schema_drift.py`: add `RemedyKind`, stored `remedy_kind`, `remedy`/`summary` as `@computed_field` properties with today's exact texts; verify `test_retype_finding.py` field/shape tests pass
-- [ ] 2.2 Replace `of(..., reingest: bool)` with `of(..., remedy_kind=...)` and update the three call sites; verify the remedy-kind tests (1.3–1.6) pass
-- [ ] 2.3 Add the `model_validator(mode="before")` legacy inference over the two canonical texts, refusing anything else; verify 1.7–1.8 pass
-- [ ] 2.4 Update `docs/concepts/schema-drift.md` §Re-type findings: add `remedy_kind` to the field list plus one sentence (`reingest` or `set_type`); verify `poetry run pytest tests/test_doc_examples.py` passes
+- [x] 2.1 In `slayer/engine/schema_drift.py`: add `RemedyKind`, stored `remedy_kind`, `remedy`/`summary` as `@computed_field` properties with today's exact texts; verify `test_retype_finding.py` field/shape tests pass
+- [x] 2.2 Replace `of(..., reingest: bool)` with `of(..., remedy_kind=...)` and update the three call sites; verify the remedy-kind tests (1.3–1.6) pass
+- [x] 2.3 Add the `model_validator(mode="before")` legacy inference over the two canonical texts, refusing anything else; verify 1.7–1.8 pass
+- [x] 2.4 Update `docs/concepts/schema-drift.md` §Re-type findings: add `remedy_kind` to the field list plus one sentence (`reingest` or `set_type`); verify `poetry run pytest tests/test_doc_examples.py` passes
 
 ## 3. Gates
 
-- [ ] 3.1 `poetry run pytest -m "not integration"` passes in full
-- [ ] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline) and `poetry run la-arch-check` pass
-- [ ] 3.3 `openspec validate dev-2224-a-re-type-finding-carries-its-remedy-as-a --strict` passes
+- [x] 3.1 `poetry run pytest -m "not integration"` passes in full
+- [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline) and `poetry run la-arch-check` pass
+- [x] 3.3 `openspec validate dev-2224-a-re-type-finding-carries-its-remedy-as-a --strict` passes

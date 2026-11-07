@@ -77,9 +77,10 @@ references that resolve into another datasource are skipped silently.
 ## Re-type findings
 
 A column whose live column exists with a conflicting type is reported as `{finding: "retype", model_name, data_source,
-column, stored_type, live_type, live_db_type, remedy, summary}` — never deleted, never applied by `--force-clean`, printed
-by the CLI as a `RE-TYPE:` line — whose remedy is re-ingesting for a live list or a SQLite column the affinity probe
-widened, and otherwise setting the column's type to `live_type`.
+column, stored_type, live_type, live_db_type, remedy_kind, remedy, summary}` — never deleted, never applied by
+`--force-clean`, printed by the CLI as a `RE-TYPE:` line — whose `remedy_kind` is `reingest` for a live list on a
+table-backed model or a SQLite column the affinity probe widened, and otherwise `set_type` (set the column's type to
+`live_type`), with `remedy` and `summary` its human-readable text.
 
 ## Output shape
 

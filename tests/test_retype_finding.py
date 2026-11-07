@@ -503,7 +503,7 @@ class TestSerializedFinding:
         assert loaded.summary.endswith(f"; {_SET_TYPE_REMEDY}.")
 
     @pytest.mark.parametrize("kind", ["reingest", "set_type"])
-    def test_a_full_dump_round_trips(self, kind: str) -> None:
+    def test_a_full_dump_round_trips(self, kind: schema_drift.RemedyKind) -> None:
         model = SlayerModel(name="m", sql_table="t", data_source="ds", columns=[_pk()])
         finding = schema_drift.RetypeFinding.of(
             model=model, column=Column(name="c", type=DataType.TEXT), live_type=DataType.INT,
