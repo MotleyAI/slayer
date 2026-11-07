@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Coroutine
@@ -17,7 +18,7 @@ from typing import (
 )
 
 import sqlglot
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
@@ -132,6 +133,15 @@ ToDeleteEntry = Annotated[
 ]
 
 
+RemedyKind = Literal["reingest", "set_type"]
+
+#: Remedy texts serialized before ``remedy_kind`` existed.
+_LEGACY_REMEDIES: dict[RemedyKind, re.Pattern[str]] = {
+    "reingest": re.compile(r"re-ingest datasource '.*' \(`slayer ingest`\) to re-type it"),
+    "set_type": re.compile(r"set the column's type to [A-Z_]+"),
+}
+
+
 class RetypeFinding(BaseModel):
     """Report-only: a column whose live column exists with a conflicting type."""
 
@@ -142,23 +152,42 @@ class RetypeFinding(BaseModel):
     stored_type: DataType
     live_type: DataType
     live_db_type: str | None = None
-    remedy: str
-    summary: str
+    remedy_kind: RemedyKind
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_legacy_remedy_kind(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "remedy_kind" in data:
+            return data
+        remedy = data.get("remedy")
+        kind = next((k for k, pattern in _LEGACY_REMEDIES.items()
+                     if isinstance(remedy, str) and pattern.fullmatch(remedy)), None)
+        if kind is None:
+            raise ValueError(f"cannot infer remedy_kind from remedy {remedy!r}")
+        return {**data, "remedy_kind": kind}
+
+    @computed_field
+    @property
+    def remedy(self) -> str:
+        if self.remedy_kind == "reingest":
+            return f"re-ingest datasource '{self.data_source}' (`slayer ingest`) to re-type it"
+        return f"set the column's type to {self.live_type.value}"
+
+    @computed_field
+    @property
+    def summary(self) -> str:
+        live = f"{self.live_db_type} ({self.live_type.value})" if self.live_db_type else self.live_type.value
+        return (f"Column '{self.model_name}.{self.column}' is stored as {self.stored_type.value} but its live "
+                f"column is {live}; {self.remedy}.")
 
     @classmethod
     def of(
-        cls, *, model: SlayerModel, column: Column, live_type: DataType, live_db_type: str | None, reingest: bool,
+        cls, *, model: SlayerModel, column: Column, live_type: DataType, live_db_type: str | None,
+        remedy_kind: RemedyKind,
     ) -> "RetypeFinding":
-        remedy = (
-            f"re-ingest datasource '{model.data_source}' (`slayer ingest`) to re-type it" if reingest
-            else f"set the column's type to {live_type.value}"
-        )
-        live = f"{live_db_type} ({live_type.value})" if live_db_type else live_type.value
         return cls(
             model_name=model.name, data_source=model.data_source, column=column.name, stored_type=column.type,
-            live_type=live_type, live_db_type=live_db_type, remedy=remedy,
-            summary=f"Column '{model.name}.{column.name}' is stored as {column.type.value} but its live column "
-            f"is {live}; {remedy}.",
+            live_type=live_type, live_db_type=live_db_type, remedy_kind=remedy_kind,
         )
 
 
@@ -322,7 +351,7 @@ def retype_findings(*, model: SlayerModel, live_table: LiveTable | None) -> list
         if live is not None and _retyped(persisted=col.type, live=live):
             out.append(RetypeFinding.of(
                 model=model, column=col, live_type=live, live_db_type=live_table.db_types.get(name),
-                reingest=live is DataType.ARRAY,
+                remedy_kind="reingest" if live is DataType.ARRAY else "set_type",
             ))
     return out
 
@@ -338,7 +367,7 @@ def sql_model_retype_findings(
             live = (live_columns or {}).get(col.sql.strip())
         if live is not None and _retyped(persisted=col.type, live=live.type):
             out.append(RetypeFinding.of(
-                model=model, column=col, live_type=live.type, live_db_type=live.db_type, reingest=False,
+                model=model, column=col, live_type=live.type, live_db_type=live.db_type, remedy_kind="set_type",
             ))
     return out
 
@@ -2208,7 +2237,8 @@ async def _sqlite_probe_int_drift_for_model(
         )
         if verdict is None or verdict is DataType.INT:
             continue
-        drifts.append(RetypeFinding.of(model=model, column=col, live_type=verdict, live_db_type=None, reingest=True))
+        drifts.append(RetypeFinding.of(model=model, column=col, live_type=verdict, live_db_type=None,
+                                       remedy_kind="reingest"))
     return drifts
 
 
