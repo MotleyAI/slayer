@@ -3,6 +3,11 @@ name: Latest deps
 permissions:
   contents: read
 
+# A new push to the same PR cancels its run in flight.
+concurrency:
+  group: latest-deps-${{ github.ref }}
+  cancel-in-progress: true
+
 # Upstream breakage is caught daily; PRs run it only when they change dependencies.
 on:
   pull_request:
