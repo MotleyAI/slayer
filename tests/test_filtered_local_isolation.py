@@ -350,9 +350,11 @@ class TestHostModelFiltersInteractions:
         assert reads, sql
         for table in reads:
             select = table.parent_select
-            assert select is not None and isinstance(select.parent, exp.Subquery), sql
+            assert select is not None, sql
+            assert isinstance(select.parent, exp.Subquery), sql
             where = select.args.get("where")
-            assert where is not None and "amount > 0" in where.sql(dialect="postgres").lower(), sql
+            assert where is not None, sql
+            assert "amount > 0" in where.sql(dialect="postgres").lower(), sql
 
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""

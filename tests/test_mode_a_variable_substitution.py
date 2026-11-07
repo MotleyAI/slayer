@@ -1,6 +1,6 @@
-"""DEV-1625 — {variable} substitution in Mode-A (raw-SQL) surfaces.
+"""{variable} substitution in Mode-A (raw-SQL) surfaces.
 
-Scope of DEV-1625 is the DIRECT source model only: SlayerModel.sql,
+Scope: the DIRECT source model only: SlayerModel.sql,
 SlayerModel.filters, Column.sql, Column.filter. Nested source_queries stages,
 query-backed direct sources, join targets and cross-model targets are deferred
 to DEV-1678 (a couple of boundary pins below assert that deferred behavior).
@@ -380,7 +380,7 @@ class TestMissingVariable:
 #
 # NB: backslash-in-value is deliberately NOT exercised end-to-end. It does not
 # round-trip through SQLite in SLayer at all — a PRE-EXISTING quirk independent
-# of DEV-1625: the Mode-B parser is ast-based (so `\b` in a filter is a
+# of this suite: the Mode-B parser is ast-based (so `\b` in a filter is a
 # backspace escape) and sqlglot's SQLite generator doubles backslashes that
 # SQLite never unescapes. Even a literal, no-variable filter `status = 'a\b'`
 # mismatches. The escaping-string CONTRACT for backslashes (value recovery
@@ -448,13 +448,13 @@ class TestEscapingEndToEnd:
     async def test_backslash_value_sqlite_roundtrip(self) -> None:
         """A backslash in a string value round-trips through SQLite.
 
-        On the LEGACY engine this was a strict-xfail gap (DEV-1625): python
+        On the LEGACY engine this was a strict-xfail gap: python
         escaping recovered the value via ``ast.parse``, but the legacy
         emission path then let sqlglot's SQLite generator double the
         backslash, which SQLite never unescapes — so the literal mismatched
         the stored value. The typed pipeline emits the predicate through the
         resolver / dialect strategy and the value survives intact, so the pin
-        is promoted to a passing regression test (DEV-1703 Phase 0).
+        is promoted to a passing regression test.
         """
         model = SlayerModel(
             name="t",
@@ -565,7 +565,7 @@ class TestBraceLiterals:
     async def test_placeholder_shaped_literal_in_variable_free_model_not_raised(
         self,
     ) -> None:
-        """Empty-map contract (DEV-1625): raise-on-missing applies only once a
+        """Empty-map contract: raise-on-missing applies only once a
         variable is in play. A model with an {identifier}-shaped placeholder in
         a string literal but NO variables anywhere (no query_variables, no
         caller vars) treats it as a literal — it is NOT substituted and does NOT
@@ -630,7 +630,7 @@ class TestBraceLiterals:
 
 class TestCrossModelConsistency:
     def _models(self) -> list[SlayerModel]:
-        # DEV-1853: no declared reverse join — the orders → customers edge
+        # No declared reverse join — the orders → customers edge
         # traverses both ways, so the old bidirectional/unidirectional fixture
         # axis is gone (a declared exact inverse is rejected at save).
         customers = SlayerModel(
@@ -682,11 +682,9 @@ class TestCrossModelConsistency:
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
-        # DEV-1853: the reverse hop is automatic, and F4 (DEV-1703) keeps the
-        # host's ``amount >= {floor}`` host-local either way — the cross-model
-        # count stays over all 3 customers. DEV-1625's guarantee: {floor} is
-        # SUBSTITUTED wherever it IS emitted (``amount:sum`` gets ``>= 100`` →
-        # 300.0) and no stray literal ``{floor}`` survives anywhere.
+        # The host's ``amount >= {floor}`` restricts the customers-rooted count
+        # to customers with a passing order, like the same query filter. {floor}
+        # is SUBSTITUTED wherever it is emitted, no stray literal survives.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -699,27 +697,16 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "orders.customers.id_count") == 3
+            assert _sum(resp, "orders.customers.id_count") == 2
             assert "{floor}" not in resp.sql  # no un-substituted placeholder
         finally:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # Reachable target (DEV-1853: reachability is automatic — the declared
-        # reverse join this variant used to add is now rejected at save).
-        #
-        # DEV-1703 F4 DIVERGENCE FROM LEGACY (deliberate, user-approved):
-        # under the typed pipeline a filter constrains the scope whose root it
-        # references, and that ONE rule now covers Mode-A model filters as well
-        # as Mode-B query filters. The host's ``amount >= {floor}`` therefore
-        # stays host-local and does NOT reach into the customers-rooted
-        # cross-model CTE, so the scalar count is over all 3 customers.
-        # Legacy re-applied model filters (but never query filters) inside the
-        # re-rooted CTE via the reverse join and returned 2 — an asymmetry F4
-        # exists to end. What DEV-1625 still guarantees, and what this test
-        # pins, is that {floor} is SUBSTITUTED wherever it IS emitted (the
-        # ``amount:sum`` scope gets ``>= 100`` → 300.0) with no stray literal
-        # ``{floor}`` anywhere in the SQL.
+        # Reachable target (reachability is automatic — the declared reverse
+        # join this variant used to add is now rejected at save). The host's
+        # model filter restricts the customers-rooted count exactly as the same
+        # query filter does; {floor} is SUBSTITUTED wherever it is emitted.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -733,7 +720,7 @@ class TestCrossModelConsistency:
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
             # F4: host model filter stays host-local — all 3 customers counted.
-            assert _sum(resp, "orders.customers.id_count") == 3
+            assert _sum(resp, "orders.customers.id_count") == 2
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql
@@ -749,7 +736,7 @@ class TestCrossModelConsistency:
 class TestDeferredScope:
     async def test_join_target_var_not_substituted(self) -> None:
         """A {var} in a JOIN-TARGET model's Column.sql is NOT substituted by
-        DEV-1625 (deferred to DEV-1678): the enclosing query's variable does
+        this suite (deferred to DEV-1678): the enclosing query's variable does
         not reach it, so the stray {var} surfaces an error rather than being
         silently filled. Stable boundary pin (holds before AND after)."""
         customers = SlayerModel(
@@ -889,7 +876,7 @@ class TestSubstituteVariablesHardened:
 
         # On a STANDARD dialect (backslash_escapes=False) sqlglot treats
         # backslash as an ordinary char, so SQL-mode must NOT touch it (only '
-        # is special). DEV-1727 backslash dialects are covered separately.
+        # is special). Backslash dialects are covered separately.
         result = substitute_variables(
             filter_str="path = '{v}'", variables={"v": r"a\b"},
             escape="sql", backslash_escapes=False,
@@ -983,7 +970,7 @@ class TestSubstituteVariablesHardened:
     def test_sql_mode_newline_left_raw(self) -> None:
 
         # SQL string literals permit raw newlines, so sql-mode must NOT escape
-        # them (only the single quote is special there). DEV-1727 made the sql
+        # them (only the single quote is special there). The sql
         # regime dialect-aware + fail-closed, so pass the standard-dialect flag.
         result = substitute_variables(
             filter_str="note = '{v}'", variables={"v": "a\nb"},
@@ -1056,7 +1043,7 @@ class TestSubstituteVariablesHardened:
     def test_dict_value_raises(self) -> None:
 
         # A dict is neither scalar nor list/tuple → terminal ValueError whose
-        # message now names list/tuple as an accepted shape (DEV-1730 lists).
+        # message now names list/tuple as an accepted shape.
         with pytest.raises(
             ValueError, match="must be a string, number, or list/tuple"
         ):
@@ -1113,10 +1100,6 @@ class TestSubstituteVariablesHardened:
 
 class TestSubstituteHelperScope:
     def test_only_mode_a_surfaces_substituted(self) -> None:
-        # Introduced by DEV-1625; import inline so a missing symbol doesn't
-        # break collection of the whole module during TDD phase 1.
-
-
         model = SlayerModel(
             name="m",
             data_source="ds",
@@ -1261,7 +1244,7 @@ class TestModelExtensionDirectSource:
     async def test_model_extension_column_sql_var_substituted(self) -> None:
         """A ModelExtension used as the direct source resolves to a template
         model (source_model_origin is None), so its extra Column.sql {var} IS
-        substituted by DEV-1625."""
+        substituted."""
         base = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -1471,7 +1454,7 @@ class TestGetColumnTypesDefaults:
             tmp.cleanup()
 
     async def test_list_default_probe_succeeds(self) -> None:
-        """DEV-1730: a Mode-A ``IN ({var})`` filter with a LIST default in
+        """A Mode-A ``IN ({var})`` filter with a LIST default in
         ``query_variables`` renders cleanly at the type-probe path, so the probe
         returns real column types instead of the ``{}`` degradation."""
         model = SlayerModel(
@@ -1496,7 +1479,7 @@ class TestGetColumnTypesDefaults:
 
 
 # ---------------------------------------------------------------------------
-# 18. Unit: list/tuple variable rendering (DEV-1730 IN-list pushdown)
+# 18. Unit: list/tuple variable rendering (IN-list pushdown)
 # ---------------------------------------------------------------------------
 
 
@@ -1635,7 +1618,7 @@ class TestListValueRenderingErrors:
     def test_empty_list_raises_naming_variable(self) -> None:
 
         # IN () is invalid SQL; the message names the variable, says "empty", and
-        # points at the sentinel-default idiom (DEV-1730) for "no filter".
+        # points at the sentinel-default idiom for "no filter".
         with pytest.raises(ValueError, match="regions") as exc:
             substitute_variables(
                 filter_str="region IN ({regions})",
@@ -1644,7 +1627,7 @@ class TestListValueRenderingErrors:
             )
         msg = str(exc.value).lower()
         assert "empty" in msg
-        # The sentinel-default hint is a required contract (DEV-1730), pinned by
+        # The sentinel-default hint is a required contract, pinned by
         # a stable single-word fragment rather than the full sentence.
         assert "sentinel" in msg
 
@@ -1906,7 +1889,7 @@ class TestListModeBEndToEnd:
 
 
 # ===========================================================================
-# DEV-1727 — dialect-aware / complete escaping for Mode-A {var} substitution
+# Dialect-aware / complete escaping for Mode-A {var} substitution
 # ===========================================================================
 
 
@@ -1918,8 +1901,7 @@ class TestSqlModeBackslashEscaping:
     """``escape="sql"`` with ``backslash_escapes=`` selects the escaping regime.
 
     - False (standard: SQLite/Postgres/DuckDB/…): backslash is an ordinary
-      char, ONLY the single quote is doubled (``'`` → ``''``). Unchanged from
-      DEV-1625.
+      char, ONLY the single quote is doubled (``'`` → ``''``).
     - True (backslash dialects: MySQL/ClickHouse/Snowflake/…): backslash is an
       escape char, so it is doubled FIRST (``\\`` → ``\\\\``) and the single
       quote is backslash-escaped (``'`` → ``\\'``). The double quote is left
@@ -1991,7 +1973,7 @@ class TestSqlModeBackslashEscaping:
             ) == "x > 100"
 
     def test_backslash_regime_list_elements_escaped(self) -> None:
-        # DEV-1730 list rendering must compose with the backslash regime:
+        # List rendering must compose with the backslash regime:
         # each string element is auto-quoted AND backslash-escaped.
         result = substitute_variables(
             filter_str="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]},
@@ -2121,7 +2103,7 @@ class TestPythonModeControlChars:
 
     @pytest.mark.parametrize("codepoint", list(range(0x00, 0x20)))
     def test_every_c0_char_roundtrips_in_list_element(self, codepoint: int) -> None:
-        # DEV-1730 list elements go through the same escaping; a control char in
+        # List elements go through the same escaping; a control char in
         # an element must round-trip so the ast tuple recovers it.
         value = f"x{chr(codepoint)}y"
         substituted = substitute_variables(

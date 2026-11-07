@@ -69,8 +69,9 @@ def test_error_family() -> None:
 class TestSaveRefusesCycles:
     async def test_two_filters_reading_each_other(self, engine, door):
         await _save(engine, _model("a", "b", filters=["a_to_b.flag = 1"]), door=door)
+        b = _model("b", "a", "c", filters=["b_to_a.flag = 1"])
         with pytest.raises(ModelFilterCycleError) as exc:
-            await _save(engine, _model("b", "a", "c", filters=["b_to_a.flag = 1"]), door=door)
+            await _save(engine, b, door=door)
         assert exc.value.cycle == ["b", "a", "b"]
         assert "b → a → b" in str(exc.value)
         assert await _stored_filters(engine, "b") == []
@@ -92,8 +93,9 @@ class TestSaveRefusesCycles:
 
     async def test_cycle_through_an_intermediate_hop(self, engine, door):
         await _save(engine, _model("a", "b", filters=["a_to_b.b_to_c.flag = 1"]), door=door)
+        b = _model("b", "a", "c", filters=["b_to_a.flag = 1"])
         with pytest.raises(ModelFilterCycleError):
-            await _save(engine, _model("b", "a", "c", filters=["b_to_a.flag = 1"]), door=door)
+            await _save(engine, b, door=door)
 
     async def test_stored_cycle_never_blocks_an_unrelated_save(self, engine, door):
         await engine.storage.save_model(_model("a", "b", filters=["a_to_b.flag = 1"]), _validate=False)

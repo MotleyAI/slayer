@@ -240,6 +240,13 @@ def _where_text(sql: str, *, dialect: str = "postgres") -> str:
     return where.this.sql(dialect=dialect) if where is not None else ""
 
 
+def _dataset_where_text(sql: str, *, dialect: str = "postgres") -> str:
+    """Rendered WHERE of the outermost SELECT's FROM when it is a model's filtered dataset ('' if none)."""
+    source = _outer_select(sql, dialect=dialect).args["from_"].this
+    where = source.this.args.get("where") if isinstance(source, exp.Subquery) else None
+    return where.this.sql(dialect=dialect) if where is not None else ""
+
+
 def _having_text(sql: str, *, dialect: str = "postgres") -> str:
     """Rendered text of the outermost SELECT's HAVING predicate ('' if none)."""
     having = _outer_select(sql, dialect=dialect).args.get("having")

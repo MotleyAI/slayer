@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from tests._dev2210_fixtures import render
 
@@ -23,18 +24,19 @@ SHAPES: dict[str, dict[str, Any]] = {
 }
 
 
-def _tree(shape: str, dialect: str) -> exp.Expression:
+def _tree(shape: str, dialect: str) -> Expr:
     sql = render(SHAPES[shape], dialect=dialect, force_association=shape == "forced-association")
     statements = sqlglot.parse(sql, read=dialect)
-    assert len(statements) == 1 and statements[0] is not None, sql
+    assert len(statements) == 1, sql
+    assert statements[0] is not None, sql
     return statements[0]
 
 
-def _mentions(node: exp.Expression, literal: str) -> bool:
+def _mentions(node: Expr, literal: str) -> bool:
     return any(isinstance(n, exp.Literal) and n.this == literal for n in node.walk())
 
 
-def _restricting_selects(tree: exp.Expression, literal: str) -> list[exp.Select]:
+def _restricting_selects(tree: Expr, literal: str) -> list[exp.Select]:
     """SELECTs whose own WHERE tests ``literal``."""
     return [
         s for s in tree.find_all(exp.Select)
@@ -42,12 +44,12 @@ def _restricting_selects(tree: exp.Expression, literal: str) -> list[exp.Select]
     ]
 
 
-def _derived_tables(tree: exp.Expression, literal: str) -> list[exp.Select]:
+def _derived_tables(tree: Expr, literal: str) -> list[exp.Select]:
     """Restricting SELECTs that are derived tables."""
     return [s for s in _restricting_selects(tree, literal) if isinstance(s.parent, exp.Subquery)]
 
 
-def _exists(tree: exp.Expression, literal: str) -> list[exp.Exists]:
+def _exists(tree: Expr, literal: str) -> list[exp.Exists]:
     return [e for e in tree.find_all(exp.Exists) if _mentions(e, literal)]
 
 

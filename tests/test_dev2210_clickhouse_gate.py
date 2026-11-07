@@ -68,5 +68,6 @@ async def test_supported_version_attaches_the_setting(serve, engine):
 async def test_inlined_filter_needs_no_probe(serve, engine):
     fake = serve("25.3.1.100")
     sql = (await engine.execute(DONE, dry_run=True)).sql
-    assert sql is not None and CORRELATED_SETTING not in sql
+    assert sql is not None
+    assert CORRELATED_SETTING not in sql
     assert fake.permission_checks() == 0

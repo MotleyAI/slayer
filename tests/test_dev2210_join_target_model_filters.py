@@ -98,14 +98,14 @@ class TestJoinTargetReadsFilteredRows:
 
 class TestUnrelatedDatasetReadsFilteredRows:
     async def test_filtered_model_as_the_unrelated_side(self, engine):
-        resp = await _run(engine, source_model="shipments", measures=[{"formula": "count(done_orders.id)", "name": "n"}])
-        assert [int(r["shipments.n"]) for r in resp.data] == [3]
+        resp = await _run(engine, source_model="carriers", measures=[{"formula": "count(done_orders.id)", "name": "n"}])
+        assert [int(r["carriers.n"]) for r in resp.data] == [3]
 
     async def test_filtered_model_as_the_population_side(self, engine):
         resp = await _run(engine, source_model="done_orders", measures=[
-            {"formula": "count(*)", "name": "n"}, {"formula": "count(shipments.id)", "name": "s"},
+            {"formula": "count(*)", "name": "n"}, {"formula": "count(carriers.id)", "name": "s"},
         ])
-        assert [(int(r["done_orders.n"]), int(r["done_orders.s"])) for r in resp.data] == [(3, 4)]
+        assert [(int(r["done_orders.n"]), int(r["done_orders.s"])) for r in resp.data] == [(3, 2)]
 
 
 class TestFilteredRoot:
@@ -119,6 +119,10 @@ class TestFilteredRoot:
     async def test_isolated_aggregate(self, engine):
         resp = await _run(engine, source_model="done_orders", measures=[{"formula": "count(returns.*)", "name": "n"}])
         assert [int(r["done_orders.n"]) for r in resp.data] == [3]
+
+    async def test_aggregate_across_a_fanning_path_associates(self, engine):
+        resp = await _run(engine, source_model="done_orders", measures=[{"formula": "count(shipments.id)", "name": "n"}])
+        assert [int(r["done_orders.n"]) for r in resp.data] == [2]
 
     async def test_windowed_aggregate(self, engine):
         resp = await _run(

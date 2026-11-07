@@ -56,16 +56,17 @@ async def _save(engine: SlayerQueryEngine, model: SlayerModel, *, door: str) -> 
 @pytest.mark.parametrize("door", ["engine", "storage"])
 class TestSaveRefusesInvalidFilters:
     async def test_filter_on_own_measure(self, engine, door):
+        model = _with_total("orders_tot")
         with pytest.raises(ModelFilterError) as exc:
-            await _save(engine, _with_total("orders_tot"), door=door)
+            await _save(engine, model, door=door)
         assert "model filter 'tot > 100'" in str(exc.value)
         assert await engine.storage.get_model("orders_tot", data_source="test") is None
 
     async def test_filter_on_joined_windowed_column(self, engine, door):
         await engine.storage.save_model(_orders("ranked_orders", columns=[RANKED]), _validate=False)
+        model = _returns("returns_ranked", target="ranked_orders", filters=["ranked_orders.ranked > 1"])
         with pytest.raises(ModelFilterError) as exc:
-            await _save(engine, _returns("returns_ranked", target="ranked_orders",
-                                         filters=["ranked_orders.ranked > 1"]), door=door)
+            await _save(engine, model, door=door)
         assert "window" in str(exc.value)
         assert await engine.storage.get_model("returns_ranked", data_source="test") is None
 
@@ -96,6 +97,7 @@ class TestQueryReadsInvalidStoredFilter:
         {"source_model": "returns_bad_derived", "dimensions": ["id", "bad_status"]},
     ], ids=["source", "join-target", "another-models-filter", "derived-column"])
     async def test_fails_with_the_targets_filter(self, stored, body):
+        query = SlayerQuery.model_validate(body)
         with pytest.raises(ModelFilterError) as exc:
-            await stored.execute(SlayerQuery.model_validate(body))
+            await stored.execute(query)
         assert "model filter 'tot > 100'" in str(exc.value)

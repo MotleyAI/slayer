@@ -4,6 +4,7 @@ orders    (id, status, amount, ordered_at): 1 done 100 2024-01-10 | 2 done 200 2
                                             | 4 open 400 2024-02-20
 returns   (id, order_id, reason):           10 1 damaged | 11 1 late | 12 2 damaged | 13 4 damaged
 shipments (id, order_ref, carrier):         20 1 ups | 21 1 ups | 22 2 dhl | 23 3 ups  (order_ref not unique)
+carriers  (id, name):                       1 ups | 2 dhl  (related to nothing)
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ DDL = (
     "INSERT INTO returns VALUES (10, 1, 'damaged'), (11, 1, 'late'), (12, 2, 'damaged'), (13, 4, 'damaged')",
     "CREATE TABLE shipments (id INTEGER PRIMARY KEY, order_ref INTEGER, carrier VARCHAR(10))",
     "INSERT INTO shipments VALUES (20, 1, 'ups'), (21, 1, 'ups'), (22, 2, 'dhl'), (23, 3, 'ups')",
+    "CREATE TABLE carriers (id INTEGER PRIMARY KEY, name VARCHAR(10))",
+    "INSERT INTO carriers VALUES (1, 'ups'), (2, 'dhl')",
 )
 
 BACKENDS = ("sqlite", "duckdb", "postgres")
@@ -89,6 +92,9 @@ def table_models() -> list[SlayerModel]:
         _orders("ups_or_big_orders", joins=to_shipments, filters=["shipments.carrier = 'ups' or amount > 350"]),
         SlayerModel(name="shipments", data_source="test", sql_table="shipments", columns=[
             _id(), Column(name="order_ref", type=DataType.INT), Column(name="carrier", type=DataType.TEXT),
+        ]),
+        SlayerModel(name="carriers", data_source="test", sql_table="carriers", columns=[
+            _id(), Column(name="name", type=DataType.TEXT),
         ]),
         _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
                  extra=[Column(name="done_status", type=DataType.TEXT, sql="done_orders.status")]),

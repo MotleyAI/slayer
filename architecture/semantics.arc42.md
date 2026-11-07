@@ -112,6 +112,7 @@ is the coercion from coarser to finer.
      one-to-many child `D.L`: one row per non-NULL element, its value
      `D.L.value`, each row determining its `D` row.
      [enforced: test:tests/test_dev2137_list_children.py]
+   - **3.3 Filtered datasets.** A model's dataset is its rows passing its `filters` (`M ≡ σ_filters(M)`): every read of `M` — root, join hop, semi-join, producer, another model's filter — sees only those rows, filtered before any join, so a null-extended row means no passing row. Filters that reach their own dataset are circular and refused. [enforced: test:tests/test_dev2210_join_target_model_filters.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home
