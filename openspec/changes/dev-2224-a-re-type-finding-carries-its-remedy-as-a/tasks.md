@@ -1,13 +1,13 @@
 ## 1. Tests (pr-tests stage, all in `tests/test_retype_finding.py`)
 
-- [ ] 1.1 Add `"remedy_kind"` to `RETYPE_FIELDS` (the only existing-test change: it pins the new serialized field in `TestOneShape` and `_assert_live`); verify it fails before implementation
-- [ ] 1.2 Add a helper asserting `remedy` agrees with `remedy_kind` (`reingest` ↔ re-ingest text naming the datasource; `set_type` ↔ text naming `live_type`) and call it on every finding the finding-producing tests see; verify it fails before implementation
-- [ ] 1.3 Table-backed live list (`listy.skills`) → `remedy_kind == "reingest"`; verify failing
-- [ ] 1.4 SQLite storage-probe widened INT (`TestSqliteProbe.test_probes_only_live_integer_columns`: `amt`, `amount` over a live `INTEGER` column) → `remedy_kind == "reingest"`, while `code` (live declared `TEXT`, a bucket conflict, not a probe verdict) → `"set_type"`; verify failing
-- [ ] 1.5 Table-backed type-bucket conflict (`retyped.code`, `legacy.flags`) → `"set_type"`; sql-mode scalar conflicts (`legacy_sql.span|flags|tz`) → `"set_type"`; verify failing
-- [ ] 1.6 New DuckDB sql-mode model `listy_sql` (`SELECT id, skills FROM kinds`, `skills: TEXT`) → its finding has `remedy_kind == "set_type"`; verify failing and that no other test's expectations change
-- [ ] 1.7 Legacy load: a finding dump with `remedy_kind` removed loads via `RetypeFinding.model_validate` with the right kind for both canonical texts, and `remedy`/`summary` unchanged; a full dump → load round-trip is equal; verify failing
-- [ ] 1.8 Legacy load with an unrecognized `remedy` text and no `remedy_kind` raises `pydantic.ValidationError`; verify failing
+- [x] 1.1 Add `"remedy_kind"` to `RETYPE_FIELDS` (the only existing-test change: it pins the new serialized field in `TestOneShape` and `_assert_live`); verify it fails before implementation
+- [x] 1.2 Add a helper asserting `remedy` agrees with `remedy_kind` (`reingest` ↔ re-ingest text naming the datasource; `set_type` ↔ text naming `live_type`) and call it on every finding the finding-producing tests see; verify it fails before implementation
+- [x] 1.3 Table-backed live list (`listy.skills`) → `remedy_kind == "reingest"`; verify failing
+- [x] 1.4 SQLite storage-probe widened INT (`TestSqliteProbe.test_probes_only_live_integer_columns`: `amt`, `amount` over a live `INTEGER` column) → `remedy_kind == "reingest"`, while `code` (live declared `TEXT`, a bucket conflict, not a probe verdict) → `"set_type"`; verify failing
+- [x] 1.5 Table-backed type-bucket conflict (`retyped.code`, `legacy.flags`) → `"set_type"`; sql-mode scalar conflicts (`legacy_sql.span|flags|tz`) → `"set_type"`; verify failing
+- [x] 1.6 New DuckDB sql-mode model `listy_sql` (`SELECT id, skills FROM kinds`, `skills: TEXT`) → its finding has `remedy_kind == "set_type"`; verify failing and that no other test's expectations change
+- [x] 1.7 Legacy load: a finding dump with `remedy_kind` removed loads via `RetypeFinding.model_validate` with the right kind for both canonical texts, and `remedy`/`summary` unchanged; a full dump → load round-trip is equal; verify failing
+- [x] 1.8 Legacy load with an unrecognized `remedy` text and no `remedy_kind` raises `pydantic.ValidationError`; verify failing
 
 ## 2. Implementation
 
