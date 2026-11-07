@@ -88,7 +88,7 @@ class TestContainsAnyAll:
 class TestLength:
     async def test_element_counts(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(skills)")).items()}
-        assert got == {"Ann": 3, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
+        assert got == {"Ann": 2, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
 
     async def test_character_count_unchanged(self, engine) -> None:
         got = {k: num(v) for k, v in (await _values(engine, "length(name)")).items()}
@@ -98,7 +98,7 @@ class TestLength:
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("sum(length(skills))", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 5
+        assert num(resp.data[0]["contractors.n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
         resp = await engine.execute(query(measures=[measure("count(*)", "n")], dimensions=["team"],

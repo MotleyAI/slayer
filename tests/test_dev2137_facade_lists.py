@@ -44,11 +44,11 @@ class TestCatalogs:
         table = next(t for t in schema.tables if t.name == "contractors")
         assert "skills" in {d.name for d in table.dimensions}
 
-    def test_list_columns_offer_only_count(self) -> None:
+    def test_list_columns_offer_count_and_distinct_count(self) -> None:
         model = _model().model_copy(update={"aggregations": [Aggregation(name="my_agg", formula="SUM({value})")]})
         (schema,) = build_catalog(models_by_datasource={DS: [model]}).schemas
         table = next(t for t in schema.tables if t.name == "contractors")
-        assert {m.name for m in table.metrics if m.name.startswith("skills_")} == {"skills_count"}
+        assert {m.name for m in table.metrics if m.name.startswith("skills_")} == {"skills_count", "skills_count_distinct"}
 
     def test_grouped_catalog_keeps_list_models(self) -> None:
         catalog = build_catalog_grouped_by_schema(models_by_datasource={DS: [_model()]})
