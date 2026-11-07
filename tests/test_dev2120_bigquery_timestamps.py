@@ -213,7 +213,7 @@ class TestIngestionRecordsZonedType:
     @pytest.mark.parametrize(("dialect", "db_type"), [("bigquery", "TIMESTAMP"), ("postgresql", None)])
     def test_inspector_path_reads_the_engine_dialect(self, dialect: str, db_type: str | None) -> None:
         cols = dialect_for_sa_backend(dialect).columns_from_inspector(
-            [{"name": "ts", "type": sa.TIMESTAMP()}], sa_engine=None, location=TableLocation(name="t"))
+            [{"name": "ts", "type": sa.TIMESTAMP()}], connection=None, inspector=None, location=TableLocation(name="t"))
         assert [c.db_type for c in cols] == [db_type]
 
     @pytest.mark.parametrize(("dialect", "expected"), [
@@ -224,7 +224,7 @@ class TestIngestionRecordsZonedType:
         inspector.get_columns.side_effect = RuntimeError("no inspector")
         with patch.object(dialects_base, "fetch", return_value=[("ts", "TIMESTAMP"), ("dt", "DATETIME")]):
             result = get_dialect(dialect).reflect_columns(
-                sa_engine=None, inspector=inspector, table="t", schema="s", catalog=None)
+                connection=None, inspector=inspector, table="t", schema="s", catalog=None)
         assert {c.name: c.db_type for c in result} == expected
 
     @pytest.mark.parametrize(("dialect", "expected"), [
@@ -237,5 +237,5 @@ class TestIngestionRecordsZonedType:
         inspector.get_columns.side_effect = RuntimeError("no inspector")
         with patch.object(dialects_base, "fetch", return_value=[("doc", "VARIANT"), ("tags", "ARRAY")]):
             result = get_dialect(dialect).reflect_columns(
-                sa_engine=None, inspector=inspector, table="t", schema="s", catalog=None)
+                connection=None, inspector=inspector, table="t", schema="s", catalog=None)
         assert {c.name: c.db_type for c in result} == expected

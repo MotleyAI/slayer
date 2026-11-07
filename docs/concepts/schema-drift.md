@@ -34,18 +34,16 @@ Drift is computed per source mode:
   `model.columns` and `model.joins`. Live types are mapped through SLayer's
   coarse buckets (`number` / `string` / `boolean` / `temporal`):
   `INTEGER` and `FLOAT` collapse to `number`, `DATE` and `TIMESTAMP`
-  collapse to `temporal`. A column flags as drift only when the bucket
-  changes — switching `BIGINT` ↔ `FLOAT` is *not* drift, but
-  `NUMBER` ↔ `STRING` is. On SQLite, which stores dates as text, a `DATE` or
-  `TIMESTAMP` column over a live `TEXT` column is not drift.
+  collapse to `temporal`. A bucket change on a column that still exists is a
+  [re-type finding](#re-type-findings), never a delete — switching `BIGINT` ↔
+  `FLOAT` is *not* drift, but `NUMBER` ↔ `STRING` is. On SQLite, which stores
+  dates as text, a `DATE` or `TIMESTAMP` column over a live `TEXT` column is not drift.
 * **`sql`** — trial-execute `SELECT * FROM (<model.sql>) AS _sd_validate
   WHERE 1=0`. Successful execution exposes cursor metadata (column names
   and types), which goes through the same column-level diff. A failed
   trial-execute means the SQL itself is broken — emit a whole-model drop.
-  A column an older SLayer probe typed wrongly when the model was saved or
-  imported (an opaque type, or a SQL Server decimal or datetime, as TEXT; a
-  MySQL `BIT` or array as DOUBLE) now reports a type mismatch: re-type the
-  column or re-import the model.
+  A column whose stored type conflicts with its result column's (e.g. one an
+  older SLayer probe typed) is a re-type finding.
 * **`source_queries`** (query-backed) — never re-introspected directly.
   Treated as a *cascade target*: when validation against the underlying
   datasource produces a column or model drop, any query-backed model that
@@ -81,29 +79,15 @@ A drop on `M.X` cascades through:
 Cascade walking stays strictly within the parent datasource. Joins and
 references that resolve into another datasource are skipped silently.
 
-## Two-pass invariant for type drift
+## Re-type findings
 
-The idempotent ingestion pass is *additive only*: it re-types an existing
-column only when a non-list column's live column is now a list (see
-[List re-type findings](#list-re-type-findings)). Type-bucket drift on a column whose name still exists
-in `model.columns` is detected in a different pass — `validate_models`
-re-introspects every persisted column and emits a `drop_column` for any
-bucket mismatch. On the user's next idempotent re-ingest after they
-apply the drop, the additive pass freshly adds the column with the
-correct live type. The two-pass flow handles type drift implicitly
-without the additive pass needing a dedicated code path.
+A column whose live column exists with a conflicting type is reported as `{finding: "retype", model_name, data_source,
+column, stored_type, live_type, live_db_type, remedy, summary}` — never deleted, never applied by `--force-clean`, printed
+by the CLI as a `RE-TYPE:` line — whose remedy is re-ingesting for a live list or a SQLite column the affinity probe
+widened, and otherwise setting the column's type to `live_type`.
 
-## List re-type findings
-
-A stored non-list column whose live column is a native list is reported as a
-report-only `list_retype` finding (`{finding: "list_retype", model_name,
-data_source, column, live_type, summary}`) naming re-ingestion as the remedy,
-never as a column to delete; re-ingesting re-types the column to the list in
-place, keeping only `count` among its `allowed_aggregations`, and a query
-failure explained by such a column raises `SchemaDriftError` carrying the
-finding.
-
-An `sql`-mode model is treated the same way, its result columns typed from the
+A stored non-list column whose live column is a native list is one: re-ingesting re-types it to the list in place,
+keeping only `count` among its `allowed_aggregations`. An `sql`-mode model is treated the same way, its result columns typed from the
 live schema of the tables its query reads (else from the type the database
 reports for the result column), so a list the query returns is found even on
 BigQuery, whose driver reports a repeated result column by its element type.
@@ -162,6 +146,15 @@ in-scope live table:
   `allowed_aggregations` on existing entries.
 * Existing `sql`-mode or `source_queries`-mode model with the matching
   name → skipped silently.
+* A stored non-list column whose live column is a native list → re-typed
+  to that list in place (description, label and meta kept, only `count`
+  kept among its aggregations, `format` and granularity dropped); until
+  then `validate_models` reports it as a `RE-TYPE` finding instead of a
+  deletion, and a query failure it explains raises `SchemaDriftError`
+  carrying that finding. Each stored measure, derived column, model filter
+  or saved query the re-type breaks is listed in
+  `IdempotentIngestResult.broken_dependents` and warned, and the re-type is
+  saved regardless.
 
 After the additive pass, `validate_models` runs against the in-scope
 models and the result is merged into `IdempotentIngestResult.to_delete`.
@@ -175,15 +168,8 @@ probe (see [Ingestion → SQLite affinity probing](ingestion.md#sqlite-affinity-
 against every persisted base column with `type = INT`. When the probe
 disagrees with the persisted type — the live storage class is `REAL`,
 non-coercible `TEXT`, `BLOB`, or otherwise non-integral numeric evidence —
-`validate_models` emits an `EditModelDelete` removing the column with
-reason `"SQLite affinity probe widened <model>.<col> from INT to
-<verdict>; re-run slayer ingest to recreate with the correct type."`
-
-The probe drop is merged into the model's diff state **before** the
-cascade fixed-point walk, so dependent measures, derived columns, joins,
-and filters that reference the widened column are cascade-dropped in the
-same pass. Pair with `--force-clean` to apply the deletes; the next
-`slayer ingest` recreates the column with the correct type.
+`validate_models` reports a re-type finding with the probe's verdict as
+`live_type` and the re-ingest remedy, deleting nothing.
 
 Probe failures and saturated samples produce no drift entry (a `WARNING`
 is logged instead). Non-SQLite datasources skip the probe entirely.

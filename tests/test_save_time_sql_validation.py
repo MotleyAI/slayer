@@ -142,7 +142,7 @@ class TestSchemaDriftReusesSharedBuilder:
             client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
         )
         assert live is not None
-        assert live.columns == {"id": DataType.INT}
+        assert live.result_column_types() == {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
 
 
 class TestRejectAndAccept:

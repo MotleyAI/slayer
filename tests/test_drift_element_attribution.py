@@ -20,7 +20,7 @@ from slayer.core.join_edges import JoinEdgeRef
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.engine import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, WholeModelDelete
+from slayer.engine.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, RetypeFinding, WholeModelDelete
 from slayer.sql import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -268,6 +268,14 @@ def _dated(*, ts: DataType, d: DataType) -> SlayerModel:
         Column(name="bad", sql="no_such_fn(x)", type=DataType.DOUBLE)])
 
 
+def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:
+    return [(e.column, e.stored_type, e.live_type) for e in entries if isinstance(e, RetypeFinding)]
+
+
+def _deletes(entries: list[Any], column: str) -> list[EditModelDelete]:
+    return [e for e in entries if isinstance(e, EditModelDelete) and column in e.remove.columns]
+
+
 class TestSqliteTemporalOverText:
     async def test_validation_reports_nothing(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.TIMESTAMP, d=DataType.DATE)) as env:
@@ -281,7 +289,8 @@ class TestSqliteTemporalOverText:
     async def test_a_non_temporal_declaration_over_text_is_still_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.INT, d=DataType.DATE)) as env:
             entries = await env.engine.validate_models(data_source="ds")
-        assert [e.remove.columns for e in entries if isinstance(e, EditModelDelete)] == [["ts"]], entries
+        assert _retypes(entries) == [("ts", DataType.INT, DataType.TEXT)], entries
+        assert not _deletes(entries, "ts"), entries
 
 
 class TestOtherDialectsKeepTheBucketRule:
@@ -301,4 +310,5 @@ class TestOtherDialectsKeepTheBucketRule:
             finally:
                 engine.close()
                 engine_factory.invalidate_engine(ds)
-        assert [e.remove.columns for e in entries if isinstance(e, EditModelDelete)] == [["ts"]], entries
+        assert _retypes(entries) == [("ts", DataType.TIMESTAMP, DataType.TEXT)], entries
+        assert not _deletes(entries, "ts"), entries

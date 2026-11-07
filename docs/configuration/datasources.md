@@ -56,8 +56,8 @@ These databases are verified by integration tests and runnable Docker examples. 
 | Type | Install Extra | Connection String |
 |------|---------------|-------------------|
 | `sqlite` | (built-in, no extra needed) | `sqlite:///path/to/db.sqlite` |
-| `postgres` / `postgresql` | `motley-slayer[postgres]` | `postgresql://user:pass@localhost:5432/db` |
-| `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
+| `postgres` / `postgresql` | `motley-slayer[postgres]` (psycopg, the default driver, plus psycopg2 and asyncpg) | `postgresql://user:pass@localhost:5432/db` |
+| `mysql` / `mariadb` | `motley-slayer[mysql]` (pymysql, the default driver, plus aiomysql) | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `duckdb` | (built-in, no extra needed) | `duckdb:///path/to/db.duckdb` |
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
@@ -65,8 +65,8 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `bigquery` | `motley-slayer[bigquery]` | `bigquery://project/dataset` |
 | `trino` | `motley-slayer[trino]` | `trino://user@host:8080/catalog/schema` |
 
-A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the driver from SLayer's extra; name one explicitly to use another.
-A driver you name yourself in `connection_string` (e.g. `postgresql+psycopg`) is not in any extra, so install it separately; SLayer keeps it on the async path when it can run async.
+A `connection_string` naming no driver (`postgresql://`, `mysql://`) uses the type's default driver (psycopg for Postgres, pymysql for MySQL/MariaDB); name one explicitly to use another.
+SLayer runs every statement and metadata read on the driver your `connection_string` names, so install one no extra bundles yourself; from SLayer 2.0 the extras stop installing psycopg2, asyncpg and aiomysql.
 On BigQuery the dataset in `bigquery://project/dataset` is the default schema, so a bare `sql_table` resolves there however many datasets the project holds.
 
 `duckdb` has no install extra because `duckdb` and `duckdb-engine` are core

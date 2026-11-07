@@ -45,7 +45,6 @@ class RedshiftDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 127
     approx_count_distinct_native: bool = True
-    type_probe_uses_sync_driver: bool = True
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)

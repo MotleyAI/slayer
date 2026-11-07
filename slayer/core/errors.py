@@ -110,18 +110,20 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and schema drift in the models it read explains it; carries the drifted models, their ``to_delete`` entries, and the DBAPI cause (as ``__cause__``)."""
+    """A query failed and schema drift in the models it read explains it; carries the drifted models, their
+    ``to_delete`` entries, the report-only ``findings`` and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
         models: list[str],
         to_delete: list[Any],
         original: BaseException,
-        findings: list[str] | None = None,
+        findings: list[Any] | None = None,
     ) -> None:
         self.models = list(models)
         self.to_delete = list(to_delete)
-        notes = "".join(f" {f}" for f in findings or [])
+        self.findings = list(findings or [])
+        notes = "".join(f" {getattr(f, 'summary', f)}" for f in self.findings)
         super().__init__(
             f"Schema drift detected on models {sorted(self.models)}. "
             f"Run validate_models to inspect the {len(self.to_delete)} "
@@ -248,6 +250,21 @@ class MissingDriverError(SlayerError, ImportError):
             suggestion=hint,
         ))
         self.name = missing
+
+
+class UnsupportedDriverError(SlayerError):
+    """A datasource's URL names a driver SLayer cannot serve the type through; ``hint`` names one it can."""
+
+    def __init__(self, *, datasource_name: str, ds_type: str | None, driver: str, reason: str, hint: str) -> None:
+        self.datasource_name = datasource_name
+        self.ds_type = ds_type
+        self.driver = driver
+        self.hint = hint
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Datasource {datasource_name!r} (type {ds_type!r}) cannot use driver {driver!r}: {reason}",
+            suggestion=hint,
+        ))
 
 
 class ModelSqlValidationError(SlayerError, ValueError):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager
 from typing import Any, Protocol, TypeVar
 
 import sqlalchemy as sa
@@ -21,10 +20,12 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-class CatalogEngine(Protocol):
-    """What a catalog read needs from an engine: connections that run statements verbatim."""
+class CatalogConnection(Protocol):
+    """What a catalog read needs: one open connection that runs statements verbatim."""
 
-    def connect(self) -> AbstractContextManager[Any]: ...
+    def exec_driver_sql(self, statement: str) -> Any: ...
+
+    def rollback(self) -> None: ...
 
 
 class TableLocation(BaseModel):
@@ -39,7 +40,7 @@ class TableLocation(BaseModel):
 
 class ReflectedColumn(BaseModel):
     """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list, exact-numeric, JSON or
-    a zoned timestamp); ``element_type`` only for a list."""
+    a zoned timestamp); ``element_type`` only for a list; ``type_name`` is the database's name for every type."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -49,6 +50,7 @@ class ReflectedColumn(BaseModel):
     is_float: bool = False
     db_type: str | None = None
     comment: str | None = None
+    type_name: str | None = None
 
 
 class ResultColumnType(BaseModel):
@@ -154,8 +156,11 @@ _TYPE_NAME_MAP = {
 
 # NUMERIC/DECIMAL are float-like only by scale.
 _FLOAT_LIKE_TYPE_NAMES = frozenset({
-    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "DOUBLE PRECISION", "FLOAT32", "FLOAT64", "MONEY", "SMALLMONEY",
+    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "DOUBLE PRECISION", "FLOAT32", "FLOAT64",
 })
+
+#: Exact numerics whose name has no DECIMAL / NUMERIC token.
+_EXACT_MONEY_TYPE_NAMES = frozenset({"MONEY", "SMALLMONEY"})
 
 # Types with no default btree/hash opclass (no GROUP BY / DISTINCT) → UNKNOWN.
 # A small allow-list on purpose: unmapped-but-comparable types stay TEXT.
@@ -197,11 +202,12 @@ def unwrap_clickhouse_wrapper_str(db_type: str) -> str:
 
 
 def is_exact_numeric_db_type(db_type: str | None) -> bool:
-    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family, wrappers and lists excluded)."""
+    """Whether a raw DB type string is exact-numeric (DECIMAL/NUMERIC family or MONEY; wrappers and lists
+    excluded)."""
     if not db_type or info_schema_list_element(db_type) is not None:
         return False
     token = db_type.split("(")[0].upper().strip()
-    return "DECIMAL" in token or "NUMERIC" in token
+    return "DECIMAL" in token or "NUMERIC" in token or token in _EXACT_MONEY_TYPE_NAMES
 
 
 def parse_info_schema_is_float(data_type_str: str) -> bool:
@@ -290,13 +296,14 @@ def column_from_type_string(
     if element is not None:
         return ReflectedColumn(
             name=name, type=DataType.ARRAY, element_type=element, db_type=unwrapped, comment=clean_comment(comment),
+            type_name=unwrapped,
         )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     word = unwrapped.split("(")[0].upper().strip()
     lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
-        comment=clean_comment(comment),
+        comment=clean_comment(comment), type_name=unwrapped or None,
     )
 
 
@@ -451,16 +458,19 @@ def column_from_sa_type(
     """A column read through the Inspector; ``db_type`` kept only where ``DataType`` is lossy (opaque, a list,
     exact NUMERIC/DECIMAL, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     data_type, element_type = sa_data_types(sa_type)
-    db_type: str | None = None
     if data_type is DataType.ARRAY:
-        db_type = list_db_type(sa_type, sa_dialect=sa_dialect)
-    elif data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(sa_type, json_types=json_types) or (
-        type(sa_type).__name__.upper() in zoned_types
-    ):
-        db_type = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+        list_type = list_db_type(sa_type, sa_dialect=sa_dialect)
+        return ReflectedColumn(
+            name=name, type=data_type, element_type=element_type, db_type=list_type,
+            comment=clean_comment(comment), type_name=list_type,
+        )
+    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+    lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
+        sa_type, json_types=json_types,
+    ) or type(sa_type).__name__.upper() in zoned_types
     return ReflectedColumn(
-        name=name, type=data_type, element_type=element_type, is_float=_sa_type_is_float(sa_type), db_type=db_type,
-        comment=clean_comment(comment),
+        name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=type_name if lossy else None,
+        comment=clean_comment(comment), type_name=type_name,
     )
 
 
@@ -525,16 +535,27 @@ def info_schema_comments_query(
     )
 
 
-def fetch(sa_engine: CatalogEngine | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
-    """Run one catalog query verbatim (no bind parameters) and return its rows."""
-    if sa_engine is None:
-        raise ValueError("no engine to read the catalog with")
+def fetch(connection: CatalogConnection | None, statement: Expression, *, dialect: str) -> list[tuple[Any, ...]]:
+    """Run one catalog query verbatim (no bind parameters) on ``connection`` and return its rows."""
+    if connection is None:
+        raise ValueError("no connection to read the catalog with")
     sql = statement.sql(dialect=dialect, normalize_functions=False)
-    with sa_engine.connect() as conn:
-        return [tuple(row) for row in conn.exec_driver_sql(sql).fetchall()]
+    return [tuple(row) for row in connection.exec_driver_sql(sql).fetchall()]
 
 
-def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -> _T:
+def recover(connection: CatalogConnection | None) -> None:
+    """End a failed read's transaction so the next read on ``connection`` runs (Postgres aborts it)."""
+    if connection is None:
+        return
+    try:
+        connection.rollback()
+    except Exception:  # noqa: BLE001 — the next read reports a dead connection itself
+        logger.debug("Rolling back after a failed catalog read failed", exc_info=True)
+
+
+def best_effort(
+    read: Callable[[], _T], *, connection: CatalogConnection | None, default: _T, table: str, what: str,
+) -> _T:
     """One key read; a failure is logged at WARNING and yields ``default`` (unsupported reads stay quiet)."""
     try:
         return read()
@@ -543,6 +564,7 @@ def best_effort(read: Callable[[], _T], *, default: _T, table: str, what: str) -
         return default
     except Exception as exc:  # noqa: BLE001 — a key read never sinks the table
         logger.warning("Reading the %s of table %r failed: %s", what, table, exc)
+        recover(connection)
         return default
 
 

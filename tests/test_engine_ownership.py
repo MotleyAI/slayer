@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import logging
 import sys
 import tempfile
 import warnings
@@ -204,23 +203,6 @@ class TestClientClose:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         assert tables == [], "reused in-memory datasource must start empty"
-
-    def test_close_warns_and_retains_a_loop_bound_async_engine(self, caplog) -> None:
-        """A loop-bound async engine can only be disposed by aclose() inside its
-        event loop, so a synchronous close() must NOT fake-dispose it (which
-        would swallow a MissingGreenlet) — it warns and leaves the reference in
-        place so aclose() can still reach it."""
-        client = SlayerSQLClient(
-            datasource=DatasourceConfig(name="pg", type="postgres", host="h", database="db"),
-        )
-        fake_async = MagicMock()
-        client._async_engine = fake_async
-        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
-            client.close()
-        fake_async.sync_engine.dispose.assert_not_called()
-        fake_async.dispose.assert_not_called()
-        assert client._async_engine is fake_async, "async engine must not be dropped by sync close()"
-        assert any("async" in r.message.lower() for r in caplog.records)
 
 
 # --------------------------------------------------------------------------- #

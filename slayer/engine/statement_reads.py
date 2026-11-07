@@ -13,7 +13,7 @@ from slayer.core.join_walker import aggregation_owner, follow, resolved_terminal
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, ValueKey, walk_value_keys
 from slayer.core.models import SlayerModel, aggregation_definition
 from slayer.engine.column_dependency import definition_reads
-from slayer.engine.schema_drift import EditModelDelete, ListRetypeFinding, WholeModelDelete
+from slayer.engine.schema_drift import EditModelDelete, RetypeFinding, WholeModelDelete
 from slayer.ir.planned import plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -33,7 +33,7 @@ class StatementReads(BaseModel):
         """Whether a drift entry or finding of a read model removes or re-types something the statement reads."""
         if isinstance(entry, WholeModelDelete):
             return entry.cause == "schema_drift"
-        if isinstance(entry, ListRetypeFinding):
+        if isinstance(entry, RetypeFinding):
             return (entry.model_name, entry.column) in self.columns
         if not isinstance(entry, EditModelDelete):
             return False

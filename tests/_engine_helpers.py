@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any, Optional
 
+import pytest
 import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
@@ -38,6 +39,7 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
+from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
 from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
 from slayer.storage.yaml_storage import YAMLStorage
@@ -60,6 +62,12 @@ def disposable_engine(url: str, **kwargs) -> Generator[sa.Engine]:
         yield engine
     finally:
         engine.dispose()
+
+
+def plant_async_engine(monkeypatch: pytest.MonkeyPatch, client: sql_client.SlayerSQLClient, fake: Any) -> None:
+    """Make ``fake`` the async engine ``client`` builds for the running loop."""
+    monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: fake)
+    assert client._get_async_engine() is fake
 
 
 async def build_exec_engine(

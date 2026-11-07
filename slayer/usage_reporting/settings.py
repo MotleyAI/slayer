@@ -13,7 +13,7 @@ from importlib.metadata import Distribution, distribution
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 if sys.platform == "win32":
     import msvcrt
@@ -42,9 +42,12 @@ class UsageReportingState(BaseModel):
 
 
 class UsageReportingConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep a newer version's fields through a rewrite
+
     setting: Literal["enabled", "disabled"] | None = None
     install_id: uuid.UUID | None = None
     install_id_created: datetime.date | None = None
+    first_query_ok: datetime.date | None = None
     notice_shown_schema: int | None = None
     last_sent: datetime.datetime | None = None
 
@@ -177,10 +180,10 @@ def _add_months(day: datetime.date, months: int) -> datetime.date:
 
 
 def with_install_id(config: UsageReportingConfig, *, today: datetime.date) -> UsageReportingConfig:
-    """``config`` with a current install ID: created on first use, replaced once 11 months old."""
+    """``config`` with a current install ID: created on first use, replaced once 11 months old (dropping its date)."""
     created = config.install_id_created
     if config.install_id is not None and created is None:
         return config.model_copy(update={"install_id_created": today})
     if config.install_id is not None and created is not None and _add_months(created, _ID_LIFETIME_MONTHS) > today:
         return config
-    return config.model_copy(update={"install_id": uuid.uuid4(), "install_id_created": today})
+    return config.model_copy(update={"install_id": uuid.uuid4(), "install_id_created": today, "first_query_ok": None})

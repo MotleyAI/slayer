@@ -1,4 +1,4 @@
-"""A connection URL that names no driver connects with SLayer's default driver, not SQLAlchemy's."""
+"""A connection URL that names no driver connects with the type's default driver, not SQLAlchemy's."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from collections import OrderedDict
 import pytest
 import sqlalchemy.dialects.postgresql.base as pg_base
 from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
+from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
 from sqlalchemy.engine.url import make_url
 
 from slayer.core.errors import MissingDriverError
@@ -21,8 +22,8 @@ _HOST = "default-driver.invalid"
 
 # ds type → (default driver, a backend it serves)
 _DEFAULT_DRIVER = {
-    "postgres": ("psycopg2", "postgresql"),
-    "postgresql": ("psycopg2", "postgresql"),
+    "postgres": ("psycopg", "postgresql"),
+    "postgresql": ("psycopg", "postgresql"),
     "mysql": ("pymysql", "mysql"),
     "mariadb": ("pymysql", "mariadb"),
     "clickhouse": ("http", "clickhouse"),
@@ -37,21 +38,26 @@ def _isolated_engine_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine_factory, "_engine_cache", OrderedDict())
 
 
-def _simulate_sa21_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SQLAlchemy 2.1's default: bare ``postgresql://`` resolves to psycopg 3."""
-    monkeypatch.setattr(pg_base, "dialect", PGDialect_psycopg)
-    assert make_url("postgresql://").get_dialect().driver == "psycopg"
+def _simulate_postgres_default(
+    monkeypatch: pytest.MonkeyPatch, dialect: type[pg_base.PGDialect], driver: str,
+) -> None:
+    """Make bare ``postgresql://`` resolve to ``dialect`` in SQLAlchemy."""
+    monkeypatch.setattr(pg_base, "dialect", dialect)
+    assert make_url("postgresql://").get_dialect().driver == driver
 
 
 @pytest.fixture
-def sa21_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    _simulate_sa21_postgres_default(monkeypatch)
+def sa20_postgres_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SQLAlchemy 2.0's default: bare ``postgresql://`` resolves to psycopg2."""
+    _simulate_postgres_default(monkeypatch, PGDialect_psycopg2, "psycopg2")
 
 
-@pytest.fixture(params=[False, True], ids=["installed", "sa21-postgres-default"])
+@pytest.fixture(
+    params=[(PGDialect_psycopg2, "psycopg2"), (PGDialect_psycopg, "psycopg")],
+    ids=["sa20-postgres-default", "sa21-postgres-default"],
+)
 def sqlalchemy_postgres_default(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    if request.param:
-        _simulate_sa21_postgres_default(monkeypatch)
+    _simulate_postgres_default(monkeypatch, *request.param)
 
 
 def _url(ds_type: str | None, connection_string: str) -> str:
@@ -67,9 +73,9 @@ def _url(ds_type: str | None, connection_string: str) -> str:
     "ds_type,connection_string,expected",
     [
         ("postgres", "postgresql://u:p%40ss@h:5432/d?sslmode=require",
-         "postgresql+psycopg2://u:p%40ss@h:5432/d?sslmode=require"),
+         "postgresql+psycopg://u:p%40ss@h:5432/d?sslmode=require"),
         ("postgresql", "postgresql://u:p%40ss@h:5432/d?sslmode=require",
-         "postgresql+psycopg2://u:p%40ss@h:5432/d?sslmode=require"),
+         "postgresql+psycopg://u:p%40ss@h:5432/d?sslmode=require"),
         ("mysql", "mysql://u:p%40ss@h/d?charset=utf8mb4", "mysql+pymysql://u:p%40ss@h/d?charset=utf8mb4"),
         ("mariadb", "mariadb://u@h/d", "mariadb+pymysql://u@h/d"),
         ("mysql", "mariadb://u@h/d", "mariadb+pymysql://u@h/d"),
@@ -87,7 +93,7 @@ def test_bare_url_pinned_to_default_driver(ds_type, connection_string, expected)
 def test_pin_preserves_every_url_part() -> None:
     cs = "postgresql://us%3Aer:p%40ss%2Fw@db.example:6543/warehouse?sslmode=require&application_name=x"
     out = make_url(_url("postgres", cs))
-    assert out == make_url(cs).set(drivername="postgresql+psycopg2")
+    assert out == make_url(cs).set(drivername="postgresql+psycopg")
     assert out.password == "p@ss/w"
 
 
@@ -151,10 +157,10 @@ def test_stored_connection_string_not_rewritten() -> None:
     ds = DatasourceConfig(name="d", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
     engine = engine_factory.get_engine(ds)
     try:
-        assert engine.url.drivername == "postgresql+psycopg2"
+        assert engine.url.drivername == "postgresql+psycopg"
     finally:
         engine.dispose()
-    assert ds.get_connection_string() == f"postgresql+psycopg2://u@{_HOST}/d"
+    assert ds.get_connection_string() == f"postgresql+psycopg://u@{_HOST}/d"
     assert ds.connection_string == f"postgresql://u@{_HOST}/d"
     assert ds.model_dump()["connection_string"] == f"postgresql://u@{_HOST}/d"
 
@@ -165,7 +171,7 @@ def test_stored_connection_string_not_rewritten() -> None:
 
 
 def test_default_driver_types_match_registry() -> None:
-    declared = {t for t in dialects._BY_DS_TYPE if dialect_for_ds_type(t).driver_facts(t).sync_driver}
+    declared = {t for t in dialects._BY_DS_TYPE if dialect_for_ds_type(t).driver_facts(t).default_driver}
     assert declared == set(_DEFAULT_DRIVER)
 
 
@@ -185,36 +191,27 @@ def test_sqlalchemy_resolves_declared_default_driver(ds_type) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("sa21_postgres_default")
-def test_sync_engine_uses_psycopg2_whatever_sqlalchemys_default() -> None:
-    ds = DatasourceConfig(name="d", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
-    engine = engine_factory.get_engine(ds)
-    try:
-        assert engine.url.drivername == "postgresql+psycopg2"
-        assert engine.dialect.driver == "psycopg2"
-    finally:
-        engine.dispose()
-
-
-@pytest.mark.usefixtures("sa21_postgres_default")
-async def test_async_engine_uses_asyncpg_whatever_sqlalchemys_default() -> None:
+@pytest.mark.usefixtures("sa20_postgres_default")
+async def test_client_connects_with_psycopg_whatever_sqlalchemys_default() -> None:
     ds = DatasourceConfig(name="d", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
     client = SlayerSQLClient(ds)
     try:
         engine = client._get_async_engine()
         assert engine is not None
-        assert engine.url.drivername == "postgresql+asyncpg"
+        assert engine.url.drivername == "postgresql+psycopg"
+        assert engine.dialect.driver == "psycopg"
     finally:
         await client.aclose()
 
 
-@pytest.mark.usefixtures("sa21_postgres_default")
-def test_missing_default_driver_names_extra(monkeypatch) -> None:
+@pytest.mark.usefixtures("sa20_postgres_default")
+async def test_missing_default_driver_names_extra(monkeypatch) -> None:
     ds = DatasourceConfig(name="pg_ds", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
-    monkeypatch.setitem(sys.modules, "psycopg2", None)
+    monkeypatch.setitem(sys.modules, "psycopg", None)
+    client = SlayerSQLClient(ds)
     with pytest.raises(MissingDriverError) as info:
-        engine_factory.get_engine(ds)
-    assert info.value.missing == "psycopg2"
+        await client.execute("SELECT 1")
+    assert info.value.missing == "psycopg"
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 
 

@@ -46,6 +46,7 @@ bucket, a date, a random ID or a count. Anything SLayer does not recognise is re
 |-------|---------|
 | `schema` | Report format version. |
 | `install_id` | Random UUID created on first use, replaced every 11 months. |
+| `first_query_ok` | The **date** of the install ID's first successful query (MCP `query`, `slayer query`, REST `/query`, Flight SQL, PostgreSQL wire; dry runs and probes excluded), or `null`. |
 | `batch_id` | Random UUID per send (lets the backend drop duplicates). |
 | `period` | First and last **date** covered (no times). |
 | `env` | SLayer version, Python `major.minor`, OS family, CPU architecture, whether it runs in a container, installed SLayer extras (read from package metadata). |
@@ -54,6 +55,7 @@ bucket, a date, a random ID or a count. Anything SLayer does not recognise is re
 | `dialects` | Queries per SQL dialect; datasources per dialect in buckets `0` / `1` / `2-5` / `6+`. |
 | `context` | Per process: storage backend (`yaml` / `sqlite` / `other`), model count in buckets `0` / `1-10` / `11-50` / `51-200` / `200+`, whether the bundled demo database was queried. |
 | `mcp_clients` | MCP sessions per client (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex, Zed, Cline, Goose, Continue; anything else `other`) with its major version. |
+| `mcp_sessions` | MCP sessions counted by their successful and failed `query` calls (dry runs excluded), each in buckets `0` / `1` / `2-5` / `6-20` / `21+`, reported once when their process ends. |
 
 ## How and when it is sent
 
@@ -70,7 +72,7 @@ Usage reporting never changes a command's output or exit code: every usage repor
 Files live in the platform config directory, not in SLayer's model storage:
 `$XDG_CONFIG_HOME/slayer` (default `~/.config/slayer`) on Linux,
 `~/Library/Application Support/slayer` on macOS, `%APPDATA%\slayer` on Windows —
-`usage-reporting.json` (setting, install ID, notice and send bookkeeping), `usage-reporting-spool/`
+`usage-reporting.json` (setting, install ID, first successful query date, notice and send bookkeeping), `usage-reporting-spool/`
 and two small lock files that keep concurrent `slayer` processes from overwriting each other.
 
 ## Destination

@@ -1066,7 +1066,7 @@ class TestDatasourceConfig:
             password="pass",
         )
         cs = ds.get_connection_string()
-        assert cs == "postgresql+psycopg2://user:pass@localhost:5432/mydb"
+        assert cs == "postgresql+psycopg://user:pass@localhost:5432/mydb"
 
     def test_explicit_connection_string(self) -> None:
         ds = DatasourceConfig(
@@ -1164,8 +1164,8 @@ class TestDatasourceConfig:
     @pytest.mark.parametrize(
         ("ds_type", "expected_driver"),
         [
-            ("postgres", "postgresql+psycopg2"),
-            ("postgresql", "postgresql+psycopg2"),
+            ("postgres", "postgresql+psycopg"),
+            ("postgresql", "postgresql+psycopg"),
             ("mysql", "mysql+pymysql"),
             ("mariadb", "mysql+pymysql"),
             ("clickhouse", "clickhouse+http"),

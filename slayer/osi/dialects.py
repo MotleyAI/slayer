@@ -9,12 +9,14 @@ from sqlglot import exp
 from pydantic import BaseModel
 
 from slayer.osi.models import OSIExpression
-from slayer.sql.dialects import SQLGLOT_NAMES
+from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
 
 OSSIE_SQL = "OSSIE_SQL_2026"
 ANSI_SQL = "ANSI_SQL"
 # Ossie's portable function set (IFF, ZEROIFNULL, DATEADD, STARTSWITH, ||) reads as Snowflake.
-_PORTABLE_READER = "snowflake"
+PORTABLE_READER = "snowflake"
+# Each SLayer dialect's Ossie token: its sqlglot name, upper-cased.
+_READERS: dict[str, str] = {name.upper(): name for name in SQLGLOT_NAMES}
 
 
 class Candidate(BaseModel):
@@ -36,12 +38,21 @@ def _token(dialect: str) -> str:
     return dialect.strip().upper()
 
 
+def ossie_token(ds_type: str | None) -> str:
+    """The Ossie dialect token a datasource type's own SQL is declared in."""
+    return dialect_for_ds_type(ds_type).sqlglot_name.upper()
+
+
 def reader_for(dialect: str) -> str | None:
     """The sqlglot read dialect for an Ossie dialect token, or ``None`` when it is not readable SQL."""
     token = _token(dialect)
     if token in (OSSIE_SQL, ANSI_SQL):
-        return _PORTABLE_READER
-    return token.lower() if token.lower() in SQLGLOT_NAMES else None
+        return PORTABLE_READER
+    return _READERS.get(token)
+
+
+def _native(dialect: str, target: str) -> bool:
+    return _token(dialect) not in (OSSIE_SQL, ANSI_SQL) and reader_for(dialect) == target
 
 
 def _first(step: list[Candidate]) -> Selection:
@@ -65,7 +76,7 @@ def select_expression(expression: OSIExpression, *, override: str | None, target
     steps += [
         matching(lambda t: t == OSSIE_SQL),
         matching(lambda t: t == ANSI_SQL),
-        matching(lambda t: t.lower() == target),
+        matching(lambda t: _native(t, target)),
     ]
     for step in steps:
         if step:
@@ -87,7 +98,7 @@ def read(candidate: Candidate) -> exp.Expr:
 
 def is_native(candidate: Candidate, *, target: str) -> bool:
     """Whether ``candidate`` is written in the target's own dialect (kept verbatim)."""
-    return _token(candidate.dialect) not in (OSSIE_SQL, ANSI_SQL) and reader_for(candidate.dialect) == target
+    return _native(candidate.dialect, target)
 
 
 def render(candidate: Candidate, tree: exp.Expr, *, target: str) -> str:

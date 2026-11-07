@@ -45,7 +45,7 @@ from slayer.sql.dialects.base import (
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
-    CatalogEngine,
+    CatalogConnection,
     ReflectedColumn,
     TableLocation,
     all_of,
@@ -414,14 +414,15 @@ class ClickhouseDialect(SqlDialect):
         )
 
     def columns_from_inspector(
-        self, raw: list[dict[str, Any]], *, sa_engine: CatalogEngine | None, location: TableLocation,
+        self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,
+        location: TableLocation,
     ) -> list[ReflectedColumn]:
         """A column the driver cannot type (``JSON``) is read from its ``system.columns`` type."""
-        columns = super().columns_from_inspector(raw, sa_engine=sa_engine, location=location)
+        columns = super().columns_from_inspector(raw, connection=connection, inspector=inspector, location=location)
         untyped = {c["name"] for c in raw if isinstance(c["type"], NullType)}
         if not untyped:
             return columns
-        declared = dict(fetch(sa_engine, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
+        declared = dict(fetch(connection, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
         return [
             column_from_type_string(
                 name=c.name, data_type=declared.get(c.name), comment=c.comment,
