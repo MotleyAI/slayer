@@ -14,11 +14,12 @@ import pytest
 import sqlalchemy.exc
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import Column, DatasourceConfig
 from slayer.sql import client as sql_client
 from slayer.sql.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.reflection import info_schema_type
+from slayer.sql.render.value_expr import keeps_native_type
 from tests._ch_fake_http import route_engine
 
 _DESCRIBE_COLUMNS = (
@@ -77,14 +78,6 @@ class TestPostgresDescriptions:
         assert described is not None
         assert described.db_type is not None
         assert described.type == info_schema_type(described.db_type)[0]
-
-
-@pytest.mark.parametrize(("ds_type", "expected"), [
-    ("postgres", True), ("redshift", True), ("duckdb", False), ("sqlite", False), ("mysql", False),
-    ("snowflake", False), ("mssql", False),
-])
-def test_type_probe_uses_sync_driver(ds_type: str, expected: bool) -> None:
-    assert dialect_for_ds_type(ds_type).type_probe_uses_sync_driver is expected
 
 
 # ─────────────────────────────── MySQL / MariaDB ────────────────────────────
@@ -245,11 +238,14 @@ class _Engines:
         self.log.append(sql)
         return self._respond(sql)
 
-    def sync(self) -> MagicMock:
+    def _sync_conn(self) -> MagicMock:
         conn = MagicMock()
         conn.exec_driver_sql.side_effect = lambda sql, **_kw: self._run(sql)
+        return conn
+
+    def sync(self) -> MagicMock:
         engine = MagicMock()
-        engine.connect.return_value.__enter__.return_value = conn
+        engine.connect.return_value.__enter__.return_value = self._sync_conn()
         return engine
 
     def async_(self) -> MagicMock:
@@ -258,8 +254,10 @@ class _Engines:
 
         def _connect() -> MagicMock:
             self.async_connects += 1
+            sync_conn = self._sync_conn()
             conn = MagicMock()
             conn.exec_driver_sql = AsyncMock(side_effect=_exec)
+            conn.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(sync_conn, *a, **kw))
             conn.rollback = AsyncMock()
             conn.get_raw_connection = AsyncMock()
             ctx = MagicMock()
@@ -305,21 +303,21 @@ class TestFirstRowFallback:
         }
 
 
-# ─────────────────────────── Postgres probes on the sync driver ─────────────
+# ───────────────────────── Postgres probes on the client's one driver ─────────
 
-async def test_postgres_probe_runs_on_the_sync_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_postgres_probe_runs_on_the_async_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     engines = _Engines(lambda _sql: _Result(
         keys=["x", "n"], rows=[],
         description=[_row("x", 23), _row("n", 1700, precision=12, scale=0)],
     ))
-    route_engine(monkeypatch, engines.sync())  # pyright: ignore[reportArgumentType]
+    monkeypatch.setattr(sql_client.engine_factory, "get_engine", MagicMock(side_effect=AssertionError("factory engine")))
     async_engine = engines.async_()
-    monkeypatch.setattr(sql_client, "_get_async_engine", lambda _cs: async_engine)
+    monkeypatch.setattr(sql_client, "create_async_engine", lambda *_a, **_k: async_engine)
     client = SlayerSQLClient(datasource=DatasourceConfig(
         name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d",
     ))
     result = await client.get_result_column_types("SELECT 1 AS x, 1::numeric(12,0) AS n")
-    assert engines.async_connects == 0
+    assert engines.async_connects == 1
     assert any("SELECT 1 AS x" in s for s in engines.log)
     assert result == {
         "x": ResultColumnType(type=DataType.INT, db_type="integer"),
@@ -343,6 +341,13 @@ def _is_describe(sql: str) -> bool:
 
 
 class TestSqlServerDescribe:
+    @pytest.mark.parametrize("scale", [0, 2])
+    def test_a_fallback_decimal_keeps_its_native_type(self, scale: int) -> None:
+        described = _describe("mssql", _row("m", Decimal, precision=10, scale=scale))
+        assert described is not None
+        derived = Column(name="d", sql="m * 2", type=described.type, db_type=described.db_type)
+        assert keeps_native_type(col=derived, dialect=dialect_for_ds_type("mssql")), described
+
     def test_declared_type_names(self) -> None:
         rows = [
             (False, 1, "i", True, 56, "int", 4, 10, 0),
@@ -394,8 +399,8 @@ class TestSqlServerDescribe:
         result = _probe_sync(engines, "SELECT * FROM #t", db_type="mssql")
         assert result == {
             "i": ResultColumnType(type=DataType.INT),
-            "m": ResultColumnType(type=DataType.DOUBLE),
-            "m0": ResultColumnType(type=DataType.INT),
+            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal(10,2)"),
+            "m0": ResultColumnType(type=DataType.INT, db_type="decimal(10,0)"),
             "t": ResultColumnType(type=DataType.TIMESTAMP),
             "d": ResultColumnType(type=DataType.DATE),
             "s": ResultColumnType(type=DataType.TEXT),

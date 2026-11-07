@@ -483,7 +483,8 @@ class TestCatalogFallbackLists:
 
     def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
         described = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
-        assert described is not None and described.type is DataType.ARRAY
+        assert described is not None
+        assert described.type is DataType.ARRAY
 
     def test_snowflake_element_inference_reads_the_table_in_its_own_database(self) -> None:
         statements: list[str] = []

@@ -1,13 +1,13 @@
 """One registry table for aggregation rendering.
 
-``_build_agg`` reached its builders five different ways, so adding an
-aggregation meant knowing which one to touch. Here each is one
-:class:`AggEntry`: ``dispatch`` names the mechanism that renders it (the
-generator still owns the builders, which need model columns and dialect hooks).
+Each aggregation is one :class:`AggEntry`; :func:`render_aggregate` is the one
+dispatch over a fully resolved :class:`AggregateSpec`, shared by the SQL
+generator and the Ossie exporter.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Dict, Literal, Optional, Type
 
 from pydantic import BaseModel, ConfigDict
@@ -20,8 +20,10 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DataType,
 )
-from slayer.sql.dialects.base import SqlDialect
+from slayer.core.models import VALUE_PLACEHOLDER, reserved_value_param_message
+from slayer.sql.dialects.base import SqlDialect, is_stat_agg1, is_stat_agg2
 from slayer.sql.render.row_expr import data_type_target, int_value
+from slayer.sql.sql_template import SqlTemplateError, sql_template
 
 # Which mechanism renders an aggregation. Retained as data so the generator's
 # dispatch is a table lookup rather than five stacked conditionals.
@@ -143,3 +145,118 @@ def apply_aggregate(
     if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
     return exp.Cast(this=aggregate, to=data_type_target(restored))
+
+
+class AggregateSpec(BaseModel):
+    """A fully resolved aggregate; ``value`` ``None`` is the row itself (``COUNT(*)``), ``formula`` the template."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    aggregation: str
+    value: Optional[Expression] = None
+    #: Each parameter's bound SQL.
+    bindings: Dict[str, Expression] = {}
+    input_type: Optional[DataType] = None
+    element_type: Optional[DataType] = None
+    formula: Optional[str] = None
+
+
+def percentile_literal(p: Expression) -> Expression:
+    """The numeric literal inside ``p`` (optionally signed / parenthesised), validated to [0, 1]."""
+    node, negative = p, False
+    while isinstance(node, (exp.Paren, exp.Neg)):
+        negative ^= isinstance(node, exp.Neg)
+        node = node.this
+    if not isinstance(node, exp.Literal) or node.is_string:
+        raise ValueError(
+            f"Aggregation 'percentile' parameter 'p' must be a numeric literal "
+            f"in [0, 1]; got {p.sql()!r}."
+        )
+    try:
+        value = Decimal(node.this)
+    except ArithmeticError:
+        value = Decimal("NaN")
+    if negative:
+        value = -value
+    if not value.is_finite() or not 0 <= value <= 1:
+        raise ValueError(
+            f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p.sql()}."
+        )
+    return node.copy()
+
+
+def _param(spec: AggregateSpec, name: str) -> Expression:
+    """A named parameter's bound SQL; a missing one fails closed."""
+    value = spec.bindings.get(name)
+    if value is None:
+        agg_name = spec.aggregation
+        raise ValueError(
+            f"Aggregation '{agg_name}' requires parameter '{name}'. "
+            f"Set it in the model's aggregation definition or at query time "
+            f"(e.g., '{agg_name}(measure, {name}=column)')."
+        )
+    return value.copy()
+
+
+def _read_value(spec: AggregateSpec) -> Expression:
+    """The value the aggregation reads (a boolean input to a numeric aggregation as its integer)."""
+    if spec.value is None:
+        raise ValueError(f"Aggregation {spec.aggregation!r} needs a value; only 'count' is defined over '*'.")
+    return aggregate_input(value=spec.value.copy(), aggregation=spec.aggregation, input_type=spec.input_type)
+
+
+def _formula_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
+    agg_name = spec.aggregation
+    if spec.formula is None:
+        raise ValueError(
+            f"Aggregation '{agg_name}' has no formula. "
+            f"Custom aggregations must define a formula."
+        )
+    if VALUE_PLACEHOLDER in spec.bindings:
+        raise SqlTemplateError(reserved_value_param_message(agg_name))
+    try:
+        template = sql_template(text=spec.formula, dialect=dialect.sqlglot_name)
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
+    bindings = {
+        name: _param(spec, name) for name in template.placeholder_names if name != VALUE_PLACEHOLDER
+    }
+    # A source ``Column.filter`` is already baked into the value.
+    bindings[VALUE_PLACEHOLDER] = exp.Star() if spec.value is None else _read_value(spec)
+    try:
+        return template.render(bindings)
+    except SqlTemplateError as e:
+        raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
+
+
+def render_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
+    """The one aggregate dispatch: ``spec`` as ``dialect``'s aggregate SQL."""
+    agg_name = spec.aggregation
+    if not is_builtin_agg(agg_name) or spec.formula:
+        return _formula_aggregate(spec, dialect=dialect)
+    entry = resolve_agg_entry(agg_name)
+    if entry.dispatch == DISPATCH_STAT:
+        if is_stat_agg2(agg_name):
+            # other= first, so a missing-required-param error outranks the dialect-unsupported one.
+            other = _param(spec, "other")
+            return dialect.build_covar_2arg(agg_name=agg_name, col_expr=_read_value(spec), other_expr=other)
+        if is_stat_agg1(agg_name):
+            return dialect.build_stat_agg_1arg(agg_name=agg_name, col_expr=_read_value(spec))
+        raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
+    if agg_name == "percentile":
+        p = percentile_literal(_param(spec, "p"))
+        return dialect.build_percentile(p=p, col_expr=_read_value(spec))
+    if agg_name == "collect":
+        return dialect.build_collect(_value(spec), spec.element_type)
+    if agg_name == "count_distinct_approx":
+        return dialect.build_approx_count_distinct(col_expr=_value(spec))
+    if agg_name == "median":
+        return dialect.build_median(inner=_read_value(spec))
+    inner = exp.Star() if spec.value is None and agg_name == "count" else _value(spec)
+    return apply_aggregate(entry=entry, value=inner, input_type=spec.input_type, dialect=dialect)
+
+
+def _value(spec: AggregateSpec) -> Expression:
+    if spec.value is None:
+        raise ValueError(f"Aggregation {spec.aggregation!r} needs a value; only 'count' is defined over '*'.")
+    return spec.value.copy()

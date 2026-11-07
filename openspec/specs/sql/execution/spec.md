@@ -217,110 +217,6 @@ for a query answered through the query engine — on the response's `warnings`.
 - **THEN** the probe still infers the column types and a Python warning with
   the same payload is emitted
 
-### Requirement: A missing database driver raises a typed, actionable error
-When connecting to a datasource needs a Python driver module or SQLAlchemy dialect plugin that is
-not installed — on the synchronous path, the asynchronous path, or a dialect's own lazily imported
-driver — SLayer SHALL raise a missing-driver error that is both a SLayer error and an import error.
-Its message SHALL name the datasource, its type, and the missing module (or, for a missing dialect
-plugin, the URL scheme whose plugin could not be loaded), and SHALL carry an install hint:
-- when the connection URL selects SLayer's default driver for a type that has a SLayer extra
-  (postgres/postgresql, mysql, mariadb, clickhouse, sqlserver/mssql/tsql, snowflake, bigquery,
-  trino), the hint SHALL be `pip install 'motley-slayer[<extra>]'` with that type's extra;
-- when the URL selects SLayer's default driver for a type without an extra, the hint SHALL tell the
-  user to install the named module or plugin and point to the datasource documentation;
-- when the URL names a driver other than SLayer's default, the hint SHALL tell the user to install
-  the driver named in their `connection_string`, and SHALL NOT recommend a SLayer extra.
-
-An import failure that is not attributable to the datasource's driver or dialect plugin SHALL
-propagate unchanged.
-
-#### Scenario: Missing sync driver names the extra
-- **WHEN** a postgres datasource with a structured config is executed synchronously and `psycopg2`
-  is not importable
-- **THEN** a missing-driver error is raised naming the datasource, type `postgres`, module
-  `psycopg2`, and `pip install 'motley-slayer[postgres]'`
-
-#### Scenario: Every extra-backed type names its own extra
-- **WHEN** the default driver or dialect plugin of each of mysql, mariadb, clickhouse, sqlserver,
-  snowflake, bigquery and trino is not importable and an engine is built for that type
-- **THEN** each raises a missing-driver error carrying that type's `motley-slayer[<extra>]` hint
-
-#### Scenario: Missing dialect plugin names the scheme
-- **WHEN** a clickhouse datasource is used and the ClickHouse SQLAlchemy plugin is not installed
-- **THEN** the missing-driver error names the `clickhouse+http` scheme and
-  `pip install 'motley-slayer[clickhouse]'`
-
-#### Scenario: Missing async driver raises instead of falling back
-- **WHEN** a postgres datasource executes asynchronously and `asyncpg` is not importable
-- **THEN** a missing-driver error naming `asyncpg` and `pip install 'motley-slayer[postgres]'` is
-  raised, and the statement is not run through the synchronous driver
-
-#### Scenario: Custom driver is not misattributed to the extra
-- **WHEN** a postgres datasource's `connection_string` is `postgresql+pg8000://…` and `pg8000` is
-  not importable
-- **THEN** the missing-driver error names `pg8000`, tells the user to install the driver named in
-  their `connection_string`, and does not mention `motley-slayer[postgres]`
-
-#### Scenario: Tier-2 type gets a generic hint
-- **WHEN** a redshift datasource is used and its SQLAlchemy dialect plugin is not installed
-- **THEN** a missing-driver error names the `redshift` scheme, tells the user to install it, and
-  points to the datasource documentation
-
-#### Scenario: Lazily imported vendor driver
-- **WHEN** a Snowflake datasource configured by `connection_name`, or a BigQuery datasource
-  configured with `oauth_credentials_json`, is used and its vendor client library is not importable
-- **THEN** a missing-driver error carrying that type's extra hint is raised
-
-#### Scenario: Unrelated import failure propagates
-- **WHEN** engine construction fails with an import error for a module that is not the
-  datasource's driver or dialect plugin
-- **THEN** that original import error propagates unchanged
-
-#### Scenario: Surfaces carry the hint
-- **WHEN** a missing-driver error reaches a handler that reports SLayer errors
-- **THEN** the reported message contains the install hint
-
-### Requirement: The asynchronous path honours the user's driver choice
-For a datasource type with a native asynchronous driver (postgres/postgresql: asyncpg;
-mysql/mariadb: aiomysql), the asynchronous connection SHALL be derived from the datasource's
-connection URL — after a URL naming no driver has been given the type's default driver — as follows,
-preserving the backend and every other URL part (credentials, host, port, database, query):
-- a URL that names an asynchronous-capable driver SHALL be used unchanged;
-- a URL that names the type's default synchronous driver (postgres: psycopg2; mysql/mariadb:
-  pymysql) SHALL use the type's native asynchronous driver;
-- a URL that names any other synchronous-only driver, or whose backend is not one the type serves,
-  SHALL run on the synchronous path in a worker thread.
-
-A datasource type without a native asynchronous driver SHALL run on the synchronous path in a
-worker thread.
-
-#### Scenario: psycopg v3 is kept
-- **WHEN** a postgres datasource's `connection_string` is `postgresql+psycopg://u:p@h:5432/d`
-- **THEN** the asynchronous connection uses psycopg with the same URL, and asyncpg is not required
-
-#### Scenario: Plain and default-sync URLs move to asyncpg
-- **WHEN** a postgres datasource's URL is `postgresql://u:p@h:5432/d?sslmode=require` or
-  `postgresql+psycopg2://u:p@h:5432/d?sslmode=require`
-- **THEN** the asynchronous connection URL is `postgresql+asyncpg://u:p@h:5432/d?sslmode=require`
-
-#### Scenario: MySQL follows the same rule
-- **WHEN** a mysql datasource's URL is `mysql://…` or `mysql+pymysql://…`, or is
-  `mysql+asyncmy://…`
-- **THEN** the first two use aiomysql and the third is used unchanged
-
-#### Scenario: MariaDB keeps its backend
-- **WHEN** a mariadb datasource's URL is `mariadb://u@h/d` or `mariadb+pymysql://u@h/d`
-- **THEN** the asynchronous connection URL is `mariadb+aiomysql://u@h/d`
-
-#### Scenario: Another named sync driver stays synchronous
-- **WHEN** a postgres datasource's URL is `postgresql+pg8000://…`, or a mysql datasource's URL is
-  `mysql+mysqldb://…`
-- **THEN** statements run on the synchronous path in a worker thread with the named driver
-
-#### Scenario: Type without an async driver
-- **WHEN** a Snowflake datasource executes asynchronously
-- **THEN** statements run on the synchronous path in a worker thread
-
 ### Requirement: Structured-config connection URLs are stable
 A datasource configured by fields rather than a `connection_string` SHALL produce a connection URL
 whose scheme names the type's default driver where the type declares one; a datasource type that no
@@ -328,7 +224,7 @@ registered dialect declares SHALL keep `<type>://` as its URL scheme.
 
 #### Scenario: Known types keep their scheme
 - **WHEN** structured postgres, mysql, mariadb, clickhouse and sqlserver datasources build their URLs
-- **THEN** the schemes are `postgresql+psycopg2`, `mysql+pymysql`, `mysql+pymysql`,
+- **THEN** the schemes are `postgresql+psycopg`, `mysql+pymysql`, `mysql+pymysql`,
   `clickhouse+http` and `mssql+pyodbc`
 
 #### Scenario: Unknown type keeps its own scheme
@@ -378,65 +274,6 @@ parameter SHALL reach the driver unchanged.
 #### Scenario: Reserved characters survive
 - **WHEN** a `trino` datasource's password contains `@`, `/` and `+`
 - **THEN** the driver receives the password unchanged
-
-### Requirement: A connection URL that names no driver uses SLayer's default driver
-For a datasource type that declares a default driver (postgres/postgresql: psycopg2; mysql/mariadb:
-pymysql; clickhouse: http; sqlserver/mssql/tsql: pyodbc), a connection URL — the datasource's
-`connection_string`, or the URL built from its structured fields — whose backend is one the type
-serves (postgres/postgresql: `postgresql`; mysql/mariadb: `mysql` and `mariadb`; clickhouse:
-`clickhouse`; sqlserver/mssql/tsql: `mssql`) and which names no driver SHALL connect with the type's
-default driver on the URL's own backend, whatever the installed SQLAlchemy's own default driver for
-that backend is. Credentials, host, port, database and query parameters SHALL be preserved.
-
-A URL that names a driver, whose backend the type does not serve, or that cannot be parsed as a
-URL, and every URL of a type without a declared default driver, SHALL be used exactly as given; the
-asynchronous path then derives its URL from this one as "The asynchronous path honours the user's
-driver choice" requires. A stored `connection_string` SHALL NOT be rewritten.
-
-#### Scenario: Bare Postgres URL uses psycopg2
-- **WHEN** a postgres datasource's `connection_string` is
-  `postgresql://u:p%40ss@h:5432/d?sslmode=require`
-- **THEN** it connects as `postgresql+psycopg2://u:p%40ss@h:5432/d?sslmode=require`
-
-#### Scenario: Bare MySQL and MariaDB URLs use pymysql
-- **WHEN** a mysql datasource's `connection_string` is `mysql://u:p%40ss@h/d?charset=utf8mb4`, or a
-  mariadb datasource's is `mariadb://u@h/d`
-- **THEN** they connect as `mysql+pymysql://u:p%40ss@h/d?charset=utf8mb4` and
-  `mariadb+pymysql://u@h/d` respectively
-
-#### Scenario: ClickHouse and SQL Server URLs use their default driver
-- **WHEN** a clickhouse datasource's `connection_string` is `clickhouse://u@h/d`, or a sqlserver
-  datasource's is `mssql://u@h/d`
-- **THEN** they connect as `clickhouse+http://u@h/d` and `mssql+pyodbc://u@h/d` respectively
-
-#### Scenario: A named driver is kept
-- **WHEN** a postgres datasource's `connection_string` is `postgresql+psycopg://u@h/d` or
-  `postgresql+asyncpg://u@h/d`, or a mysql datasource's is `mysql+mysqldb://u@h/d`
-- **THEN** the connection URL is exactly the `connection_string`
-
-#### Scenario: Types without a default driver are untouched
-- **WHEN** a sqlite, duckdb, snowflake, trino, redshift or unregistered-type datasource connects,
-  including a sqlite `:memory:` datasource
-- **THEN** its connection URL is exactly as given or as built today
-
-#### Scenario: A foreign backend is untouched
-- **WHEN** a postgres datasource's `connection_string` is `mysql://u@h/d`
-- **THEN** the connection URL is exactly the `connection_string`
-
-#### Scenario: Resolution does not depend on SQLAlchemy's defaults
-- **WHEN** a datasource of any type that declares a default driver connects with a URL naming no
-  driver, or with structured fields
-- **THEN** SQLAlchemy resolves that URL to the type's declared default driver
-
-#### Scenario: Missing default driver names the extra
-- **WHEN** a postgres datasource's `connection_string` is `postgresql://u@h/d` and `psycopg2` is not
-  importable
-- **THEN** a missing-driver error naming `psycopg2` and `pip install 'motley-slayer[postgres]'` is
-  raised
-
-#### Scenario: Stored configuration is not rewritten
-- **WHEN** a datasource with `connection_string` `postgresql://u@h/d` is used and then read back
-- **THEN** its `connection_string` is still `postgresql://u@h/d`
 
 ### Requirement: Every live database access goes through an engine-owned client
 
@@ -518,14 +355,284 @@ Live database access reached from asynchronous code SHALL run without blocking t
 - **WHEN** the REST, MCP, Postgres-facade and Flight builders are given a client factory and serve a query and a datasource-describing request
 - **THEN** every engine they build uses the factory's clients
 
-### Requirement: An async-only driver URL still gets a synchronous engine
+### Requirement: A client connects through one driver
+A datasource's default SQL client SHALL connect through exactly one database driver: the driver of
+the engine its caller supplied, else the driver its connection URL names, else — for a URL that
+names none — the type's default driver. The client SHALL NOT rewrite a connection URL to another
+driver; the URL's query parameters SHALL reach that driver unchanged.
 
-For a datasource type with a native asynchronous driver (postgres/postgresql: asyncpg; mysql/mariadb: aiomysql), a connection URL naming that asynchronous-only driver SHALL get its synchronous connection on the type's default synchronous driver (postgres: psycopg2; mysql/mariadb: pymysql), preserving the backend and every other URL part, so metadata reads and column-type probes work. Statements SHALL still run on the asynchronous driver the URL names.
+When the driver can run asynchronously, the client SHALL run statements asynchronously on it and
+SHALL serve every metadata read — connectivity checks, reflection, object listings, keys, comments,
+the server profile and column-type probes — over the same driver, without building any other
+engine. When the driver cannot run asynchronously, the client SHALL run statements and metadata
+reads on that driver synchronously without blocking the event loop. On an event loop the driver's
+asynchronous mode cannot run on (psycopg on Windows' default proactor event loop), the client SHALL
+use the same driver synchronously, from the same URL, without blocking the event loop.
 
-#### Scenario: asyncpg URL
-- **WHEN** a postgres datasource's URL is `postgresql+asyncpg://u:p@h:5432/d?sslmode=require` and its client pings, reflects a table and probes a statement's column types
-- **THEN** each succeeds over `postgresql+psycopg2://u:p@h:5432/d?sslmode=require`, and query statements run on asyncpg
+#### Scenario: Each named Postgres driver serves every operation
+- **WHEN** a postgres datasource's URL is `postgresql+psycopg2://u@h/d?sslmode=disable`,
+  `postgresql+asyncpg://u@h/d?ssl=disable`, `postgresql+psycopg://u@h/d?sslmode=disable` or
+  `postgresql+pg8000://u@h/d`, and its client pings, reflects and lists a table, probes a
+  statement's column types and executes a statement
+- **THEN** each operation succeeds, and every connection the client opens uses the named driver with
+  the URL's query parameters unchanged
 
-#### Scenario: aiomysql URL
-- **WHEN** a mysql datasource's URL is `mysql+aiomysql://u@h/d`
-- **THEN** its synchronous connection URL is `mysql+pymysql://u@h/d`
+#### Scenario: A URL naming no driver connects with psycopg
+- **WHEN** a postgres datasource's URL is `postgresql://u@h/d?sslmode=disable&connect_timeout=5` and
+  its client runs the same operations
+- **THEN** each succeeds over psycopg, asynchronously, with `sslmode=disable` and `connect_timeout=5`
+  reaching the driver unchanged
+
+#### Scenario: A sync-only driver builds no asynchronous engine
+- **WHEN** a client whose URL names `psycopg2`, `pg8000`, `pymysql` or `mysqldb`, or a mysql
+  datasource whose URL names no driver, runs statements and metadata reads from asynchronous code
+- **THEN** every one runs on that driver synchronously without blocking the event loop, and no
+  asynchronous engine is built
+
+#### Scenario: An async-capable driver builds no second engine
+- **WHEN** a client whose URL names `psycopg`, `asyncpg` or `aiomysql` runs every statement and
+  metadata operation
+- **THEN** no synchronous engine is built for that datasource
+
+#### Scenario: A named asynchronous MySQL driver serves metadata
+- **WHEN** a mysql datasource's URL is `mysql+aiomysql://…` and its client pings, reflects a table,
+  probes a statement's column types and executes a statement
+- **THEN** each succeeds over aiomysql
+
+#### Scenario: A loop the driver refuses runs it synchronously
+- **WHEN** a client whose driver is psycopg is used from an event loop psycopg's asynchronous mode
+  refuses
+- **THEN** statements and metadata reads run on psycopg synchronously from the same URL, and the
+  event loop is not blocked
+
+#### Scenario: A caller's engine is the only driver
+- **WHEN** a client wraps an engine its caller supplied and runs statements and metadata reads
+- **THEN** every one runs on that engine, and no other engine is built
+
+#### Scenario: An async SQLite driver is refused
+- **WHEN** a SQLite datasource's URL names `aiosqlite`
+- **THEN** connecting raises an error naming the built-in `sqlite://` driver, and no engine is built
+
+### Requirement: Async engines are held per event loop
+A client's asynchronous engine SHALL belong to the event loop that built it: a client used from
+several event loops SHALL hold one engine per loop and SHALL never use an engine or its connections
+from another loop. Releasing a client's loop-bound resources SHALL release only the running loop's
+engine. An engine whose event loop has closed SHALL be dropped without connection I/O from another
+loop. One client SHALL serve several event loops on several threads at once.
+
+#### Scenario: A synchronous bridge after asynchronous use
+- **WHEN** asynchronous code on a running event loop executes a statement through an engine-owned
+  client of a Postgres datasource, and the query engine's synchronous entry point then runs a
+  statement on the same datasource from inside that loop
+- **THEN** both return the same rows, no warning about an unclosed connection or transport is
+  emitted, and the client keeps serving statements on the caller's loop afterwards
+
+#### Scenario: Releasing one loop keeps the other
+- **WHEN** a client has served statements on two event loops and its loop-bound resources are
+  released on one of them
+- **THEN** the other loop's statements keep succeeding on that loop's engine
+
+#### Scenario: A closed loop's engine is dropped
+- **WHEN** a client served statements on an event loop that has since closed, and is then used on a
+  new event loop
+- **THEN** the statement succeeds, and none of the closed loop's connections is used from the new loop
+
+#### Scenario: Two loops on two threads at once
+- **WHEN** one client serves statements from two event loops running on two threads at the same time
+- **THEN** every statement succeeds
+
+#### Scenario: MySQL follows the same rule
+- **WHEN** the synchronous-bridge scenario runs on a mysql datasource whose URL names `aiomysql`
+- **THEN** it has the same outcome
+
+### Requirement: A bundled non-default driver warns until 2.0
+A client whose driver is one a SLayer extra installs but not the type's default driver
+(postgres/postgresql: psycopg2 and asyncpg; mysql/mariadb: aiomysql) SHALL emit a deprecation
+warning naming the driver and the extra and stating that from SLayer 2.0 the extra no longer
+installs it. A client on the type's default driver, or on a driver no SLayer extra installs, SHALL
+NOT emit it.
+
+#### Scenario: psycopg2 warns
+- **WHEN** a postgres datasource whose URL names `psycopg2` builds its client's connection
+- **THEN** a deprecation warning names `psycopg2` and `motley-slayer[postgres]`
+
+#### Scenario: asyncpg warns
+- **WHEN** a postgres datasource whose URL names `asyncpg` builds its client's connection
+- **THEN** a deprecation warning names `asyncpg` and `motley-slayer[postgres]`
+
+#### Scenario: aiomysql warns
+- **WHEN** a mysql datasource whose URL names `aiomysql` builds its client's connection
+- **THEN** a deprecation warning names `aiomysql` and `motley-slayer[mysql]`
+
+#### Scenario: Default and unbundled drivers are silent
+- **WHEN** clients connect with a postgres URL naming no driver or naming `psycopg`, a mysql URL
+  naming `pymysql`, and a postgres URL naming `pg8000`
+- **THEN** none emits the deprecation warning
+
+### Requirement: A missing driver raises a typed, actionable error
+When connecting to a datasource needs a Python driver module or SQLAlchemy dialect plugin that is
+not installed — whether the client runs it synchronously or asynchronously, or it is a dialect's own
+lazily imported driver — SLayer SHALL raise a missing-driver error that is both a SLayer error and
+an import error. Its message SHALL name the datasource, its type, and the missing module (or, for a
+missing dialect plugin, the URL scheme whose plugin could not be loaded), and SHALL carry an install
+hint:
+- when the connection URL selects a driver that a SLayer extra installs for the type — its default
+  driver, or a bundled non-default driver (postgres/postgresql: psycopg2 and asyncpg; mysql/mariadb:
+  aiomysql) — the hint SHALL be `pip install 'motley-slayer[<extra>]'` with that type's extra
+  (postgres/postgresql, mysql, mariadb, clickhouse, sqlserver/mssql/tsql, snowflake, bigquery,
+  trino);
+- when the URL selects SLayer's default driver for a type without an extra, the hint SHALL tell the
+  user to install the named module or plugin and point to the datasource documentation;
+- when the URL names a driver no SLayer extra installs, the hint SHALL tell the user to install the
+  driver named in their `connection_string`, and SHALL NOT recommend a SLayer extra.
+
+A missing driver SHALL NOT be replaced by another driver. An import failure that is not attributable
+to the datasource's driver or dialect plugin SHALL propagate unchanged.
+
+#### Scenario: Missing default Postgres driver names the extra
+- **WHEN** a postgres datasource with a structured config is used and `psycopg` is not importable
+- **THEN** a missing-driver error is raised naming the datasource, type `postgres`, module
+  `psycopg`, and `pip install 'motley-slayer[postgres]'`
+
+#### Scenario: Every extra-backed type names its own extra
+- **WHEN** the default driver or dialect plugin of each of mysql, mariadb, clickhouse, sqlserver,
+  snowflake, bigquery and trino is not importable and an engine is built for that type
+- **THEN** each raises a missing-driver error carrying that type's `motley-slayer[<extra>]` hint
+
+#### Scenario: Missing dialect plugin names the scheme
+- **WHEN** a clickhouse datasource is used and the ClickHouse SQLAlchemy plugin is not installed
+- **THEN** the missing-driver error names the `clickhouse+http` scheme and
+  `pip install 'motley-slayer[clickhouse]'`
+
+#### Scenario: Missing bundled driver names the extra and is not replaced
+- **WHEN** a postgres datasource whose URL names `asyncpg` executes a statement and `asyncpg` is not
+  importable
+- **THEN** a missing-driver error naming `asyncpg` and `pip install 'motley-slayer[postgres]'` is
+  raised, and the statement is not run through any other driver
+
+#### Scenario: Custom driver is not misattributed to the extra
+- **WHEN** a postgres datasource's `connection_string` is `postgresql+pg8000://…` and `pg8000` is
+  not importable
+- **THEN** the missing-driver error names `pg8000`, tells the user to install the driver named in
+  their `connection_string`, and does not mention `motley-slayer[postgres]`
+
+#### Scenario: Tier-2 type gets a generic hint
+- **WHEN** a redshift datasource is used and its SQLAlchemy dialect plugin is not installed
+- **THEN** a missing-driver error names the `redshift` scheme, tells the user to install it, and
+  points to the datasource documentation
+
+#### Scenario: Lazily imported vendor driver
+- **WHEN** a Snowflake datasource configured by `connection_name`, or a BigQuery datasource
+  configured with `oauth_credentials_json`, is used and its vendor client library is not importable
+- **THEN** a missing-driver error carrying that type's extra hint is raised
+
+#### Scenario: Unrelated import failure propagates
+- **WHEN** engine construction fails with an import error for a module that is not the
+  datasource's driver or dialect plugin
+- **THEN** that original import error propagates unchanged
+
+#### Scenario: Surfaces carry the hint
+- **WHEN** a missing-driver error reaches a handler that reports SLayer errors
+- **THEN** the reported message contains the install hint
+
+### Requirement: A connection URL that names no driver uses the type's default driver
+For a datasource type that declares a default driver (postgres/postgresql: psycopg; mysql/mariadb:
+pymysql; clickhouse: http; sqlserver/mssql/tsql: pyodbc), a connection URL — the datasource's
+`connection_string`, or the URL built from its structured fields — whose backend is one the type
+serves (postgres/postgresql: `postgresql`; mysql/mariadb: `mysql` and `mariadb`; clickhouse:
+`clickhouse`; sqlserver/mssql/tsql: `mssql`) and which names no driver SHALL connect with the type's
+default driver on the URL's own backend, whatever the installed SQLAlchemy's own default driver for
+that backend is. Credentials, host, port, database and query parameters SHALL be preserved.
+
+A URL that names a driver, whose backend the type does not serve, or that cannot be parsed as a
+URL, and every URL of a type without a declared default driver, SHALL be used exactly as given. A
+stored `connection_string` SHALL NOT be rewritten.
+
+#### Scenario: Bare Postgres URL uses psycopg
+- **WHEN** a postgres datasource's `connection_string` is
+  `postgresql://u:p%40ss@h:5432/d?sslmode=require`
+- **THEN** it connects as `postgresql+psycopg://u:p%40ss@h:5432/d?sslmode=require`
+
+#### Scenario: Bare MySQL and MariaDB URLs use pymysql
+- **WHEN** a mysql datasource's `connection_string` is `mysql://u:p%40ss@h/d?charset=utf8mb4`, or a
+  mariadb datasource's is `mariadb://u@h/d`
+- **THEN** they connect as `mysql+pymysql://u:p%40ss@h/d?charset=utf8mb4` and
+  `mariadb+pymysql://u@h/d` respectively
+
+#### Scenario: ClickHouse and SQL Server URLs use their default driver
+- **WHEN** a clickhouse datasource's `connection_string` is `clickhouse://u@h/d`, or a sqlserver
+  datasource's is `mssql://u@h/d`
+- **THEN** they connect as `clickhouse+http://u@h/d` and `mssql+pyodbc://u@h/d` respectively
+
+#### Scenario: A named driver is kept
+- **WHEN** a postgres datasource's `connection_string` is `postgresql+psycopg2://u@h/d` or
+  `postgresql+asyncpg://u@h/d`, or a mysql datasource's is `mysql+mysqldb://u@h/d`
+- **THEN** the connection URL is exactly the `connection_string`
+
+#### Scenario: Types without a default driver are untouched
+- **WHEN** a sqlite, duckdb, snowflake, trino, redshift or unregistered-type datasource connects,
+  including a sqlite `:memory:` datasource
+- **THEN** its connection URL is exactly as given or as built today
+
+#### Scenario: A foreign backend is untouched
+- **WHEN** a postgres datasource's `connection_string` is `mysql://u@h/d`
+- **THEN** the connection URL is exactly the `connection_string`
+
+#### Scenario: Resolution does not depend on SQLAlchemy's defaults
+- **WHEN** a datasource of any type that declares a default driver connects with a URL naming no
+  driver, or with structured fields
+- **THEN** SQLAlchemy resolves that URL to the type's declared default driver
+
+#### Scenario: Stored configuration is not rewritten
+- **WHEN** a datasource with `connection_string` `postgresql://u@h/d` is used and then read back
+- **THEN** its `connection_string` is still `postgresql://u@h/d`
+
+### Requirement: Cancelling a client's blocking database call returns at once
+
+When the default SQL client runs a blocking database call (a statement, a metadata read or a ping)
+over a datasource's own connection settings, cancelling the task that awaits it SHALL raise the
+cancellation in that task at once, without waiting for the call to finish, and the event loop SHALL
+keep running meanwhile. The abandoned call SHALL finish on its own, and its later result or error
+SHALL NOT reach the caller or the event loop's exception handler, also when the loop has closed
+before the call finishes. Cancelling a statement SHALL start no further retry attempt. An
+uncancelled call SHALL return its own result or raise its own error, and SHALL leave no worker
+thread running.
+
+#### Scenario: A timeout bounds a blocking metadata read
+- **WHEN** a client lists the objects of a SQLite datasource whose file another connection holds
+  under an exclusive lock, bounded by `asyncio.wait_for` with a 0.2 s timeout
+- **THEN** the caller gets `TimeoutError` long before the database's own busy timeout, and a
+  concurrent task keeps advancing while the call is pending
+
+#### Scenario: A timeout bounds a blocking statement
+- **WHEN** a client executes a statement on a SQLite datasource whose file another connection holds
+  under an exclusive lock, bounded by `asyncio.wait_for` with a 0.2 s timeout
+- **THEN** the caller gets `TimeoutError` long before the database's own busy timeout, and a
+  concurrent task keeps advancing while the call is pending
+
+#### Scenario: A cancelled call raises the cancellation
+- **WHEN** the task awaiting a blocking call is cancelled, either while the call runs or before it
+  has started
+- **THEN** the task raises `CancelledError` at once, never the call's later result or error, and a
+  call cancelled before it started never runs
+
+#### Scenario: The abandoned call's outcome is dropped
+- **WHEN** a cancelled call later fails or returns, while its event loop still runs or after the
+  loop has closed
+- **THEN** nothing is reported to the loop's exception handler, and the call's worker thread ends
+
+#### Scenario: Closing the client right after a cancellation
+- **WHEN** a client is closed immediately after one of its blocking calls was cancelled, while that
+  call still blocks
+- **THEN** closing returns without waiting for the call or raising, and the abandoned call ends on
+  its own
+
+#### Scenario: Cancelling a retried statement starts no further attempt
+- **WHEN** a statement is cancelled while an attempt runs or while it waits to retry
+- **THEN** the caller gets the cancellation and no further attempt starts
+
+#### Scenario: An uncancelled call is unchanged
+- **WHEN** a blocking call runs to completion without cancellation, returning a result or raising
+  an error
+- **THEN** the caller gets that result or that same error, and the call's worker thread has ended
+  when the call returns

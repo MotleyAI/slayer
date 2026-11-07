@@ -167,6 +167,27 @@ class TestTheTypedProbeIsChecked:
         assert report.failed == ["get_result_column_types"]
 
 
+class _Probe160Only:
+    """A 1.6.0 client: every current member but the typed probe, which it serves as ``get_column_types``."""
+
+    def __init__(self, inner: SlayerSQLClient) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "get_result_column_types":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    async def get_column_types(self, sql: str) -> dict[str, str]:  # noqa: ARG002 — 1.6.0 signature
+        return {"id": "number", "name": "string"}
+
+
+class TestA160ClientIsCheckedAgainstTheCurrentContract:
+    async def test_its_typed_probe_check_fails(self, sqlite_ds: DatasourceConfig) -> None:
+        report = await _run(_Probe160Only(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")
+        assert report.failed == ["get_result_column_types"], report.failures
+
+
 class TestStatementsOnlyDelegatingClientConforms:
     async def test_conforms(self, sqlite_ds: DatasourceConfig) -> None:
         report = await _run(_StatementsOnly(inner=SlayerSQLClient(datasource=sqlite_ds)), dialect="sqlite")

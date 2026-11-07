@@ -185,31 +185,35 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         async def call_tool(self, name: str, arguments: dict[str, Any]):
-            self._observe_client()
-            try:
-                result = await super().call_tool(name, arguments)
-            except BaseException as exc:
-                # FastMCP re-raises a tool's exception as ToolError from the original.
-                usage_reporting.record(surface="mcp", token=name, error=exc.__cause__ or exc)
-                raise
-            usage_reporting.record(surface="mcp", token=name)
+            session = self._observe_session()
+            with usage_reporting.action() as action:
+                try:
+                    result = await super().call_tool(name, arguments)
+                except BaseException as exc:
+                    usage_reporting.record(
+                        surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
+                    )
+                    raise
+            usage_reporting.record(surface="mcp", token=name, dry_run=action.dry_run, session=session)
             return result
 
-        def _observe_client(self) -> None:
+        def _observe_session(self) -> object | None:
+            """The calling session (counting its client at its first call), or ``None``."""
             if not usage_reporting.is_active():
-                return
+                return None
             try:
                 session = self.get_context().session
                 if session in self._usage_reporting_sessions:
-                    return
+                    return session
                 self._usage_reporting_sessions.add(session)
                 info = session.client_params.clientInfo if session.client_params else None
             except Exception:
                 logger.debug("usage reporting: no MCP session to identify", exc_info=True)
-                return
+                return None
             usage_reporting.observe_mcp_client(
                 name=getattr(info, "name", None), version=getattr(info, "version", None),
             )
+            return session
 
     return CountedFastMCP
 
@@ -234,8 +238,24 @@ def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
     )
 
 
-#: Failures rendered as a friendly database message rather than raised.
+#: Failures rendered as a friendly database message.
 _DB_FAILURES = (DatabaseError, SqlClientError)
+
+
+class ToolFailure(Exception):
+    """A tool failure whose message is safe to show the client; raised from its cause."""
+
+
+def _db_tool_failure(exc: Exception) -> ToolFailure:
+    return ToolFailure(_friendly_db_error(exc))
+
+
+def _counted_error(exc: BaseException) -> BaseException:
+    """The failure to count: past FastMCP's ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
+    error = exc.__cause__ or exc  # FastMCP re-raises a tool's exception as ToolError from the original
+    if isinstance(error, ToolFailure) and error.__cause__ is not None:
+        return error.__cause__
+    return error
 
 
 async def _test_connection(client: SqlClient) -> tuple[bool, str]:
@@ -397,6 +417,12 @@ def _render_hidden_internals_section(
     return out
 
 
+def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
+    if not broken:
+        return []
+    return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
+
+
 def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
@@ -418,9 +444,11 @@ async def _render_ingest_result(
     skipped = list(getattr(result, "skipped", None) or [])
     skipped_schemas = list(getattr(result, "skipped_schemas", None) or [])
     hidden_internals = list(getattr(result, "hidden_internals", None) or [])
+    broken = list(getattr(result, "broken_dependents", None) or [])
     datasource_described = bool(getattr(result, "datasource_described", False))
     if (
-        not additions
+        not broken
+        and not additions
         and not result.to_delete
         and not result.errors
         and not skipped
@@ -455,6 +483,7 @@ async def _render_ingest_result(
     lines.extend(
         _render_hidden_internals_section(hidden_internals, data_source=ds.name)
     )
+    lines.extend(_render_broken_dependents_section(broken))
     lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")
@@ -537,6 +566,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         First inspect the model and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.
         """
+        if dry_run:
+            usage_reporting.mark_dry_run()
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
@@ -568,10 +599,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
             return output
-        except Exception as e:
-            if isinstance(e, _DB_FAILURES):
-                return _friendly_db_error(e)
-            raise
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
 
     # Model discovery
 
@@ -786,9 +815,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     access_tags=access_tags,
                     warnings_out=notes,
                 )
+            except _DB_FAILURES as e:
+                raise _db_tool_failure(e) from e
             except Exception as e:
-                if isinstance(e, _DB_FAILURES):
-                    return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
             cols = [c.name for c in model.columns]
             meas = [m.name for m in model.measures]
@@ -817,9 +846,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # a raw-sql source against its datasource before it persists.
         try:
             await engine.save_model(model, warnings_out=notes)
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
         except Exception as e:
-            if isinstance(e, _DB_FAILURES):
-                return _friendly_db_error(e)
             return f"Error creating model '{model.name}': {e}"
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}." + _warning_lines(notes)
@@ -1546,7 +1575,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         try:
             entries = await engine.validate_models(data_source=data_source)
         except _DB_FAILURES as exc:
-            return _friendly_db_error(exc)
+            raise _db_tool_failure(exc) from exc
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @tool()
@@ -1642,10 +1671,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
-        except Exception as e:
-            if isinstance(e, _DB_FAILURES):
-                return _friendly_db_error(e)
-            raise
+        except _DB_FAILURES as e:
+            raise _db_tool_failure(e) from e
 
         return await _render_ingest_result(
             result, schema_name=schema_name, ds=ds, client=client,

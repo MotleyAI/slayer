@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar, Optional
 
+from pydantic import Field
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
@@ -14,6 +15,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    LegacyTypeCategories,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     set_statement,
@@ -152,11 +154,23 @@ class PostgresDialect(SqlDialect):
     max_identifier_bytes: int | None = 63
     statement_timeout_best_effort: bool = True
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON", "JSONB"})
-    url_scheme: str | None = "postgresql+psycopg2"
-    async_driver: str | None = "asyncpg"
+    url_scheme: str | None = "postgresql+psycopg"
     install_extra: str | None = "postgres"
-    # asyncpg reports no NUMERIC typmod.
-    type_probe_uses_sync_driver: bool = True
+    extra_drivers: dict[str, str] = Field(
+        default_factory=lambda: {"psycopg": "psycopg", "psycopg2": "psycopg2-binary", "asyncpg": "asyncpg"},
+    )
+    refused_loops: dict[str, frozenset[str]] = Field(
+        default_factory=lambda: {"psycopg": frozenset({"ProactorEventLoop"})},
+    )
+    legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
+        names={
+            "boolean": "boolean", "bigint": "number", "smallint": "number", "integer": "number", "oid": "number",
+            "real": "number", "double precision": "number", "numeric": "number", "money": "number",
+            "date": "time", "time": "time", "timestamp without time zone": "time",
+            "timestamp with time zone": "time", "interval": "time",
+        },
+        other="string",
+    )
 
     database_name: ClassVar[str] = "Postgres"
     native_lists: ClassVar[bool] = True

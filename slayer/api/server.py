@@ -258,18 +258,20 @@ class _UsageMiddleware:
                 status.append(message["status"])
             await send(message)
 
-        try:
-            await self.app(scope, receive, capture)
-        except BaseException as exc:
-            self._record(scope, error=exc)
-            raise
-        self._record(scope, error=usage_reporting.HttpError(status[0]) if status and status[0] >= 400 else None)
+        with usage_reporting.action() as action:
+            try:
+                await self.app(scope, receive, capture)
+            except BaseException as exc:
+                self._record(scope, error=exc, dry_run=action.dry_run)
+                raise
+        error = usage_reporting.HttpError(status[0]) if status and status[0] >= 400 else None
+        self._record(scope, error=error, dry_run=action.dry_run)
 
     @staticmethod
-    def _record(scope: Scope, *, error: BaseException | None) -> None:
+    def _record(scope: Scope, *, error: BaseException | None, dry_run: bool) -> None:
         route = scope.get("route")
         token = route.path if isinstance(route, APIRoute) else "other"
-        usage_reporting.record(surface="rest", token=token, error=error)
+        usage_reporting.record(surface="rest", token=token, error=error, dry_run=dry_run)
 
 
 def _slayer_version() -> str:
@@ -401,6 +403,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
                 run_query = SlayerQuery.model_validate(payload)
+            if dry_run:
+                usage_reporting.mark_dry_run()
             usage_reporting.observe_query(run_query)
             result = await engine.execute(
                 query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,

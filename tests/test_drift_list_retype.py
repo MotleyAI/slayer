@@ -71,7 +71,7 @@ def _deletes_scores(entry: dict[str, Any]) -> bool:
 
 
 def _findings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [e for e in entries if e.get("finding") == "list_retype" and e.get("column") == "scores"]
+    return [e for e in entries if e.get("finding") == "retype" and e.get("column") == "scores"]
 
 
 STALE_TYPES = [t for t in DataType if t is not DataType.ARRAY]

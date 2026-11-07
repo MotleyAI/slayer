@@ -17,11 +17,13 @@ import pytest
 from slayer import cli as slayer_cli
 from slayer.usage_reporting.recorder import NOTICE
 from tests._usage_reporting_helpers import (
+    McpStdio,
     build_storage,
     cli,
     free_port,
     is_posix,
     quiet_config,
+    session_rows,
     show,
     total,
     usage,
@@ -578,3 +580,40 @@ def test_pg_serve_idle_client_does_not_block_stop(store: str, usage_reporting_en
         client.close()
     assert returncode == 128 + signal.SIGTERM, proc.stderr
     assert usage(show(), "cli:pg-serve") == _CLEAN
+
+
+# --- MCP session totals at a signal stop ----------------------------------------------------------------------
+
+
+def _stdio_mcp_after_a_query(store: str, env: dict[str, str]) -> McpStdio:
+    session = McpStdio(args=["--storage", store], env=env)
+    session.initialize()
+    response = session.call_tool("query", {"query": {"source_model": "orders", "measures": ["sum(amount)"]}})
+    assert not response["result"].get("isError"), response
+    return session
+
+
+def test_stdio_mcp_sigterm_spools_session_totals(store: str, usage_reporting_env) -> None:
+    session = _stdio_mcp_after_a_query(store, usage_reporting_env.subprocess_env())
+    try:
+        session.proc.send_signal(signal.SIGTERM)
+        returncode = session.wait()
+    finally:
+        session.kill()
+    assert returncode == 128 + signal.SIGTERM, session.stderr_text()
+    assert session_rows(show()) == [("1", "0", 1)]
+
+
+@pytest.mark.parametrize("second", _SIGNALS)
+def test_stdio_mcp_forced_second_signal_spools_session_totals(
+    store: str, usage_reporting_env, second: signal.Signals,
+) -> None:
+    session = _stdio_mcp_after_a_query(store, usage_reporting_env.subprocess_env())
+    try:
+        session.proc.send_signal(signal.SIGTERM)
+        session.proc.send_signal(second)
+        returncode = session.wait()
+    finally:
+        session.kill()
+    assert returncode in (128 + signal.SIGTERM, 128 + second), session.stderr_text()
+    assert session_rows(show()) == [("1", "0", 1)]

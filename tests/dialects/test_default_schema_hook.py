@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.engine.url import make_url
 
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.bigquery import BigqueryDialect
@@ -30,50 +31,51 @@ class _RaisingInspector:
         raise RuntimeError("not supported")
 
 
-def _probe_engine(value: Any) -> MagicMock:
-    """An engine whose ``current_schema()`` probe returns ``value``."""
-    engine = MagicMock()
-    conn = engine.connect.return_value.__enter__.return_value
-    conn.execute.return_value.fetchone.return_value = (value,)
-    return engine
+def _probe_connection(value: Any) -> MagicMock:
+    """A connection whose ``current_schema()`` probe returns ``value``."""
+    conn = MagicMock()
+    conn.exec_driver_sql.return_value.fetchone.return_value = (value,)
+    return conn
 
 
-def _probe_sql(engine: MagicMock) -> str:
-    conn = engine.connect.return_value.__enter__.return_value
-    return str(conn.execute.call_args.args[0])
+def _probe_sql(conn: MagicMock) -> str:
+    return str(conn.exec_driver_sql.call_args.args[0])
 
 
 class TestBaseHook:
     @pytest.mark.parametrize("inspector_value", ["public", " "])
     def test_inspector_value_wins_without_probing(self, inspector_value: str) -> None:
-        engine = _probe_engine("probed")
-        got = SqlDialect().reflect_default_schema(sa_engine=engine, inspector=_Inspector(inspector_value))
+        conn = _probe_connection("probed")
+        got = SqlDialect().reflect_default_schema(connection=conn, inspector=_Inspector(inspector_value))
         assert got == inspector_value
-        engine.connect.assert_not_called()
+        conn.exec_driver_sql.assert_not_called()
 
     @pytest.mark.parametrize("inspector_value", [None, "", 42, MagicMock()])
     def test_probe_runs_when_the_inspector_value_is_not_a_name(self, inspector_value: Any) -> None:
-        engine = _probe_engine("probed")
-        got = SqlDialect().reflect_default_schema(sa_engine=engine, inspector=_Inspector(inspector_value))
+        conn = _probe_connection("probed")
+        got = SqlDialect().reflect_default_schema(connection=conn, inspector=_Inspector(inspector_value))
         assert got == "probed"
-        assert "current_schema()" in _probe_sql(engine)
+        assert "current_schema()" in _probe_sql(conn)
 
     def test_a_raising_inspector_falls_through_to_the_probe(self) -> None:
-        engine = _probe_engine("probed")
-        assert SqlDialect().reflect_default_schema(sa_engine=engine, inspector=_RaisingInspector()) == "probed"
+        conn = _probe_connection("probed")
+        assert SqlDialect().reflect_default_schema(connection=conn, inspector=_RaisingInspector()) == "probed"
 
     @pytest.mark.parametrize("probed", [None, "", 7])
     def test_a_non_name_probe_result_is_none(self, probed: Any) -> None:
-        engine = _probe_engine(probed)
-        assert SqlDialect().reflect_default_schema(sa_engine=engine, inspector=_Inspector(None)) is None
+        conn = _probe_connection(probed)
+        assert SqlDialect().reflect_default_schema(connection=conn, inspector=_Inspector(None)) is None
 
     def test_a_failing_probe_is_none(self) -> None:
-        engine = MagicMock()
-        engine.connect.side_effect = RuntimeError("no current_schema()")
-        assert SqlDialect().reflect_default_schema(sa_engine=engine, inspector=_Inspector(None)) is None
+        conn = MagicMock()
+        conn.exec_driver_sql.side_effect = RuntimeError("no current_schema()")
+        assert SqlDialect().reflect_default_schema(connection=conn, inspector=_Inspector(None)) is None
 
-    def test_no_engine_means_no_probe(self) -> None:
-        assert SqlDialect().reflect_default_schema(sa_engine=None, inspector=_Inspector(None)) is None
+    def test_no_connection_means_no_probe(self) -> None:
+        assert SqlDialect().reflect_default_schema(connection=None, inspector=_Inspector(None)) is None
+
+    def test_no_url_default_schema(self) -> None:
+        assert SqlDialect().url_default_schema(url=make_url("postgresql://h/db")) is None
 
 
 @pytest.fixture
@@ -82,33 +84,47 @@ def bq_engine() -> Iterator[sa.Engine]:
         yield engine
 
 
+def _no_sql_connection(engine: sa.Engine) -> MagicMock:
+    """A connection on ``engine``'s dialect whose every statement fails the test."""
+    conn = MagicMock(dialect=engine.dialect)
+    conn.exec_driver_sql.side_effect = AssertionError("ran SQL")
+    conn.execute.side_effect = AssertionError("ran SQL")
+    return conn
+
+
 class TestBigqueryHook:
     def test_returns_the_url_dataset_without_running_sql(self, bq_engine: sa.Engine) -> None:
-        with patch.object(bq_engine, "connect", MagicMock(side_effect=AssertionError("ran SQL"))) as connect:
-            got = BigqueryDialect().reflect_default_schema(sa_engine=bq_engine, inspector=_Inspector(None))
+        conn = _no_sql_connection(bq_engine)
+        got = BigqueryDialect().reflect_default_schema(connection=conn, inspector=_Inspector(None))
         assert got == "ds_a"
-        connect.assert_not_called()
+        conn.exec_driver_sql.assert_not_called()
+        conn.execute.assert_not_called()
 
     def test_a_url_without_a_dataset_is_none(self) -> None:
-        with (
-            disposable_engine(_BQ_URL_NO_DATASET) as engine,
-            patch.object(engine, "connect", MagicMock(side_effect=AssertionError("ran SQL"))) as connect,
-        ):
-            got = BigqueryDialect().reflect_default_schema(sa_engine=engine, inspector=_Inspector(None))
+        with disposable_engine(_BQ_URL_NO_DATASET) as engine:
+            conn = _no_sql_connection(engine)
+            got = BigqueryDialect().reflect_default_schema(connection=conn, inspector=_Inspector(None))
         assert got is None
-        connect.assert_not_called()
+        conn.exec_driver_sql.assert_not_called()
+        conn.execute.assert_not_called()
+
+    @pytest.mark.parametrize("url", [_BQ_URL, _BQ_URL_NO_DATASET])
+    def test_the_url_default_schema_is_the_drivers_dataset(self, url: str) -> None:
+        with disposable_engine(url) as engine:
+            expected = getattr(engine.dialect, "dataset_id")
+        assert BigqueryDialect().url_default_schema(url=make_url(url)) == expected
+
+    def test_the_url_default_schema_is_the_url_dataset(self) -> None:
+        assert BigqueryDialect().url_default_schema(url=make_url(_BQ_URL)) == "ds_a"
 
     def test_schema_description_resolves_the_dataset_via_the_hook(self, bq_engine: sa.Engine) -> None:
         client = MagicMock()
         client.get_dataset.return_value.description = "Dataset description"
-        conn = MagicMock()
-        conn.__enter__.return_value.connection._client = client
-        with (
-            patch.object(bq_engine, "connect", return_value=conn),
-            patch.object(BigqueryDialect, "reflect_default_schema", return_value="from_hook"),
-        ):
+        conn = MagicMock(dialect=bq_engine.dialect)
+        conn.connection._client = client
+        with patch.object(BigqueryDialect, "reflect_default_schema", return_value="from_hook"):
             got = BigqueryDialect().reflect_schema_description(
-                sa_engine=bq_engine, schema=None, configured_schema="configured",
+                connection=conn, schema=None, configured_schema="configured",
             )
         assert got == "Dataset description"
         client.get_dataset.assert_called_once_with("from_hook")

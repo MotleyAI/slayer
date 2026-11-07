@@ -291,3 +291,29 @@ def test_stdio_mcp_stdout_identical_with_usage_reporting_on_and_off(usage_report
     on = _mcp_transcript(env=usage_reporting_env.subprocess_env(), store=store)
     off = _mcp_transcript(env=usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off"), store=store)
     assert on == off
+
+
+def test_notice_again_for_a_schema_1_record(usage_reporting_env, store: str) -> None:
+    quiet_config()
+    write_config(notice_shown_schema=1)
+    first = cli(["models", "--storage", store, "list"])
+    second = cli(["models", "--storage", store, "list"])
+    _assert_notice(first.stderr)
+    assert _NOTICE_URL not in second.stderr
+    assert config().notice_shown_schema == 2
+
+
+def test_no_notice_and_no_lowering_for_a_newer_record(usage_reporting_env, store: str) -> None:
+    quiet_config()
+    write_config(notice_shown_schema=3)
+    result = cli(["models", "--storage", store, "list"])
+    assert result.returncode == 0, result.stderr
+    assert _NOTICE_URL not in result.stderr
+    assert config().notice_shown_schema == 3
+
+
+def test_notice_names_the_new_fields(usage_reporting_env, store: str) -> None:
+    write_config(last_sent=None)
+    stderr = cli(["models", "--storage", store, "list"]).stderr
+    assert "query outcomes per MCP session" in stderr
+    assert "the date of the first successful query" in stderr

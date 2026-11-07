@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import difflib
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -22,6 +22,7 @@ from slayer.core.errors import (
     AggregationFilterError,
     AggregationNotAllowedError,
     CastTypeError,
+    ListTypeError,
     CircularJoinPathError,
     GranularityCallError,
     IllegalScopeReferenceError,
@@ -114,6 +115,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 
 __all__ = [
     "bind_expr",
+    "bind_model_formula",
     "bind_filter",
     "bind_time_dimension",
     "collect_bind_records",
@@ -205,10 +207,18 @@ def bind_expr(
     )
     return BoundExpr(
         value_key=value_key,
-        routed_dotted=_canonical_if_routed(
-            parsed=parsed, value_key=value_key, scope=scope,
-        ),
+        routed_dotted=_canonical_if_routed(parsed=parsed, value_key=value_key),
     )
+
+
+def bind_model_formula(
+    formula: str, *, model: SlayerModel, models: Sequence[SlayerModel], dialect: str,
+) -> ValueKey:
+    """``formula`` bound on ``model`` (saved measures inlined) against the ``models`` graph, reading no database."""
+    bundle = ResolvedSourceBundle(dialect=dialect, source_model=model, referenced_models=list(models))
+    return bind_expr(
+        parse_expr(formula), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True,
+    ).value_key
 
 
 def spelled_aggregate_key(
@@ -247,7 +257,7 @@ def bind_time_dimension(
         )
     bound_col = _resolve_column_ref(parsed, scope=scope, bundle=bundle)
     column_type, upstream = _column_facts(bound_col, scope=scope, bundle=bundle)
-    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col, scope=scope)
+    routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         column_type=column_type,
@@ -327,7 +337,6 @@ def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
     value_key: ValueKey,
-    scope: ModelScope | StageSchema,
 ) -> Optional[str]:
     """Full canonical dotted path when a ``DottedRef``'s bound path differs from
     its typed hop path (auto-routed or respelled) — or the canonical name of a
@@ -1646,6 +1655,11 @@ def _validate_agg_eligibility(
     reason = _column_agg_refusal(
         col=col, columns=owner_model.columns, agg=effective, custom=effective in custom_names,
     )
+    if reason is not None and col.type is DataType.ARRAY:
+        raise ListTypeError(
+            summary=f"`{col.name}` is a list: an aggregation over a list is only count; {effective}() cannot take it.",
+            suggestion=f"Aggregate its elements: {effective}({col.name}.value).",
+        )
     if reason is not None:
         raise AggregationNotAllowedError(column=col.name, agg=effective, reason=reason)
     return effective

@@ -10,6 +10,16 @@ from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from slayer.core.enums import DataType
+
+OSSIE_DATATYPES: dict[str, DataType] = {
+    "String": DataType.TEXT, "Integer": DataType.INT, "Decimal": DataType.DOUBLE,
+    "Float": DataType.DOUBLE, "Boolean": DataType.BOOLEAN, "Date": DataType.DATE,
+    "DateTime": DataType.TIMESTAMP, "DateTimeTz": DataType.TIMESTAMP,
+    "Time": DataType.UNKNOWN, "Opaque": DataType.UNKNOWN,
+}
+TEMPORAL_DATATYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
+
 
 class OSIAIContextObject(BaseModel):
     """Structured AI context with instructions, synonyms, and examples."""
@@ -156,3 +166,32 @@ def ai_context_to_dict(ctx: Optional[OSIAIContext]) -> Optional[dict[str, Any]]:
     if isinstance(ctx, str):
         return {"instructions": ctx}
     return ctx.model_dump(exclude_none=True)
+
+
+def render_description(explicit: Optional[str], ctx: Optional[OSIAIContext]) -> Optional[str]:
+    """Explicit description (lead) + ai_context instructions + synonyms, as the importer stores it."""
+    parts: list[str] = []
+    if explicit:
+        parts.append(explicit)
+    ctx_dict = ai_context_to_dict(ctx)
+    if ctx_dict:
+        instructions = ctx_dict.get("instructions")
+        if instructions and instructions != explicit:
+            parts.append(instructions)
+        synonyms = ctx_dict.get("synonyms")
+        if synonyms:
+            parts.append("Synonyms: " + ", ".join(synonyms))
+    return "\n".join(parts) or None
+
+
+def explicit_description(stored: Optional[str], ctx: Optional[dict[str, Any]]) -> Optional[str]:
+    """The explicit description ``render_description`` turned into ``stored`` (``stored`` when none did)."""
+    if not stored or not ctx:
+        return stored
+    context = OSIAIContextObject.model_validate(ctx)
+    lines = stored.split("\n")
+    for cut in range(len(lines), -1, -1):
+        explicit = "\n".join(lines[:cut]) or None
+        if render_description(explicit, context) == stored:
+            return explicit
+    return stored
