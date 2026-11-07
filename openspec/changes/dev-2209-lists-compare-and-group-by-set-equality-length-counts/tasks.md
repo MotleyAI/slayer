@@ -43,5 +43,5 @@
 
 - [x] 6.1 Apply the approved Axiom 3.2 wording verbatim to `architecture/semantics.arc42.md` (design.md decision 3) with `[enforced: test:tests/test_list_set_equality.py]`; run `poetry run la-arch-check`
 - [x] 6.2 Update `docs/examples/16_list_columns/list_columns.md` (grouping and comparing lists, `length` meaning) and re-execute `list_columns_nb.ipynb` with `jupyter nbconvert --to notebook --execute --inplace`; update `docs/concepts/queries.md` (List columns), `docs/concepts/references.md` (Lists), `docs/interfaces/pg-facade.md:138` and `docs/interfaces/flight-sql.md:115`
-- [ ] 6.3 Run `poetry run pytest -m "not integration"`, the CI integration invocation, the live ClickHouse / Trino / Snowflake suites, and `poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py`; all pass
+- [x] 6.3 Run `poetry run pytest -m "not integration"`, the CI integration invocation, the live ClickHouse / Trino / Snowflake suites, and `poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py`; all pass
 - [x] 6.4 Run `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs the baseline); both clean
