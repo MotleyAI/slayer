@@ -21,7 +21,7 @@ from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev2101_fixtures import emit
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
-from tests._dev2137_fixtures import list_engine, measure, num, query
+from tests._dev2137_fixtures import as_list, list_engine, measure, num, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -123,9 +123,9 @@ class TestArrayLiterals:
         assert "1" in msg, msg
 
     async def test_a_literal_as_a_dimension(self, engine) -> None:
-        with pytest.raises(SlayerError) as info:
-            await _values(engine, "['go', 'sql']")
-        assert "list" in str(info.value).lower() or "ARRAY" in str(info.value), str(info.value)
+        got = await _values(engine, "['go', 'sql']")
+        assert got
+        assert all(as_list(v) == ["go", "sql"] for v in got.values()), got
 
     async def test_a_literal_as_an_equality_operand(self, engine) -> None:
         with pytest.raises(SlayerError):

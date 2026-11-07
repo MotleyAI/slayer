@@ -27,6 +27,7 @@ from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     SLOT_COMPOSITE_KINDS,
     CastKey,
+    ListSetKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -152,6 +153,8 @@ class ValueRegistry:
         canonical_alias: Optional[str],
     ) -> None:
         """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source column raises; self-named dimensions are exempt."""
+        if isinstance(key, ListSetKey):
+            key = key.source
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
@@ -547,6 +550,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return f"_scalar_{key.name}"
     if isinstance(key, CastKey):
         return f"_cast_{_canonical_name(key.source)}"
+    if isinstance(key, ListSetKey):
+        return _canonical_name(key.source)
     if isinstance(key, LiteralKey):
         return f"_lit_{key.value}"
     if isinstance(key, StarKey):

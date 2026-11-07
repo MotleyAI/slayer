@@ -22,6 +22,7 @@ from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     CastKey,
+    ListSetKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -248,7 +249,7 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.operand]
     if isinstance(node, SqlFragmentKey):
         return list(node.refs)
-    if isinstance(node, CastKey):
+    if isinstance(node, (CastKey, ListSetKey)):
         return [node.source]
     raise UnhandledValueKindError(node)
 

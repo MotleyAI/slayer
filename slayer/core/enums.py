@@ -467,8 +467,8 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
     DataType.DATE: _ORDERED_AGGREGATIONS,
     DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
-    # A list counts as a whole; its elements aggregate through ``<column>.value``.
-    DataType.ARRAY: frozenset({"count"}),
+    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<column>.value``.
+    DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 
 # A sole primary key is restricted to counting and min/max, regardless of data type.

@@ -111,8 +111,12 @@ is the coercion from coarser to finer.
      [enforced: test:tests/test_unrelated_datasets.py]
    - **3.2 List children.** A list column `L` of dataset `D` is a keyless
      one-to-many child `D.L`: one row per non-NULL element, its value
-     `D.L.value`, each row determining its `D` row.
+     `D.L.value`, each row determining its `D` row. The list itself is its
+     **element set**, its distinct non-NULL elements (`[b, a, b, NULL] ≡ [a, b]`):
+     equality, grouping, distinct counting and `length` read that set; `D.L`
+     keeps repeats.
      [enforced: test:tests/test_dev2137_list_children.py]
+     [enforced: test:tests/test_list_set_equality.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 4. **The home-dataset axiom**: an aggregation runs over the rows of its home

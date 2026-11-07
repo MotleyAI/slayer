@@ -41,7 +41,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
-from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
     aggregation_owner,
     follow,
@@ -624,7 +624,7 @@ _RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank
 # Real ValueKey args (a ScalarCallKey / iif may also carry raw scalar literals).
 _COMPOUND_VALUE_KEYS = (
     ColumnKey, ColumnSqlKey, TimeTruncKey, StarKey,
-    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, InKey, CastKey,
+    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, InKey, CastKey, ListSetKey,
 )
 
 
@@ -661,7 +661,7 @@ def _walk_cp_predicate(*, op: str, key, connective_operand: bool) -> None:
                 _walk_cp_predicate(op=op, key=a, connective_operand=False)
     elif isinstance(key, InKey):
         _walk_cp_predicate(op=op, key=key.column, connective_operand=False)
-    elif isinstance(key, CastKey):
+    elif isinstance(key, (CastKey, ListSetKey)):
         _walk_cp_predicate(op=op, key=key.source, connective_operand=False)
 
 
@@ -1919,7 +1919,7 @@ class SQLGenerator:
             elif isinstance(key, ScalarCallKey):
                 for a in key.args:
                     _walk(a, fn)
-            elif isinstance(key, CastKey):
+            elif isinstance(key, (CastKey, ListSetKey)):
                 _walk(key.source, fn)
 
         def _for_each_local_agg(fn) -> None:
@@ -2004,16 +2004,17 @@ class SQLGenerator:
         """One ``(cte_name, condition)`` per regroup producer. Each host"""
         out: List[Tuple[str, Optional[Expression]]] = []
         for cte_name, pairs in (regroup_join_specs or []):
-            operands = [
+            operands = self._keyed_pairs([
                 (
                     render_value_key(
                         key=host_key,
                         ctx=RenderContext(scope=scope, dialect=self._dialect),
                     ),
                     grain_alias_column(alias=producer_alias, table=cte_name),
+                    host_key,
                 )
                 for host_key, producer_alias in pairs
-            ]
+            ])
             out.append((
                 cte_name,
                 build_grain_joinback_condition(pairs=operands, dialect=self._dialect),
@@ -2104,6 +2105,8 @@ class SQLGenerator:
 
         select_columns: list[Expr] = []
         group_by_keys: Dict[str, Expression] = {}
+        # A grouped dimension's value where it differs from its GROUP BY key.
+        display_by_sid: Dict[str, Expression] = {}
         has_aggregation = False
         alias_index: Dict[str, int] = {}
         aliases_by_slot_id: Dict[str, List[str]] = {}
@@ -2171,8 +2174,9 @@ class SQLGenerator:
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
-                    select_columns.append(dim_expr.copy().as_(full_alias))
-                    group_by_keys.setdefault(sid, dim_expr)
+                    select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias))
+                    group_by_keys.setdefault(sid, self._grain_key(dim_expr, key=key))
+                    display_by_sid[sid] = dim_expr
                     _record_alias(sid, full_alias)
                 elif isinstance(key, LiteralKey) and slot.is_dimension:
                     # A constant needs no GROUP BY entry (a constant one is refused or read as a position).
@@ -2229,7 +2233,7 @@ class SQLGenerator:
                     f"construction.",
                 )
 
-        dimension_values = {slots_by_id[sid].key: gb for sid, gb in group_by_keys.items()}
+        dimension_values = {slots_by_id[sid].key: display_by_sid.get(sid, gb) for sid, gb in group_by_keys.items()}
         # No dimension and no aggregate: every measure is the single grand-total cell.
         grand_total = not group_by_keys and not has_aggregation and bool(deferred_composites)
         for idx, slot, full_alias in deferred_composites:
@@ -2367,6 +2371,7 @@ class SQLGenerator:
         src_cols: List[Expr] = []
         grain_pairs: List[Tuple[Expression, Expression]] = []
         grain_aliases: List[str] = []
+        grain_keys: Dict[str, Any] = {}
 
         for idx, sid in enumerate(plan.dimension_slot_ids):
             dslot = slots_by_id.get(sid)
@@ -2377,10 +2382,9 @@ class SQLGenerator:
                 ctx=RenderContext(scope=src_scope, dialect=self._dialect),
             )
             src_cols.append(expr.as_(f"_w_dim_{idx}"))
-            grain_pairs.append(
-                (_src_col(f"_w_dim_{idx}"), _base_col(base_alias)),
-            )
+            grain_pairs.extend(self._keyed_pairs([(_src_col(f"_w_dim_{idx}"), _base_col(base_alias), dslot.key)]))
             grain_aliases.append(base_alias)
+            grain_keys[base_alias] = dslot.key
 
         # Non-window time dimensions are equality-joined so the trailing window doesn't fan out across their values.
         for idx, sid in enumerate(plan.other_time_dimension_slot_ids):
@@ -2626,12 +2630,14 @@ class SQLGenerator:
 
         outer = exp.Select()
         for ga in grain_aliases:
-            outer = outer.select(_base_col(ga))
+            shown = self._grouped_display(_base_col(ga), key=grain_keys.get(ga))
+            outer = outer.select(shown.as_(exp.to_identifier(ga, quoted=True)) if isinstance(shown, exp.AnyValue)
+                                 else shown)
         outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
         outer = outer.from_(base_from)
         outer = outer.join(src_subq, on=on_range, join_type="LEFT")
         for ga in grain_aliases:
-            outer = outer.group_by(_base_col(ga))
+            outer = outer.group_by(self._grain_key(_base_col(ga), key=grain_keys.get(ga)))
 
         # Return AST: rendering here and re-parsing later would re-introduce the dotted-alias corruption on BigQuery.
         return outer, grain_aliases
@@ -3064,13 +3070,15 @@ class SQLGenerator:
             bundle=bundle, allocator=allocator, attached_columns=regroup_env,
         )
         ctx = RenderContext(scope=scope, dialect=self._dialect)
+        list_rows = getattr(kernel, "list_rows", False)
 
         inner_cols: List[Expr] = []
         group: List[Expression] = []
         for slot, alias in zip(grain_slots, grain_aliases):
             expr = render_value_key(key=slot.key, ctx=ctx)
-            inner_cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
-            group.append(expr.copy())
+            shown = expr.copy() if list_rows else self._grouped_display(expr, key=slot.key)
+            inner_cols.append(shown.as_(exp.to_identifier(alias, quoted=True)))
+            group.append(self._grain_key(expr.copy(), key=slot.key))
         entity_exprs: List[Expression] = []
         for idx, ekey in enumerate(kernel.entity_keys):
             eexpr = render_value_key(key=ekey, ctx=ctx)
@@ -3083,8 +3091,6 @@ class SQLGenerator:
         # the input is root-determined, constant per entity); ``count(*)`` keeps no
         # value column — level 2 counts the entity rows. List rows are already one
         # per root row and cell, so they read their values as is.
-        list_rows = getattr(kernel, "list_rows", False)
-
         def pick(value: Expression, *, input_type: Optional[DataType]) -> Expression:
             return value if list_rows else self._pick_once(value, input_type=input_type)
 
@@ -3267,14 +3273,15 @@ class SQLGenerator:
             )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(agg_slot))
+        grain_key_of = {alias: slot.key for slot, alias in zip(grain_slots, grain_aliases)}
         outer_cols: List[Expr] = [
-            _base_col(alias).as_(exp.to_identifier(alias, quoted=True))
+            self._grouped_display(_base_col(alias), key=grain_key_of[alias]).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
         ]
         outer_cols.append(agg_expr.as_(exp.to_identifier(agg_alias, quoted=True)))
         outer = exp.Select().select(*outer_cols).from_(base_subq)
         for alias in grain_aliases:
-            outer = outer.group_by(_base_col(alias))
+            outer = outer.group_by(self._grain_key(_base_col(alias), key=grain_key_of[alias]))
         return outer
 
     def _window_endpoints_base(self, *, kernel, plan, slots_by_id, aliases_by_slot_id) -> exp.Select:
@@ -3309,8 +3316,8 @@ class SQLGenerator:
 
         def _emit(slot, expr: Expression) -> None:
             alias = aliases_by_slot_id[slot.id][0]
-            cols.append(expr.copy().as_(exp.to_identifier(alias, quoted=True)))
-            group.append(expr.copy())
+            cols.append(self._grouped_display(expr, key=slot.key).as_(exp.to_identifier(alias, quoted=True)))
+            group.append(self._grain_key(expr.copy(), key=slot.key))
 
         for sid in plan.dimension_slot_ids:
             dslot = slots_by_id[sid]
@@ -3729,14 +3736,16 @@ class SQLGenerator:
             if cte_name in joined_cte_names:
                 continue
             joined_cte_names.add(cte_name)
+            key_by_alias = {a: slots_by_id[sid].key for sid, als in aliases_by_slot_id.items() for a in als}
             on_condition = build_grain_joinback_condition(
-                pairs=[
+                pairs=self._keyed_pairs([
                     (
                         grain_alias_column(alias=host, table="_base"),
                         grain_alias_column(alias=cte_col, table=cte_name),
+                        key_by_alias.get(host),
                     )
                     for host, cte_col in joinback_pairs
-                ],
+                ]),
                 dialect=self._dialect,
             )
             if on_condition is None:
@@ -4283,6 +4292,20 @@ class SQLGenerator:
                 rendered_map[ident] = (cte_name, exposed_by_sid)
         return ctes, attached_env, join_specs, reused_cte_names
 
+    def _grain_key(self, expr: Expression, *, key: Any) -> Expression:
+        """What grouping, partitioning and join-backs read of grain member ``key``: an element set's list key."""
+        return self._dialect.build_list_key(expr.copy()) if isinstance(key, ListSetKey) else expr
+
+    def _keyed_pairs(self, pairs: Sequence[Tuple[Expression, Expression, Any]]) -> List[Tuple[Expression, Expression]]:
+        """Grain join-back operands ``(left, right, member key)``, an element set read through its list key."""
+        return [(self._grain_key(left, key=k), self._grain_key(right, key=k)) for left, right, k in pairs]
+
+    def _grouped_display(self, expr: Expression, *, key: Any) -> Expression:
+        """A grouped member's projection: its value, any one of its cell's where its key is another expression."""
+        if not isinstance(key, ListSetKey) or self._dialect.build_list_key(expr) is expr:
+            return expr.copy()
+        return exp.AnyValue(this=expr.copy())
+
     def _full_alias_for_slot(
         self,
         *,
@@ -4579,8 +4602,8 @@ class SQLGenerator:
 
         # Explicit partition_keys win; otherwise auto-partition by query dimension slots (ColumnKey row-phase), never
         # TimeTruncKey.
+        partition_members: list[Tuple[str, Any]] = []
         if key.partition_keys:
-            partition_aliases: list[str] = []
             for pk in sorted(
                 key.partition_keys, key=lambda k: repr(k),
             ):
@@ -4591,21 +4614,16 @@ class SQLGenerator:
                         f"slot id={slot.id!r}, op={key.op!r}, "
                         f"partition_key={pk!r}.",
                     )
-                partition_aliases.append(
-                    available_alias_by_slot_id[pk_sid],
-                )
-        elif key.op in RANK_FAMILY_TRANSFORMS:
-            partition_aliases = []
-        else:
-            partition_aliases = []
+                partition_members.append((available_alias_by_slot_id[pk_sid], pk))
+        elif key.op not in RANK_FAMILY_TRANSFORMS:
             for sid in self._transform_grain_slot_ids(
                 planned_query=planned_query, slots_by_id=slots_by_id, axis=key.time_key,
             ):
                 alias = available_alias_by_slot_id.get(sid)
                 if alias is not None:
-                    partition_aliases.append(alias)
+                    partition_members.append((alias, slots_by_id[sid].key))
 
-        partition_by = [exp.column(a, quoted=True) for a in partition_aliases]
+        partition_by = [self._grain_key(exp.column(a, quoted=True), key=k) for a, k in partition_members]
 
         def _over(
             fn: Expression,
@@ -4949,17 +4967,20 @@ class SQLGenerator:
             periods=periods, shift_granularity=shift_granularity,
             bucket_granularity=time_key.granularity,
         )
+        key_by_alias = {chain.available_alias_by_slot_id.get(sid): k for k, sid in chain.slot_id_by_key.items()}
         sjoin_on = build_grain_joinback_condition(
-            pairs=[
+            pairs=self._keyed_pairs([
                 (
                     lookup_expr,
                     self._dialect.bucket_comparand(grain_alias_column(alias=shifted, table=shifted_cte_name)),
+                    None,
                 ) if host == time_alias else (
                     grain_alias_column(alias=host, table=chain_tail),
                     grain_alias_column(alias=shifted, table=shifted_cte_name),
+                    key_by_alias.get(host),
                 )
                 for host, shifted in pairs
-            ],
+            ]),
             dialect=self._dialect,
         )
         source_relation = chain.source_relation
@@ -5568,7 +5589,7 @@ class SQLGenerator:
                     _walk(a)
             elif isinstance(k, InKey):
                 _walk(k.column)
-            elif isinstance(k, CastKey):
+            elif isinstance(k, (CastKey, ListSetKey)):
                 _walk(k.source)
 
         _walk(key)

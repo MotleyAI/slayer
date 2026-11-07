@@ -99,8 +99,10 @@ from slayer.core.warnings import (
     SlayerLibraryNameShadowWarning,
     SlayerNarrowedAccessWarning,
     SlayerUnrelatedDatasetWarning,
+    SlayerWholeListWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
+    WholeListWarning,
     WholePeriodsNonNestingWarningPayload,
     announced_by_caller,
 )
@@ -613,6 +615,8 @@ def _emit_python_warnings(response) -> None:
             )
         elif isinstance(w, WholePeriodsNonNestingWarningPayload):
             _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
+        elif isinstance(w, WholeListWarning):
+            _warnings_module.warn(SlayerWholeListWarning(w), stacklevel=3)
         elif isinstance(w, UnrelatedDatasetWarningPayload):
             _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
         elif isinstance(w, LibraryNameShadowWarning):
@@ -1322,6 +1326,7 @@ class SlayerQueryEngine:
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
         warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
+        warnings.extend(WholeListWarning(operation=r.operation, list=r.list) for p in plans for r in p.whole_list_reads)
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))

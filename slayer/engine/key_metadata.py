@@ -22,6 +22,7 @@ from slayer.core.keys import (
     ColumnTypeFn,
     ColumnSqlKey,
     CastKey,
+    ListSetKey,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -279,7 +280,7 @@ def dimension_key_metadata(
     """
     if isinstance(key, CastKey):
         return key.data_type, None, None
-    inner = key.source if isinstance(key, TimeTruncKey) else key
+    inner = key.source if isinstance(key, (TimeTruncKey, ListSetKey)) else key
     if not isinstance(inner, (ColumnKey, ColumnSqlKey)):
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:

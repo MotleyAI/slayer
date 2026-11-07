@@ -168,7 +168,14 @@ class DuckdbDialect(SqlDialect):
         return case((anon("JSON_VALID", value), read))
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("LEN", _compact(values))
+        return anon("LEN", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        """``list_distinct`` drops NULL elements."""
+        return anon("LIST_SORT", anon("LIST_DISTINCT", values))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return anon("LIST_CONTAINS", _compact(values), value)

@@ -117,6 +117,15 @@ class ArrayLit(_BaseNode):
     elements: Tuple[Any, ...] = ()
 
 
+class BoundVariable(_BaseNode):
+    """Variable ``name`` filling a whole ``IN`` right-hand side: its ``values``, one list (``listed``) or one value;
+    the left side's type decides which it is."""
+
+    name: str
+    values: Tuple[Any, ...]
+    listed: bool
+
+
 class AggCall(_BaseNode):
     source: Any
     agg: str
@@ -189,7 +198,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit,
+    Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit, BoundVariable,
     AggCall, TransformCall, ScalarCall, Cast,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -959,12 +968,28 @@ def _regex_operator(left: Any, toks: List[Any]) -> Any:
     return _negated(ScalarCall(name="regexp_like", args=(left, pattern, *flags)), op.startswith("!"))
 
 
-def _in_rhs_elements(items: List[Any]) -> TupleLit:
+class _ListItems:
+    """An ``IN`` right-hand side of lists: each item is one list the left side may equal."""
+
+    __slots__ = ("items",)
+
+    def __init__(self, items: List[Any]) -> None:
+        self.items = items
+
+
+def _in_rhs_elements(items: List[Any]) -> TupleLit | _ListItems:
     if not items:
         raise _Problem(
             "an empty list is not allowed on the right-hand side of in / not in (dialect-dependent SQL); "
             "use a non-empty literal list."
         )
+    if any(isinstance(item, ArrayLit) for item in items):
+        if not all(isinstance(item, (ArrayLit, Placeholder)) for item in items):
+            raise _Problem(
+                "the right-hand side of in / not in mixes lists with scalars; write every item as a list, "
+                "e.g. tags in (['a'], ['b', 'c'])."
+            )
+        return _ListItems(items)
     elements: List[Literal] = []
     for item in items:
         if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
@@ -977,6 +1002,14 @@ def _in_rhs_elements(items: List[Any]) -> TupleLit:
             )
         elements.append(item)
     return TupleLit(elements=tuple(elements))
+
+
+def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
+    """``L IN (M1, M2)`` over lists is ``L = M1 OR L = M2``."""
+    if not isinstance(right, _ListItems):
+        return Cmp(op="not in" if negate else "in", left=left, right=right)
+    equalities = tuple(Cmp(op="==", left=left, right=item) for item in right.items)
+    return _negated(equalities[0] if len(equalities) == 1 else BoolOp(op="or", operands=equalities), negate)
 
 
 _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
@@ -996,8 +1029,7 @@ _CMP_SUFFIX = (
     | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
     | _suffix(_IS + _NOT_FLAG + _concat_level,
               lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=t[1]))
-    | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST,
-              lambda left, t: Cmp(op="not in" if t[0] else "in", left=left, right=t[1]))
+    | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST, lambda left, t: _in_comparison(left, t[0], t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
               lambda left, t: _negated(BoolOp(op="and", operands=(
                   Cmp(op=">=", left=left, right=t[1]), Cmp(op="<=", left=left, right=t[2]),
@@ -1191,23 +1223,44 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     text_slots = _text_slot_ordinals(template, variables=variables)
     return _spliced(
         text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
-        list_slots=_list_slot_ordinals(template),
+        in_slots=_in_slot_ordinals(template),
     )
 
 
-#: Functions whose arguments are lists: a list variable there binds as a list literal.
-_LIST_ARG_FUNCTIONS = frozenset({"contains_any", "contains_all"})
-
-
-def _list_slot_ordinals(template: Any) -> frozenset[int]:
-    """Textual ordinals of the placeholders filling a list function's list argument."""
+def _in_slot_ordinals(template: Any) -> frozenset[int]:
+    """Textual ordinals of the placeholders forming a whole ``IN`` right-hand side: left for ``parse_bound_expr``."""
     starts = sorted({n.start for n in walk_parsed(template) if isinstance(n, Placeholder)})
     return frozenset(
-        starts.index(arg.start)
+        starts.index(node.right.start)
         for node in walk_parsed(template)
-        if isinstance(node, ScalarCall) and node.name in _LIST_ARG_FUNCTIONS
-        for arg in node.args if isinstance(arg, Placeholder)
+        if isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
     )
+
+
+_IN_OPS = frozenset({"in", "not in"})
+
+
+def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
+    """``parse_expr`` of ``text``, each placeholder ``bind_variables`` left as a whole ``IN`` right-hand side bound to
+    its value in ``variables``."""
+    return _with_in_variables(parse_expr(text), variables=variables)
+
+
+def _with_in_variables(node: Any, *, variables: Mapping[str, Any]) -> Any:
+    if isinstance(node, tuple):
+        mapped = tuple(_with_in_variables(n, variables=variables) for n in node)
+        return node if all(a is b for a, b in zip(mapped, node)) else mapped
+    if not isinstance(node, _BaseNode):
+        return node
+    if (isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
+            and node.right.name in variables):
+        value = variables[node.right.name]
+        listed = isinstance(value, (list, tuple))
+        bound = BoundVariable(name=node.right.name, values=tuple(value) if listed else (value,), listed=listed)
+        return node.model_copy(update={"left": _with_in_variables(node.left, variables=variables), "right": bound})
+    update = {f: _with_in_variables(getattr(node, f), variables=variables) for f in type(node).model_fields}
+    changed = {f: v for f, v in update.items() if v is not getattr(node, f)}
+    return node.model_copy(update=changed) if changed else node
 
 
 def _text_slot_ordinals(template: Any, *, variables: Mapping[str, Any]) -> frozenset[int]:
@@ -1269,7 +1322,7 @@ def _check_slot(
 
 def _spliced(
     text: str, *, variables: Mapping[str, Any], regions: List[_Region], kinds: Tuple[str, ...], code_braces: bool,
-    text_slots: frozenset[int] = frozenset(), list_slots: frozenset[int] = frozenset(),
+    text_slots: frozenset[int] = frozenset(), in_slots: frozenset[int] = frozenset(),
 ) -> str:
     out: List[str] = []
     cursor = 0
@@ -1282,7 +1335,7 @@ def _spliced(
             chunk = _ANY_BRACE_RE.sub(
                 partial(
                     _bound_text, text=text, region_start=region.start, in_string=in_string, variables=variables,
-                    text_slots=text_slots, list_slots=list_slots, ordinal=ordinal,
+                    text_slots=text_slots, in_slots=in_slots, ordinal=ordinal,
                 ),
                 chunk,
             )
@@ -1315,11 +1368,10 @@ def _check_variable(match: "re.Match[str]", *, text: str, variables: Mapping[str
 
 def _bound_text(
     match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
-    text_slots: frozenset[int], ordinal: Iterator[int], list_slots: frozenset[int] = frozenset(),
+    text_slots: frozenset[int], ordinal: Iterator[int], in_slots: frozenset[int] = frozenset(),
 ) -> str:
     bound = _bound_value_text(
-        match, text=text, region_start=region_start, in_string=in_string, variables=variables,
-        text_slots=text_slots, ordinal=ordinal, list_slots=list_slots,
+        match, in_string=in_string, variables=variables, text_slots=text_slots, ordinal=ordinal, in_slots=in_slots,
     )
     start = region_start + match.start()
     # A negative value right after a ``-`` would make a ``--`` comment.
@@ -1328,8 +1380,8 @@ def _bound_text(
 
 
 def _bound_value_text(
-    match: "re.Match[str]", *, text: str, region_start: int, in_string: bool, variables: Mapping[str, Any],
-    text_slots: frozenset[int], ordinal: Iterator[int], list_slots: frozenset[int] = frozenset(),
+    match: "re.Match[str]", *, in_string: bool, variables: Mapping[str, Any], text_slots: frozenset[int],
+    ordinal: Iterator[int], in_slots: frozenset[int],
 ) -> str:
     whole = match.group(0)
     if whole in ("{{", "}}"):
@@ -1341,29 +1393,13 @@ def _bound_value_text(
     if in_string:
         return _value_text(name, value).replace("'", "''")
     position = next(ordinal)
+    if position in in_slots:
+        return whole
     if position in text_slots:
         return _literal_text(name, value)
-    if position in list_slots and isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_literal_text(name, v) for v in value) + "]"
-    start = region_start + match.start()
-    if _opens_in_list(text, start=start, end=region_start + match.end()):
-        values = value if isinstance(value, (list, tuple)) else [value]
-        if not values:
-            raise ValueError(
-                f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
-                f"For 'no filter' semantics, use a sentinel default."
-            )
-        return ", ".join(_literal_text(name, v) for v in values)
     return _bare_literal_text(name, value)
-
-
-def _opens_in_list(text: str, *, start: int, end: int) -> bool:
-    """Whether the placeholder at ``[start, end)`` is the whole list of an ``IN``."""
-    before = text[:start].rstrip()
-    if before.endswith("(") and text[end:].lstrip().startswith(")"):
-        before = before[:-1].rstrip()
-    tail = before[-3:]
-    return tail[-2:].lower() == "in" and not (len(tail) == 3 and tail[0].isascii() and tail[0].isalpha())
 
 
 def _value_text(name: str, value: Any) -> str:
@@ -1387,16 +1423,11 @@ def _literal_text(name: str, value: Any) -> str:
     if isinstance(value, str):
         return "'" + value.replace("'", "''") + "'"
     if isinstance(value, (list, tuple)):
-        raise ValueError(f"{_LITERAL_VALUES}: variable '{name}' holds a list, which fills only a whole IN list.")
+        raise ValueError(f"{_LITERAL_VALUES}: variable '{name}' holds a nested list; a list's elements are scalars.")
     return _value_text(name, value)
 
 
 def _bare_literal_text(name: str, value: Any) -> str:
-    if isinstance(value, (list, tuple)):
-        raise ValueError(
-            f"{_LITERAL_VALUES}: variable '{name}' holds a list, which fills only a whole IN list or a list "
-            f"function's list, e.g. x in ({{{name}}}) or contains_any(tags, {{{name}}})."
-        )
     if isinstance(value, str):
         stripped = value.strip()
         if _NUMBER_TEXT_RE.fullmatch(stripped):
@@ -2256,9 +2287,9 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 
 __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
-    "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
+    "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
     "aggregation_reading", "bind_variables", "call_source", "canonical_measure_text", "comparison_hint",
     "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling", "measure_dependency_problems",
-    "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",
+    "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths", "root_relative", "split_entity_agg_ref",
     "text_paths", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

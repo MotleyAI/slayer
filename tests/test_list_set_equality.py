@@ -16,7 +16,9 @@ import duckdb
 import pytest
 from fastapi.testclient import TestClient
 from pytest_postgresql import factories
+from mcp.types import TextContent
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.api.server import create_app
 from slayer.core import keys
@@ -355,11 +357,12 @@ class TestPartitionKeys:
     async def test_a_cross_model_aggregate_joined_back_on_a_list(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(query(dimensions=["skills"], measures=[
             measure("count(*)", "n"), measure("count(assignments.id)", "a")]))
-        per_contractor = Counter(c for _, c in ASSIGNED)
         expected: dict[Any, list[int]] = defaultdict(lambda: [0, 0])
         for r in ROWS:
             expected[elset(r["skills"])][0] += 1
-            expected[elset(r["skills"])][1] += per_contractor[r["id"]]
+        # An assignment's absent contractor reads a NULL list.
+        for _, c in ASSIGNED:
+            expected[elset(BY_ID.get(c, {}).get("skills"))][1] += 1
         got = {as_set(cell(r, "skills")): [num(cell(r, "n")), num(cell(r, "a"))] for r in resp.data}
         assert got == dict(expected)
 
@@ -529,8 +532,9 @@ class TestRefusals:
 
     @pytest.mark.parametrize("agg", ["min", "max", "sum", "avg", "median", "count_distinct_approx", "collect"])
     async def test_other_aggregations(self, duck: SlayerQueryEngine, agg: str) -> None:
+        body = query(measures=[measure(f"{agg}(skills)", "n")])
         with pytest.raises(SlayerError) as info:
-            await duck.execute(query(measures=[measure(f"{agg}(skills)", "n")]))
+            await duck.execute(body)
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     async def test_custom_aggregation_over_a_list(self) -> None:
@@ -538,13 +542,15 @@ class TestRefusals:
             "aggregations": [Aggregation(name="my_agg", formula="COUNT({value})")]})
         async with duckdb_engine(statements=contractor_statements("duckdb"),
                                  engine_models=[model, assignments_model()]) as e:
+            body = query(measures=[measure("my_agg(skills)", "n")])
             with pytest.raises(SlayerError) as info:
-                await e.execute(query(measures=[measure("my_agg(skills)", "n")]))
+                await e.execute(body)
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     async def test_aggregating_a_collected_list(self, duck: SlayerQueryEngine) -> None:
+        body = query(measures=[measure("min(collect(team))", "n")])
         with pytest.raises(SlayerError) as info:
-            await duck.execute(query(measures=[measure("min(collect(team))", "n")]))
+            await duck.execute(body)
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     async def test_null_test(self, duck: SlayerQueryEngine) -> None:
@@ -744,7 +750,7 @@ class TestWarning:
             blocks, _ = await server.call_tool(name="query", arguments={"query": {
                 "source_model": "contractors", "dimensions": ["skills"],
                 "measures": [{"formula": "count_distinct(skills)", "name": "n"}]}})
-        text = "\n".join(b.text for b in blocks)
+        text = "\n".join(b.text for b in blocks if isinstance(b, TextContent))
         assert "count_distinct(skills.value)" in text, text
 
 
@@ -809,9 +815,10 @@ class TestAllowedAggregations:
 
     @pytest.mark.parametrize("allowed", [["sum"], ["count", "count_distinct", "min"], ["count_distinct_approx"]])
     def test_other_aggregations_fail_to_save(self, allowed: list[str]) -> None:
+        data = {"name": "c", "sql_table": "c", "data_source": "test",
+                "columns": [_list_column(allowed_aggregations=allowed)]}
         with pytest.raises(ValueError, match="skills"):
-            SlayerModel.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
-                                        "columns": [_list_column(allowed_aggregations=allowed)]})
+            SlayerModel.model_validate(data)
 
     async def test_round_trips_through_storage(self, tmp_path: Path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
@@ -822,7 +829,8 @@ class TestAllowedAggregations:
         loaded = await storage.get_model("c", data_source="test")
         assert loaded is not None
         skills = loaded.get_column("skills")
-        assert skills is not None and skills.allowed_aggregations == ["count", "count_distinct"]
+        assert skills is not None
+        assert skills.allowed_aggregations == ["count", "count_distinct"]
 
 
 # --------------------------------------------------------------------------- #
@@ -837,6 +845,7 @@ def _says_set_grouping(text: str) -> bool:
 class TestRendering:
     async def test_inspect_model(self, duck: SlayerQueryEngine) -> None:
         model = await duck.storage.get_model("contractors", data_source="test")
+        assert model is not None
         out = await render_model_inspection(model=model, storage=duck.storage, engine=duck, format="markdown",
                                             sections=["columns"], compact=False)
         assert _says_set_grouping(out), out
@@ -908,7 +917,8 @@ class TestKeyKind:
     def test_display(self) -> None:
         text = key_display(_list_set(SKILLS))
         assert "skills" in text
-        assert "ListSetKey" not in text and "leaf=" not in text
+        assert "ListSetKey" not in text
+        assert "leaf=" not in text
 
 
 # --------------------------------------------------------------------------- #
@@ -919,14 +929,14 @@ class TestDialectHooks:
     def test_every_native_list_dialect_builds_the_set_and_its_key(self, dialect: str) -> None:
         d = get_dialect(dialect)
         canonical = d.build_list_set(exp.column("x"), DataType.TEXT)
-        assert isinstance(canonical, exp.Expression)
-        assert isinstance(d.build_list_key(canonical), exp.Expression)
+        assert isinstance(canonical, Expression)
+        assert isinstance(d.build_list_key(canonical), Expression)
 
     @pytest.mark.parametrize(("dialect", "database"), sorted(NO_LIST_DATABASES.items()))
     async def test_no_list_databases_refuse_grouping(self, dialect: str, database: str) -> None:
+        body, schema = query(dimensions=["skills"], measures=[measure("count(*)", "n")]), models()
         with pytest.raises(SlayerError, match=database):
-            await emit(query(dimensions=["skills"], measures=[measure("count(*)", "n")]), dialect=dialect,
-                       models=models())
+            await emit(body, dialect=dialect, models=schema)
 
 
 #: Every position that reads a list's element set.
@@ -1077,5 +1087,6 @@ class TestPostgresArrayTypes:
                                      "measures": [measure("count(*)", "n"),
                                                   measure(f"count({column}, partition_by={column})", "p")]})
         assert sum(num(r["widths.n"]) or 0 for r in resp.data) == 3
-        total = await widths.execute({"source_model": "widths", "measures": [measure(f"count_distinct({column})", "d")]})
-        assert num(total.data[0]["widths.d"]) == len(resp.data)
+        total = await widths.execute({"source_model": "widths",
+                                      "measures": [measure(f"count_distinct({column})", "sets")]})
+        assert num(total.data[0]["widths.sets"]) == len(resp.data)

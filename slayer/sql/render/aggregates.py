@@ -135,7 +135,8 @@ def apply_aggregate(
     if entry.node_class is None:
         raise ValueError(f"Aggregation {entry.name!r} has no SQL node to render.")
     if entry.dispatch == DISPATCH_DISTINCT:
-        return entry.node_class(this=exp.Distinct(expressions=[value]))
+        keyed = dialect.build_list_key(value) if input_type is DataType.ARRAY else value
+        return entry.node_class(this=exp.Distinct(expressions=[keyed]))
     read = aggregate_input(value=value, aggregation=entry.name, input_type=input_type)
     # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
     if entry.name == "avg" and dialect.integer_avg and input_type is not DataType.DOUBLE:

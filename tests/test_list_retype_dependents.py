@@ -42,9 +42,9 @@ LIVE = (
     "INSERT INTO skills VALUES (1, ['go'], ['git'])",
 )
 TAGS = "contractors.tags"
-NT = ModelMeasure(name="nt", formula="count_distinct(tags)")
+NT = ModelMeasure(name="nt", formula="max(tags)")
 FIRST_TAG = Column(name="first_tag", sql="upper(tags)", type=DataType.TEXT)
-BY_TAG = {"source_model": "contractors", "dimensions": ["tags"], "measures": ["*:count"]}
+BY_TAG = {"source_model": "contractors", "measures": ["*:count"], "filters": ["tags = 'go'"]}
 
 Key = tuple[str, str, str]
 
@@ -66,7 +66,7 @@ def orders(*, columns: tuple[Column, ...] = (), measures: tuple[ModelMeasure, ..
 def notes() -> SlayerModel:
     return SlayerModel(name="notes", sql_table="notes", data_source="ds", columns=[
         Column(name="id", type=DataType.INT, primary_key=True), Column(name="tags", type=DataType.TEXT)],
-        measures=[ModelMeasure(name="nn", formula="count_distinct(tags)")])
+        measures=[ModelMeasure(name="nn", formula="max(tags)")])
 
 
 def skills(*, measures: tuple[ModelMeasure, ...]) -> SlayerModel:
@@ -172,7 +172,7 @@ class TestReported:
             b.model_dump_json() for b in result.broken_dependents)
 
     async def test_a_dependant_across_a_join(self) -> None:
-        nc = ModelMeasure(name="nc", formula="count_distinct(contractors.tags)")
+        nc = ModelMeasure(name="nc", formula="max(contractors.tags)")
         async with _env(contractors(), orders(measures=(nc,))) as env:
             broken = _by_key(await env.reingest())
         _assert_list_type_break(broken[("orders", "measure", "nc")])
@@ -185,7 +185,7 @@ class TestReported:
         _assert_list_type_break(broken[("contractors", "measure", "nt")])
 
     async def test_attributed_to_the_column_that_breaks_it(self) -> None:
-        mixed = ModelMeasure(name="mixed", formula="count(langs) + count_distinct(tools)")
+        mixed = ModelMeasure(name="mixed", formula="count(langs) + max(tools)")
         async with _env(skills(measures=(mixed,))) as env:
             broken = _by_key(await env.reingest())
         assert broken[("skills", "measure", "mixed")].column == "skills.tools", broken
@@ -213,13 +213,17 @@ class TestNotReported:
 
     async def test_a_dependant_that_still_works(self) -> None:
         n_tagged = ModelMeasure(name="n_tagged", formula="count(tags)")
-        async with _env(contractors(measures=(NT, n_tagged))) as env:
+        n_sets = ModelMeasure(name="n_sets", formula="count_distinct(tags)")
+        by_set = {"source_model": "contractors", "dimensions": ["tags"], "measures": ["*:count"]}
+        async with _env(contractors(measures=(NT, n_tagged, n_sets)), saved={"by_set": by_set}) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "measure", "nt") in broken, broken
-        assert ("contractors", "measure", "n_tagged") not in broken, broken
+        for key in (("contractors", "measure", "n_tagged"), ("contractors", "measure", "n_sets"),
+                    ("by_set", "saved_query", "by_set")):
+            assert key not in broken, broken
 
     async def test_a_definition_already_broken(self) -> None:
-        ghostly = ModelMeasure(name="ghostly", formula="count_distinct(tags) + sum(ghost)")
+        ghostly = ModelMeasure(name="ghostly", formula="max(tags) + sum(ghost)")
         async with _env(contractors(measures=(NT, ghostly))) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "measure", "nt") in broken, broken
@@ -276,7 +280,7 @@ class TestReportBroken:
 class TestUnchecked:
     async def test_an_unchecked_dependant_is_reported_with_its_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _refuse_planning(monkeypatch, "audited")
-        audited = ModelMeasure(name="audited", formula="count_distinct(tags)")
+        audited = ModelMeasure(name="audited", formula="max(tags)")
         async with _env(contractors(measures=(audited,))) as env:
             broken = _by_key(await env.reingest())
         entry = broken[("contractors", "measure", "audited")]

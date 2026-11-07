@@ -14,7 +14,7 @@ from sqlglot.schema import MappingSchema
 
 from slayer.async_utils import marked_coroutine_function, run_sync
 from slayer.core.deprecation import warn_deprecated
-from slayer.core.enums import DataType, ObjectKind
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
     Column,
@@ -1200,8 +1200,9 @@ def _retyped_list(*, persisted: Column, fresh: Column) -> Column | None:
             "type": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
             "granularity": None, "format": None,
-            # A list's only aggregation is count.
-            "allowed_aggregations": [a for a in persisted.allowed_aggregations or () if a == "count"] or None,
+            "allowed_aggregations": [
+                a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
+            ] or None,
         })
     inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
     known = fresh.element_type is not None and not fresh.element_type.is_opaque

@@ -447,7 +447,7 @@ class LiteralKey(_LeafKey, frozen=True):
 AggregateSource = Union[
     ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
-    "InKey", "TimePointCmpKey", "CastKey",
+    "InKey", "TimePointCmpKey", "CastKey", "ListSetKey",
 ]
 # Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
 # ranking column, `weighted_avg(weight=qty * 2)` a row-level expression,
@@ -894,6 +894,31 @@ class ArrayLiteralKey(_FrozenKey, frozen=True):
         return self.model_copy(update={"values": values}) if m.changed else self
 
 
+class ListSetKey(_FrozenKey, frozen=True):
+    """A list's element set — its distinct non-NULL elements, sorted — the list's value wherever equality reads it."""
+
+    source: "ValueKey"
+
+    @property
+    def phase(self) -> Phase:
+        return self.source.phase
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (self.source,)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "ListSetKey":
+        m = _ChildMapper(fn)
+        source = m(self.source)
+        return list_set_key(source) if m.changed else self
+
+
+def list_set_key(source: "ValueKey") -> "ListSetKey":
+    """``ListSetKey(source)``, idempotent: the set of a set is itself."""
+    return source if isinstance(source, ListSetKey) else ListSetKey(source=source)
+
+
 ValueKey = Union[
     ColumnKey,
     ColumnSqlKey,
@@ -909,6 +934,7 @@ ValueKey = Union[
     InKey,
     SqlFragmentKey,
     CastKey,
+    ListSetKey,
 ]
 
 
@@ -1016,6 +1042,7 @@ ScalarCallKey.model_rebuild()
 TimePointCmpKey.model_rebuild()
 InKey.model_rebuild()
 CastKey.model_rebuild()
+ListSetKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
@@ -1059,6 +1086,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     InKey: KindPolicy(slot_composite=True, materialised_order=True),
     SqlFragmentKey: KindPolicy(),
     CastKey: KindPolicy(slot_composite=True, materialised_order=True),
+    ListSetKey: KindPolicy(slot_composite=True, materialised_order=True),
 }
 SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
@@ -1648,7 +1676,9 @@ def _boolean_int_expression(key: object, *, column_type: ColumnTypeFn) -> bool:
 
 def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
     """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, INT when built from booleans and
-    integer literals, a column's, cast's or conditional's type, else ``None``."""
+    integer literals, ARRAY for an element set, a column's, cast's or conditional's type, else ``None``."""
+    if isinstance(source, ListSetKey):
+        return DataType.ARRAY
     if boolean_valued(source, column_type=column_type):
         return DataType.BOOLEAN
     if _boolean_int_expression(source, column_type=column_type):
@@ -1709,7 +1739,7 @@ def list_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
     """Whether ``key``'s value is certainly a list."""
     if isinstance(key, (ColumnKey, ColumnSqlKey)):
         return column_type(key) is DataType.ARRAY
-    if isinstance(key, ArrayLiteralKey):
+    if isinstance(key, (ArrayLiteralKey, ListSetKey)):
         return True
     if isinstance(key, AggregateKey):
         return key.builtin and key.agg.lower() in LIST_AGGREGATIONS
@@ -1808,6 +1838,8 @@ def list_element_type(
         return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
     if isinstance(key, TransformKey):
         return list_element_type(key.input, column_type=column_type, column_element=column_element)
+    if isinstance(key, ListSetKey):
+        return list_element_type(key.source, column_type=column_type, column_element=column_element)
     if isinstance(key, CastKey):
         return key.element_type
     if isinstance(key, ScalarCallKey):

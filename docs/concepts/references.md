@@ -258,7 +258,7 @@ Arithmetic on TEXT is typed DOUBLE, a `CAST` you write is never rewritten (it fa
 
 ### Lists
 
-Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle every list construct is a plan-time error.
+Over a [list column](queries.md#list-columns) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context), and on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle every list construct is a plan-time error.
 
 ## Date and time functions
 

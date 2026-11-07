@@ -48,7 +48,7 @@ Every GROUP BY site in `generator.py` consumes one structured rendered dimension
 List-vs-list `=`, `<>`, `IS [NOT] DISTINCT FROM` and `IN` render over `list_key(list_set(·))` of both operands after both are coerced to the element family's canonical array type (array literals, list variables and `[]` included, `[]` typed by the other operand). List-vs-scalar, ordering comparisons and `BETWEEN` stay `ListTypeError`s with today's remedies.
 
 ### D7 — `IN` grammar and binding
-`core.syntax` (the one Mode B reader) accepts an `IN` right-hand side of all array literals and/or placeholders; mixing array and scalar literals is a parse error. Binding reads the left side's type: a list left side takes each item as one list operand (`L IN ({wanted})` ≡ `L = {wanted}`, an empty list binding as `[]`); a scalar left side keeps expanding a list variable into the whole right-hand side.
+`core.syntax` (the one Mode B reader) accepts an `IN` right-hand side of all array literals and/or placeholders; mixing array and scalar literals is a parse error, and an `IN` over array literals is the `OR` of `=`. Variable binding writes a list variable as an array literal wherever it is one operand (`L = {v}`, an item beside array literals, a list function's argument), but leaves a placeholder forming the whole `IN` right-hand side unwritten: the owning query or measure copy carries its effective variables, and `core.syntax.parse_bound_expr` turns that placeholder into a `BoundVariable(name, value)` node. `_bind_in` binds the left side first and reads its type: a list left side takes the variable as one list operand (`L IN ({wanted})` ≡ `L = {wanted}`, `[]` included); a scalar left side expands it into the whole right-hand side, an empty one failing with the variable's name. A written array literal never expands: `team IN (['A', 'C'])` is a `ListTypeError`.
 
 ### D8 — Aggregations and catalogs
 `DEFAULT_AGGREGATIONS_BY_TYPE[ARRAY]` becomes `{count, count_distinct}`; the save-time rule in `core/models.py` and re-ingest re-typing in `engine/ingestion.py` move with it. `count_distinct(L)` renders as `COUNT(DISTINCT list_key(list_set(L)))`. The facade catalog follows the type defaults, advertising `<list>_count_distinct` (§3.17).
@@ -93,6 +93,7 @@ The translator's `_validate_group_by` / `_reject_lossy_cast_in_implicit_grouping
 28. rejected (codex): removing the warning — the user required it.
 29. rejected (codex): separate deltas for partitioned aggregates, transforms and stages — `models/list-columns` states the grain-member rule once, with scenarios; one enforcing test file per axiom clause.
 30. rejected (codex): NaN / signed-zero / collation special cases — lists inherit the database's element equality, like scalar dimensions (semantics §4).
+31. A whole-`IN` list variable stays a named `BoundVariable` until its left side is typed; text splicing cannot tell it from a scalar `IN` list. Full structural binding is DEV-2223. (user)
 
 ## Risks / Trade-offs
 

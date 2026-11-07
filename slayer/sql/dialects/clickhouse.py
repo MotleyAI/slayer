@@ -218,7 +218,14 @@ class ClickhouseDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("length", _compact(values))
+        return anon("length", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        """An absent list is ``[]`` here (no NULL lists)."""
+        return anon("arraySort", anon("arrayDistinct", _compact(values)))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return anon("has", _compact(values), value)
