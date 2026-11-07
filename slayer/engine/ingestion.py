@@ -406,10 +406,13 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
     lists: dict[str, ResultList] = {}
     for name, data_type in columns.items():
         found = by_name.get(name.casefold())
+        # The database's own list type name wins wherever it reports one.
+        reported = probed[name].db_type if data_type is DataType.ARRAY else None
         if found is not None:
-            columns[name], lists[name] = DataType.ARRAY, found
+            columns[name] = DataType.ARRAY
+            lists[name] = found.model_copy(update={"db_type": reported}) if reported else found
         elif data_type is DataType.ARRAY:
-            lists[name] = ResultList(element_type=DataType.UNKNOWN, db_type="ARRAY")
+            lists[name] = ResultList(element_type=DataType.UNKNOWN, db_type=reported or "ARRAY")
     db_types = {name: found.db_type for name, found in probed.items() if found.db_type}
     return SqlResultTypes(columns=columns, lists=lists, db_types=db_types)
 

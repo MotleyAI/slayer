@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from pytest_postgresql import factories
 from sqlalchemy.dialects import mysql
 
@@ -32,7 +33,7 @@ postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
 
 RETYPE_FIELDS = {"finding", "model_name", "data_source", "column", "stored_type", "live_type", "live_db_type",
-                 "remedy"}
+                 "remedy_kind", "remedy"}
 
 DUCK_LIVE = (
     "CREATE TABLE kinds (id INTEGER, flags BIT, span INTERVAL, doc JSON, tz TIMETZ, code INTEGER, "
@@ -81,13 +82,19 @@ def _listy() -> SlayerModel:
     ])
 
 
+def _listy_sql() -> SlayerModel:
+    return SlayerModel(name="listy_sql", sql="SELECT id, skills FROM kinds", data_source="ds", columns=[
+        _pk(), Column(name="skills", type=DataType.TEXT),
+    ])
+
+
 def _dropped() -> SlayerModel:
     return SlayerModel(name="dropped", sql_table="kinds", data_source="ds", columns=[
         _pk(), Column(name="kept", type=DataType.TEXT), Column(name="gone", type=DataType.TEXT),
     ], measures=[ModelMeasure(name="n_gone", formula="count_distinct(gone)")])
 
 
-DUCK_MODELS = (_legacy, _legacy_sql, _retyped, _listy, _dropped)
+DUCK_MODELS = (_legacy, _legacy_sql, _retyped, _listy, _listy_sql, _dropped)
 
 
 class Duck:
@@ -161,8 +168,21 @@ def _dump(entries: list[Any]) -> list[dict[str, Any]]:
     return [e.model_dump(mode="json") for e in entries]
 
 
+def _assert_remedy_agrees(finding: dict[str, Any]) -> None:
+    """``remedy`` and ``summary`` agree with ``remedy_kind``."""
+    expected = {
+        "reingest": f"re-ingest datasource '{finding['data_source']}' (`slayer ingest`) to re-type it",
+        "set_type": f"set the column's type to {finding['live_type']}",
+    }[finding["remedy_kind"]]
+    assert finding["remedy"] == expected, finding
+    assert finding["summary"].endswith(f"; {expected}."), finding
+
+
 def _retypes(entries: list[dict[str, Any]], model: str) -> dict[str, dict[str, Any]]:
-    return {e["column"]: e for e in entries if e.get("finding") == "retype" and e.get("model_name") == model}
+    found = [e for e in entries if e.get("finding") == "retype"]
+    for e in found:
+        _assert_remedy_agrees(e)
+    return {e["column"]: e for e in found if e.get("model_name") == model}
 
 
 def _removed(entries: list[dict[str, Any]], model: str) -> set[str]:
@@ -208,6 +228,7 @@ class TestTypedBy160Reflection:
         assert set(found) == {"flags"}, entries
         _assert_live(found["flags"], stored=DataType.TEXT, live=DataType.BOOLEAN, db_type="BIT")
         _assert_set_type_remedy(found["flags"])
+        assert found["flags"]["remedy_kind"] == "set_type", found
         assert _removed(entries, "legacy") == set(), entries
 
     async def test_postgres_interval_and_oid(self, pg: SlayerQueryEngine) -> None:
@@ -216,6 +237,7 @@ class TestTypedBy160Reflection:
         assert set(found) == {"duration", "ref"}, entries
         _assert_live(found["duration"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="interval")
         _assert_live(found["ref"], stored=DataType.TEXT, live=DataType.INT, db_type="oid")
+        assert {c: f["remedy_kind"] for c, f in found.items()} == {"duration": "set_type", "ref": "set_type"}
         assert _removed(entries, "pg_table") == set(), entries
 
     async def test_mysql_year_stored_as_text(self, duck: Duck) -> None:
@@ -248,6 +270,7 @@ class TestTypedBy160Probe:
         _assert_live(found["payload"], stored=DataType.TEXT, live=DataType.UNKNOWN, db_type="json")
         _assert_live(found["doc"], stored=DataType.TEXT, live=DataType.UNKNOWN, db_type="xml")
         _assert_live(found["dur"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="interval")
+        assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "pg_sql") == set(), entries
 
     async def test_duckdb_interval_bit_and_timetz(self, duck: Duck) -> None:
@@ -257,6 +280,7 @@ class TestTypedBy160Probe:
         _assert_live(found["span"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="INTERVAL")
         _assert_live(found["flags"], stored=DataType.TEXT, live=DataType.BOOLEAN, db_type="BIT")
         _assert_live(found["tz"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="TIME WITH TIME ZONE")
+        assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "legacy_sql") == set(), entries
 
 
@@ -266,6 +290,7 @@ class TestScalarAndList:
         (finding,) = _retypes(entries, "retyped").values()
         _assert_live(finding, stored=DataType.TEXT, live=DataType.INT, db_type="INTEGER")
         _assert_set_type_remedy(finding)
+        assert finding["remedy_kind"] == "set_type", finding
         assert _removed(entries, "retyped") == set(), entries
 
     async def test_a_list_keeps_the_reingest_remedy(self, duck: Duck) -> None:
@@ -273,7 +298,16 @@ class TestScalarAndList:
         (finding,) = _retypes(entries, "listy").values()
         _assert_live(finding, stored=DataType.TEXT, live=DataType.ARRAY, db_type="VARCHAR[]")
         assert "ingest" in finding["remedy"].lower(), finding
+        assert finding["remedy_kind"] == "reingest", finding
         assert not any(e.get("finding") == "list_retype" for e in entries), entries
+
+    async def test_a_list_in_an_sql_mode_model_keeps_the_reingest_remedy(self, duck: Duck) -> None:
+        entries = await _validate(duck.engine(), "ds")
+        (finding,) = _retypes(entries, "listy_sql").values()
+        _assert_live(finding, stored=DataType.TEXT, live=DataType.ARRAY, db_type="VARCHAR[]")
+        assert "ingest" in finding["remedy"].lower(), finding
+        assert finding["remedy_kind"] == "reingest", finding
+        assert _removed(entries, "listy_sql") == set(), entries
 
     async def test_a_missing_column_is_still_deleted_with_its_cascade(self, duck: Duck) -> None:
         entries = await _validate(duck.engine(), "ds")
@@ -324,7 +358,10 @@ class TestForceClean:
 
 def _carried(err: SchemaDriftError, *, model: str, column: str) -> bool:
     wanted = {"finding": "retype", "model_name": model, "column": column}
-    return any(wanted.items() <= f.model_dump(mode="json").items() for f in getattr(err, "findings", []))
+    carried = [f.model_dump(mode="json") for f in getattr(err, "findings", [])]
+    for f in carried:
+        _assert_remedy_agrees(f)
+    return any(wanted.items() <= f.items() for f in carried)
 
 
 class TestQueryTime:
@@ -369,6 +406,8 @@ class TestOneShape:
 
         assert python, python
         assert all(RETYPE_FIELDS <= set(e) for e in python), python
+        for e in python:
+            _assert_remedy_agrees(e)
         expected = sorted(python, key=key)
         assert sorted((e for e in rest.json() if e.get("finding") == "retype"), key=key) == expected
         assert sorted((e for e in mcp if e.get("finding") == "retype"), key=key) == expected
@@ -419,3 +458,57 @@ class TestSqliteProbe:
             engine_factory.invalidate_engine(ds)
         assert sorted((f.column, f.live_type) for f in findings) == [
             ("amount", DataType.DOUBLE), ("amt", DataType.DOUBLE), ("code", DataType.TEXT)]
+        for f in findings:
+            _assert_remedy_agrees(f.model_dump(mode="json"))
+        # ``code`` is a bucket conflict over a live TEXT column, not a probe verdict.
+        assert {f.column: f.remedy_kind for f in findings} == {
+            "amount": "reingest", "amt": "reingest", "code": "set_type"}
+
+
+_REINGEST_REMEDY = "re-ingest datasource 'ds' (`slayer ingest`) to re-type it"
+_SET_TYPE_REMEDY = "set the column's type to INT"
+
+
+def _legacy_payload(*, live_type: str, live_db_type: str, remedy: str) -> dict[str, Any]:
+    """A re-type finding as 1.8.0 serialized it, before ``remedy_kind``."""
+    return {
+        "finding": "retype", "model_name": "m", "data_source": "ds", "column": "c", "stored_type": "TEXT",
+        "live_type": live_type, "live_db_type": live_db_type, "remedy": remedy,
+        "summary": f"Column 'm.c' is stored as TEXT but its live column is {live_db_type} ({live_type}); {remedy}.",
+    }
+
+
+class TestSerializedFinding:
+    @pytest.mark.parametrize(("live_type", "live_db_type", "remedy", "kind"), [
+        ("ARRAY", "VARCHAR[]", _REINGEST_REMEDY, "reingest"),
+        ("INT", "INTEGER", _SET_TYPE_REMEDY, "set_type"),
+    ])
+    def test_a_finding_without_a_remedy_kind_loads(self, live_type: str, live_db_type: str, remedy: str,
+                                                   kind: str) -> None:
+        payload = _legacy_payload(live_type=live_type, live_db_type=live_db_type, remedy=remedy)
+        loaded = schema_drift.RetypeFinding.model_validate(payload)
+        assert loaded.remedy_kind == kind
+        assert (loaded.remedy, loaded.summary) == (payload["remedy"], payload["summary"])
+
+    def test_an_unrecognized_remedy_text_is_refused(self) -> None:
+        payload = _legacy_payload(live_type="INT", live_db_type="INTEGER", remedy="drop the column")
+        with pytest.raises(ValidationError):
+            schema_drift.RetypeFinding.model_validate(payload)
+
+    def test_a_contradicting_remedy_text_is_recomputed(self) -> None:
+        payload = {**_legacy_payload(live_type="INT", live_db_type="INTEGER", remedy=_REINGEST_REMEDY),
+                   "remedy_kind": "set_type"}
+        loaded = schema_drift.RetypeFinding.model_validate(payload)
+        assert loaded.remedy == _SET_TYPE_REMEDY
+        assert loaded.summary.endswith(f"; {_SET_TYPE_REMEDY}.")
+
+    @pytest.mark.parametrize("kind", ["reingest", "set_type"])
+    def test_a_full_dump_round_trips(self, kind: schema_drift.RemedyKind) -> None:
+        model = SlayerModel(name="m", sql_table="t", data_source="ds", columns=[_pk()])
+        finding = schema_drift.RetypeFinding.of(
+            model=model, column=Column(name="c", type=DataType.TEXT), live_type=DataType.INT,
+            live_db_type="INTEGER", remedy_kind=kind)
+        dumped = finding.model_dump(mode="json")
+        assert dumped["remedy_kind"] == kind
+        _assert_remedy_agrees(dumped)
+        assert schema_drift.RetypeFinding.model_validate(dumped) == finding
