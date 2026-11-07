@@ -48,6 +48,11 @@ def test_is_builtin_aggregation() -> None:
 
 def test_eligible_on_every_type_like_count_distinct() -> None:
     for dtype, allowed in DEFAULT_AGGREGATIONS_BY_TYPE.items():
+        if dtype is DataType.ARRAY:
+            # A list counts distinct element sets exactly, never approximately.
+            assert "count_distinct" in allowed, allowed
+            assert "count_distinct_approx" not in allowed, allowed
+            continue
         assert ("count_distinct_approx" in allowed) == ("count_distinct" in allowed), (
             f"count_distinct_approx eligibility must mirror count_distinct for {dtype}"
         )

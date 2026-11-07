@@ -7,7 +7,9 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column
 from slayer.core.query import SlayerQuery, extract_placeholder_names
-from slayer.core.syntax import AggCall, Cmp, Literal, Ref, bind_variables, parse_expr, variable_names
+from slayer.core.syntax import (
+    AggCall, BoundVariable, Cmp, Literal, Ref, bind_variables, parse_bound_expr, parse_expr, variable_names,
+)
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2101_fixtures import (
     EXEC_BACKENDS, customers_model, emit, ids, m, make_exec_engine, num, orders_model, q, single,
@@ -106,7 +108,10 @@ class TestPlaceholders:
         same(bind_variables("amount -{d} + 1", {"d": value}), f"amount - ({value}) + 1")
 
     def test_negative_values_in_an_in_list(self) -> None:
-        same(bind_variables("amount in ({ds})", {"ds": [-5, 3]}), "amount in (-5, 3)")
+        variables = {"ds": [-5, 3]}
+        assert bind_variables("amount in ({ds})", variables) == "amount in ({ds})"
+        assert parse_bound_expr("amount in ({ds})", variables) == Cmp(
+            op="in", left=Ref(name="amount"), right=BoundVariable(name="ds", values=(-5, 3), listed=True))
 
 
 @pytest.fixture(params=EXEC_BACKENDS)

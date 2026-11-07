@@ -901,7 +901,7 @@ def list_contains_all(value: Optional[list[Any]], other: Optional[list[Any]]) ->
 
 
 def list_length(value: Optional[list[Any]]) -> Optional[int]:
-    return None if value is None else len(elements(value))
+    return None if value is None else len(set(elements(value)))
 
 
 def as_numbers(value: Optional[list[Any]]) -> Optional[list[Any]]:

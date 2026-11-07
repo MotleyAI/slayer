@@ -78,8 +78,10 @@ def plan_query(
         elaborated=elaborated,
         producer_registry=producer_registry,
     )
-    conflicts = elaborated.prebound.granularity_conflicts
-    return planned.model_copy(update={"granularity_conflicts": conflicts}) if conflicts else planned
+    prebound = elaborated.prebound
+    update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
+                                ("whole_list_reads", prebound.whole_list_reads)) if v}
+    return planned.model_copy(update=update) if update else planned
 
 
 def _stage_scope_and_bundle(

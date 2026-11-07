@@ -298,8 +298,8 @@ class Column(BaseModel):
 def list_operations_hint(column: Column) -> str:
     """One line naming what a list column takes."""
     n = column.name
-    return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}); "
-            f"its elements are {n}.value")
+    return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}) (distinct elements); "
+            f"it groups and compares as the set of its distinct elements; its elements are {n}.value")
 
 
 def column_type_text(column: Column) -> str:
@@ -370,16 +370,23 @@ class ModelMeasure(BaseModel):
     meta: dict[str, Any] | None = None
     # Pre-substitution formula; names derive from it so result keys never carry variable values.
     _template: str | None = PrivateAttr(default=None)
+    # The effective variables a whole-``IN`` placeholder left unwritten by binding reads (``parse_bound_expr``).
+    _bound_variables: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @property
     def template(self) -> str:
         """The formula as written, before ``{var}`` substitution."""
         return self._template or self.formula
 
-    def substituted(self, formula: str) -> "ModelMeasure":
-        """A copy carrying the substituted ``formula`` and remembering its template."""
+    @property
+    def bound_variables(self) -> dict[str, Any]:
+        return self._bound_variables
+
+    def substituted(self, formula: str, *, variables: dict[str, Any]) -> "ModelMeasure":
+        """A copy carrying the substituted ``formula`` and its ``variables``, remembering its template."""
         out = self.model_copy(update={"formula": formula})
         out._template = self.template
+        out._bound_variables = dict(variables)
         return out
 
     @model_validator(mode="before")
@@ -846,9 +853,10 @@ class SlayerModel(BaseModel):
                     f"aggregations are not supported for that type. Remove "
                     f"allowed_aggregations, or give the column an operable type."
                 )
-            if c.type is DataType.ARRAY and set(c.allowed_aggregations) - {"count"}:
+            if c.type is DataType.ARRAY and set(c.allowed_aggregations) - DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]:
                 raise ValueError(
-                    f"Column '{c.name}' is a list: its only aggregation is 'count', got allowed_aggregations "
+                    f"Column '{c.name}' is a list: its only aggregations are 'count' and 'count_distinct', got "
+                    f"allowed_aggregations "
                     f"{c.allowed_aggregations}. Aggregate its elements through '{c.name}.value' instead."
                 )
             identifier = is_identifier(column=c, columns=self.columns)

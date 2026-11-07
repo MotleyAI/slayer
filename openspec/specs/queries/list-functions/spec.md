@@ -58,15 +58,19 @@ When its first argument is a list, `contains(L, x)` SHALL be TRUE when `x` is an
 
 ### Requirement: length counts a list's elements
 
-When its argument is a list, `length(L)` SHALL return the number of non-NULL elements, 0 for an empty list and NULL for a NULL list. When the argument is `TEXT`, `length` SHALL keep its character-count meaning. A BigQuery NULL list reads as an empty list because BigQuery stores it as one.
+When its argument is a list, `length(L)` SHALL return the size of its element set — the number of distinct non-NULL elements — 0 for an empty list and NULL for a NULL list; the count with repeats is `count(L.value)`. When the argument is `TEXT`, `length` SHALL keep its character-count meaning. A BigQuery or ClickHouse NULL list reads as an empty list.
 
 #### Scenario: Element counts
 - **WHEN** a dimension is `length(skills)`
-- **THEN** it is 3 for Ann, 1 for Bob, 0 for Cid, NULL for Dee and 1 for Eve
+- **THEN** it is 2 for Ann, 1 for Bob, 0 for Cid, NULL for Dee and 1 for Eve
+
+#### Scenario: Repeats are counted through the elements
+- **WHEN** a query on `contractors` has the dimensions `id` and `length(skills)` and the measure `count(skills.*)`
+- **THEN** Ann's row carries 2 and 3
 
 ### Requirement: Array literals and list variables
 
-A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as a dimension, or as an operand of `=`). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
+A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as an operand of `=` beside a scalar). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
 
 #### Scenario: NULL element in a literal
 - **WHEN** a filter is `contains_any(skills, ['go', NULL])`
@@ -78,7 +82,7 @@ A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, 
 
 #### Scenario: A literal as a dimension
 - **WHEN** a dimension is `['go', 'sql']`
-- **THEN** the query fails with a typed error naming the list type
+- **THEN** every row carries `['go', 'sql']`
 
 ### Requirement: Arguments match the element type
 

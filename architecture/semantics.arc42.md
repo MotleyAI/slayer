@@ -111,8 +111,12 @@ is the coercion from coarser to finer.
      [enforced: test:tests/test_unrelated_datasets.py]
    - **3.2 List children.** A list column `L` of dataset `D` is a keyless
      one-to-many child `D.L`: one row per non-NULL element, its value
-     `D.L.value`, each row determining its `D` row.
+     `D.L.value`, each row determining its `D` row. The list itself is its
+     **element set**, its distinct non-NULL elements (`[b, a, b, NULL] ≡ [a, b]`):
+     equality, grouping, distinct counting and `length` read that set; `D.L`
+     keeps repeats.
      [enforced: test:tests/test_dev2137_list_children.py]
+     [enforced: test:tests/test_list_set_equality.py]
    - **3.3 Filtered datasets.** A model's dataset is its rows passing its `filters` (`M ≡ σ_filters(M)`): every read of `M` — root, join hop, semi-join, producer, another model's filter — sees only those rows, filtered before any join, so a null-extended row means no passing row. Filters that reach their own dataset are circular and refused. [enforced: test:tests/test_dev2210_join_target_model_filters.py]
    [enforced: test:tests/test_dev1853_mirror_parity.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]

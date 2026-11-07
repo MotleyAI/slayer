@@ -159,8 +159,17 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return text_try_cast(value, to)
 
     def list_length(self, values: Expression) -> Expression:
-        kept = _over_elements(values, _ELEMENT).where(is_not_null(exp.column(_ELEMENT)))
-        return anon("ARRAY_LENGTH", exp.Array(expressions=[kept]))
+        return anon("ARRAY_LENGTH", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        """A NULL list is stored as ``[]`` and reads as it."""
+        e = exp.column(_ELEMENT)
+        rows = _over_elements(values, _ELEMENT).distinct().where(is_not_null(e)).order_by(e.copy())
+        return exp.Array(expressions=[rows])
+
+    def build_list_key(self, values: Expression) -> Expression:
+        """Arrays neither group nor compare here: their JSON text does."""
+        return anon("TO_JSON_STRING", values)
 
     def list_contains(self, values: Expression, value: Expression) -> Expression:
         return exp.Exists(this=_over_elements(values, _ELEMENT).where(

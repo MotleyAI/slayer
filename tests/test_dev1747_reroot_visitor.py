@@ -27,6 +27,7 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
+    ListSetKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -353,6 +354,7 @@ class TestTotalityAndFailClosed:
                 source=ColumnKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
             ),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
+            ListSetKey: ListSetKey(source=ColumnKey(path=("customers",), leaf="tags")),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

@@ -83,7 +83,8 @@ class TestReRootedProducers:
         query = {"source_model": "assignments", "dimensions": ["contractors.id"],
                  "measures": [measure("collect(contractors.skills.value)", "s")]}
         resp = await engine.execute(query)
-        got = {int(r["assignments.contractors.id"]): as_list(r["assignments.s"]) for r in resp.data}
-        assert got == {1: ["go", "sql"], 2: ["sql"], 3: [], 5: ["go"]}
+        got = {None if (c := r["assignments.contractors.id"]) is None else int(c): as_list(r["assignments.s"])
+               for r in resp.data}
+        assert got == {1: ["go", "sql"], 2: ["sql"], 3: [], 5: ["go"], None: []}
         model = await engine.create_model_from_query(query=query, name="per_contractor")
         assert _typed(model, "s") == (DataType.ARRAY, DataType.TEXT)

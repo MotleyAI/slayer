@@ -135,7 +135,7 @@ the query surface is identical:
 * A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`)
   returns one row per record, as in SQL; `DISTINCT` or `GROUP BY` returns one row per distinct combination.
 * A list column is selectable as its JSON array text (a NULL list as NULL), and a JSON value as its JSON
-  text; grouping on a list is refused — group by its elements with `<list>.value`.
+  text; grouping on a list groups by its element set (`["go","sql"]` for `['sql', 'go', 'sql']`), and ordering by one is refused.
 * Other values are encoded as on every SLayer output: a UUID as its string, bytes as `\x` followed by
   lowercase hex, an interval as an ISO-8601 duration (`P1DT2H`), and a decimal with its exact digits.
 * `SELECT *` is rejected on models (project named columns), but allowed on

@@ -71,9 +71,12 @@ from slayer.engine.elaborate_env import (
     check_computed_dimension,
     check_conditional_branches,
     check_date_operands,
+    canonical_list_dimension,
+    canonical_list_reads,
     check_list_dimension,
     check_list_order_key,
     check_list_operands,
+    whole_list_reads,
     coerce_list_arguments,
     ListTyping,
     check_dimension_call_known,
@@ -121,6 +124,7 @@ from slayer.core.syntax import (
     TransformCall,
     canonical_measure_text,
     drop_root_qualifier,
+    parse_bound_expr,
     parse_expr,
     root_relative,
     text_paths,
@@ -405,7 +409,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if not isinstance(f, str):
                 continue
             bf = bind_filter(
-                parsed=parse_expr(f),
+                parsed=parse_bound_expr(f, query.bound_variables),
                 scope=scope,
                 bundle=bundle,
                 alias_map=filter_alias_map,
@@ -461,7 +465,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
                 order_specs.append(OrderSpec(
                     bound=bind_expr(
-                        parsed=parse_expr(o.raw_formula),
+                        parsed=parse_bound_expr(o.raw_formula, query.bound_variables),
                         scope=scope,
                         bundle=bundle,
                         alias_map=filter_alias_map,
@@ -474,7 +478,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
             if o.raw_formula and _passes_grain_kwargs(o.raw_formula):
                 _part_bound = bind_expr(
-                    parsed=parse_expr(o.raw_formula),
+                    parsed=parse_bound_expr(o.raw_formula, query.bound_variables),
                     scope=scope, bundle=bundle,
                     alias_map=filter_alias_map,
                     dimension_alias_map=dim_alias_map,
@@ -507,7 +511,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 bo = declared_alias_to_bound[f"_{col_name}"]
             elif o.raw_formula:
                 bo = bind_expr(
-                    parsed=parse_expr(o.raw_formula),
+                    parsed=parse_bound_expr(o.raw_formula, query.bound_variables),
                     scope=scope,
                     bundle=bundle,
                     alias_map=filter_alias_map,
@@ -525,6 +529,11 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     column_type = scope_column_type(scope=scope, bundle=bundle)
     zoned = scope_zoned_timestamp(scope=scope, bundle=bundle)
     lists = _list_typing(scope=scope, bundle=bundle)
+    # A list has no sort order: the default order skips it.
+    order_specs = [
+        spec for o, spec in zip(query.order or [], order_specs, strict=True)
+        if not (o.implied and lists.is_list(spec.bound.value_key))
+    ]
     check_list_operands(
         roots=[
             *(dm.bound.value_key for dm in declared_measures),
@@ -566,6 +575,26 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             *(spec.bound.value_key for spec in order_specs),
         ],
         column_type=column_type,
+    )
+    declared_measures, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: canonical_list_reads(vk, typing=lists),
+        declared_measures=declared_measures,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
+    will_group_by = _will_group_by(query)
+    declared_measures = [
+        _rekeyed(dm, canonical_list_dimension(dm.bound.value_key, typing=lists, will_group_by=will_group_by))
+        if i < n_dims else dm
+        for i, dm in enumerate(declared_measures)
+    ]
+    list_reads = whole_list_reads(
+        dimensions=[dm.bound.value_key for dm in declared_measures[:n_dims]],
+        roots=[
+            *(dm.bound.value_key for dm in declared_measures),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
     )
     declared_measures = _retyped_after_coercion(
         declared_measures, n_grain=n_dims + n_tds, scope=scope, bundle=bundle,
@@ -759,6 +788,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         distinct_dimension_values=query.distinct_dimension_values,
         to_many_handling=query.to_many_handling,
         granularity_conflicts=granularity_conflicts,
+        whole_list_reads=list_reads,
     )
 
 
@@ -786,6 +816,12 @@ def _format_description_for_measure_formula(
     return measure_key_format_description(
         model=scope.source_model, key=bound.value_key, bundle=bundle,
     )
+
+
+def _rekeyed(dm: DeclaredMeasure, key: ValueKey) -> DeclaredMeasure:
+    if key is dm.bound.value_key:
+        return dm
+    return dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": key}), "is_dimension": True})
 
 
 def _list_typing(*, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle) -> ListTyping:
@@ -1027,7 +1063,7 @@ def _declared_computed_dimension(
     name = d.name
     assert name is not None  # _fill_name auto-names from the expression
     _reject_computed_dim_name_collision(name=name, query=query, scope=scope)
-    parsed = parse_expr(d.expression)
+    parsed = parse_bound_expr(d.expression, query.bound_variables)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
         dimension_alias_map=dim_alias_map,
@@ -1157,7 +1193,7 @@ def _declared_measures_from_query(  # NOSONAR(S3776) — three sequential projec
         with stale_spelling_position(f"measures[{i}]"):
             formula = m.formula
             explicit_name = m.name
-            parsed = parse_expr(formula)
+            parsed = parse_bound_expr(formula, query.bound_variables)
             bound = bind_expr(
                 parsed=parsed, scope=scope, bundle=bundle, allow_measures=True,
                 dimension_alias_map=dim_alias_map,

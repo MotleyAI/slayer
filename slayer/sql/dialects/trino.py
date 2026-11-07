@@ -123,7 +123,13 @@ class PrestoFamilyDialect(SqlDialect):
         return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
 
     def list_length(self, values: Expression) -> Expression:
-        return anon("CARDINALITY", non_null_elements(values))
+        return anon("CARDINALITY", values)
+
+    def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
+        return anon("ARRAY_SORT", anon("ARRAY_DISTINCT", non_null_elements(values)))
+
+    def build_list_key(self, values: Expression) -> Expression:
+        return values
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,

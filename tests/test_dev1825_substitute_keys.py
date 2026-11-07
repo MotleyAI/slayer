@@ -19,6 +19,7 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
+    ListSetKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -122,6 +123,7 @@ class TestTotality:
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
             CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
+            ListSetKey: ListSetKey(source=CITY),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)
