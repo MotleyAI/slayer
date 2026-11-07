@@ -1,4 +1,4 @@
-"""DEV-1450 review fixes (group 1) — cross-model derived-column completeness.
+"""Cross-model derived-column completeness.
 
 Extends the #4a/#4b ``ColumnSqlKey`` support to the cross-model CTE path:
 
@@ -145,9 +145,9 @@ async def test_c1_target_derived_model_filter_expands(engine):
         r["orders.customers.region"]: r["orders.customers.revenue_sum"]
         for r in resp.data
     }
-    # NA: only active customer 1 (100); customer 2 (inactive, 50) excluded.
-    # EU: active customer 3 (70).
-    assert by_region == pytest.approx({"NA": 100.0, "EU": 70.0})
+    # NA: only active customer 1 (100); customer 2 (inactive, 50) excluded —
+    # its orders read the filtered-out customer as NULL. EU: active customer 3 (70).
+    assert by_region == pytest.approx({"NA": 100.0, "EU": 70.0, None: None})
 
 
 async def test_c2_routed_query_filter_on_joined_derived_column(engine):
@@ -190,8 +190,9 @@ async def test_derived_column_as_cross_model_agg_source(engine):
         r["orders.customers.region"]: r["orders.customers.rev_x2_sum"]
         for r in resp.data
     }
-    # is_active filter keeps cust1 (NA, 100*2=200) and cust3 (EU, 70*2=140).
-    assert by_region == pytest.approx({"NA": 200.0, "EU": 140.0})
+    # is_active filter keeps cust1 (NA, 100*2=200) and cust3 (EU, 70*2=140); the
+    # inactive customer's orders read it as NULL.
+    assert by_region == pytest.approx({"NA": 200.0, "EU": 140.0, None: None})
 
 
 async def test_cr11_cross_model_agg_over_derived_column_metadata(engine):

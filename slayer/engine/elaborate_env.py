@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import (
-    Any, Callable, Dict, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
+    Any, Callable, Dict, Iterable, Iterator, List, Literal, Mapping, NamedTuple, NoReturn, Optional,
     Sequence, Tuple, TypeGuard, cast,
 )
 
@@ -96,8 +96,7 @@ from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, add_units, ceil_to, floor_to, is_relative_token, resolve_time_point,
 )
 from slayer.sql.sql_expr import has_window_function
-from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.ir.planned import MaskTyping, ModeAFilter
+from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
 )
@@ -607,28 +606,18 @@ def check_reserved_regroup_prefix(columns: List[str]) -> None:
         )
 
 
-def validate_model_filter(
-    *,
-    mf: str,
-    idx: int,
-    model: SlayerModel,
-) -> ModeAFilter:
-    """Validate a ``SlayerModel.filters`` entry and emit its Mode-A text carrier (rejects same-model ModelMeasure and window-function column refs)."""
-    parsed = parse_sql_predicate(mf)
-    measure_names = {m.name for m in (model.measures or [])}
-    windowed_columns = {
-        c.name for c in model.columns
-        if c.sql and has_window_function(c.sql)
-    }
-    for col in parsed.columns:
-        if col in measure_names:
+def validate_model_filter(*, mf: str, references: Iterable[Tuple[SlayerModel, str]]) -> None:
+    """Reject a model filter naming a saved measure or a windowed column, each ``(owner, leaf)`` reference judged on its owner."""
+    for owner, col in references:
+        if col in {m.name for m in owner.measures or []}:
             raise ModelFilterError(
                 summary=f"The model filter references measure {col!r}. "
                 f"Model filters can only reference table columns (WHERE).",
                 location=f"model filter {mf!r}",
                 suggestion="Use query-level filters for measure conditions.",
             )
-        if col in windowed_columns:
+        column = owner.get_column(col)
+        if column is not None and column.sql and has_window_function(column.sql):
             raise ModelFilterError(
                 summary=f"The model filter references column {col!r} whose "
                 f"SQL contains a window function.",
@@ -636,7 +625,6 @@ def validate_model_filter(
                 suggestion="Factor it into a multi-stage source_queries model "
                 "or use a rank-family transform at query time.",
             )
-    return ModeAFilter(id=f"mf{idx}", text=mf)
 
 
 def _aggregate_terms(

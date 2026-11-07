@@ -118,6 +118,7 @@ flowchart TD
     only — its caller's engine's, else its URL's (the one named, else the type's
     default); no URL is rewritten to another driver.
     [enforced: test:tests/test_one_driver_per_client.py]
+16. **One relation door**: a model reaches SQL only through one door, as its filtered dataset (semantics Axiom 3.3) — never as its bare table, and never filtered afterwards by an enclosing WHERE. [enforced: test:tests/test_law_relation_door.py]
 
 ## 4. Rationale
 

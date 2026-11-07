@@ -83,7 +83,6 @@ from slayer.engine.elaborate_env import (
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
-    validate_model_filter,
     check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
@@ -117,7 +116,6 @@ from slayer.ir.planned import (
     FilterReachability,
     MaskEntry,
     MaskTyping,
-    ModeAFilter,
     OrderEntry,
     PickedParam,
     PlannedQuery,
@@ -1618,6 +1616,7 @@ _T, _F, _U, _D = "T", "F", "U", "D"
 _AND_ORDER = (_F, _U, _D, _T)
 _OR_ORDER = (_T, _D, _U, _F)
 _NOT_VALUE = {_T: _F, _F: _T, _U: _U, _D: _D}
+_IS_NOT = "is not"
 
 #: null-source paths per ref: nulling any hop on/above one nulls the ref.
 _NullSources = Dict[ValueKey, "frozenset[Tuple[str, ...]]"]
@@ -1681,9 +1680,9 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
         return _fold(vals=vals, order=_AND_ORDER if op == "and" else _OR_ORDER)
     if op == "not":
         return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
-    if op in ("is", "is not"):
+    if op in ("is", _IS_NOT):
         return _is_value(
-            a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+            a=cj.operands[0], b=cj.operands[1], negated=op == _IS_NOT, h=h, srcs=srcs,
         )
     if op in PREDICATE_COMPARISON_OPS:
         return _unknown_if_null(cj.operands, h=h, srcs=srcs)
@@ -2129,6 +2128,9 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     # Host included so the reverse (fanning) hop resolves for the broadcast
     # reason; attributability/filter routing keep the host-free map unchanged.
     models_with_host = {**models_by_name, host_model.name: host_model}
+    base_filters_with_text = [*base_filters_with_text, *_host_membership(
+        host_model=host_model, target_path=target_path, models_by_name=models_with_host, bundle=bundle,
+    )]
 
     # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
@@ -3987,14 +3989,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         attach_plans=regroup_attach_plans,
     )
 
-    # SlayerModel.filters — Mode-A SQL WHERE, scope-derived so a sub-plan gets its own.
-    mode_a_filters: List[ModeAFilter] = []
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        for j, mf in enumerate(scope.source_model.filters or []):
-            mode_a_filters.append(validate_model_filter(
-                mf=mf, idx=j, model=scope.source_model,
-            ))
-
     source_col_names = _source_column_names(scope)
     host_name = host_model_name(scope)
 
@@ -4273,8 +4267,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         regroup_combined_slot_ids=regroup_combined_slot_ids,
         order_entries=order_entries,
         masks=masks,
-        mode_a_filters=mode_a_filters,
-        host_gated=host_population_gated,
+        host_gated=host_population_gated or _restricted_dataset(render_source_model, bundle=bundle),
     )
 
     regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
@@ -4311,7 +4304,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         transform_layers=transform_layers,
         masks=masks,
         n_date_range_masks=surviving_date_range,
-        mode_a_filters=mode_a_filters,
         projection=projection.public_projection,
         order=order_entries,
         limit=prebound.limit,
@@ -4357,6 +4349,31 @@ def _isolated_composites(*, slots: list, isolated: AbstractSet[SlotId], registry
     return {s.id for s in slots if isinstance(s.key, SLOT_COMPOSITE_KINDS) and composed(s.key)}
 
 
+def _host_membership(
+    *, host_model: SlayerModel, target_path: Tuple[str, ...], models_by_name: Dict[str, SlayerModel],
+    bundle: ResolvedSourceBundle,
+) -> List[Tuple[BoundFilter, Optional[str]]]:
+    """For a home beyond a restricted host, the row filter ``<host join column> IS NOT NULL`` on the
+    home's first hop from the host: re-rooted, it keeps only home rows associated with a host row."""
+    if not target_path or not _restricted_dataset(host_model, bundle=bundle):
+        return []
+    chain = follow(root=host_model, path=target_path[:1], models_by_name=models_by_name)
+    if not chain or not chain[0].join_pairs or chain[0].lateral is not None:
+        return []  # a product hop associates every row; a list child reads its parent's dataset
+    witness = ColumnKey(leaf=chain[0].join_pairs[0][0])
+    return [(bound_filter_from_key(ArithmeticKey(op=_IS_NOT, operands=(witness, LiteralKey(value=None)))), None)]
+
+
+def _restricted_dataset(model: Optional[SlayerModel], *, bundle: ResolvedSourceBundle) -> bool:
+    """Whether reading ``model`` reads only some of its rows: it, or the parent a list child reads, has filters."""
+    if model is None:
+        return False
+    if model.list_of is not None:
+        parent = bundle.models_by_name.get(model.list_of[0])
+        return parent is not None and bool(parent.filters)
+    return bool(model.filters)
+
+
 def _plan_empty_base_grain(
     *,
     projection: List[SlotId],
@@ -4364,11 +4381,10 @@ def _plan_empty_base_grain(
     windowed_slot_ids: AbstractSet[SlotId],
     order_entries: list,
     masks: List[MaskEntry],
-    mode_a_filters: List[ModeAFilter],
     regroup_combined_slot_ids: Optional[set] = None,
     host_gated: bool = False,
 ) -> "EmptyBaseGrainPlan | None":
-    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join gates the spine even with no field mask."""
+    """Decide the empty-base spine at plan time — the host base has nothing of its own exactly when every value asked for is an isolated aggregate. ``host_gated`` (D7) means a population semi-join or the host's own filters gate the spine even with no field mask."""
     isolated = set(windowed_slot_ids)
     isolated |= (regroup_combined_slot_ids or set())
     if not projection or any(sid not in isolated for sid in projection):
@@ -4378,9 +4394,7 @@ def _plan_empty_base_grain(
     if any(entry.slot_id not in isolated for entry in order_entries):
         return None
     # Field masks gate the host spine; measure masks resolve after attachment.
-    host_filter_ids = [
-        m.slot_id for m in masks if m.typing == MaskTyping.FIELD
-    ] + [mf.id for mf in mode_a_filters]
+    host_filter_ids = [m.slot_id for m in masks if m.typing == MaskTyping.FIELD]
     return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids, host_gated=host_gated)
 
 
@@ -4394,7 +4408,7 @@ def _plan_src_row_filters(
     *,
     producer_plan: PlannedQuery,
 ) -> "Tuple[List[str], List[SrcFilterRewrite]]":
-    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (Mode-A model filters exempt, date-range masks are frame bounds)."""
+    """Partition the producer's field masks for a windowed measure's ``_src`` scope into ``(where_filter_ids, src_filter_rewrites)`` by frame-bound membership (date-range masks are frame bounds)."""
     time_cols = frozenset(producer_plan.frame_bound_columns)
     slots_by_id = {
         s.id: s
@@ -4404,7 +4418,7 @@ def _plan_src_row_filters(
             *producer_plan.combined_expression_slots,
         )
     }
-    where_ids: List[str] = [mf.id for mf in producer_plan.mode_a_filters]
+    where_ids: List[str] = []
     rewrites: List[SrcFilterRewrite] = []
     date_ids = {
         m.slot_id

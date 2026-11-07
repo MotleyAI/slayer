@@ -41,7 +41,6 @@ __all__ = [
     "FilterReachability",
     "MaskEntry",
     "MaskTyping",
-    "ModeAFilter",
     "OrderEntry",
     "PickedParam",
     "PlainProducerKernel",
@@ -216,13 +215,6 @@ class MaskEntry(BaseModel):
     slot_id: SlotId
     typing: MaskTyping
     stratum: int
-
-
-class ModeAFilter(BaseModel):
-    """A Mode-A model-filter text (model definition, not a query position); renders in the base WHERE."""
-
-    id: BoundFilterId
-    text: str
 
 
 class OrderEntry(BaseModel):
@@ -465,10 +457,9 @@ class PlannedQuery(BaseModel):
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     # Typed filter conjuncts over hidden slots; the first ``n_date_range_masks``
-    # are synthesized date-range bounds (they render before the Mode-A texts).
+    # are synthesized date-range bounds.
     masks: List[MaskEntry] = Field(default_factory=list)
     n_date_range_masks: int = Field(default=0, ge=0)
-    mode_a_filters: List[ModeAFilter] = Field(default_factory=list)
     projection: List[SlotId] = Field(default_factory=list)
     order: List[OrderEntry] = Field(default_factory=list)
     limit: Optional[int] = None

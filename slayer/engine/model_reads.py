@@ -32,6 +32,23 @@ def models_read_by(
     return frozenset(reads.out)
 
 
+def models_read_closure(query: SlayerQuery, *, host: SlayerModel, models: Sequence[SlayerModel]) -> list[SlayerModel]:
+    """``host`` and every model ``query``, rooted at ``host``, reads — directly or through what it reads."""
+    reads = _Reads(models)
+    reads.model(host)
+    for parts in query_reference_parts(query):
+        reads.ref(parts, host=host)
+    by_id = {(m.data_source, m.name): m for m in models}
+    pending, seen = list(reads.out), set()
+    while pending:
+        key = pending.pop()
+        if key in seen or key not in by_id:
+            continue
+        seen.add(key)
+        pending.extend(models_read_by(by_id[key], models=models))
+    return [host, *(by_id[key] for key in sorted(seen) if by_id[key] is not host)]
+
+
 def placeholder(identity: Identity) -> SlayerModel:
     """Stand-in for a stored model that cannot be loaded: no source, columns or joins, so a path can only end on it."""
     data_source, name = identity

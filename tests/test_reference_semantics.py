@@ -1,4 +1,4 @@
-"""Tests for the two-mode reference semantics introduced by DEV-1369.
+"""Tests for the two-mode reference semantics.
 
 Mode A — SQL expression: Column.sql, Column.filter, SlayerModel.filters.
     Free SQL via sqlglot. Bare names = underlying-table columns; ``__``-paths
@@ -25,7 +25,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 
-from tests._engine_helpers import _engine_generate, _where_text
+from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
 def _make_planets_model(*, with_window_column: bool = False) -> SlayerModel:
@@ -141,10 +141,10 @@ class TestSqlModeAcceptance:
 
 
 class TestSqlModeRuntime:
-    """DEV-1378: Mode A SQL filters (``Column.filter`` /
+    """Mode A SQL filters (``Column.filter`` /
     ``SlayerModel.filters``) must not just construct cleanly — they
     have to flow through enrichment without the DSL parser rejecting
-    arbitrary SQL function calls. Before DEV-1378 the construction
+    arbitrary SQL function calls. Once, the construction
     tests passed but the engine failed at first query against any
     such model.
     """
@@ -164,11 +164,11 @@ class TestSqlModeRuntime:
             source_model="m",
             measures=[ModelMeasure(formula="amount:sum")],
         )
-        # Bug under DEV-1378: this raised "Unknown filter function
-        # 'json_extract'" at enrichment time. Post-fix, it renders — the
-        # Mode A model filter survives into the emitted WHERE clause.
+        # This once raised "Unknown filter function 'json_extract'" at enrichment
+        # time; it renders — the Mode A model filter survives into the WHERE of
+        # the model's filtered dataset.
         sql = await _engine_generate(query=query, model=model)
-        assert "json_extract" in _where_text(sql).lower(), (
+        assert "json_extract" in _dataset_where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
 
@@ -271,41 +271,20 @@ class TestSqlModeRejection:
             )
 
     def test_model_filter_rejects_aggregation_colon(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
-            SlayerModel(
-                name="m",
-                sql_table="t",
-                data_source="test",
-                filters=["revenue:sum > 100"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
-            )
+            SlayerModel(name="m", sql_table="t", data_source="test", filters=["revenue:sum > 100"], columns=columns)
 
     def test_model_filter_rejects_transform_call(self) -> None:
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
-            SlayerModel(
-                name="m",
-                sql_table="t",
-                data_source="test",
-                filters=["cumsum(revenue:sum) > 0"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
-            )
+            SlayerModel(name="m", sql_table="t", data_source="test", filters=["cumsum(revenue:sum) > 0"], columns=columns)
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
+        columns = [Column(name="id", sql="id", type=DataType.INT, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            SlayerModel(
-                name="m",
-                sql_table="t",
-                data_source="test",
-                filters=["row_number() over (order by mass desc) <= 3"],
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True)
-                ],
-            )
+            SlayerModel(name="m", sql_table="t", data_source="test", filters=["row_number() over (order by mass desc) <= 3"], columns=columns)
 
     def test_column_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
@@ -494,7 +473,7 @@ class TestStrictResolution:
                 await _engine_generate(query=query, model=model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
-        """DEV-1367: a filter like ``transportation_assets.total_vehicles >= 3``
+        """A filter like ``transportation_assets.total_vehicles >= 3``
         where ``transportation_assets`` is **not** in the source model's
         ``joins`` used to silently render SQL with an unbound table reference
         in the WHERE clause and fail at execution with a cryptic database
@@ -515,7 +494,7 @@ class TestStrictResolution:
             dimensions=["housenum"],
             filters=["transportation_assets.total_vehicles >= 3"],
         )
-        # DEV-1856: an unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL (the DEV-1367 contract).
+        # An unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL.
         with pytest.raises(
             ValueError,
             match=(
@@ -526,7 +505,7 @@ class TestStrictResolution:
         ):
             await _engine_generate(query=query, model=households)
 
-    # DEV-1484 Stage C: the two former lenient-drop tests moved to producer filter
+    # The two former lenient-drop tests moved to producer filter
     # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
 
     async def test_known_filter_name_passes(self) -> None:
@@ -550,7 +529,7 @@ class TestStrictResolution:
 
 
 # ---------------------------------------------------------------------------
-# Predicate-promotion drop (DEV-1336 reversal)
+# Predicate-promotion drop (reversed)
 # ---------------------------------------------------------------------------
 
 
