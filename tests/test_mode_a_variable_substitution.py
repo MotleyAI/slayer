@@ -719,7 +719,7 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            # F4: host model filter stays host-local — all 3 customers counted.
+            # The host's model filter restricts the customers-rooted count.
             assert _sum(resp, "orders.customers.id_count") == 2
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.

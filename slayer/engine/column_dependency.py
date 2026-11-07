@@ -32,7 +32,7 @@ from slayer.core.errors import (
     UnreachableDefinitionError,
 )
 from slayer.core.join_search import unreachable_target
-from slayer.core.join_walker import provably_to_one, walk, walk_miss, walk_terminal
+from slayer.core.join_walker import OrientedJoin, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.elaborate_env import validate_model_filter
 from slayer.engine.join_safety import provably_fans
@@ -499,21 +499,30 @@ def filter_references(
     yield from _references(fragment, host=host, reachable=reachable, via=(), seen=set())
 
 
+def _resolve_owner(
+    *, quals, host: SlayerModel, reachable: dict[str, SlayerModel],
+) -> tuple[SlayerModel, list[OrientedJoin]] | None:
+    """The model owning a reference and the chain reaching it, else ``None`` when unresolvable."""
+    path = _hop_path(quals=quals, host=host)
+    try:
+        chain = walk(root=host, path=path, models_by_name=reachable) if path else []
+    except (AmbiguousJoinPathError, CircularJoinPathError):
+        return None
+    if chain is None:
+        return None
+    owner = reachable.get(chain[-1].target_model) if chain else host
+    return None if owner is None else (owner, chain)
+
+
 def _references(
     fragment: str, *, host: SlayerModel, reachable: dict[str, SlayerModel], via: tuple[str, ...],
     seen: set[tuple[str, str]],
 ) -> Iterator[tuple[SlayerModel, str, tuple[str, ...]]]:
     for quals, leaf in _fragment_refs(fragment) or []:
-        path = _hop_path(quals=quals, host=host)
-        try:
-            chain = walk(root=host, path=path, models_by_name=reachable) if path else []
-        except (AmbiguousJoinPathError, CircularJoinPathError):
+        resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
+        if resolved is None:
             continue
-        if chain is None:
-            continue
-        owner = reachable.get(chain[-1].target_model) if chain else host
-        if owner is None:
-            continue
+        owner, chain = resolved
         on_path = (*via, *(edge.target_model for edge in chain))
         yield owner, leaf, on_path
         column = owner.get_column(leaf)

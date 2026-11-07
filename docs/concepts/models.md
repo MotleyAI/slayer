@@ -405,7 +405,7 @@ filters:
   - "status <> 'test'"
 ```
 
-They apply wherever the model's rows are read — as a query's source, a join target, a cross-model aggregate or inside another model's filter — before any join, so a joined row with no passing match reads as NULL.
+They apply wherever the model's rows are read — as a query's source, a join target, a cross-model aggregate or inside another model's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
 
 These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 

@@ -1616,6 +1616,7 @@ _T, _F, _U, _D = "T", "F", "U", "D"
 _AND_ORDER = (_F, _U, _D, _T)
 _OR_ORDER = (_T, _D, _U, _F)
 _NOT_VALUE = {_T: _F, _F: _T, _U: _U, _D: _D}
+_IS_NOT = "is not"
 
 #: null-source paths per ref: nulling any hop on/above one nulls the ref.
 _NullSources = Dict[ValueKey, "frozenset[Tuple[str, ...]]"]
@@ -1679,9 +1680,9 @@ def _pred_value(cj: ValueKey, *, h: Tuple[str, ...], srcs: _NullSources) -> str:
         return _fold(vals=vals, order=_AND_ORDER if op == "and" else _OR_ORDER)
     if op == "not":
         return _NOT_VALUE[_pred_value(cj.operands[0], h=h, srcs=srcs)]
-    if op in ("is", "is not"):
+    if op in ("is", _IS_NOT):
         return _is_value(
-            a=cj.operands[0], b=cj.operands[1], negated=op == "is not", h=h, srcs=srcs,
+            a=cj.operands[0], b=cj.operands[1], negated=op == _IS_NOT, h=h, srcs=srcs,
         )
     if op in PREDICATE_COMPARISON_OPS:
         return _unknown_if_null(cj.operands, h=h, srcs=srcs)
@@ -4360,7 +4361,7 @@ def _host_membership(
     if not chain or not chain[0].join_pairs or chain[0].lateral is not None:
         return []  # a product hop associates every row; a list child reads its parent's dataset
     witness = ColumnKey(leaf=chain[0].join_pairs[0][0])
-    return [(bound_filter_from_key(ArithmeticKey(op="is not", operands=(witness, LiteralKey(value=None)))), None)]
+    return [(bound_filter_from_key(ArithmeticKey(op=_IS_NOT, operands=(witness, LiteralKey(value=None)))), None)]
 
 
 def _restricted_dataset(model: Optional[SlayerModel], *, bundle: ResolvedSourceBundle) -> bool:
