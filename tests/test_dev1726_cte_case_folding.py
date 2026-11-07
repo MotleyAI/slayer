@@ -50,7 +50,7 @@ import slayer.sql.generator as generator_module
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects import _ALL_DIALECTS
 from slayer.sql.naming import (
     CASE_FOLDING_SQLGLOT_DIALECTS,
@@ -292,7 +292,7 @@ def _vehicle_query() -> SlayerQuery:
         source_model="orders",
         time_dimensions=[
             TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -385,7 +385,7 @@ class TestE2eCaseFoldingAllDialects:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],

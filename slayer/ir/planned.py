@@ -216,6 +216,8 @@ class MaskEntry(BaseModel):
     slot_id: SlotId
     typing: MaskTyping
     stratum: int
+    # Mirrors ``BoundFilter.row_restriction``.
+    row_restriction: bool = False
 
 
 class ModeAFilter(BaseModel):
@@ -784,6 +786,21 @@ def _walk_plan_keys(obj, seen: set) -> Iterator[ValueKey]:
 def plan_value_keys(planned) -> Iterator[ValueKey]:
     """Every root ``ValueKey`` a plan carries, nested producer plans included."""
     yield from _walk_plan_keys(planned, set())
+
+
+def plan_value_keys_by_root(planned, root: Optional[str] = None) -> Iterator[Tuple[Optional[str], ValueKey]]:
+    """``plan_value_keys`` paired with the model each key is rooted at: a target-rooted producer's keys at its
+    ``producer_root_model``, every other key at the enclosing plan's root (``None``: the plan's own)."""
+    attaches = list(getattr(planned, "regroup_attach_plans", ()) or ())
+    for key in _walk_plan_keys(planned, {id(a.producer_plan) for a in attaches}):
+        yield root, key
+    for attach in attaches:
+        yield from plan_value_keys_by_root(attach.producer_plan, attach.producer_root_model or root)
+
+
+def planned_keys(planned_list) -> Iterator[ValueKey]:
+    """Every key, nested ones included, that rendering ``planned_list`` reads."""
+    return (k for planned in planned_list for root in plan_value_keys(planned) for k in walk_value_keys(root))
 
 
 def plans_read_clock(planned_list) -> bool:

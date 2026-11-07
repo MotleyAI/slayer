@@ -12,13 +12,13 @@ A model defines columns as bare expressions:
 columns:
   - name: subtotal
     sql: subtotal
-    type: number
+    type: DOUBLE
   - name: tax_paid
     sql: tax_paid
-    type: number
+    type: DOUBLE
   - name: order_total
     sql: order_total
-    type: number
+    type: DOUBLE
 ```
 
 No `type: sum` or `type: avg`. Just what the column is.
@@ -178,11 +178,11 @@ Not every aggregation makes sense for every column. `avg(customer_id)`? Probably
 columns:
   - name: customer_id
     sql: customer_id
-    type: number
+    type: INT
     allowed_aggregations: [count, count_distinct]
   - name: revenue
     sql: amount
-    type: number
+    type: DOUBLE
     allowed_aggregations: [sum, avg, min, max, weighted_avg]
 ```
 

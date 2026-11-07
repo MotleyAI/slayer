@@ -435,7 +435,7 @@ class UnknownGranularityError(QueryTypeError):
 
 
 class GranularityShapeError(QueryTypeError):
-    """A datasource-granularity call that is not a single column reference ``gran(col)``."""
+    """A datasource-granularity call that does not take one row-level argument ``gran(expr)``."""
 
 
 class TimeSpineError(QueryTypeError):
@@ -447,9 +447,35 @@ class UnrelatedDatasetError(QueryTypeError):
     """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
 
 
+class CastTypeError(QueryTypeError):
+    """A CAST target type the query's dialect cannot express."""
+
+
+class AggregationFilterError(QueryTypeError):
+    """A ``FILTER (WHERE …)`` condition that is not a row-level predicate of its aggregation."""
+
+
+class ScalarArgumentError(QueryTypeError):
+    """A scalar function argument outside its contract: a pattern, path, flag or index the library does not
+    take, or a literal outside the function's domain."""
+
+
+class ScalarOperandTypeError(QueryTypeError):
+    """A scalar function or operator over an operand of a type it does not read (a number function over TEXT,
+    a JSON read of a non-JSON value, a TEXT literal that is not a number beside a number)."""
+
+
 class ListTypeError(QueryTypeError):
     """A list where a scalar is required (or the reverse), a malformed list literal, or a list construct on a
     database without native lists."""
+
+
+class ServerVersionError(QueryTypeError):
+    """A function the connected server's version does not provide."""
+
+
+class UnsupportedServerFunctionError(QueryTypeError):
+    """A library function the connected database cannot yet run with its portable meaning."""
 
 
 class UnreachableDefinitionError(SlayerError, ValueError):
@@ -611,6 +637,14 @@ class ModeASqlParseError(SlayerError, ValueError):
         ))
 
 
+class NotReadOnlyQueryError(SlayerError):
+    """SQL that must be a read-only query is not one."""
+
+    def __init__(self, *, sql: str) -> None:
+        self.sql = sql
+        super().__init__(f"Not a read-only query: {sql!r}.")
+
+
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope."""
 
@@ -760,6 +794,10 @@ class MeasureCycleError(SlayerError, ValueError):
             summary="Cyclic reference in named-measure expansion.",
             extras=[("chain", " → ".join(self.chain))],
         ))
+
+
+class VariableError(SlayerError):
+    """A ``{name}`` placeholder whose name is invalid or whose variable is undefined."""
 
 
 class UnresolvedPlaceholderError(SlayerError):
@@ -933,10 +971,10 @@ class GranularityCallError(SlayerError, ValueError):
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
-        """A granularity callee with any argument shape other than one column reference."""
+        """A granularity callee with any argument shape other than one row-level argument."""
         return cls(
-            f"Granularity call {entry!r} must be a single column reference "
-            f"``gran(col)`` (e.g. ``month(created_at)``) for one of: "
+            f"Granularity call {entry!r} must take one row-level argument "
+            f"``gran(expr)`` (e.g. ``month(created_at)``) for one of: "
             f"{', '.join(g.value for g in TimeGranularity)}."
         )
 

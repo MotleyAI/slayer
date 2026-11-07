@@ -21,7 +21,7 @@ from slayer.api.server import QueryRequest, create_app
 from slayer.core import query as core_query
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.ir import source_bundle
 from slayer.ir.source_bundle import (
@@ -302,14 +302,11 @@ class TestSourceModelName:
     def test_property_over_the_four_cases(self, spec, expected) -> None:
         assert SlayerQuery(source_model=spec).source_model_name == expected
 
-    def test_prefix_strip_uses_the_typed_name(self) -> None:
-        q = _query(source_model=EXTENSION, dimensions=["orders.status"])
-        stripped = q.strip_source_model_prefix()
-        assert stripped.dimensions
-        dim = stripped.dimensions[0]
-        assert isinstance(dim, ColumnRef)
-        assert dim.model is None
-        assert dim.name == "status"
+    async def test_root_qualifier_uses_the_typed_name(self, chain_engine) -> None:
+        qualified = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["orders.status"]))
+        bare = await chain_engine.execute(_query(source_model=EXTENSION, dimensions=["status"]))
+        assert qualified.sql == bare.sql
+        assert qualified.columns == bare.columns == ["orders.status"]
 
 
 # ---------------------------------------------------------------------------
@@ -408,27 +405,27 @@ class TestTimeDimensionColumnAlias:
             time_dimensions=[{"column": "created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
-        assert q.time_dimensions[0].dimension.name == "created_at"
+        assert q.time_dimensions[0].dimension == "created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
-        assert dumped == {"dimension": {"name": "created_at"}, "granularity": "month"}
+        assert dumped == {"dimension": "created_at", "granularity": "month"}
 
     def test_column_key_accepts_a_column_ref_object(self) -> None:
         td = TimeDimension.model_validate({
             "column": {"name": "created_at", "model": "orders"}, "granularity": "day",
         })
-        assert (td.dimension.name, td.dimension.model) == ("created_at", "orders")
+        assert td.dimension == "orders.created_at"
 
     def test_dimension_key_and_keyword_still_validate(self) -> None:
         via_key = TimeDimension.model_validate({"dimension": "created_at", "granularity": "month"})
         via_kw = TimeDimension(
-            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            dimension="created_at", granularity=TimeGranularity.MONTH,
         )
         assert via_key == via_kw
-        assert via_kw.dimension.name == "created_at"
+        assert via_kw.dimension == "created_at"
 
     def test_dimension_wins_when_both_keys_are_present(self) -> None:
         td = TimeDimension.model_validate({"dimension": "a", "column": "b", "granularity": "month"})
-        assert td.dimension.name == "a"
+        assert td.dimension == "a"
 
     def test_schema_advertises_dimension_only(self) -> None:
         props = SlayerQuery.model_json_schema()["$defs"]["TimeDimension"]["properties"]

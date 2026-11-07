@@ -22,9 +22,9 @@ import re
 
 from pydantic import BaseModel, Field
 
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.refs import AGG_REF_RE
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
+import slayer.core.enums
 
 
 class ParsedFilter(BaseModel):
@@ -36,7 +36,7 @@ class ParsedFilter(BaseModel):
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
 
 _DSL_TRANSFORM_CALL_RE = re.compile(
-    r"\b(" + "|".join(sorted(ALL_TRANSFORMS, key=len, reverse=True)) + r")\s*\(",
+    r"\b(" + "|".join(sorted(slayer.core.enums.ALL_TRANSFORMS, key=len, reverse=True)) + r")\s*\(",
     re.IGNORECASE,
 )
 

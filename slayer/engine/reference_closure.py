@@ -21,6 +21,7 @@ from sqlglot import exp
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     ColumnKey,
     ColumnSqlKey,
     InKey,
@@ -230,11 +231,11 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
         return []
     if isinstance(node, TimeTruncKey):
-        return [node.column]
+        return [node.source]
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
             return []
-        return [node.source, *node.args, *(v for _name, v in node.kwargs)]
+        return [node.source, *node.args, *(v for _name, v in node.kwargs), *([node.filter] if node.filter else [])]
     if isinstance(node, TransformKey):
         return [node.input, *sorted(node.partition_keys, key=repr), node.time_key]
     if isinstance(node, ArithmeticKey):
@@ -247,6 +248,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.operand]
     if isinstance(node, SqlFragmentKey):
         return list(node.refs)
+    if isinstance(node, CastKey):
+        return [node.source]
     raise UnhandledValueKindError(node)
 
 

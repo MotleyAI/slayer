@@ -51,7 +51,7 @@ from slayer.engine.cardinality import (
     declares_solo_unique,
 )
 from slayer.core.policy import SessionPolicy
-from slayer.core.format import format_number, list_json_text
+from slayer.core.format import encode_text, format_number
 from slayer.core.join_edges import JoinEdgeRef, resolve_join_refs, without_joins
 from slayer.core.models import (
     DatasourceConfig,
@@ -61,14 +61,13 @@ from slayer.core.models import (
     _check_join_keys,
     join_key_error,
 )
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, walk_value_keys
-from slayer.core.join_walker import resolved_terminal
 from slayer.core.granularity import resolve_granularity
 from slayer.core.query import (
     ComputedDimension,
     OrderItem,
     QueryRefinement,
     SlayerQuery,
+    computed_dimension_name,
     extract_variable_refs,
     granularity_call_parts,
     refine_query,
@@ -105,13 +104,13 @@ from slayer.core.warnings import (
     WholePeriodsNonNestingWarningPayload,
     announced_by_caller,
 )
-from slayer.core.refs import auto_name_from_expression, functional_agg_text
+from slayer.core.refs import functional_agg_text
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
     RootModelRecommendation,
 )
-from slayer.engine.syntax import split_entity_agg_ref
+from slayer.core.syntax import split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,
@@ -128,8 +127,8 @@ from slayer.ir.planned import (
     emitted_plans,
     is_spliced,
     plan_has_semi_join_filters,
-    plan_value_keys,
     plans_read_clock,
+    planned_keys,
 )
 from slayer.engine import ingestion, schema_drift
 from slayer.engine.model_reads import narrowing_models
@@ -143,6 +142,7 @@ from slayer.engine.response_meta import (
 from slayer.sql.column_expansion import expand_derived_refs_sync
 from slayer.ir.source_bundle import ResolvedSourceBundle, model_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
+from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
@@ -162,13 +162,17 @@ from slayer.sql.client import (
     _is_auth_failure,
     _is_transient_db_error,
     _is_unreachable_db_error,
+    TypeProbe,
     adapt_client,
-    build_sql_model_trial_query,
     classify_model_sql,
+    render_type_probe,
+    sql_model_trial_query,
     type_categories,
 )
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.render.library import check_library_support
+from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.sql.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
@@ -179,7 +183,9 @@ from slayer.sql.generator import (
     generate_planned_stages,
     read_models,
 )
-from slayer.sql.session_policy import ScopedTable, apply_session_policy, policy_column_checks
+from slayer.sql.session_policy import (
+    HasColumn, ScopedTable, apply_session_policy, apply_session_policy_to_probe, policy_column_checks,
+)
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 from slayer.storage.engine_view import EngineStorage
@@ -326,7 +332,7 @@ def _merge_query_variables(
 
 def _is_granularity_call(d: ComputedDimension, *, bundle: ResolvedSourceBundle) -> bool:
     """Whether ``d`` is an unnamed datasource-granularity call (it projects as a time dimension)."""
-    if d.name != auto_name_from_expression(d.template):
+    if d.name != computed_dimension_name(d.template):
         return False
     call = granularity_call_parts(d.expression)
     return call is not None and resolve_granularity(call[1], defined=bundle.granularities) is not None
@@ -351,7 +357,7 @@ def _with_default_order(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> 
             dimensions.append(d.name or d.expression)
     time_dimensions = [
         f"{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}"
-        f"({td.dimension.full_name})"
+        f"({td.dimension})"
         for td in query.time_dimensions or []
     ]
     columns = [*dimensions, *time_dimensions, *granularity_calls]
@@ -640,14 +646,10 @@ class SlayerResponse(BaseModel):
 
     def _format_value(self, column: str, value: Any) -> str:
         """Format a single cell value using column format metadata if available."""
-        if value is None:
-            return ""
-        if isinstance(value, list):
-            return list_json_text(value)
         fm = self.attributes.get(column)
         if fm and fm.format and isinstance(value, (int, float, decimal.Decimal)):
             return format_number(value=value, format_spec=fm.format)
-        return str(value)
+        return encode_text(value)
 
     def to_markdown(self) -> str:
         """Format data as a Markdown table with number formatting applied."""
@@ -660,19 +662,6 @@ class SlayerResponse(BaseModel):
             cells = [self._format_value(column=c, value=row.get(c, "")) for c in self.columns]
             body_lines.append("| " + " | ".join(cells) + " |")
         return "\n".join([header, separator] + body_lines)
-
-
-def _read_columns(keys: List[Any], *, bundle: ResolvedSourceBundle) -> Set[Tuple[str, str]]:
-    """The ``(model, column)`` pairs the column leaves of ``keys`` read."""
-    out: Set[Tuple[str, str]] = set()
-    for k in keys:
-        if isinstance(k, ColumnSqlKey):
-            out.add((k.model, k.column_name))
-        elif isinstance(k, ColumnKey) and bundle.source_model is not None:
-            owner = resolved_terminal(root=bundle.source_model, path=k.path, models_by_name=bundle.models_by_name)
-            if owner is not None:
-                out.add((owner.name, k.leaf))
-    return out
 
 
 class _Prepared(BaseModel):
@@ -688,8 +677,8 @@ class _Prepared(BaseModel):
     expected_columns: List[str]
     # The persisted models the statement reads (drift-attribution scope).
     touched: Set[str]
-    # The ``(model, column)`` pairs it reads.
-    read_columns: Set[Tuple[str, str]] = PydanticField(default_factory=set)
+    # The elements of those models it reads (drift attribution).
+    reads: StatementReads = PydanticField(default_factory=StatementReads)
     model: SlayerModel
     slack_warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
@@ -714,7 +703,7 @@ class _Rendered(BaseModel):
     model: SlayerModel
     # Models whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
-    read_columns: Set[Tuple[str, str]] = PydanticField(default_factory=set)
+    element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
     population: Optional[str] = None
     population_inferred: bool = False
@@ -813,16 +802,43 @@ class SlayerQueryEngine:
         """Rewrite ``sql`` to enforce the forced-filter policy; unchanged when no policy."""
         if not self.policy:
             return sql
+        has_column = await self._has_column(sql=sql, dialect=dialect, datasource=datasource, policy=self.policy)
+        return apply_session_policy(sql, dialect=dialect, policy=self.policy, has_column=has_column)
+
+    async def _apply_probe_policy(self, probe: TypeProbe, *, dialect: str, datasource: DatasourceConfig) -> TypeProbe:
+        """``probe`` under the forced-filter policy; unchanged when no policy."""
+        if not self.policy:
+            return probe
+        has_column = await self._has_column(sql=probe.sql, dialect=dialect, datasource=datasource, policy=self.policy)
+        return apply_session_policy_to_probe(probe, dialect=dialect, policy=self.policy, has_column=has_column)
+
+    async def _has_column(
+        self, *, sql: str, dialect: str, datasource: DatasourceConfig, policy: SessionPolicy,
+    ) -> HasColumn:
+        """The column presence facts the policy rewrite of ``sql`` asks for, read up front."""
         present = {
             check: await self._column_present(datasource=datasource, scoped_table=check[0], column=check[1])
-            for check in policy_column_checks(sql, dialect=dialect, policy=self.policy)
+            for check in policy_column_checks(sql, dialect=dialect, policy=policy)
         }
-        return apply_session_policy(
-            sql,
-            dialect=dialect,
-            policy=self.policy,
-            has_column=lambda scoped, column: present.get((scoped, column)),
-        )
+        return lambda scoped, column: present.get((scoped, column))
+
+    async def _render_dialect(
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+    ) -> "str | SqlDialect":
+        """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
+        name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
+        as an unknown server. A library call the dialect does not translate is refused first."""
+        sql_dialect = dialect_for_ds_type(datasource.type)
+        if sql_dialect.sqlglot_name != dialect:
+            sql_dialect = get_dialect(dialect)
+        check_library_support(sql_dialect, planned_keys(planned_list))
+        if not sql_dialect.profile_needed(planned_keys(planned_list)):
+            return sql_dialect
+        try:
+            profile = await self.client_for(datasource).server_profile()
+        except Exception:  # noqa: BLE001 — an unknown server gets the plain cast
+            profile = ServerProfile()
+        return sql_dialect.model_copy(update={"server_profile": profile})
 
     async def _require_correlated_subqueries(
         self, *, dialect: str, datasource: DatasourceConfig, planned_list, sql: str,
@@ -1115,7 +1131,7 @@ class SlayerQueryEngine:
             attributes=attributes,
             expected_columns=list(expected_columns),
             touched=rendered.reads,
-            read_columns=rendered.read_columns,
+            reads=rendered.element_reads,
             model=rendered.model,
             slack_warnings=rendered.warnings,
             population=rendered.population,
@@ -1124,16 +1140,13 @@ class SlayerQueryEngine:
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
-        """Plan and render one statement (see ``_plan_and_render_statement``), with the library shadows it calls."""
+        """Plan and render one statement (see ``_plan_and_render_statement``), with the elements it reads."""
         with collect_bind_records() as records:
             rendered = await self._plan_and_render_statement(**kwargs)
-        keys = [k for planned in rendered.emitted_list for root in plan_value_keys(planned) for k in walk_value_keys(root)]
-        called = {k.agg for k in keys if isinstance(k, AggregateKey)}
+        reads = statement_reads(plans=rendered.emitted_list, bundle=rendered.bundle, measures=records.measures)
         # A pruned stage's shadowing call is not made by the statement.
-        shadows = [w for w in records.shadows.values() if w.aggregation in called]
-        return rendered.model_copy(update={
-            "warnings": [*rendered.warnings, *shadows], "read_columns": _read_columns(keys, bundle=rendered.bundle),
-        })
+        shadows = [w for w in records.shadows.values() if (w.model, w.aggregation) in reads.aggregations]
+        return rendered.model_copy(update={"element_reads": reads, "warnings": [*rendered.warnings, *shadows]})
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
         self,
@@ -1172,12 +1185,6 @@ class SlayerQueryEngine:
         if inferred_data_source is not None:
             prefer_data_source = inferred_data_source
 
-        query = query.strip_source_model_prefix()
-        named_queries = {
-            name: q.strip_source_model_prefix()
-            for name, q in named_queries.items()
-        }
-
         # Build the resolved bundle once — the only storage consult; the binder
         # then reads from the bundle purely.
         failures = DocumentLoadFailures()
@@ -1203,7 +1210,7 @@ class SlayerQueryEngine:
         # never touches ``model.data_source``.
         datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
-        bundle = bundle.model_copy(update={"dialect": dialect})
+        bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
         # Substitute {var} into the direct source model's Mode-A surfaces before
         # anything parses them; the substituted copy replaces the model as both
@@ -1274,6 +1281,7 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and render the whole chain to one SQL string.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
+        render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
         kept: Set[str] = set()
         sql: Optional[str] = None
         statement: Optional[Any] = None
@@ -1281,12 +1289,12 @@ class SlayerQueryEngine:
         with collect_stale_spellings() as render_stale_spellings:
             if as_statement:
                 statement = _build_planned_stages_ast(
-                    planned_list, bundle=bundle, dialect=dialect, kept_stages=kept,
+                    planned_list, bundle=bundle, dialect=render_dialect, kept_stages=kept,
                 )
                 reads |= read_models(statement)
             else:
                 sql = generate_planned_stages(
-                    planned_queries=planned_list, bundle=bundle, dialect=dialect,
+                    planned_queries=planned_list, bundle=bundle, dialect=render_dialect,
                     # Plan-derived canonical projection keys drive the write-side length
                     # fit; the read side decodes against the same set.
                     projection_aliases=projection_result_keys(root_planned=planned_list[-1]),
@@ -1491,7 +1499,7 @@ class SlayerQueryEngine:
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
                     err=exc, datasource=prepared.datasource, read_set=prepared.touched,
-                    read_columns=prepared.read_columns,
+                    reads=prepared.reads,
                 )
                 raise
             return SlayerResponse(
@@ -1545,7 +1553,7 @@ class SlayerQueryEngine:
         except Exception as exc:
             await self._maybe_raise_schema_drift(
                 err=exc, datasource=prepared.datasource, read_set=prepared.touched,
-                read_columns=prepared.read_columns,
+                reads=prepared.reads,
             )
             raise
         # Pass canonical aliases so length-fitted keys are restored.
@@ -1874,27 +1882,21 @@ class SlayerQueryEngine:
         err: BaseException,
         datasource: DatasourceConfig,
         read_set: "Set[str]",
-        read_columns: "Optional[Set[Tuple[str, str]]]" = None,
+        reads: StatementReads,
     ) -> None:
-        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift in the read
-        models (a re-type finding only on a column the statement reads, when known); else return so the caller re-raises.
-        Attribution errors are swallowed."""
+        """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
+        statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
             found: List[schema_drift.RetypeFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
-            findings = found
-            if read_columns is not None and found:
-                models = [m for name in sorted(read_set)
-                          if (m := await self.storage.get_model(name, data_source=datasource.name)) is not None]
-                findings = [f for f in found
-                            if schema_drift.reads_retyped_column(models=models, finding=f, read_columns=read_columns)]
-            # An "invalid_sql" entry is not drift evidence — it restates the
-            # query failure itself, so the original error must propagate.
+            # An "invalid_sql" entry restates the query failure itself, so it is no drift evidence.
             filtered = [
-                e for e in entries if getattr(e, "cause", "schema_drift") != "invalid_sql"
+                e for e in entries
+                if reads.touched_by(e) and getattr(e, "cause", "schema_drift") != "invalid_sql"
             ]
+            findings = [f for f in found if reads.touched_by(f)]
             if filtered or findings:
                 raise SchemaDriftError(
                     models=sorted({e.model_name for e in [*filtered, *findings]}),
@@ -2003,16 +2005,16 @@ class SlayerQueryEngine:
                 now=self._clock(),
             )
             dialect = self._dialect_for_type(datasource.type)
-            bundle = bundle.model_copy(update={"dialect": dialect})
+            bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
             planned = plan_stages(queries=[probe_query], bundle=bundle)
             root = planned[-1]
-            sql = generate_planned_stages(
+            probe = generate_planned_stages(
                 planned, bundle=bundle, dialect=dialect,
-                projection_aliases=projection_result_keys(root_planned=root),
+                projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
             )
             # Type probing honours the forced-filter policy too; a policy failure
             # degrades to {} rather than leaking an unscoped probe.
-            sql = await self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
+            probe = await self._apply_probe_policy(probe, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning(
                 "get_result_column_types plan/generate failed for model '%s'",
@@ -2021,7 +2023,7 @@ class SlayerQueryEngine:
             return {}
 
         try:
-            raw_types = await client.get_result_column_types(sql)
+            raw_types = await client.get_result_column_types(probe)
         except Exception:
             logger.warning(
                 "get_result_column_types probe failed for model '%s'", model_name,
@@ -2666,7 +2668,7 @@ class SlayerQueryEngine:
     @staticmethod
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[str, str]:
         """(row-count, distinct-count) profiling SQL; NULL key rows excluded from both."""
-        tbl = exp.to_table(sql_path=table, dialect=sqlglot_name)
+        tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c, quoted=True) for c in key_cols]
         predicate = None
         for col in cols:
@@ -3015,8 +3017,9 @@ class SlayerQueryEngine:
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert model.sql is not None
         try:
+            dialect = dialect_for_ds_type(ds.type)
             await self.client_for(ds).get_result_column_types(
-                build_sql_model_trial_query(model.sql)
+                render_type_probe(sql_model_trial_query(model.sql, dialect=dialect), dialect=dialect)
             )
         except Exception as exc:
             if (

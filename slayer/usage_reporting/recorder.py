@@ -22,6 +22,7 @@ from slayer.usage_reporting.payload import (
     CLIENTS,
     DIALECTS,
     FLAGS,
+    FUNCTIONS,
     SCHEMA_VERSION,
     TRANSFORMS,
     Batch,
@@ -214,6 +215,7 @@ class _Recorder:
         self.flags: Counter[str] = Counter()
         self.transforms: Counter[str] = Counter()
         self.aggregations: Counter[str] = Counter()
+        self.functions: Counter[str] = Counter()
         self.queries: Counter[str] = Counter()
         self.datasources: dict[str, str] = {}
         self.storage: str | None = None
@@ -250,6 +252,7 @@ class _Recorder:
                 "flags": dict(self.flags),
                 "transforms": dict(self.transforms),
                 "aggregations": dict(self.aggregations),
+                "functions": dict(self.functions),
             },
             "dialects": {
                 "queries": dict(self.queries),
@@ -464,6 +467,7 @@ def observe_query(query: Any) -> None:
         _recorder.flags.update(f for f in found.flags if f in FLAGS)
         _recorder.transforms.update(n if n in TRANSFORMS else features.CUSTOM for n in found.transforms)
         _recorder.aggregations.update(n if n in AGGREGATIONS else features.CUSTOM for n in found.aggregations)
+        _recorder.functions.update(n for n in found.functions if n in FUNCTIONS)
         _recorder.touch()
 
 

@@ -294,6 +294,24 @@ LIST_AGGREGATIONS: frozenset[str] = frozenset({"collect"})
 # Named once so classifier, planner and renderer agree.
 RANKED_AGGREGATIONS = ("first", "last")
 
+# Transforms that require a time dimension for ORDER BY
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
+
+# Transforms that don't need time ordering
+TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
+
 # Default partition is the whole result set, not the group-by dimensions;
 # ``partition_by=`` opts into per-partition ranking.
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
@@ -453,7 +471,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.ARRAY: frozenset({"count"}),
 }
 
-# A sole primary key is restricted to counting, min/max and collect, regardless of data type.
+# A sole primary key is restricted to counting and min/max, regardless of data type.
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx", "min", "max", "collect",
+    "count", "count_distinct", "count_distinct_approx", "min", "max",
 })

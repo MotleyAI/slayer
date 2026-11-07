@@ -250,7 +250,7 @@ class TestJoinedDimensionDottedKeys:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signup_at"),
+                    dimension="customers.signup_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
@@ -328,7 +328,7 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
@@ -355,7 +355,7 @@ class TestJoinedDimensionDottedKeys:
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
-                        dimension=ColumnRef(name="customers.signup_at"),
+                        dimension="customers.signup_at",
                         granularity=TimeGranularity.MONTH,
                     )
                 ],
@@ -563,9 +563,8 @@ class TestBareNamedMeasureResultKey:
 
     async def test_self_qualified_saved_measure_ref_matches_bare(self) -> None:
         """Codex F4 (qualified ref): a SELF-qualified saved-measure reference
-        (``orders.rev_total`` on source model ``orders``) is normalized to the
-        bare form by ``SlayerQuery.strip_source_model_prefix`` before planning,
-        so it preserves the measure NAME exactly like the bare reference — the
+        (``orders.rev_total`` on source model ``orders``) resolves at binding
+        as the bare form, so it preserves the measure NAME exactly like the bare reference — the
         two are equivalent, not divergent. Pinned so the equivalence is
         explicit."""
         model = _orders_named_model(
@@ -621,7 +620,7 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
@@ -674,7 +673,7 @@ class TestTimeShiftCteDecollision:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -715,7 +714,7 @@ class TestTimeShiftCteDecollision:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[

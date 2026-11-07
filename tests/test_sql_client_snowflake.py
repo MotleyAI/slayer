@@ -7,10 +7,9 @@ Where the **dialect-class methods** are tested in
 * The typed probe reads cursor descriptions through
   ``SqlDialect.describe_cursor_column``, never through Postgres OIDs.
 * ``_execute_sql_sync`` / ``_execute_sql_async`` emit the dialect's
-  ``statement_timeout_sql`` when the standard if/elif chain doesn't
+  ``statement_timeout`` when the standard if/elif chain doesn't
   cover the dialect.
-* The type-probe path (``get_result_column_types_sync``) also applies
-  the dialect's timeout SQL.
+* The type-probe door also applies the dialect's timeout SQL.
 * Snowflake has no async driver (sync driver only).
 * The ``LIMIT 0`` type probe is preserved on Snowflake (no LIMIT 1 fallback).
 """
@@ -20,10 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.engine.url import make_url
+from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.sql import client
 from slayer.sql.client import ResultColumnType
+from slayer.sql.dialects import SnowflakeDialect
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +85,7 @@ class TestSnowflakeStatementTimeout:
 
     def test_execute_sync_emits_dialect_timeout_sql(self) -> None:
         """Snowflake falls past the postgres/mysql/clickhouse if-elif
-        and uses the dialect's ``statement_timeout_sql``."""
+        and uses the dialect's ``statement_timeout``."""
         fake_engine = MagicMock()
         fake_conn = MagicMock()
         fake_engine.connect.return_value.__enter__.return_value = fake_conn
@@ -149,7 +150,7 @@ class TestSnowflakeStatementTimeout:
         fake_conn.exec_driver_sql.return_value = fake_result
 
         client.get_result_column_types_sync(
-            sql="SELECT 1 AS col",
+            client.render_type_probe(exp.select(exp.Literal.number(1).as_("col")), dialect=SnowflakeDialect()),
             db_type="snowflake",
             engine=fake_engine,
         )
@@ -189,7 +190,7 @@ class TestTypeProbeUsesLimitZero:
     """
 
     def test_snowflake_uses_limit_zero(self) -> None:
-        probe = client._build_type_probe_sql("SELECT * FROM orders", db_type="snowflake")
+        probe = client.render_type_probe(exp.select("*").from_("orders"), dialect=SnowflakeDialect()).sql
         assert "LIMIT 0" in probe
         assert "LIMIT 1" not in probe
         assert "SELECT TOP" not in probe.upper()

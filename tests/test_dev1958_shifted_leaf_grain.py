@@ -10,7 +10,6 @@ import re
 import pytest
 
 from tests._dev1832_fixtures import (
-    ColumnRef,
     ModelMeasure,
     dev1832_models,
     TimeDimension,
@@ -66,7 +65,7 @@ async def filtered_engine(request):
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension=ColumnRef(name="ordered_at"),
+    return [TimeDimension(dimension="ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 

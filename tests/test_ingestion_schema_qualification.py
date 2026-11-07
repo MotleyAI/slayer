@@ -483,7 +483,7 @@ class TestAttachedCatalogs:
         async with _attached_client(attached_paths) as client:
             try:
                 model = await introspect_table_to_model(
-                    client=client, table_name="shared", schema=None, data_source="ds",
+                    client=client, table_name="shared", ref=None, data_source="ds",
                 )
             except ValueError:
                 return                 # refusing to guess is acceptable
@@ -506,7 +506,7 @@ class TestAttachedCatalogs:
         async with _attached_client(attached_paths) as client:
             model = await introspect_table_to_model(
                 client=client, table_name="shared",
-                schema=None, data_source="ds",
+                ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
             assert model.sql_table == "shared"      # default stays bare
@@ -532,7 +532,7 @@ class TestAttachedCatalogs:
             monkeypatch.setattr(Inspector, "get_columns", _bare_returns_union)
             model = await introspect_table_to_model(
                 client=client, table_name="shared",
-                schema=None, data_source="ds",
+                ref=None, data_source="ds",
             )
             assert {c.name for c in model.columns} == {"m"}
 

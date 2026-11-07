@@ -24,7 +24,10 @@ from importlib.util import find_spec
 from typing import IO
 
 import duckdb
+import sqlglot
 from pydantic import BaseModel, Field
+from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -115,13 +118,14 @@ DATE_COLUMNS = {
     "tweets": ["tweeted_at"],
 }
 
-# List columns computed on insert from a sibling CSV (``{source}``), per table: column → (source CSV, per-row list).
+# List columns computed on insert from a sibling CSV (table ``source``), per table: column → (source CSV, per-row list).
+_LIST_SOURCE = "source"
 LIST_COLUMNS = {
     "products": {"ingredients": (
-        "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM {source} s WHERE s.sku = _products_raw.sku",
+        "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM source AS s WHERE s.sku = _products_raw.sku",
     )},
     "orders": {"item_skus": (
-        "items", "SELECT list(i.sku ORDER BY i.id) FROM {source} i WHERE i.order_id = _orders_raw.id",
+        "items", "SELECT list(i.sku ORDER BY i.id) FROM source AS i WHERE i.order_id = _orders_raw.id",
     )},
 }
 
@@ -754,15 +758,17 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
     delta_days = (dt.date.today() - max_date).days
     if delta_days == 0:
         return
+    shift = exp.Interval(this=exp.Literal.string(str(delta_days)), unit=exp.Var(this="DAY"))
     for table, cols in DATE_COLUMNS.items():
         for col in cols:
-            conn.execute(
-                f"UPDATE {table} SET {col} = {col} + INTERVAL '{delta_days} days'"
-            )
+            shifted = exp.Add(this=exp.column(col), expression=shift.copy())
+            update = exp.Update(this=exp.table_(table), expressions=[exp.column(col).eq(shifted)])
+            conn.execute(update.sql(dialect="duckdb"))
 
 
 def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> None:
-    names = {name for (name,) in conn.execute(f"SELECT DISTINCT name FROM {view}").fetchall()}
+    query = exp.select("name").distinct().from_(exp.table_(view))
+    names = {name for (name,) in conn.execute(query.sql(dialect="duckdb")).fetchall()}
     unmapped = sorted(names - STORE_REGIONS.keys())
     if unmapped:
         raise SlayerError(f"Demo stores without a region assignment: {', '.join(unmapped)}")
@@ -793,66 +799,71 @@ def load_data(
     (see ``shift_dates_to_today``).
     """
     if _declared_columns(conn, TABLE_NAMES["regions"]):
-        conn.executemany(
-            f"INSERT INTO {TABLE_NAMES['regions']} (id, name) VALUES (?, ?)", list(REGIONS.items())
-        )
+        insert = exp.insert(exp.values(list(REGIONS.items())), TABLE_NAMES["regions"], columns=["id", "name"])
+        conn.execute(insert.sql(dialect="duckdb"))
     for csv_name in LOAD_ORDER:
         table = TABLE_NAMES[csv_name]
         csv_path = os.path.join(data_dir, f"{prefix}_{csv_name}.csv")
         if not os.path.exists(csv_path):
             continue
 
-        # read_csv_auto takes a SQL string literal, not a bound parameter, so
-        # escape any single quotes in the path by doubling them before
-        # interpolation. (The path itself is trusted in normal demo flows —
-        # this is defence-in-depth for callers who pass arbitrary data_dirs.)
-        quoted_csv_path = csv_path.replace("'", "''")
-
         cents_cols = CENTS_COLUMNS.get(csv_name, [])
         renames = COLUMN_RENAMES.get(csv_name, {})
-        conn.execute(
-            f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
+        view = f"_{table}_raw"
+        # read_csv_auto takes a SQL string literal, not a bound parameter.
+        csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
+        create = exp.Create(
+            this=exp.table_(view), kind="VIEW", expression=exp.select("*").from_(csv_source),
+            properties=exp.Properties(expressions=[exp.TemporaryProperty()]),
         )
+        conn.execute(create.sql(dialect="duckdb"))
         try:
-            csv_columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
+            describe = exp.Describe(this=exp.table_(view))
+            csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
             select_parts = []
             target_columns = []
             for col in csv_columns:
                 target_col = renames.get(col, col)
                 target_columns.append(target_col)
+                value: Expr = exp.column(col)
                 if col in cents_cols:
-                    select_parts.append(
-                        f"CAST(CAST({col} AS DECIMAL(18,0)) * 0.01 AS {MONEY_DB_TYPE}) AS {target_col}"
-                    )
-                else:
-                    select_parts.append(f"{col} AS {target_col}")
+                    cents = exp.cast(value, to="DECIMAL(18,0)")
+                    value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
+                select_parts.append(exp.alias_(value, target_col))
             declared = _declared_columns(conn, table)
-            derived = {c: e for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared}
+            derived: dict[str, Expr] = {
+                c: sqlglot.parse_one(e, dialect="duckdb")
+                for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared
+            }
             derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
-            for target_col, expr in derived.items():
+            for target_col, derived_expr in derived.items():
                 target_columns.append(target_col)
-                select_parts.append(f"{expr} AS {target_col}")
+                select_parts.append(exp.alias_(derived_expr, target_col))
             if csv_name == "stores" and "region_id" in derived:
-                _require_store_regions(conn, view=f"_{table}_raw")
-            conn.execute(
-                f"INSERT INTO {table} ({', '.join(target_columns)}) "
-                f"SELECT {', '.join(select_parts)} FROM _{table}_raw"
+                _require_store_regions(conn, view=view)
+            insert = exp.insert(
+                expression=exp.select(*select_parts).from_(exp.table_(view)), into=exp.table_(table),
+                columns=[exp.to_identifier(c) for c in target_columns],
             )
+            conn.execute(insert.sql(dialect="duckdb"))
         finally:
-            conn.execute(f"DROP VIEW _{table}_raw")
+            conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
 
 
-def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, str]:
-    """The declared ``LIST_COLUMNS`` of ``csv_name`` as insert expressions (``[]`` for a row with none)."""
-    out: dict[str, str] = {}
+def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, Expr]:
+    """The declared ``LIST_COLUMNS`` of ``csv_name`` whose source CSV exists, as insert expressions (``[]`` for a
+    row with none)."""
+    out: dict[str, Expr] = {}
     for column, (source, values) in LIST_COLUMNS.get(csv_name, {}).items():
-        if column not in declared:
+        path = os.path.join(data_dir, f"{prefix}_{source}.csv")
+        if column not in declared or not os.path.exists(path):
             continue
-        path = os.path.join(data_dir, f"{prefix}_{source}.csv").replace("'", "''")
-        rows = values.format(source=f"read_csv_auto('{path}')")
-        out[column] = f"COALESCE(({rows}), [])"
+        rows = sqlglot.parse_one(values, dialect="duckdb")
+        table = next(t for t in rows.find_all(exp.Table) if t.name == _LIST_SOURCE)
+        table.set("this", exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(path)]))
+        out[column] = exp.Coalesce(this=exp.Subquery(this=rows), expressions=[exp.Array(expressions=[])])
     return out
 
 
@@ -865,7 +876,10 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
 
     counts = {}
     for table in TABLE_NAMES.values():
-        counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        count = exp.select(exp.Count(this=exp.Star())).from_(exp.table_(table))
+        row = conn.execute(count.sql(dialect="duckdb")).fetchone()
+        assert row is not None
+        counts[table] = row[0]
     results["row_counts"] = counts
 
     fk_checks = {

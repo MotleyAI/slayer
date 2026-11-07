@@ -33,7 +33,7 @@ from slayer.engine.binding import (
     bind_filter,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import Ref, parse_expr
+from slayer.core.syntax import Ref, parse_expr
 
 
 # ---------------------------------------------------------------------------

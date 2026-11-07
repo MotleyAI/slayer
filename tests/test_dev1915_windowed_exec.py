@@ -14,7 +14,7 @@ import tempfile
 
 import pytest
 
-from slayer.core.query import OrderItem, SlayerQuery, TimeDimension, ColumnRef
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity as TG
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from tests import _dev1471_fixtures as D71
@@ -288,12 +288,12 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
     windowed = [{"formula": f"rev:{agg}(window='60d')", "name": "win"}]
     stage_outer = SlayerQuery.model_validate({
         "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
         "measures": windowed,
     })
     model_query = SlayerQuery.model_validate({
         "source_model": "monthly",
-        "time_dimensions": [TimeDimension(dimension=ColumnRef(name="month_ts"), granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(dimension="month_ts", granularity=TG.MONTH)],
         "measures": windowed,
     })
     with tempfile.TemporaryDirectory() as tmp:

@@ -21,7 +21,7 @@ from slayer.core.models import (
     SlayerModel,
     SourceModelOrigin,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -355,7 +355,7 @@ class TestCrossStageTimeDimension:
                 name="s1",
                 source_model="orders",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.last_activity_at"),
+                    dimension="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[{"formula": "*:count"}],
@@ -364,7 +364,7 @@ class TestCrossStageTimeDimension:
                 source_model="s1",
                 time_dimensions=[TimeDimension(
                     # Typed contract: flat downstream alias.
-                    dimension=ColumnRef(name="customers__regions__last_activity_at"),
+                    dimension="customers__regions__last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[{"formula": "*:count"}],
@@ -742,7 +742,7 @@ class TestCrossStageTimeShift:
                 name="s1",
                 source_model="orders",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.last_activity_at"),
+                    dimension="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[{"formula": "*:count"}],
@@ -751,7 +751,7 @@ class TestCrossStageTimeShift:
                 source_model="s1",
                 time_dimensions=[TimeDimension(
                     # Typed contract: downstream flat alias.
-                    dimension=ColumnRef(name="customers__regions__last_activity_at"),
+                    dimension="customers__regions__last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[

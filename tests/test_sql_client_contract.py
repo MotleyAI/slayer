@@ -223,7 +223,7 @@ _DUCKDB_KINDS = {
     "created_at": (DataType.TIMESTAMP, None, None),
     "flag": (DataType.BOOLEAN, None, None),
     "uid": (DataType.TEXT, None, None),
-    "doc": (DataType.TEXT, None, None),
+    "doc": (DataType.TEXT, None, "JSON"),
 }
 _SQLITE_KINDS = {
     "id": (DataType.INT, _INT, None),

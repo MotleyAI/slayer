@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import (
-    ColumnRef,
     ModelMeasure,
     SlayerQuery,
     TimeDimension,
@@ -90,7 +89,7 @@ class TestDateRangeReachesProducer:
         # (5000, not > 5000) bands to 0. Every Jan city total is <= 5000 -> all
         # band 0, distinguishing the two behaviours by VALUE.
         jan = [TimeDimension(
-            dimension=ColumnRef(name="ordered_at"),
+            dimension="ordered_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-01-01", "2024-01-31"],
         )]

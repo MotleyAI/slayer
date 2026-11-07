@@ -1,7 +1,8 @@
 # Aggregations
 
 An aggregation is a function call over a column, a joined column (dotted path) or a
-same-model row-level expression. It is valid in every expression position: measures,
+row-level expression, which may reach across to-one joins (`sum(amount * customers.credit)`
+from `orders`). It is valid in every expression position: measures,
 filters, order, and computed dimensions.
 
 ## Catalogue
@@ -13,7 +14,12 @@ filters, order, and computed dimensions.
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), `collect(x)` (the distinct sorted values in each
 group, as a list), plus the model's custom aggregations
-(`inspect` the model to list them).
+(`inspect` the model to list them). Any column argument may be a row-level expression:
+`weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
+After an aggregation's or transform's first argument, `name = value` is a keyword
+argument (`first(x, a = b)` binds the keyword `a`), so a comparison there needs `==`; a
+keyword's value may itself be a single-`=` comparison. In a scalar function
+(`iif(status = 'paid', …)`) `=` compares.
 
 A sole primary-key column only takes `count`, `count_distinct`,
 `count_distinct_approx`, `min` and `max`; a column's `allowed_aggregations` may
@@ -23,8 +29,9 @@ restrict it further. Expressions are not gated: `sum(price * quantity)` works.
 
 `sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
 A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
-conditional aggregate uses `iif`: `sum(iif(status == 'paid', amount, 0))`; always give
-it a `name`.
+conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
+it a `name`. `agg(x) FILTER (WHERE c)` aggregates only the rows where the row-level
+condition `c` holds: `sum(amount) FILTER (WHERE status = 'paid')`.
 
 ## Empty input
 
@@ -42,7 +49,8 @@ suggested free name.
 
 `partition_by=` computes the aggregate at a coarser grain and repeats it on every row:
 one key, a list, a dotted path for a joined column, or `[]` for the grand total. Keys
-are spelled exactly like the query's dimensions. In a measure, filter, order or
+are spelled exactly like the query's dimensions, an expression key (`upper(city)`) being
+the computed dimension with that expression. In a measure, filter, order or
 transform input every key must be one of the query's dimensions (a time dimension
 partitions by its bucket). The coarser total is computed over the rows that pass the
 row-level conditions; aggregate conditions and `limit` never change it.

@@ -18,12 +18,16 @@ from slayer.core.keys import (
     constituent_grain,
     operand_constituents,
     parameter_row_leaves,
+    reroot_value_key,
     source_anchor_path,
     source_leaf_paths,
+    source_row_leaves,
     walk_value_keys,
 )
 from slayer.core.models import SlayerModel
-from slayer.engine.join_safety import attributable_from_root, key_host_path
+from slayer.core.refs import key_display
+from slayer.engine.join_safety import attributable_from_root, key_host_path, safe_reachable
+from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -109,15 +113,8 @@ def home_path_for(
         key=lambda p: (-len(p), p != anchor, p),
     )
     for p in candidates:
-        model_at_p = walk_key_path(model=host_model, path=p, bundle=bundle)
-        if model_at_p is None:
-            continue
-        if all(
-            attributable_from_root(
-                host_path=q, target_path=p, root_model=model_at_p,
-                models_by_name=models_by_name, host_name=host_model.name,
-            )
-            for q in input_paths
+        if _determines_all(
+            path=p, input_paths=input_paths, host_model=host_model, models_by_name=models_by_name, bundle=bundle,
         ):
             return p
     # No valid home: fall to the inputs' common prefix (never deeper than the
@@ -150,3 +147,40 @@ def resolve_aggregate_homes(
                     dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
                 )
     return homes
+
+
+def _determines_all(
+    *, path: Path, input_paths: List[Path], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    model_at_p = walk_key_path(model=host_model, path=path, bundle=bundle)
+    return model_at_p is not None and all(
+        attributable_from_root(
+            host_path=q, target_path=path, root_model=model_at_p,
+            models_by_name=models_by_name, host_name=host_model.name,
+        )
+        for q in input_paths
+    )
+
+
+def row_expression_crossing(
+    *, source: ValueKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, Optional[str]]]:
+    """``(leaf, hop)`` of the first row leaf whose dependency closure crosses an unproven or
+    fanning hop from the expression's anchor (Axiom 2.2; ``hop`` ``None`` when the leaf's
+    definition cannot be analysed), else ``None``."""
+    anchor = source_anchor_path(source)
+    root = walk_key_path(model=host_model, path=anchor, bundle=bundle) or host_model
+    for leaf in source_row_leaves(source):
+        closure = key_closure(
+            key=reroot_value_key(leaf, target_path=anchor), anchor_model=root,
+            anchor_relation=root.name, bundle=bundle,
+        )
+        if closure is None:
+            return key_display(leaf), None
+        hop = next((p[-1] for p in closure if p and not safe_reachable(
+            root=root, path=p, models_by_name=bundle.models_by_name,
+        )), None)
+        if hop is not None:
+            return key_display(leaf), hop
+    return None

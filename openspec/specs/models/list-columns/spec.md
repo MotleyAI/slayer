@@ -7,7 +7,7 @@ Defines list (array) columns as model metadata: the `ARRAY` type and its element
 
 ### Requirement: The list type carries an element type
 
-A column whose values are lists of scalars SHALL have `type: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY` (except on an `sql`-mode model, see below), SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only `length` and NULL tests.
+A column whose values are lists of scalars SHALL have `type: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY`, SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only `length` and NULL tests.
 
 #### Scenario: Missing element type
 - **WHEN** a model is saved with a column `type: ARRAY` and no `element_type`
@@ -45,18 +45,6 @@ Ingestion SHALL map each dialect's native list type to `ARRAY` with the declared
 - **WHEN** a DuckDB table with `grid INTEGER[][]` is ingested
 - **THEN** the column is `type: ARRAY`, `element_type: UNKNOWN`
 
-### Requirement: An sql-mode list column's element type is declared
-
-An `sql`-mode model's list column SHALL be declared `type: ARRAY`; its `element_type` SHALL be `UNKNOWN` unless the model declares one, and nothing SHALL infer it. A declared `element_type` SHALL be kept by every re-ingest.
-
-#### Scenario: Undeclared element type
-- **WHEN** an `sql`-mode model over DuckDB selects the `VARCHAR[]` column `skills` and declares it `type: ARRAY` without an `element_type`
-- **THEN** `skills` is `type: ARRAY`, `element_type: UNKNOWN`, and `skills.value` as a dimension fails naming the opaque element type
-
-#### Scenario: Declared element type
-- **WHEN** the same model declares `skills` with `element_type: TEXT` and is re-ingested
-- **THEN** `skills` keeps `element_type: TEXT` and `contains(skills, 'go')` runs
-
 ### Requirement: Snowflake untyped arrays get an inferred element type
 
 For a Snowflake `ARRAY` without a declared element type, ingestion SHALL infer `element_type` from the stored elements with one query per such column: a single scalar family maps to its type, mixed scalar families to `TEXT`, and objects, nested arrays or no non-NULL elements to `UNKNOWN`. A re-ingest SHALL re-infer only while the stored `element_type` is `UNKNOWN`. A structured `ARRAY(T)` SHALL use `T` without a query.
@@ -85,13 +73,25 @@ Every list construct — list functions, element access, sampling and `collect` 
 - **WHEN** a row's `skills` is `['sql', NULL]`
 - **THEN** `length(skills)` is 1, `contains(skills, 'go')` is FALSE, and the row contributes one `skills.value` row, `'sql'`
 
-### Requirement: List columns are not dimensions, comparisons or general aggregation inputs
+### Requirement: List columns are not group keys, comparisons or general aggregation inputs
 
-A list column SHALL NOT be a dimension, and SHALL NOT be an operand of `=`, `<>`, `<`, `<=`, `>`, `>=` or `IN`. `IS NULL` / `IS NOT NULL` SHALL be accepted. The only aggregation over a list-valued source SHALL be `count`, which counts non-NULL lists; every other built-in aggregation, `collect` and every custom aggregation over a list-valued source SHALL be rejected — whether the source is a column or an expression. `allowed_aggregations` on a list column naming anything but `count` SHALL fail at save time. Each rejection SHALL be a typed error naming its remedy.
+A list column SHALL NOT be a group key: a query that groups (it has measures, or `distinct_dimension_values` is true) SHALL reject a list-valued dimension, whether it names the column or is an expression. A raw-rows query (`distinct_dimension_values: false`) SHALL project a list-valued dimension once per record. A list column SHALL NOT be an operand of `=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `BETWEEN` or `IS DISTINCT FROM`, and SHALL NOT be an `order` key. `IS NULL` / `IS NOT NULL` SHALL be accepted. The only aggregation over a list-valued source SHALL be `count`, which counts non-NULL lists; every other built-in aggregation, `collect` and every custom aggregation over a list-valued source SHALL be rejected — whether the source is a column or an expression. `allowed_aggregations` on a list column naming anything but `count` SHALL fail at save time. Each rejection SHALL be a typed error naming its remedy.
 
 #### Scenario: List as a dimension
-- **WHEN** a query on `contractors` has the dimension `skills`
+- **WHEN** a grouping query on `contractors` has the dimension `skills`
 - **THEN** it fails with a typed error naming `skills.value`
+
+#### Scenario: List projected per record
+- **WHEN** a query on `contractors` has the dimensions `id` and `skills` and `distinct_dimension_values: false`
+- **THEN** it returns one row per contractor with that contractor's list, and NULL for a NULL list
+
+#### Scenario: List-valued expression projected per record
+- **WHEN** a raw-rows query has a computed dimension whose expression is the list column `skills`
+- **THEN** it returns each contractor's list, and the same expression in a grouping query fails naming `skills.value`
+
+#### Scenario: Ordering by a list
+- **WHEN** a raw-rows query on `contractors` orders by `skills`
+- **THEN** it fails with a typed error naming the list type
 
 #### Scenario: Comparing a list
 - **WHEN** a filter is `skills = 'go'` or `skills IN ('go', 'sql')`
@@ -190,3 +190,11 @@ Before saving such a re-type, re-ingest SHALL check every stored definition of t
 #### Scenario: Rendered list column
 - **WHEN** `inspect_model` renders `contractors` with a profiled `skills` column
 - **THEN** the rendering shows `ARRAY<TEXT>`, the sampled elements, and names `contains`, `contains_all` and `skills.value`
+
+### Requirement: Snowflake JSON reads on arrays keep working
+
+`json_value` SHALL accept a list column whose `db_type` is a JSON-family type, so that a Snowflake `ARRAY` remains readable as JSON.
+
+#### Scenario: Reading an array element as JSON
+- **WHEN** a Snowflake `ARRAY` column `tags` is queried with the dimension `json_value(tags, '$[0]')`
+- **THEN** the query renders the Snowflake JSON read of the first element

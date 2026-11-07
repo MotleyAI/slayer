@@ -40,6 +40,7 @@ from slayer.engine.ingestion import (
     introspect_table_to_model,
 )
 from slayer.engine.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.engine.schema_scope import SchemaRef
 from slayer.mcp.server import _render_ingest_result
 from slayer.sql.client import DelegatingSqlClient, SlayerSQLClient
 from slayer.sql.dialects import ReflectedColumn, SqlDialect, TableKeys, dialect_for_ds_type, dialect_for_sa_backend
@@ -290,7 +291,7 @@ class TestInspectorPathComments:
         model = await introspect_table_to_model(
             client=_inspector_client(inspector),
             table_name="orders",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description == "Orders table"
@@ -306,7 +307,7 @@ class TestInspectorPathComments:
         model = await introspect_table_to_model(
             client=_inspector_client(inspector),
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert model.description is None
@@ -319,7 +320,7 @@ class TestInspectorPathComments:
         model = await introspect_table_to_model(
             client=_inspector_client(inspector),
             table_name="t",
-            schema=None,
+            ref=None,
             data_source="ds",
         )
         assert _col(model, "count_col").description == "collides"
@@ -988,7 +989,7 @@ class TestBigQueryDriverContract:
         model = await introspect_table_to_model(
             client=_inspector_client(inspector, ds_type="bigquery", backend="bigquery"),
             table_name="orders",
-            schema="dset",
+            ref=SchemaRef(name="dset", requested="dset"),
             data_source="bq",
         )
         assert model.description == "All orders"

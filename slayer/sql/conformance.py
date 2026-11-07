@@ -37,7 +37,15 @@ class ConformanceReport(BaseModel):
     failures: dict[str, str] = Field(default_factory=dict)
 
 
-_FLOAT = {"sqlite": "REAL", "duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
+# The orders table, its ``amount`` in each backend's float type.
+_ORDERS_DDL = {
+    "sqlite": "CREATE TABLE conf_orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES conf_customers(id), "
+              "amount REAL, placed_at TIMESTAMP, note VARCHAR(100))",
+    "duckdb": "CREATE TABLE conf_orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES conf_customers(id), "
+              "amount DOUBLE, placed_at TIMESTAMP, note VARCHAR(100))",
+    "postgres": "CREATE TABLE conf_orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES conf_customers(id), "
+                "amount DOUBLE PRECISION, placed_at TIMESTAMP, note VARCHAR(100))",
+}
 _CAPABILITIES = {
     "sqlite": Capabilities(),
     "duckdb": Capabilities(column_comments=True, catalogs=True),
@@ -53,23 +61,21 @@ def capabilities_for(*, dialect: str) -> Capabilities:
 def fixture_statements(*, dialect: str) -> list[str]:
     """DDL and data of the conformance fixture for ``dialect``, in execution order."""
     statements = [
-        f"CREATE TABLE {_CUSTOMERS} (id INTEGER PRIMARY KEY, email VARCHAR(100), name VARCHAR(100), "
-        f"UNIQUE (email))",
-        f"CREATE TABLE {_ORDERS} (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES {_CUSTOMERS}(id), "
-        f"amount {_FLOAT[dialect]}, placed_at TIMESTAMP, note VARCHAR(100))",
-        f"CREATE VIEW {_PAID} AS SELECT id, amount FROM {_ORDERS}",
-        f"INSERT INTO {_CUSTOMERS} VALUES (1, 'a@x', 'Ann'), (2, 'b@x', 'Bob')",
-        f"INSERT INTO {_ORDERS} VALUES (1, 1, 10.5, '2024-01-01 00:00:00', 'first'), "
-        f"(2, 2, 20.0, '2024-01-02 00:00:00', NULL)",
+        "CREATE TABLE conf_customers (id INTEGER PRIMARY KEY, email VARCHAR(100), name VARCHAR(100), UNIQUE (email))",
+        _ORDERS_DDL[dialect],
+        "CREATE VIEW conf_paid AS SELECT id, amount FROM conf_orders",
+        "INSERT INTO conf_customers VALUES (1, 'a@x', 'Ann'), (2, 'b@x', 'Bob')",
+        "INSERT INTO conf_orders VALUES (1, 1, 10.5, '2024-01-01 00:00:00', 'first'), "
+        "(2, 2, 20.0, '2024-01-02 00:00:00', NULL)",
     ]
     caps = capabilities_for(dialect=dialect)
     if caps.column_comments:
-        statements.append(f"COMMENT ON COLUMN {_ORDERS}.amount IS 'Order amount'")
+        statements.append("COMMENT ON COLUMN conf_orders.amount IS 'Order amount'")
     if caps.table_comments:
-        statements.append(f"COMMENT ON TABLE {_ORDERS} IS 'Orders'")
+        statements.append("COMMENT ON TABLE conf_orders IS 'Orders'")
     if caps.materialized_views:
-        statements.append(f"CREATE MATERIALIZED VIEW {_TOTALS} AS SELECT customer_id, SUM(amount) AS total "
-                          f"FROM {_ORDERS} GROUP BY customer_id")
+        statements.append("CREATE MATERIALIZED VIEW conf_totals AS SELECT customer_id, SUM(amount) AS total "
+                          "FROM conf_orders GROUP BY customer_id")
     return statements
 
 
@@ -94,7 +100,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
     orders, customers = TableLocation(name=_ORDERS), TableLocation(name=_CUSTOMERS)
 
     async def execute_rows() -> None:
-        rows = (await client.execute(f"SELECT id FROM {_CUSTOMERS} ORDER BY id")).rows
+        rows = (await client.execute("SELECT id FROM conf_customers ORDER BY id")).rows
         _expect([r["id"] for r in rows] == [1, 2], f"rows {rows!r}")
 
     async def execute_verbatim_literals() -> None:
@@ -111,7 +117,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
         raise _Failed("an invalid statement succeeded")
 
     async def get_result_column_types() -> None:
-        types = await client.get_result_column_types(f"SELECT id, name FROM {_CUSTOMERS}")
+        types = await client.get_result_column_types("SELECT id, name FROM conf_customers")
         _expect({k: t.type for k, t in types.items()} == {"id": DataType.INT, "name": DataType.TEXT}, f"types {types!r}")
         _expect(
             all(t.db_type is None or (isinstance(t.db_type, str) and t.db_type) for t in types.values()),

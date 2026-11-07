@@ -10,8 +10,7 @@ from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
-from slayer.core.formula import ALL_TRANSFORMS
+from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.models import reserved_granularity_names
 from slayer.core.time_points import relative_unit_word
 from slayer.storage.rank_direction_migration import rewrite_query_fields

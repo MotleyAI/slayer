@@ -22,7 +22,7 @@ from slayer.core.enums import (
 )
 from slayer.core.models import VALUE_PLACEHOLDER, reserved_value_param_message
 from slayer.sql.dialects.base import SqlDialect, is_stat_agg1, is_stat_agg2
-from slayer.sql.render.row_expr import cast_target, int_value
+from slayer.sql.render.row_expr import data_type_target, int_value
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 
 # Which mechanism renders an aggregation. Retained as data so the generator's
@@ -144,7 +144,7 @@ def apply_aggregate(
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
     if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
-    return exp.Cast(this=aggregate, to=cast_target(restored))
+    return exp.Cast(this=aggregate, to=data_type_target(restored))
 
 
 class AggregateSpec(BaseModel):

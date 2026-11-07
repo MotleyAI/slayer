@@ -15,7 +15,7 @@ from sqlglot import exp
 
 from slayer.core.keys import AggregateKey, ColumnKey, walk_value_keys
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import AggCall, parse_expr
+from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
@@ -214,14 +214,11 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
                        for a in planned.regroup_attach_plans)
 
 
-class TestFirstOverMixedKeepsExpressionError:
-    async def test_first_over_mixed_source_expression_error(self):
-        """Scenario: Ranked aggregation over a mixed source keeps the
-        expression error — never a mixing error, never wrong values."""
+class TestFirstOverMixedSource:
+    async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
             dimensions=["region"],
             measures=[ModelMeasure(
-                formula=f"first(quantity * {INNER_UP_PRODUCT})",
+                formula=f"first(quantity * {INNER_UP_PRODUCT}, id)",
                 name="f")])
-        with pytest.raises(ValueError, match="not supported over an expression"):
-            await gen(q)
+        assert "ROW_NUMBER" in (await gen(q)).upper()

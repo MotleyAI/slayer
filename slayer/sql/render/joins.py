@@ -11,7 +11,7 @@ Two properties, both of which had counter-examples before this module existed:
 outer-joined column, a bucket with no rows. Plain ``=`` never matches NULL
 against NULL, so the group silently loses its aggregate instead of receiving it.
 The dialect strategy owns the spelling (``IS NOT DISTINCT FROM``, MySQL
-``<=>``, SQLite ``IS``, or the expanded ``a = b OR (a IS NULL AND b IS NULL)``
+``<=>``, SQLite ``IS``, or an expanded two-valued ``=`` / ``IS NULL`` disjunction
 where there is no native operator).
 
 **Built as AST, never re-parsed.** The superseded helper rendered both sides to

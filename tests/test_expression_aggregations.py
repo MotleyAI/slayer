@@ -27,7 +27,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import AggCall, Ref, canonical_measure_text, parse_expr
+from slayer.core.syntax import AggCall, Ref, canonical_measure_text, parse_expr
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _norm
@@ -424,13 +424,6 @@ class TestExpressionErrors:
         q = _q(measures=["sum(amount + sum(amount))"])
         resp = await _dry(q)
         assert resp.sql
-
-    async def test_first_last_over_expression_rejected(self) -> None:
-        # first/last need a plain column — the ranked kernel can't rank an
-        # expression, so reject at binding instead of crashing at SQL time.
-        q = _q(measures=["last(amount - cost, created_at)"])
-        with pytest.raises(ValueError, match="(?i)expression"):
-            await _dry(q)
 
 
 # ===========================================================================

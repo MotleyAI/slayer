@@ -145,7 +145,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
@@ -157,7 +157,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],

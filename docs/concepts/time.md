@@ -44,11 +44,11 @@ A comparison of a temporal operand `x` with a period `P` reads the period as a w
 
 So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
 
-A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
+A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
 ## Granularity calls
 
-`gran(col)` — `month(created_at)`, `week(ts)`, … — is the time bucket of the DATE / TIMESTAMP column `col`, usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(month(created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `col` exactly: `month(created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+`gran(expr)` — `month(created_at)`, `week(ts)`, `month(CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr`, usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(month(created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `month(created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
 
 ## `date_range`
 
@@ -74,10 +74,10 @@ A trailing window has to read rows from *before* the earliest bucket you asked f
  "filters": ["created_at in '2025'"]}
 ```
 
-A bound is a *frame* bound when it bounds a **time dimension's own column** by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `gran(col)` against a point. Everything else restricts the window's input like any row filter:
+A bound is a *frame* bound when it bounds a **time dimension's own expression** (a column or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `gran(expr)` against a point. Everything else restricts the window's input like any row filter:
 
 - an instant `=`, and `!=` / `not in` against a period;
-- a bound on a time column that is not one of the query's time dimensions, or against another column;
+- a bound on a temporal expression that is not one of the query's time dimensions, or against another column;
 - a bound wrapped in `or` or `not`;
 - `filters` declared on the **model**.
 
@@ -85,7 +85,7 @@ Mixed filters are split: `"created_at >= '2025-01-01' and status = 'paid'"` rest
 
 ## `whole_periods_only`
 
-With `whole_periods_only: true`, every frame bound on a time dimension's column snaps down to a bucket boundary, and the upper bound is clamped to now (added when absent), so each returned bucket is complete and the current one is left out. A monthly query with `date_range: ["2025-01-15", "2025-03-10"]` returns January and February; with no range it returns every month before the current one. With several granularities on one column the earliest boundary wins; a pair that does not nest (`week` with `month`) returns a `whole_periods_non_nesting` warning.
+With `whole_periods_only: true`, every frame bound on a time dimension's expression snaps down to a bucket boundary, and the upper bound is clamped to now (added when absent), so each returned bucket is complete and the current one is left out. A monthly query with `date_range: ["2025-01-15", "2025-03-10"]` returns January and February; with no range it returns every month before the current one. With several granularities on one expression the earliest boundary wins; a pair that does not nest (`week` with `month`) returns a `whole_periods_non_nesting` warning.
 
 ## Time spine
 
@@ -101,6 +101,8 @@ The population is `time_spine × P` (P the population of the remaining dimension
 
 A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
 
+An expression is never an axis: a time dimension whose expression reads `time_spine.timestamp` (`time_spine.timestamp + INTERVAL '1 day'`) is a typed error that names the remedy of bucketing the column itself, while any other expression time dimension is an ordinary dimension of P.
+
 ## Custom granularities
 
-A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`. A stored granularity whose name is now a library name (e.g. `contains`) is renamed on load to `<name>_granularity`, with every reference in its datasource's models, saved queries and memories rewritten and a warning logged, while saving a new one with such a name is refused.
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `fiscal_year(order_date)`, `Column.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

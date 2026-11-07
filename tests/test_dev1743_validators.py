@@ -18,7 +18,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -100,8 +100,6 @@ class TestSlayerPrefixReservedOnNames:
 
 # --------------------------------------------------------------------------- #
 # P3 — the parser rejects a literal __slayer_ spoof but keeps colon-aggs working.
-# The spoof scan runs on the RAW input, BEFORE _preprocess_colons substitutes
-# its own __slayer_agg_N__ placeholders [C3].
 # --------------------------------------------------------------------------- #
 class TestParserSlayerPrefixReservation:
     def test_literal_placeholder_spoof_rejected(self) -> None:
@@ -132,8 +130,6 @@ class TestParserSlayerPrefixReservation:
         assert parse_expr("变量__slayer_bar") is not None
 
     def test_colon_aggregation_still_parses(self) -> None:
-        # revenue:sum is rewritten to a __slayer_agg_ placeholder INTERNALLY;
-        # the raw-input scan must not mistake that for a spoof.
         parsed = parse_expr("revenue:sum")
         assert parsed is not None
 

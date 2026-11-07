@@ -324,7 +324,7 @@ class TestAssociatedRankedPickStaysTyped:
         query = f1841.assoc_q(
             dimensions=["status"],
             time_dimensions=[f1841.TimeDimension(
-                dimension=f1841.ColumnRef(name="customers.signup_at"),
+                dimension="customers.signup_at",
                 granularity=f1841.TimeGranularity.MONTH,
             )],
             measures=[f1841.ModelMeasure(formula="customers.spend:last", name="l")],

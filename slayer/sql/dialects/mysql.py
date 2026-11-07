@@ -11,21 +11,47 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, ClassVar
+import re
+from collections.abc import Iterable, Sequence
+from typing import Any, ClassVar, Optional
 
 from pydantic import Field
 from sqlglot import exp
+from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.errors import UnsupportedServerFunctionError
+from slayer.core.json_path import JsonPath, json_path_text
+from slayer.core.keys import CastKey, ScalarCallKey
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     LegacyTypeCategories,
+    NativeFn,
+    set_statement,
+    FALSE_WORDS,
+    INT64_BOUNDS,
+    INTEGER_TEXT_PATTERN,
+    NARROW_INTEGER_BOUNDS,
+    NUMBER_TEXT_PATTERN,
+    PORTABLE_LIBRARY,
+    REGEX_LIBRARY,
+    TRUE_WORDS,
+    UNSIGNED_CAST_TYPES,
+    MathFn,
+    ServerProfile,
     SqlDialect,
+    TextFn,
+    anon,
+    any_null,
+    as_text,
+    case,
+    lit,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
 )
+from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
     TableLocation,
@@ -33,6 +59,23 @@ from slayer.sql.dialects.reflection import (
     info_schema_comments_query,
     result_column_type_of_name,
 )
+
+
+#: MySQL 8.0 brought the ICU regex functions; 8.0.21 ``JSON_VALUE``.
+_MYSQL_8_0 = (8, 0, 0)
+_MYSQL_8_0_21 = (8, 0, 21)
+_VERSION = re.compile(r"\s*(\d+)\.(\d+)(?:\.(\d+))?")
+_NUMBERS = frozenset({DataType.INT, DataType.DOUBLE})
+_GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
+
+
+def _numeric_try_cast(key: object) -> bool:
+    return isinstance(key, CastKey) and key.try_ and key.data_type in _NUMBERS
+
+
+def _match_type(case_insensitive: bool) -> Expression:
+    """ICU match type: always explicit, so a case-insensitive collation never decides."""
+    return lit("i" if case_insensitive else "c")
 
 
 _SUB_DAY_TRUNC_FORMATS = {
@@ -74,7 +117,10 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
-    native_lists: ClassVar[bool] = False
+    unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
+        exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
+    })
     database_name: ClassVar[str] = "MySQL"
     legacy_type_categories: LegacyTypeCategories = LegacyTypeCategories(
         names={
@@ -86,6 +132,130 @@ class MysqlDialect(SqlDialect):
     )
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
+    regex_flavour: ClassVar[Optional[RegexFlavour]] = ICU
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
+        "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "GREATEST", "LEAST",
+    })
+    extremum_propagates_null: ClassVar[bool] = True
+
+    def profile_needed(self, keys: Iterable[object]) -> bool:
+        """Regex and numeric ``TRY_CAST`` need MySQL 8.0, ``json_value`` 8.0.21: the version decides."""
+        return any(
+            (isinstance(k, ScalarCallKey) and k.name in _GATED_FUNCTIONS) or _numeric_try_cast(k) for k in keys
+        )
+
+    def server_profile_sql(self) -> str | None:
+        return "SELECT VERSION()"
+
+    def parse_server_profile(
+        self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+    ) -> ServerProfile:
+        match = _VERSION.match(str(base_row[0])) if base_row and base_row[0] is not None else None
+        if match is None:
+            return ServerProfile()
+        return ServerProfile(version=tuple(int(part or 0) for part in match.groups()))
+
+    def _require_mysql(self, minimum: tuple[int, int, int], what: str) -> None:
+        release = "MySQL " + ".".join(map(str, minimum[:2] if minimum[2] == 0 else minimum))
+        self.require_version(minimum=minimum, what=what, release=release)
+
+    def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "chr":
+            utf32 = exp.Chr(expressions=[args[0].copy()], charset=exp.var("utf32"))
+            text = exp.Cast(this=utf32, to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+            return self._code_point_guard(args[0], text)
+        if fn == "ascii":
+            return exp.Unicode(this=args[0].copy())
+        return super().build_text_call(fn, args)
+
+    def binary_text(self, value: Expression) -> Expression:
+        """Read as ``utf8mb4`` (any column charset) under its binary collation."""
+        utf8 = exp.Cast(this=value.copy(), to=exp.DataType(this=exp.DataType.Type.CHARACTER_SET, kind=exp.var("utf8mb4")))
+        return exp.Collate(this=utf8, expression=exp.var("utf8mb4_bin"))
+
+    def build_split_part(self, value: Expression, delimiter: Expression, index: int) -> Expression:
+        """``SUBSTRING_INDEX`` twice; ``''`` past the last field."""
+        inner = anon("SUBSTRING_INDEX", value, delimiter, lit(index))
+        field = anon("SUBSTRING_INDEX", inner, delimiter, lit(-1 if index > 0 else 1))
+        beyond = exp.GT(this=lit(abs(index)), expression=self.field_count(value, delimiter))
+        return case((any_null(value, delimiter), exp.Null()), (beyond, lit("")), default=field)
+
+    def build_math_call(self, fn: MathFn, args: tuple[Expression, ...]) -> Expression:
+        if fn == "pi":
+            return anon("ACOS", lit(-1))  # PI() reaches the client rounded to 6 places
+        return super().build_math_call(fn, args)
+
+    def cube_root(self, value: Expression) -> Expression:
+        # A DOUBLE exponent: 1 / 3.0 is a DECIMAL cut to div_precision_increment places.
+        third = exp.Div(this=lit(1), expression=exp.Literal.number("3E0"))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=exp.Pow(this=exp.Abs(this=value.copy()), expression=third))
+
+    def build_regexp_like(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self._require_mysql(_MYSQL_8_0, "regexp_like()")
+        return anon("REGEXP_LIKE", value, self.regex_text(pattern), _match_type(case_insensitive))
+
+    def build_regexp_extract(
+        self, value: Expression, pattern: RegexPattern, group: int, case_insensitive: bool,
+    ) -> Expression:
+        """The first match, then (for a group) that match re-read whole by the pattern."""
+        self._require_mysql(_MYSQL_8_0, "regexp_extract()")
+        match = anon("REGEXP_SUBSTR", value, self.regex_text(pattern), lit(1), lit(1), _match_type(False))
+        if group == 0:
+            return match
+        return anon("REGEXP_REPLACE", match, self.regex_text(pattern, anchored=True), lit(f"${group}"), lit(1),
+                    lit(0), _match_type(False))
+
+    def build_regexp_replace(
+        self, value: Expression, pattern: RegexPattern, replacement: RegexReplacement, case_insensitive: bool,
+    ) -> Expression:
+        self._require_mysql(_MYSQL_8_0, "regexp_replace()")
+        return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
+                    lit(0), _match_type(case_insensitive))
+
+    def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
+        self._require_mysql(_MYSQL_8_0_21, "json_value()")
+
+        def json_type(steps: tuple[str | int, ...]) -> Expression:
+            return anon("JSON_TYPE", anon("JSON_EXTRACT", value.copy(), lit(json_path_text(steps))))
+
+        # MySQL reads ``[n]`` on a non-array as the value itself; an index needs an array parent.
+        arrays = [exp.EQ(this=json_type(path.steps[:i]), expression=lit("ARRAY"))
+                  for i, step in enumerate(path.steps) if isinstance(step, int)]
+        readable: Expression = exp.Not(this=exp.In(this=json_type(path.steps),
+                                                   expressions=[lit("OBJECT"), lit("ARRAY"), lit("NULL")]))
+        for array in reversed(arrays):
+            readable = exp.And(this=array, expression=readable)
+        read = case((readable, anon("JSON_VALUE", value.copy(), lit(path.text))))
+        return case((anon("JSON_VALID", value), read))  # a nested CASE: JSON_EXTRACT raises on invalid text
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""
+        text = as_text(value)
+        if to.is_type(*exp.DataType.NUMERIC_TYPES):
+            self._require_mysql(_MYSQL_8_0, "TRY_CAST to a number")
+            guard = exp.RegexpLike(this=text, expression=exp.Literal.string(NUMBER_TEXT_PATTERN))
+            return exp.Case(ifs=[exp.If(this=guard, true=exp.Cast(this=value.copy(), to=to))])
+        if to.is_type(exp.DataType.Type.BOOLEAN):
+            word = exp.Lower(this=exp.Trim(this=text))
+            return exp.Case(ifs=[
+                exp.If(this=exp.In(this=word, expressions=[exp.Literal.string(w) for w in TRUE_WORDS]), true=exp.true()),
+                exp.If(this=exp.In(this=word.copy(), expressions=[exp.Literal.string(w) for w in FALSE_WORDS]),
+                       true=exp.false()),
+            ])
+        return exp.Cast(this=value, to=to)
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """An integer ``CAST`` saturates here: the text's exact value is range-checked first."""
+        trimmed = exp.Trim(this=text.copy())
+        unsigned = (0, 2 ** 64 - 1) if to.this in UNSIGNED_CAST_TYPES else INT64_BOUNDS
+        low, high = NARROW_INTEGER_BOUNDS.get(to.this, unsigned)
+        exact = exp.Cast(this=trimmed.copy(), to=exp.DataType.build("DECIMAL(65, 0)"))
+        valid = exp.And(
+            this=self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
+            expression=exp.Between(this=exact, low=lit(low), high=lit(high)),
+        )
+        return case((valid, self.build_try_cast(trimmed, to)))
     explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True
@@ -97,8 +267,8 @@ class MysqlDialect(SqlDialect):
     install_extra: str | None = "mysql"
     extra_drivers: dict[str, str] = Field(default_factory=lambda: {"pymysql": "pymysql", "aiomysql": "aiomysql"})
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        return f"SET max_execution_time = {timeout_seconds * 1000}"
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
+        return set_statement(name="max_execution_time", value=timeout_seconds * 1000)
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         """PyMySQL / aiomysql field types: length 1 makes ``TINY`` and ``BIT`` boolean; decimals type by scale."""
@@ -242,11 +412,24 @@ class MysqlDialect(SqlDialect):
 
 
 class MariadbDialect(MysqlDialect):
-    """MariaDB renders as MySQL; it names its statement timeout differently."""
+    """MariaDB renders as MySQL; it names its statement timeout differently. Library regex, numeric
+    ``TRY_CAST`` (so text-to-number coercion) and ``json_value`` are refused: MariaDB has no
+    ``REGEXP_LIKE``, shorter ``REGEXP_SUBSTR`` / ``REGEXP_REPLACE``, and reads JSON booleans as 1 / 0
+    (lowerings: DEV-1975)."""
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
     database_name: ClassVar[str] = "MariaDB"
     sa_backend_names: frozenset[str] = frozenset({"mariadb"})
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - REGEX_LIBRARY - {"json_value"}
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
-        return f"SET max_statement_time = {timeout_seconds}"
+    def statement_timeout(self, timeout_seconds: int) -> Expression | None:
+        return set_statement(name="max_statement_time", value=timeout_seconds)
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        if to.is_type(*exp.DataType.NUMERIC_TYPES):
+            raise UnsupportedServerFunctionError(
+                summary="TRY_CAST to a number (and comparing or computing text with numbers) is not supported on "
+                "MariaDB yet.",
+                suggestion="Run it on MySQL, or express it in the model's own SQL (Column.sql).",
+            )
+        return super().build_try_cast(value, to)

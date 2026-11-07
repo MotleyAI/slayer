@@ -102,7 +102,7 @@ class TestClassification:
             model = await introspect_table_to_model(
                 client=client,
                 table_name="orders",
-                schema=None,
+                ref=None,
                 data_source="ds",
             )
             assert model.source_kind is None

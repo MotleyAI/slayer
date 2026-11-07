@@ -268,6 +268,7 @@ def _engine_view_of(*, engine: object, storage: object) -> object:
         return view
     return storage
 
+
 # GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
 # drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
@@ -1080,7 +1081,7 @@ class PgConnection:
             return True
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
-            self._writer.write(proto.encode_command_complete(_command_tag(result.command_tag)))
+            self._writer.write(_no_op_command_complete(result.command_tag))
             # Apply SET / RESET captures AFTER CommandComplete so
             # the post-SET ParameterStatus push lands between CC and
             # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
@@ -1125,7 +1126,7 @@ class PgConnection:
                 for i in range(len(batch.columns))
             ]
             self._writer.write(proto.encode_data_row(values))
-        self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))
+        self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(batch.rows)))
 
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
@@ -1169,7 +1170,7 @@ class PgConnection:
                 for i, (engine_alias, _projected) in enumerate(mapping)
             ]
             self._writer.write(proto.encode_data_row(values))
-        self._writer.write(proto.encode_command_complete(f"SELECT {len(response.data)}"))
+        self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(response.data)))
         return True
 
     def _fields_for_result(
@@ -1677,12 +1678,12 @@ def _is_tx_end(stmt: exp.Expression) -> bool:
     return False
 
 
-def _command_tag(command_tag: str | None) -> str:
-    if command_tag in ("BEGIN", "START TRANSACTION"):
-        return "BEGIN"
+def _no_op_command_complete(command_tag: str | None) -> bytes:
     if command_tag is None:
-        return "SELECT 0"
-    return command_tag
+        return proto.encode_command_complete(command="SELECT", rows=0)
+    return proto.encode_command_complete(
+        command="BEGIN" if command_tag in ("BEGIN", "START TRANSACTION") else command_tag,
+    )
 
 
 def _engine_error_fields(exc: BaseException) -> tuple[str, str]:

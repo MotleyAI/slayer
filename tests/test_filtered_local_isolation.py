@@ -23,7 +23,7 @@ from slayer.core.models import (
     ModelJoin,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import MaskTyping, RankedProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -388,7 +388,7 @@ class TestFirstLastNoNestedCmaPlans:
             dimensions=["claim.claim_number"],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

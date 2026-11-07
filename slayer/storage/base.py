@@ -84,10 +84,10 @@ _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
 # Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
-# The loading query engine's client source, set by its storage view around each call it delegates.
-CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 # Inside the one-time granularity settle, whose own loads must not wait on it.
 _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+# The loading query engine's client source, set by its storage view around each call it delegates.
+CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
 
 def _is_exact_inverse_join(a: dict, b: dict) -> bool:
@@ -377,6 +377,15 @@ def warn_library_shadows(model: SlayerModel) -> None:
             warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
                 model=model.name, aggregation=agg.name, function=agg.name,
             )), stacklevel=3)
+
+
+def without_none(value: Any) -> Any:
+    """``value`` with every ``None`` mapping entry dropped, recursively: an unset field is never persisted."""
+    if isinstance(value, dict):
+        return {k: without_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [without_none(v) for v in value]
+    return value
 
 
 def storage_base_dir(path: str) -> str:
@@ -691,8 +700,8 @@ class StorageBackend(ABC):
             self._granularities_settled = True
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed, its dependants persisted
-        before it so an interrupted rename converges."""
+        """A stored datasource dict with each granularity a library name reserves renamed (system P11.2), its
+        dependants persisted before it so an interrupted rename converges."""
         if not isinstance(data, dict):
             return data
         names = [g["name"] for g in data.get("granularities") or [] if isinstance(g, dict)
@@ -975,8 +984,14 @@ class StorageBackend(ABC):
     async def _repair_query_filters(
         self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
     ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column."""
-        filters = query.get("filters") if isinstance(query, dict) else None
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column;
+        the stored query is migrated first, so its filters read under the current grammar."""
+        if not isinstance(query, dict):
+            return
+        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
+        query.clear()
+        query.update(migrated)
+        filters = query.get("filters")
         if not isinstance(filters, list):
             return
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]

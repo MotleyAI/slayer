@@ -6,12 +6,18 @@ upstream). See DEV-1608 §3.
 """
 
 import re
+from collections.abc import Collection, Mapping
+
+from pydantic import BaseModel, Field
 
 from slayer.core.refs import IDENTIFIER_RE
 
 _JINJA_RE = re.compile(r"\{\{|\{%|%\}|\}\}")
 _LITERAL_RE = re.compile(r"'(?:''|[^'])*'")  # SQL string literal, doubled-quote aware
 _REF_RE = re.compile(r"\{([^{}]+)\}")
+_MARKER_PREFIX = "__slayer_member_"
+_PHYSICAL_PREFIX = "__slayer_physical_"
+_IDENT_RE = re.compile(r'"(?:[^"]|"")+"|[A-Za-z_]\w*')
 
 # Operand forms accepted inside a join ON clause.
 _OPERAND_BRACE_DOT = re.compile(r"^\{([A-Za-z_]\w*)\}\.(\w+)$")  # {CUBE}.col
@@ -70,33 +76,110 @@ def _resolve_ref(inner: str, next_char: str, cube: str | None) -> tuple[str, int
     return inner, 0  # `{member}` / `{a.b}` → inner verbatim
 
 
-def _operand_ref(operand: str) -> tuple[str, str] | None:
-    """Parse one side of an equality into ``(qualifier, column)``.
+class ForeignRef(BaseModel):
+    """A joined cube's physical column, as written."""
 
-    Returns ``None`` for anything that isn't a bare Cube column reference
-    (function calls, arithmetic, literals) — those can't go in ``join_pairs``.
+    cube: str
+    column: str  # identifier SQL, quoting kept
+
+
+class CubeSql(BaseModel):
+    """Cube SQL with physical references bare and each member reference as a marker identifier."""
+
+    text: str
+    members: dict[str, str] = Field(default_factory=dict)  # marker -> source member name
+    foreign: dict[str, ForeignRef] = Field(default_factory=dict)  # marker -> another cube's physical column
+    unknown: list[str] = Field(default_factory=list)  # referenced members the cube does not declare
+
+    def resolved(self, emitted: Mapping[str, str]) -> str:
+        """``text`` with each marker replaced by its member's emitted name."""
+        out = self.text
+        for marker, member in self.members.items():
+            out = out.replace(marker, emitted.get(member, member))
+        return out
+
+
+def member_marker(index: int) -> str:
+    return f"{_MARKER_PREFIX}{index}__"
+
+
+def classify_cube_refs(text: str, *, cube: str, members: Collection[str], start: int = 0) -> CubeSql:
+    """Translate ``text``'s Cube refs: ``{CUBE}.x`` / ``{<cube>}.x`` → physical ``x``; ``{other}.x`` → a marker for
+    ``other``'s physical ``x``; ``{m}`` / ``{CUBE.m}`` / ``{<cube>.m}`` → a member marker; ``{other.m}`` →
+    ``other.m``; ``{CUBE}`` → the cube name. Markers are numbered from ``start``."""
+    literal_spans = [m.span() for m in _LITERAL_RE.finditer(text)]
+    out: list[str] = []
+    found = CubeSql(text="")
+    last = 0
+    for m in _REF_RE.finditer(text):
+        if m.start() < last or any(s <= m.start() < e for s, e in literal_spans):
+            continue
+        out.append(text[last:m.start()])
+        replacement, last = _classify(m, text=text, cube=cube, members=members, found=found, start=start)
+        out.append(replacement)
+    out.append(text[last:])
+    found.text = "".join(out)
+    return found
+
+
+def _classify(m: re.Match[str], *, text: str, cube: str, members: Collection[str], found: CubeSql,
+              start: int) -> tuple[str, int]:
+    """One brace ref's replacement and the position after it; markers are recorded on ``found``."""
+    parts = m.group(1).strip().split(".")
+    end = m.end()
+    index = start + len(found.members) + len(found.foreign)
+    if len(parts) == 1 and text[end:end + 1] == ".":
+        if parts[0] in ("CUBE", cube):
+            return "", end + 1  # `{CUBE}.col` → `col`
+        if (col := _IDENT_RE.match(text, end + 1)) is not None:
+            marker = f"{_PHYSICAL_PREFIX}{index}__"
+            found.foreign[marker] = ForeignRef(cube=parts[0], column=col.group(0))
+            return marker, col.end()
+    if parts == ["CUBE"]:
+        return cube, end
+    if len(parts) == 1 or (len(parts) == 2 and parts[0] in ("CUBE", cube)):
+        if parts[-1] not in members:
+            found.unknown.append(parts[-1])
+        marker = member_marker(index)
+        found.members[marker] = parts[-1]
+        return marker, end
+    return m.group(1).strip(), end
+
+
+class JoinSide(BaseModel):
+    """One side of a join key: a physical column of its cube, or one of its members."""
+
+    name: str
+    physical: bool
+
+
+def _operand_ref(operand: str) -> tuple[str, JoinSide] | None:
+    """One side of an equality as ``(qualifier, side)``: ``{cube}.col`` physical, ``{cube.member}`` a member.
+
+    ``None`` for anything else (function calls, arithmetic, literals) — those can't go in ``join_pairs``.
     """
     operand = operand.strip()
     m = _OPERAND_BRACE_DOT.match(operand)
     if m:
-        return m.group(1), m.group(2)
+        return m.group(1), JoinSide(name=m.group(2), physical=True)
     m = _OPERAND_BRACED.match(operand)
     if m:
         parts = m.group(1).strip().split(".")
         if len(parts) >= 2:
-            return parts[0], ".".join(parts[1:])
+            return parts[0], JoinSide(name=".".join(parts[1:]), physical=False)
     return None
 
 
 def parse_join_on(on_sql: str, *, source_cube: str, target_cube: str) -> list[list[str]] | None:
-    """Parse a Cube join ON clause into SLayer ``join_pairs``.
+    """A Cube join ON clause as ``[[source column, target column], ...]``; ``None`` for a non-equality ON."""
+    keys = parse_join_keys(on_sql, source_cube=source_cube, target_cube=target_cube)
+    return None if keys is None else [[src.name, tgt.name] for src, tgt in keys]
 
-    Returns ``[[src_col, tgt_col], ...]`` for an equality (or AND-conjunction of
-    equalities); ``None`` for any non-equality / non-column ON. The column names
-    are the *member* names as written, which the converter keeps as join keys
-    (and drops the join if a member's sql is not a base column).
-    """
-    pairs: list[list[str]] = []
+
+def parse_join_keys(on_sql: str, *, source_cube: str, target_cube: str) -> list[tuple[JoinSide, JoinSide]] | None:
+    """A Cube join ON clause (an equality or AND-conjunction of equalities) as ``(source, target)`` key sides;
+    ``None`` for any other ON."""
+    pairs: list[tuple[JoinSide, JoinSide]] = []
     for part in _AND_SPLIT.split(on_sql.strip()):
         pair = _equality_pair(part, source_cube=source_cube, target_cube=target_cube)
         if pair is None:
@@ -105,8 +188,8 @@ def parse_join_on(on_sql: str, *, source_cube: str, target_cube: str) -> list[li
     return pairs or None
 
 
-def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> list[str] | None:
-    """Parse one ``A = B`` equality into ``[src_col, tgt_col]`` or ``None``."""
+def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> tuple[JoinSide, JoinSide] | None:
+    """One ``A = B`` equality as ``(source, target)`` sides, or ``None``."""
     if part.count("=") != 1 or any(op in part for op in ("<", ">", "!")):
         return None
     left, right = part.split("=")
@@ -114,15 +197,15 @@ def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> list[str
     rhs = _operand_ref(right)
     if lhs is None or rhs is None:
         return None
-    src_col = tgt_col = None
-    for qualifier, col in (lhs, rhs):
+    src = tgt = None
+    for qualifier, side in (lhs, rhs):
         if qualifier in ("CUBE", source_cube):
-            src_col = col
+            src = side
         elif qualifier == target_cube:
-            tgt_col = col
-    if src_col is None or tgt_col is None:
+            tgt = side
+    if src is None or tgt is None:
         return None
-    return [src_col, tgt_col]
+    return src, tgt
 
 
 def is_bare_identifier(sql: str) -> bool:

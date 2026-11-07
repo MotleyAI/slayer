@@ -96,6 +96,11 @@ def read(candidate: Candidate) -> exp.Expr:
     return sqlglot.parse_one(candidate.text, read=reader_for(candidate.dialect))
 
 
+def is_native(candidate: Candidate, *, target: str) -> bool:
+    """Whether ``candidate`` is written in the target's own dialect (kept verbatim)."""
+    return _native(candidate.dialect, target)
+
+
 def render(candidate: Candidate, tree: exp.Expr, *, target: str) -> str:
     """Target-native text verbatim, anything else rendered in the target dialect."""
-    return candidate.text if _native(candidate.dialect, target) else tree.sql(dialect=target)
+    return candidate.text if is_native(candidate, target=target) else tree.sql(dialect=target)

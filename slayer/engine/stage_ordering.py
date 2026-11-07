@@ -83,8 +83,6 @@ def localize_stages(
     displays = {ident: StageDisplay(name=name, model=model) for name, ident in rename.items()}
     out: List[SlayerQuery] = []
     for q in queries:
-        if q.source_model_name in rename:
-            q = q.strip_source_model_prefix()
         update: Dict[str, Any] = {"source_model": _respell_spec(q.source_model, rename)}
         if q is not root and q.name:
             update["name"] = rename[q.name]

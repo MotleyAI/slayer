@@ -19,7 +19,7 @@ from slayer.cube.models import (
     CubeSegment,
 )
 from slayer.cube.report import CubeIssueCategory
-from slayer.engine.syntax import AggCall, DottedRef, Ref, parse_expr
+from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
 from tests._cube_helpers import DS, column, convert, measure, meta
 
 
@@ -137,7 +137,7 @@ def test_filtered_measures_same_sql_get_distinct_columns():
     assert filtered.filter == "status = 'completed'"
 
 
-def test_count_distinct_approx_maps_to_count_distinct_with_lossy_report():
+def test_count_distinct_approx_maps_to_count_distinct_approx():
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
         measures=[CubeMeasure(name="uniq_users", type="count_distinct_approx",
@@ -145,8 +145,8 @@ def test_count_distinct_approx_maps_to_count_distinct_with_lossy_report():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert measure(models["orders"], "uniq_users").formula.startswith("count_distinct(")
-    assert any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
+    assert measure(models["orders"], "uniq_users").formula.startswith("count_distinct_approx(")
+    assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
 def test_calculated_number_measure_becomes_dsl_formula():
@@ -163,7 +163,7 @@ def test_calculated_number_measure_becomes_dsl_formula():
     assert measure(models["orders"], "aov").formula == "total_revenue / count"
 
 
-def test_calculated_measure_with_case_when_is_reported_not_emitted():
+def test_calculated_measure_with_case_when_is_emitted():
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
         measures=[
@@ -174,8 +174,8 @@ def test_calculated_measure_with_case_when_is_reported_not_emitted():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert models["orders"].get_measure("tier") is None
-    assert any(i.category == CubeIssueCategory.COMPLEX_MEASURE for i in report.issues)
+    assert measure(models["orders"], "tier").formula == "CASE WHEN count > 100 THEN 'high' ELSE 'low' END"
+    assert not report.issues
 
 
 def test_finite_rolling_window_becomes_windowed_aggregation():
@@ -403,8 +403,9 @@ def test_count_distinct_exact():
 
 @pytest.mark.parametrize("agg", ["avg", "min", "max"])
 def test_simple_aggregation_passthrough(agg):
-    models, _ = convert(_orders_with(
-        [CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")]))
+    project = _orders_with([CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")])
+    project.cubes[0].dimensions.append(CubeDimension(name="amount", sql="{CUBE}.amount", type="number"))
+    models, _ = convert(project)
     assert measure(models["orders"], f"m_{agg}").formula.startswith(f"{agg}(")
 
 

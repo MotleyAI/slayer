@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._engine_helpers import seeded_exec_engine
 
@@ -102,7 +102,7 @@ def q(**kw):
 
 def month_td(column: str = "ordered_at"):
     return [TimeDimension(
-        dimension=ColumnRef(name=column), granularity=TimeGranularity.MONTH,
+        dimension=column, granularity=TimeGranularity.MONTH,
     )]
 
 

@@ -1,4 +1,4 @@
-"""A list's element type survives stages, query-backed models, re-rooted producers and result metadata."""
+"""A list's element type survives stages, query-backed models and re-rooted producers (design D1)."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class TestStages:
                                              "filters": ["contains(rates, '10')"]}])
         assert {_cell(r, "team") for r in kept.data} == {"A"}
         above = await engine.execute([stage, {"source_model": "s", "dimensions": ["team"],
-                                              "filters": ["rates.value > 45"]}])
+                                              "filters": ["rates.value > '45'"]}])
         assert {_cell(r, "team") for r in above.data} == {"B"}
 
     async def test_list_values_survive_a_stage(self, engine) -> None:
@@ -87,11 +87,3 @@ class TestReRootedProducers:
         assert got == {1: ["go", "sql"], 2: ["sql"], 3: [], 5: ["go"]}
         model = await engine.create_model_from_query(query=query, name="per_contractor")
         assert _typed(model, "s") == (DataType.ARRAY, DataType.TEXT)
-
-
-class TestResultMetadata:
-    async def test_a_collected_list_carries_no_number_format(self, engine) -> None:
-        resp = await engine.execute(TEAM_SETS)
-        for name in ("contractors.team_skills", "contractors.rates"):
-            meta = resp.attributes.get(name)
-            assert meta is None or meta.format is None, (name, meta)

@@ -29,11 +29,11 @@ def _execute(env: BenchEnv, loop: asyncio.AbstractEventLoop, **query_kwargs) -> 
 
 
 MONTHLY_TD = [TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )]
 
 WEEKLY_TD = [TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.WEEK,
+    dimension="created_at", granularity=TimeGranularity.WEEK,
 )]
 
 
@@ -121,7 +121,7 @@ QUERIES: dict[str, dict] = {
             ModelMeasure(formula="time_shift(total_cost:sum, -1, 'month')", name="prev"),
         ],
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=QUERY_DATE_RANGE,
         )],

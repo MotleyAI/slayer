@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.engine.syntax import AggCall, Ref, parse_expr
+from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.ingest_report import ConversionResult
 from tests._osi_helpers import (
     by_name, convert, documents, ds, f, flat, hidden, m, measure_home, query, rel, seed_db, unconverted,

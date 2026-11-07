@@ -16,7 +16,11 @@ SLayer surfaces drift as a first-class concept across three behaviours:
    query fails and surfaces the structured drift payload instead of the
    raw DBAPI message. It checks only the models the failed statement read,
    reuses live-schema facts for up to 60 seconds, and its `models` lists
-   the drifted models.
+   the drifted models. It wraps the failure only when a drift entry touches
+   what the statement reads — a whole-model drop, a column it reads (also
+   through a derived column or as a join key), a join it crosses, a measure
+   or aggregation it uses, any model filter, or a re-type finding on a
+   column it reads; any other drift leaves the original database error.
 
 Use `validate_models` to inspect drift; use `slayer validate-models
 --force-clean` (CLI only) to apply the deletes.
@@ -32,7 +36,8 @@ Drift is computed per source mode:
   `INTEGER` and `FLOAT` collapse to `number`, `DATE` and `TIMESTAMP`
   collapse to `temporal`. A bucket change on a column that still exists is a
   [re-type finding](#re-type-findings), never a delete — switching `BIGINT` ↔
-  `FLOAT` is *not* drift, but `NUMBER` ↔ `STRING` is.
+  `FLOAT` is *not* drift, but `NUMBER` ↔ `STRING` is. On SQLite, which stores
+  dates as text, a `DATE` or `TIMESTAMP` column over a live `TEXT` column is not drift.
 * **`sql`** — trial-execute `SELECT * FROM (<model.sql>) AS _sd_validate
   WHERE 1=0`. Successful execution exposes cursor metadata (column names
   and types), which goes through the same column-level diff. A failed
@@ -80,6 +85,12 @@ A column whose live column exists with a conflicting type is reported as `{findi
 column, stored_type, live_type, live_db_type, remedy, summary}` — never deleted, never applied by `--force-clean`, printed
 by the CLI as a `RE-TYPE:` line — whose remedy is re-ingesting for a live list or a SQLite column the affinity probe
 widened, and otherwise setting the column's type to `live_type`.
+
+A stored non-list column whose live column is a native list is one: re-ingesting re-types it to the list in place,
+keeping only `count` among its `allowed_aggregations`. An `sql`-mode model is treated the same way, its result columns typed from the
+live schema of the tables its query reads (else from the type the database
+reports for the result column), so a list the query returns is found even on
+BigQuery, whose driver reports a repeated result column by its element type.
 
 ## Output shape
 

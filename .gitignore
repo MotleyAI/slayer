@@ -235,3 +235,6 @@ motley-bigquery-tester.json
 
 # Engine A/B audit artifacts (DEV-1811): reports, seeded DBs, baseline venv
 tests/perf/compare/out/
+
+# Local release-notes drafts
+/RELEASE_NOTES_*.md

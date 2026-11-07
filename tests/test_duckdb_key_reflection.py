@@ -196,7 +196,7 @@ class TestAttachedCatalog:
     async def test_attached_twin_contributes_no_keys(self, attached_paths) -> None:
         async with _attached(attached_paths) as client:
             model = await introspect_table_to_model(
-                client=client, table_name="t", schema=None, data_source="ds",
+                client=client, table_name="t", ref=None, data_source="ds",
             )
         assert _pk(model) == ["id"]
         assert _unique(model) == {"u"}

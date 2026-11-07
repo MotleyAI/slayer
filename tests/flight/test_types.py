@@ -143,9 +143,9 @@ def test_pa_table_from_pylist_rejects_decimal_into_double() -> None:
     column-by-column). Without that shim, the Arrow build raises
     ``ArrowInvalid``."""
     schema = pa.schema([pa.field("v", datatype_to_arrow(DataType.DOUBLE))])
-    rows = [{"v": decimal.Decimal("3.14")}]
+    decimal_rows = [{"v": decimal.Decimal("3.14")}]
     with pytest.raises(pa.ArrowInvalid):
-        pa.Table.from_pylist(rows, schema=schema)
+        pa.Table.from_pylist(decimal_rows, schema=schema)
     # And the documented shim — pre-coerce Decimal → float — works:
     rows = [{"v": float(decimal.Decimal("3.14"))}]
     table = pa.Table.from_pylist(rows, schema=schema)

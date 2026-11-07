@@ -33,6 +33,7 @@ sqlglot = {version = ">=30.17", extras = ["c"]}
 sqlalchemy = ">=2.0,<2.1"
 greenlet = ">=1"
 pydantic = ">=2.0"
+pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 pyyaml = ">=6.0"
 fastapi = ">=0.100"

@@ -110,7 +110,8 @@ async def test_every_operation_succeeds(named: tuple[DatasourceConfig, str]) -> 
         foreign_keys=[ReflectedForeignKey(columns=["customer_id"], referred_table="customers", referred_columns=["id"])],
     )
     assert seen["comment"] == "People who buy"
-    assert seen["profile"] == ServerProfile()
+    assert seen["profile"].version is not None
+    assert seen["profile"].model_copy(update={"version": None}) == ServerProfile()
     assert seen["types"] == {
         "id": ResultColumnType(type=DataType.INT, db_type="integer"),
         "name": ResultColumnType(type=DataType.TEXT, db_type="text"),

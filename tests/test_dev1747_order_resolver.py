@@ -55,7 +55,7 @@ import pydantic
 _MEASURE = [{"formula": "amount:sum", "name": "rev"}]
 
 _MONTH = TimeDimension(
-    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+    dimension="created_at", granularity=TimeGranularity.MONTH,
 )
 
 #: One query per render path that builds its own ORDER BY term. D4's claim is
@@ -253,7 +253,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
@@ -292,7 +292,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"),
+                dimension="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[{"formula": "amount:sum(window='90d')", "name": "w"}],
@@ -418,7 +418,7 @@ class TestNullOrdering:
             SlayerQuery(
                 source_model="orders",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],

@@ -153,6 +153,36 @@ def schema_ref_from_token(
     )
 
 
+def requested_schema_ref(token: Optional[str], *, client: SqlClient) -> Optional[SchemaRef]:
+    """The ref a user's schema token names, or ``None`` (the connection default) when absent."""
+    if not token:
+        return None
+    return schema_ref_from_token(token, dialect_name=client.datasource.type, requested=token)
+
+
+async def table_schema_ref(*, catalog: Optional[str], schema: Optional[str], client: SqlClient) -> Optional[SchemaRef]:
+    """The ref locating a parsed table's schema; a catalog the connection cannot reach raises."""
+    if catalog and not qualifies_tokens(client.datasource):
+        if catalog != await _current_database(client):
+            raise ValueError(f"catalog {catalog!r} is not reachable over this connection")
+        catalog = None
+    if not schema:
+        return None
+    return SchemaRef(catalog=catalog or None, name=schema, requested=schema)
+
+
+async def _current_database(client: SqlClient) -> Optional[str]:
+    """The connection's current database (``current_database()``), or None."""
+    try:
+        rows = (await client.execute("SELECT current_database()")).rows
+    except UNREACHABLE:
+        raise
+    except Exception:  # noqa: BLE001 — best-effort; absence just means "no catalog"
+        return None
+    value = next(iter(rows[0].values()), None) if rows else None
+    return value if isinstance(value, str) else None
+
+
 def is_system_schema(token: str, *, qualifies: bool = False) -> bool:
     """True for catalog/bookkeeping schemas that are never ingested.
 

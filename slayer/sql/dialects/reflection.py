@@ -39,8 +39,8 @@ class TableLocation(BaseModel):
 
 
 class ReflectedColumn(BaseModel):
-    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list or exact-numeric),
-    ``type_name`` is the database's name for every type."""
+    """One live column; ``db_type`` is set only where ``type`` is lossy (opaque, a list, exact-numeric, JSON or
+    a zoned timestamp); ``element_type`` only for a list; ``type_name`` is the database's name for every type."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -59,6 +59,7 @@ class ResultColumnType(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: DataType
+    element_type: DataType | None = None
     db_type: str | None = None
 
     @property
@@ -278,13 +279,18 @@ def result_column_type_of_name(
     name: str, *, overrides: Mapping[str, DataType] | None = None,
 ) -> ResultColumnType:
     """A probed column the database names ``name``."""
+    element = info_schema_list_element(unwrap_clickhouse_wrapper_str(name))
+    if element is not None:
+        return ResultColumnType(type=DataType.ARRAY, element_type=element, db_type=name)
     return ResultColumnType(type=info_schema_type(name, overrides=overrides)[0], db_type=name)
 
 
 def column_from_type_string(
     *, name: str, data_type: str | None, comment: str | None = None, overrides: Mapping[str, DataType] | None = None,
+    zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(),
 ) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept for a list and for exact numerics."""
+    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (a list, exact
+    numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
     element = info_schema_list_element(unwrapped)
     if element is not None:
@@ -293,9 +299,10 @@ def column_from_type_string(
             type_name=unwrapped,
         )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
+    word = unwrapped.split("(")[0].upper().strip()
+    lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
     return ReflectedColumn(
-        name=name, type=mapped, is_float=is_float,
-        db_type=unwrapped if is_exact_numeric_db_type(unwrapped) else None,
+        name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment), type_name=unwrapped or None,
     )
 
@@ -393,8 +400,9 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Add a non-comparable type to _OPAQUE_TYPE_NAMES "
-            "and a mappable one to _TYPE_NAME_MAP.",
+            "DataType.TEXT. Most unmapped types (bytea) are comparable and "
+            "work as TEXT; add genuinely non-comparable ones to "
+            "_OPAQUE_TYPE_NAMES and the rest to _TYPE_NAME_MAP.",
             type_name,
             str(sa_type),
         )
@@ -437,10 +445,18 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     return False
 
 
+def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]) -> bool:
+    """A type in the dialect's ``json_types`` (``json_value`` reads it natively)."""
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    return any(n.split("(")[0].strip().upper() in json_types for n in (type(sa_type).__name__, str(sa_type)))
+
+
 def column_from_sa_type(
-    *, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None, sa_dialect: Any = None,
+    *, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None,
+    zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(), sa_dialect: Any = None,
 ) -> ReflectedColumn:
-    """A column read through the Inspector; ``db_type`` kept only for opaque, list and exact-numeric types."""
+    """A column read through the Inspector; ``db_type`` kept only where ``DataType`` is lossy (opaque, a list,
+    exact NUMERIC/DECIMAL, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     data_type, element_type = sa_data_types(sa_type)
     if data_type is DataType.ARRAY:
         list_type = list_db_type(sa_type, sa_dialect=sa_dialect)
@@ -449,9 +465,11 @@ def column_from_sa_type(
             comment=clean_comment(comment), type_name=list_type,
         )
     type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+    lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
+        sa_type, json_types=json_types,
+    ) or type(sa_type).__name__.upper() in zoned_types
     return ReflectedColumn(
-        name=name, type=data_type, is_float=_sa_type_is_float(sa_type),
-        db_type=type_name if data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) else None,
+        name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=type_name if lossy else None,
         comment=clean_comment(comment), type_name=type_name,
     )
 

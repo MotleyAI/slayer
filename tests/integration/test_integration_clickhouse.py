@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+import requests
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
@@ -77,7 +78,18 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
-from tests._dev2120_fixtures import contractors_model, contractors_statements
+from tests._dev2120_fixtures import (
+    DOCS_ROWS,
+    LIB,
+    check_library,
+    check_native_json,
+    contractors_model,
+    contractors_statements,
+    lib_model,
+    server_literal,
+    server_table_statements as dev2120_table_statements,
+)
+from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
@@ -276,6 +288,9 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 
 @pytest.mark.integration
 class TestClickHouseQueries:
+    async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
+        await check_try_cast_targets(clickhouse_env, model="orders")
+
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
         result = await clickhouse_env.execute(query=query)
@@ -319,18 +334,8 @@ class TestClickHouseQueries:
     async def test_string_hygiene_functions_execute(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """The typed pipeline emits string functions UPPERCASE
-        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
-        ClickHouse's native lowercase spelling. ClickHouse function names are
-        case-sensitive in general, so this pins that the standard SQL aliases
-        really do resolve on a live server rather than trusting that the
-        emitted SQL merely looks plausible.
-
-        ``substr`` now reaches the server as ``SUBSTRING``: routing every
-        scalar through one dialect-aware policy means sqlglot transpiles the
-        call to the target's own spelling instead of passing the DSL name
-        through verbatim.
-        """
+        """``lower`` / ``substr`` reach ClickHouse as its character-counting ``lowerUTF8`` /
+        ``substringUTF8``; ClickHouse names are case-sensitive, so this pins that they resolve live."""
         lowered = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
@@ -338,7 +343,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=lowered)
         assert result.data[0]["orders._count"] > 0
-        assert "LOWER(" in (result.sql or ""), result.sql
+        assert "lowerUTF8(" in (result.sql or ""), result.sql
 
         subs = SlayerQuery(
             source_model="orders",
@@ -347,7 +352,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=subs)
         assert result.data[0]["orders._count"] > 0
-        assert "SUBSTRING(" in (result.sql or ""), result.sql
+        assert "substringUTF8(" in (result.sql or ""), result.sql
 
     async def test_trunc_executes_lowercase(
         self, clickhouse_env: SlayerQueryEngine
@@ -479,7 +484,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -497,7 +502,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[
                 ModelMeasure(formula="total:sum"),
@@ -518,7 +523,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -535,7 +540,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             measures=[
@@ -552,7 +557,7 @@ class TestClickHouseQueries:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             measures=[
@@ -648,7 +653,7 @@ class TestCrossModelAndMultistageClickHouse:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -664,7 +669,7 @@ class TestCrossModelAndMultistageClickHouse:
         inner = SlayerQuery(
             name="monthly", source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -676,7 +681,7 @@ class TestCrossModelAndMultistageClickHouse:
         source = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                dimension="created_at", granularity=TimeGranularity.MONTH,
             )],
             measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
@@ -1920,6 +1925,54 @@ def test_every_clickhouse_alias_failure_is_quoted(clickhouse_container) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Portable Mode-B library (spec: queries/scalar-functions, regex, json, mixed-type-coercion, string-matching)
+# ---------------------------------------------------------------------------
+
+def _http(clickhouse_container, db_name: str, sql: str, **settings: str) -> None:
+    """Run one statement over HTTP, where per-query server settings ride as URL parameters."""
+    host = clickhouse_container.get_container_host_ip()
+    port = int(clickhouse_container.get_exposed_port(8123))
+    user = getattr(clickhouse_container, "username", "default") or "default"
+    password = getattr(clickhouse_container, "password", "") or ""
+    resp = requests.post(f"http://{host}:{port}/", params={"database": db_name, **settings}, data=sql.encode(),
+                         auth=(user, password), timeout=60)
+    assert resp.ok, resp.text
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2120_table_statements(LIB, dialect="clickhouse"):
+                    conn.execute(sa.text(stmt))
+        _http(clickhouse_container, db_name, "CREATE TABLE docs (id Int32, payload JSON) ENGINE = MergeTree ORDER BY id",
+              allow_experimental_json_type="1")
+        rows = ", ".join(f"({rid}, {server_literal(doc or '{}', kind='TEXT', dialect='clickhouse')})"
+                         for rid, doc in DOCS_ROWS)
+        _http(clickhouse_container, db_name, f"INSERT INTO docs VALUES {rows}", allow_experimental_json_type="1")
+        ds = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
+        run_sync(storage.save_datasource(ds))
+        run_sync(storage.save_model(lib_model(data_source="testclickhouse")))
+        for model in ingestion.ingest_datasource(datasource=ds, include_tables=["docs"]):
+            run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHousePortableLibrary:
+    async def test_library(self, _clickhouse_dev2120_storage) -> None:
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+    async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
+        await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
 # List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
@@ -1941,9 +1994,9 @@ def _seeded_lists(container, base_dir: str):
         ds = _ds_config(container, db_name)
         storage = YAMLStorage(base_dir=base_dir)
         run_sync(storage.save_datasource(ds))
-        for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
-                      mixed_numbers_model(data_source=ds.name)):
-            run_sync(storage.save_model(model))
+        run_sync(storage.save_model(contractors_model(data_source=ds.name)))
+        run_sync(storage.save_model(assignments_model(data_source=ds.name)))
+        run_sync(storage.save_model(mixed_numbers_model(data_source=ds.name)))
         yield storage, ds
     finally:
         _drop_module_db(container, db_name)
@@ -1978,8 +2031,8 @@ class TestClickHouseLists:
     async def test_mixed_numeric_lists(self, _clickhouse_lists) -> None:
         await check_mixed_numbers(SlayerQueryEngine(storage=_clickhouse_lists[0]))
 
-    async def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
-        (model,) = await _ingest(_clickhouse_lists[1], include_tables=["tagged"])
+    def test_wrapped_element_ingested(self, _clickhouse_lists) -> None:
+        (model,) = ingestion.ingest_datasource(datasource=_clickhouse_lists[1], include_tables=["tagged"])
         tags = model.get_column("tags")
         assert tags is not None
         assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)

@@ -56,7 +56,7 @@ ACCOUNT = "account_snapshots.account_id"
 NAME_KEY = ColumnKey(leaf="name")
 ACCOUNT_KEY = ColumnKey(path=("account_snapshots",), leaf="account_id")
 MONTH_KEY = TimeTruncKey(
-    column=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
+    source=ColumnKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
 BY_NAME_MONTH = ("name", "snapshot_date")
 BY_NAME_ACCOUNT = ("name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"

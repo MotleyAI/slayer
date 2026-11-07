@@ -75,7 +75,7 @@ def test_explain_prefix_is_none() -> None:
 def test_log_native_flags() -> None:
     d = BigqueryDialect()
     assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
+    assert d.should_use_native_log(2) is False
 
 
 def test_build_explain_sql_raises() -> None:
@@ -545,8 +545,8 @@ class _EchoTypesClient(DelegatingSqlClient):
         return ExecutionResult(rows=[])
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
-        parsed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery"))
-        return {name: ResultColumnType(type=DataType.DOUBLE) for name in parsed.named_selects}
+        probed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery").args["from_"].this.this)
+        return {name: ResultColumnType(type=DataType.DOUBLE) for name in probed.named_selects}
 
 
 async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> None:

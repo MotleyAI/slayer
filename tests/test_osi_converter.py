@@ -5,6 +5,7 @@ OSI semantic metadata (labels, descriptions, is_time, relationships->joins,
 metrics->measures) on top.
 """
 
+import contextlib
 from pathlib import Path
 from collections.abc import Iterator
 
@@ -13,8 +14,9 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import DatasourceConfig
-from slayer.engine.syntax import AggCall, Ref, parse_expr
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.syntax import AggCall, Ref, parse_expr
+from slayer.importers.column_types import LiveSource
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
     OSIDataset,
@@ -30,6 +32,8 @@ from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import run_converter
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
+#: A self-named field is dropped until DEV-2175 imports it.
+SELF_NAMED = pytest.mark.xfail(strict=True, reason="DEV-2175: self-named field")
 
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
@@ -56,7 +60,7 @@ def shop_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 def _convert(engine: sa.Engine, doc: OSIDocument, **kw):
     return run_converter(
         OsiToSlayerConverter(documents=[doc], data_source="testds", **kw),
-        datasource=DatasourceConfig(name="testds", type="sqlite", database=engine.url.database),
+        datasource=DatasourceConfig(name="testds", type=engine.dialect.name, database=engine.url.database),
     )
 
 
@@ -416,6 +420,7 @@ def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
     assert _reported(result)
 
 
+@SELF_NAMED
 def test_derived_overlay_preserves_primary_key(shop_engine):
     # A derived overlay on the PK column (OSI not restating primary_key) keeps
     # the introspected PK flag.
@@ -634,9 +639,8 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     assert status.type == DataType.TEXT
 
 
-def test_derived_field_shadowing_physical_column_overlays(shop_engine):
-    # A derived OSI field whose name matches a physical column must overlay its
-    # expression onto that column, not be silently dropped.
+def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
+    # A self-named legacy overlay is dropped with a report; the physical column stays (DEV-2175 imports it).
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -647,9 +651,9 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     orders = {m.name: m for m in result.models}["orders"]
     status_cols = [c for c in orders.columns if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].sql == "LOWER(status)"
-    # the derived field inherits the shadowed column's known TEXT type, not DOUBLE
-    assert status_cols[0].type == DataType.TEXT
+    assert status_cols[0].is_base
+    assert (status_cols[0].physical_name, status_cols[0].type) == ("status", DataType.TEXT)
+    assert _reported(result)
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
@@ -1155,7 +1159,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     assert {m.name: m for m in orders.measures}["tot"].formula == "sum(amount)"
 
 
-def test_target_dialect_percentile_caveat(shop_engine):
+def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
@@ -1166,8 +1170,7 @@ def test_target_dialect_percentile_caveat(shop_engine):
     )
     result = _convert(shop_engine, doc, target_dialect="mysql")
     orders = {m.name: m for m in result.models}["orders"]
-    # measure still created, but an info caveat is reported.
-    assert "p90" in {meas.name for meas in orders.measures}
+    assert "p90" not in {meas.name for meas in orders.measures}
     assert _reported(result)
 
 
@@ -1216,3 +1219,127 @@ def test_relationship_keyed_on_renamed_field_names_the_field(shop_engine):
     key = orders.get_column("cust_key")
     assert key is not None
     assert key.physical_name == "customer_id"
+
+
+def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount")),
+                                     OSIField(name="status", expression=_expr("status"))])],
+        metrics=[OSIMetric(name="paid_share",
+                           expression=_expr("SUM(CASE WHEN status = 'paid' THEN amount END) / COUNT(*)"))],
+    )
+    orders = _by_name(_convert(shop_engine, doc))["orders"]
+    formula = {m.name: m for m in orders.measures}["paid_share"].formula
+    parse_expr(formula)
+    assert '"' not in formula
+    assert "\\" not in formula
+    assert " | " not in formula
+
+
+# ─────────────────────── list columns ─────────────────────
+
+@pytest.fixture
+def staff_engine(tmp_path: Path) -> Iterator[sa.Engine]:
+    duckdb = pytest.importorskip("duckdb")
+    path = tmp_path / "staff.duckdb"
+    with contextlib.closing(duckdb.connect(str(path))) as con:
+        con.execute("CREATE TABLE staff (id INTEGER, skills VARCHAR[])")
+        con.execute("INSERT INTO staff VALUES (1, ['go', 'sql'])")
+        con.execute("CREATE TABLE assignments (id INTEGER, staff_id INTEGER, role_id INTEGER)")
+        con.execute("CREATE TABLE roles (id INTEGER, staff_id INTEGER)")
+    with disposable_engine(f"duckdb:///{path}") as engine:
+        yield engine
+
+
+def _staff_columns(engine: sa.Engine, *, source: str, fields: list[OSIField]) -> dict:
+    doc = OSIDocument(version="0.2.0.dev0", name="s", datasets=[OSIDataset(name="staff", source=source, fields=fields)])
+    staff = _by_name(_convert(engine, doc, target_dialect="duckdb"))["staff"]
+    return {c.name: (c.type, c.element_type) for c in staff.columns}
+
+
+def test_a_query_source_list_column_is_a_list(staff_engine):
+    cols = _staff_columns(staff_engine, source="SELECT id, skills FROM staff",
+                          fields=[OSIField(name="skills", expression=_expr("skills"))])
+    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+
+
+@SELF_NAMED
+def test_a_derived_list_field_is_a_list(staff_engine):
+    cols = _staff_columns(staff_engine, source="staff", fields=[
+        OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
+        OSIField(name="skills", expression=_expr("list_distinct(skills)")),
+    ])
+    assert cols["skill_set"] == (DataType.ARRAY, DataType.UNKNOWN)
+    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+
+
+def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
+    doc = OSIDocument(version="0.2.0.dev0", name="s",
+                      datasets=[OSIDataset(name="staff", source="staff",
+                                           fields=[OSIField(name="skills", expression=_expr("skills"))])],
+                      metrics=[OSIMetric(name="sets", expression=_expr("COUNT(list_distinct(staff.skills))"))])
+    staff = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["staff"]
+    hidden = [(c.type, c.element_type) for c in staff.columns if c.hidden]
+    assert hidden == [(DataType.ARRAY, DataType.UNKNOWN)]
+
+
+def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="assignments", source="assignments",
+                       fields=[OSIField(name="staff_id", expression=_expr("staff_id")),
+                               OSIField(name="staff_skills", expression=_expr("staff.skills"))]),
+            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
+                                                            OSIField(name="skills", expression=_expr("skills"))]),
+        ],
+        relationships=[OSIRelationship.model_validate({"name": "a2s", "from": "assignments", "to": "staff",
+                                                       "from_columns": ["staff_id"], "to_columns": ["id"]})],
+    )
+    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
+    col = assignments.get_column("staff_skills")
+    assert col is not None
+    assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+@SELF_NAMED
+def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
+    monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
+    cols = _staff_columns(staff_engine, source="staff",
+                          fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
+    assert cols["skills"] == (DataType.ARRAY, DataType.TEXT)
+
+
+def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
+    def rel(name: str, frm: str, to: str, key: str) -> OSIRelationship:
+        return OSIRelationship.model_validate(
+            {"name": name, "from": frm, "to": to, "from_columns": [key], "to_columns": ["id"]})
+
+    doc = _mini_doc(
+        datasets=[  # the referrer first, so one pass would copy roles.skills_of before it is typed
+            OSIDataset(name="assignments", source="assignments",
+                       fields=[OSIField(name="role_id", expression=_expr("role_id")),
+                               OSIField(name="role_skills", expression=_expr("roles.skills_of"))]),
+            OSIDataset(name="roles", source="roles",
+                       fields=[OSIField(name="id", expression=_expr("id")),
+                               OSIField(name="staff_id", expression=_expr("staff_id")),
+                               OSIField(name="skills_of", expression=_expr("staff.skills"))]),
+            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
+                                                            OSIField(name="skills", expression=_expr("skills"))]),
+        ],
+        relationships=[rel("a2r", "assignments", "roles", "role_id"), rel("r2s", "roles", "staff", "staff_id")],
+    )
+    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
+    col = assignments.get_column("role_skills")
+    assert col is not None
+    assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+
+
+def test_a_cycle_of_cross_model_refs_has_no_end(staff_engine, monkeypatch):
+    model = SlayerModel(name="m", sql_table="m", data_source="testds", columns=[
+        Column(name=n, sql=f"x.{n}", type=DataType.DOUBLE) for n in ("a", "b", "c")])
+    nxt = {"a": "b", "b": "c", "c": "a"}
+    monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_model_ref",
+                        lambda self, model, sql: (model, model.get_column(nxt[sql.split(".")[1]])))
+    converter = OsiToSlayerConverter(documents=[], data_source="testds", sa_engine=staff_engine)
+    assert [converter._ref_chain_end(model=model, col=c) for c in model.columns] == [None, None, None]

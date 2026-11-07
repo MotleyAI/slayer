@@ -38,6 +38,7 @@ from slayer.core.policy import (
     _validate_join_rule_anchor,
 )
 from slayer.sql.dialects import SqlDialect, get_dialect
+from slayer.sql.type_probe import TypeProbe, mint_type_probe
 
 # Any other statement root (INSERT / UPDATE / DDL / …) fails closed.
 _ALLOWED_ROOTS = (exp.Select, exp.SetOperation)
@@ -320,8 +321,23 @@ def apply_session_policy(
     only for a ``ColumnFilterRuleset``. Raises :class:`ForcedFilterError` on any
     fail-closed condition.
     """
-    ruleset = policy.ruleset
+    return _policed(sql, dialect=dialect, policy=policy, has_column=has_column).sql(dialect=dialect)
 
+
+def apply_session_policy_to_probe(
+    probe: TypeProbe,
+    *,
+    dialect: str,
+    policy: SessionPolicy,
+    has_column: HasColumn,
+) -> TypeProbe:
+    """``probe`` with :func:`apply_session_policy`'s rewrite, re-minted from the rewritten AST."""
+    tree = _policed(probe.sql, dialect=dialect, policy=policy, has_column=has_column)
+    return mint_type_probe(tree, dialect=get_dialect(dialect), render=lambda t: t.sql(dialect=dialect))
+
+
+def _policed(sql: str, *, dialect: str, policy: SessionPolicy, has_column: HasColumn) -> Expression:
+    ruleset = policy.ruleset
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(ast, _ALLOWED_ROOTS):
         raise ForcedFilterError(
@@ -333,4 +349,4 @@ def apply_session_policy(
         _apply_column_ruleset(ast, ruleset, has_column)
     else:  # JoinFilterRuleset
         _apply_join_ruleset(ast, ruleset, sql_dialect=get_dialect(dialect))
-    return ast.sql(dialect=dialect)
+    return ast

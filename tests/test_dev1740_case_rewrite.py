@@ -1,6 +1,6 @@
 """DEV-1740 Part A — the CASE/iif surface at parse time.
 
-Pins the ``_rewrite_case_when`` preprocessor and the reserved-name
+Pins CASE lowering and the reserved-name
 ``ScalarCall(name="iif")`` it lowers to: searched + simple CASE, nesting,
 multi-WHEN, missing ELSE, case-insensitive keywords, keywords inside string
 literals, malformed rejection, ``iif`` arity, and the deliberate rejection of
@@ -18,15 +18,13 @@ from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     check_scalar_arity,
 )
-from slayer.engine.syntax import (
+from slayer.core.syntax import (
     BoolOp,
     Cmp,
     Literal,
     Ref,
     ScalarCall,
-    _rewrite_case_when,
     parse_expr,
-    parse_filter_expr,
 )
 
 
@@ -38,35 +36,26 @@ def _iif(node) -> ScalarCall:
 
 
 # --------------------------------------------------------------------------- #
-# The text rewrite: CASE ... END -> nested iif(...)
+# CASE ... END lowers to nested iif(...)
 # --------------------------------------------------------------------------- #
 class TestRewriteToIif:
-    def test_searched_single_branch(self) -> None:
-        out = _rewrite_case_when("CASE WHEN amount > 5 THEN 1 ELSE 0 END")
-        assert "CASE" not in out.upper()
-        assert out.strip() == "iif(amount > 5, 1, 0)"
+    @pytest.mark.parametrize(("case", "iif"), [
+        ("CASE WHEN amount > 5 THEN 1 ELSE 0 END", "iif(amount > 5, 1, 0)"),
+        ("CASE WHEN amount > 5 THEN 1 END", "iif(amount > 5, 1, None)"),
+        ("CASE WHEN a > 2 THEN 10 WHEN a > 1 THEN 5 ELSE 0 END", "iif(a > 2, 10, iif(a > 1, 5, 0))"),
+        ("CASE region WHEN 'EU' THEN 1 ELSE 0 END", "iif(region == 'EU', 1, 0)"),
+    ])
+    def test_lowers_to_iif(self, case: str, iif: str) -> None:
+        assert parse_expr(case) == parse_expr(iif)
 
-    def test_missing_else_becomes_null(self) -> None:
-        out = _rewrite_case_when("CASE WHEN amount > 5 THEN 1 END")
-        assert out.strip() == "iif(amount > 5, 1, None)"
-
-    def test_multi_when_nests_right(self) -> None:
-        out = _rewrite_case_when(
-            "CASE WHEN a > 2 THEN 10 WHEN a > 1 THEN 5 ELSE 0 END"
-        )
-        assert out.strip() == "iif(a > 2, 10, iif(a > 1, 5, 0))"
-
-    def test_simple_form_synthesizes_equality(self) -> None:
-        out = _rewrite_case_when("CASE region WHEN 'EU' THEN 1 ELSE 0 END")
-        assert out.strip() == "iif(region == 'EU', 1, 0)"
-
-    def test_non_case_text_is_untouched(self) -> None:
-        assert _rewrite_case_when("amount + 1") == "amount + 1"
+    def test_non_case_text_is_not_a_conditional(self) -> None:
+        assert not isinstance(parse_expr("amount + 1"), ScalarCall)
 
     def test_keyword_inside_string_literal_is_not_syntax(self) -> None:
         # A value that merely contains CASE/END words must survive verbatim.
-        text = "status == 'END of the CASE when done'"
-        assert _rewrite_case_when(text) == text
+        assert parse_expr("status == 'END of the CASE when done'") == Cmp(
+            op="==", left=Ref(name="status"), right=Literal(value="END of the CASE when done"),
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -228,7 +217,7 @@ class TestIifCall:
 # --------------------------------------------------------------------------- #
 class TestFilterContext:
     def test_case_in_filter_predicate(self) -> None:
-        node = parse_filter_expr(
+        node = parse_expr(
             "CASE WHEN region = 'EU' THEN 1 ELSE 0 END = 1"
         )
         assert isinstance(node, Cmp)

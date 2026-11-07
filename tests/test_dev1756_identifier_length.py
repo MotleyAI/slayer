@@ -19,7 +19,7 @@ from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.client import ExecutionResult, ResultColumnType
+from slayer.sql.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.generator import SQLGenerator  # noqa: F401 — used by the skipped TestVirtualModelShorts
@@ -959,10 +959,10 @@ class TestEngineContract:
         captured: dict[str, ResultColumnType] = {}
 
         class _FakeClient:
-            async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
+            async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
                 # Echo back server keys exactly as emitted.
                 for name, _ in _projection_aliases(
-                    next(iter(sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Select)))
+                    next(iter(sqlglot.parse_one(probe.sql, dialect="postgres").args["from_"].this.find_all(exp.Select)))
                 ):
                     captured[name] = ResultColumnType(type=DataType.DOUBLE, db_type="double precision")
                 return dict(captured)

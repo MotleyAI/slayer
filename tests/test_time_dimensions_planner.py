@@ -30,7 +30,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import TimeDimensionColumnError, UnknownReferenceError
 from slayer.core.keys import AggregateKey, ColumnKey, Phase, TimeTruncKey
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_time_dimension
 from slayer.engine.elaborate_env import check_time_dimension_column
@@ -131,7 +131,7 @@ def _orders_with_derived_temporal() -> SlayerModel:
     """Host model with a derived (Column.sql) temporal column.
 
     Used to pin the 7b.3b rejection contract: derived TD columns route
-    through ``ColumnSqlKey`` and ``TimeTruncKey.column`` is typed as
+    through ``ColumnSqlKey`` and ``TimeTruncKey.source`` is typed as
     ``ColumnKey``, so the binder must raise rather than silently produce
     an ill-typed key. A later issue can widen TimeTruncKey if/when this
     case is needed.
@@ -193,28 +193,28 @@ class TestBindTimeDimension:
     def test_local_td_yields_timetrunckey(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
             td, scope=ModelScope(source_model=model), bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(path=(), leaf="created_at")
+        assert bound.bound.value_key.source == ColumnKey(path=(), leaf="created_at")
         assert bound.bound.value_key.granularity == "month"
         assert bound.bound.phase == Phase.ROW
 
     def test_joined_td_path_is_populated(self) -> None:
         host = _orders_with_customers_join()
         td = TimeDimension(
-            dimension=ColumnRef(name="customers.signed_up_at"),
+            dimension="customers.signed_up_at",
             granularity=TimeGranularity.DAY,
         )
         bound = bind_time_dimension(
             td, scope=ModelScope(source_model=host), bundle=_bundle_joined(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(
+        assert bound.bound.value_key.source == ColumnKey(
             path=("customers",), leaf="signed_up_at",
         )
         assert bound.bound.value_key.granularity == "day"
@@ -224,13 +224,13 @@ class TestBindTimeDimension:
         with pytest.raises(TimeDimensionColumnError, match="temporal"):
             check_time_dimension_column(
                 name="status", column_type=DataType.TEXT,
-                upstream_granularity=None, requested_granularity=TimeGranularity.MONTH,
+                requested_granularity=TimeGranularity.MONTH,
             )
 
     def test_unknown_column_raises_unknown_reference(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="not_a_column"),
+            dimension="not_a_column",
             granularity=TimeGranularity.MONTH,
         )
         scope = ModelScope(source_model=model)
@@ -243,7 +243,7 @@ class TestBindTimeDimension:
 
     def test_model_scope_without_source_model_rejected(self) -> None:
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         scope = ModelScope(source_model=None)
@@ -255,7 +255,7 @@ class TestBindTimeDimension:
         # DATE is in the same temporal bucket as TIMESTAMP — should bind.
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="reviewed_at"),
+            dimension="reviewed_at",
             granularity=TimeGranularity.WEEK,
         )
         bound = bind_time_dimension(
@@ -264,7 +264,7 @@ class TestBindTimeDimension:
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        col_key = bound.bound.value_key.column
+        col_key = bound.bound.value_key.source
         assert isinstance(col_key, ColumnKey)
         assert col_key.leaf == "reviewed_at"
         assert bound.bound.value_key.granularity == "week"
@@ -274,7 +274,7 @@ class TestBindTimeDimension:
         # multi-hop path. The bound key carries the full path.
         host = _orders_with_customers_join()
         td = TimeDimension(
-            dimension=ColumnRef(name="customers.regions.opened_at"),
+            dimension="customers.regions.opened_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -283,19 +283,19 @@ class TestBindTimeDimension:
             bundle=_bundle_multi_hop(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnKey(
+        assert bound.bound.value_key.source == ColumnKey(
             path=("customers", "regions"), leaf="opened_at",
         )
         assert bound.bound.value_key.granularity == "month"
 
     def test_derived_column_sql_td_binds(self) -> None:
         # A derived (Column.sql) temporal column now
-        # binds to ``TimeTruncKey(column=ColumnSqlKey(...))`` — full support,
+        # binds to ``TimeTruncKey(source=ColumnSqlKey(...))`` — full support,
         # no NotImplementedError. The grain still rides on the TimeTruncKey.
 
         host = _orders_with_derived_temporal()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_day"),
+            dimension="created_day",
             granularity=TimeGranularity.DAY,
         )
         bound = bind_time_dimension(
@@ -304,7 +304,7 @@ class TestBindTimeDimension:
             bundle=_bundle_derived(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
-        assert bound.bound.value_key.column == ColumnSqlKey(
+        assert bound.bound.value_key.source == ColumnSqlKey(
             path=(), model="orders", column_name="created_day",
         )
         assert bound.bound.value_key.granularity == "day"
@@ -319,7 +319,7 @@ class TestBindTimeDimension:
 class TestPlanningPrimitivesForTimeTruncKey:
     def test_iter_slot_deps_yields_timetrunckey(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         deps = list(_iter_slot_deps(key))
@@ -335,7 +335,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
         # adding a time dimension does not auto-add the raw column as a
         # separate output column.)
         col = ColumnKey(path=(), leaf="created_at")
-        key = TimeTruncKey(column=col, granularity=TimeGranularity.MONTH)
+        key = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
         deps = list(_iter_slot_deps(key))
         assert deps == [key]
 
@@ -343,21 +343,21 @@ class TestPlanningPrimitivesForTimeTruncKey:
         # Legacy result-key contract: alias is the column name only —
         # the granularity goes into the SQL DATE_TRUNC, not the alias.
         key = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert _canonical_name(key) == "created_at"
 
     def test_canonical_name_joined_uses_dunder_path(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=("customers",), leaf="signed_up_at"),
+            source=ColumnKey(path=("customers",), leaf="signed_up_at"),
             granularity=TimeGranularity.DAY,
         )
         assert _canonical_name(key) == "customers__signed_up_at"
 
     def test_canonical_name_multi_hop_path(self) -> None:
         key = TimeTruncKey(
-            column=ColumnKey(path=("customers", "regions"), leaf="opened_at"),
+            source=ColumnKey(path=("customers", "regions"), leaf="opened_at"),
             granularity=TimeGranularity.MONTH,
         )
         assert _canonical_name(key) == "customers__regions__opened_at"
@@ -372,11 +372,11 @@ class TestValueRegistryTimeTrunc:
     def test_same_column_same_grain_interns_once(self) -> None:
         reg = ValueRegistry()
         k1 = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k2 = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         sid1 = reg.intern(key=k1, declared_name="created_at", phase=Phase.ROW)
@@ -389,11 +389,11 @@ class TestValueRegistryTimeTrunc:
         # they share an underlying column.
         reg = ValueRegistry()
         k_month = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k_day = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.DAY,
         )
         sid_m = reg.intern(
@@ -407,11 +407,11 @@ class TestValueRegistryTimeTrunc:
     def test_different_column_distinct_slots(self) -> None:
         reg = ValueRegistry()
         k_a = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         k_b = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="reviewed_at"),
+            source=ColumnKey(path=(), leaf="reviewed_at"),
             granularity=TimeGranularity.MONTH,
         )
         sid_a = reg.intern(key=k_a, declared_name="created_at", phase=Phase.ROW)
@@ -428,7 +428,7 @@ class TestProjectionPlannerTimeDimensions:
     def test_td_declared_measure_is_public_not_hidden(self) -> None:
         model = _orders_model()
         td = TimeDimension(
-            dimension=ColumnRef(name="created_at"),
+            dimension="created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -469,7 +469,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -493,7 +493,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                     label="Order date",
                 ),
@@ -517,7 +517,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signed_up_at"),
+                    dimension="customers.signed_up_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -534,7 +534,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.signed_up_at"),
+                    dimension="customers.signed_up_at",
                     granularity=TimeGranularity.DAY,
                     label="Customer signup",
                 ),
@@ -554,7 +554,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.opened_at"),
+                    dimension="customers.regions.opened_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -572,7 +572,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -592,7 +592,7 @@ class TestStagePlannerTimeDimensions:
             source_model="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -611,7 +611,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

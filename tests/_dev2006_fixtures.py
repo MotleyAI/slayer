@@ -48,7 +48,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -116,7 +116,7 @@ def m(formula: str, name: str = "v") -> ModelMeasure:
 
 
 def month_td(column: str = "snapshot_date") -> List[TimeDimension]:
-    return [TimeDimension(dimension=ColumnRef(name=column), granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(dimension=column, granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #

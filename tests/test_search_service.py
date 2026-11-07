@@ -21,6 +21,7 @@ Also pins:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -906,17 +907,20 @@ async def test_search_cross_model_concurrency_is_allowed(
     ))
 
     persist_events: list = []
+    started: set = set()
+    both_started = asyncio.Event()
     original = storage.update_column_sampled
 
     async def tracking_persist(**kwargs):
         persist_events.append(
             ("start", kwargs.get("model_name"), kwargs.get("column_name"))
         )
-        # Force overlap: hold the write open. If implementation does NOT
-        # parallelize across models, both writes still complete sequentially
-        # — which would pass the "no overlap" test but fail this one's
-        # "must overlap" check.
-        await asyncio.sleep(0.05)
+        started.add(kwargs.get("model_name"))
+        if len(started) >= 2:
+            both_started.set()
+        # Hold the write open until the other model's write starts; a sequential refresh times out and never overlaps.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(both_started.wait(), timeout=5)
         result = await original(**kwargs)
         persist_events.append(
             ("stop", kwargs.get("model_name"), kwargs.get("column_name"))

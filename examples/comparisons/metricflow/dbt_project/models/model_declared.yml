@@ -1,5 +1,43 @@
 # Model-declared metrics (NOT graded on the query rows): what defining a metric in YAML enables.
+semantic_models:
+  - name: customer_tags
+    model: ref('stg_customer_tags')
+    defaults:
+      agg_time_dimension: tag_asof
+    entities:
+      - name: customer_tag
+        type: primary
+        expr: id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: region
+        type: foreign
+        expr: region_id
+    dimensions:
+      - name: tag
+        type: categorical
+      - name: tag_asof
+        type: time
+        expr: "DATE '2024-01-01'"
+        type_params:
+          time_granularity: day
+    measures:
+      - name: tagged_customers
+        agg: count_distinct
+        expr: customer_id
+      - name: distinct_tags
+        agg: count_distinct
+        expr: tag
+
 metrics:
+  - name: tagged_customers
+    type: simple
+    type_params: {measure: tagged_customers}
+  - name: distinct_tags
+    type: simple
+    type_params:
+      measure: {name: distinct_tags, fill_nulls_with: 0}
   - name: aov
     type: ratio
     type_params: {numerator: revenue, denominator: order_count}

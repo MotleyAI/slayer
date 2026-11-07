@@ -342,7 +342,7 @@ def _conn(properties: dict[str, str]) -> SimpleNamespace:
 
 class TestTimeoutHooks:
     def test_no_timeout_statement(self) -> None:
-        assert TrinoDialect().statement_timeout_sql(120) is None
+        assert TrinoDialect().statement_timeout(120) is None
 
     def test_fail_closed(self) -> None:
         assert TrinoDialect().statement_timeout_best_effort is False
@@ -385,7 +385,7 @@ class TestTimeoutHooks:
         prior = PrestoDialect().set_connection_timeout(conn, 30)
         PrestoDialect().restore_connection_timeout(conn, prior)
         assert props == {"query_max_run_time": "1h"}
-        assert PrestoDialect().statement_timeout_sql(30) is None
+        assert PrestoDialect().statement_timeout(30) is None
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ import sqlalchemy.exc
 import sqlglot
 from pydantic import BaseModel, Field
 from sqlglot import expressions as exp
+from sqlglot.errors import SqlglotError
+from sqlglot.expressions.core import Expr
 from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -42,7 +44,9 @@ from slayer.sql.dialects.reflection import (
     recover,
     schema_token,
 )
+from slayer.sql.render.parse import is_read_only_query, parse_query
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.core import timing
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,14 @@ class AuthenticationRefused(SqlClientError):
 
 class ObjectNotFound(SqlClientError):
     """A metadata read named a schema or table that does not exist."""
+
+
+class UnparseableTypeProbeError(ValueError):
+    """The SQL whose result columns were asked for could not be parsed, so no type probe was built."""
+
+    def __init__(self, *, sql: str, dialect: str) -> None:
+        super().__init__(f"Cannot type the result of this {dialect} statement; it does not parse: {sql!r}")
+        self.sql = sql
 
 
 class ObjectListing(BaseModel):
@@ -136,10 +148,6 @@ def type_categories(types: dict[str, ResultColumnType], *, dialect: SqlDialect) 
     return {name: dialect.legacy_type_categories.category(column) for name, column in types.items()}
 
 
-# T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
-_TSQL_DB_TYPES = frozenset({"mssql", "sqlserver", "tsql"})
-
-
 async def _run_sync_in_thread(func, *args, **kwargs):
     """Run one blocking DB call in a short-lived worker thread.
 
@@ -160,30 +168,10 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
 
 
-def _wrap_probe(sql: str, *, db_type: str | None, limit: int | None, select: str = "*") -> str:
-    """``SELECT <select> FROM (<sql>) AS _types``, row-limited in the dialect's spelling."""
-    if db_type in _TSQL_DB_TYPES:
-        top = "" if limit is None else f"TOP {limit} "
-        return f"SELECT {top}{select} FROM ({sql}) AS _types"
-    tail = "" if limit is None else f" LIMIT {limit}"
-    return f"SELECT {select} FROM ({sql}) AS _types{tail}"
-
-
-def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
-    """The row-limiting probe: no rows where the cursor reports types, else one."""
-    limit = 0 if dialect_for_ds_type(db_type).cursor_reports_types else 1
-    return _wrap_probe(sql, db_type=db_type, limit=limit)
-
-
-def _census_sql(sql: str, *, db_type: str | None, columns: list[str]) -> str | None:
-    """The dialect's storage census over a sample of ``sql``'s rows, or ``None`` when its cursor types columns."""
-    dialect = dialect_for_ds_type(db_type)
-    select = dialect.result_census_select(columns)
-    if select is None or dialect.result_census_rows is None:
-        return None
-    rendered = ", ".join(e.sql(dialect=dialect.sqlglot_name) for e in select)
-    sample = _wrap_probe(sql, db_type=db_type, limit=dialect.result_census_rows)
-    return _wrap_probe(sample, db_type=db_type, limit=None, select=rendered)
+def render_type_probe(query: Expr, *, dialect: SqlDialect) -> TypeProbe:
+    """``query`` bounded by ``dialect.type_probe`` and rendered once."""
+    return mint_type_probe(dialect.type_probe(query), dialect=dialect,
+                           render=lambda tree: tree.sql(dialect=dialect.sqlglot_name))
 
 
 def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
@@ -191,31 +179,11 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
-def build_sql_model_trial_query(inner_sql: str) -> str:
-    """Wrap raw model SQL in the zero-row trial-execute probe.
-
-    Strips a trailing ``;`` (invalid in a subquery) and puts the inner SQL on
-    its own line so a trailing ``-- comment`` can't swallow the closing paren.
-    """
-    inner = inner_sql.rstrip()
-    if inner.endswith(";"):
-        inner = inner[:-1].rstrip()
-    return f"SELECT * FROM (\n{inner}\n) AS _sd_validate WHERE 1=0"
-
-
-# A read-only source parses to a query root with no DML/DDL nested (a
-# data-modifying CTE hides DML under a SELECT root; COPY/GRANT/CALL/etc. are
-# non-query roots the allowlist rejects on its own).
-_READ_ONLY_ROOTS = (
-    exp.Select, exp.Union, exp.Except, exp.Intersect, exp.Subquery, exp.Values,
-)
-_DATA_MODIFYING_NODES = (
-    exp.Insert, exp.Update, exp.Delete, exp.Merge,
-    exp.Create, exp.Drop, exp.Alter, exp.TruncateTable,
-    exp.Into,  # SELECT ... INTO new_table creates a table under a SELECT root
-    exp.Lock,  # SELECT ... FOR UPDATE / FOR SHARE takes write-intent row locks
-    exp.NextValueFor,  # SELECT NEXT VALUE FOR seq advances sequence state
-)
+def sql_model_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
+    """The zero-row trial of read-only model ``sql``; anything else raises."""
+    inner = parse_query(sql=sql, target_dialect=dialect)
+    return exp.select("*").from_(inner.subquery("_sd_validate")).where(
+        exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
 
 
 def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
@@ -229,9 +197,7 @@ def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
         return "unparseable"
     if tree is None:
         return "unparseable"
-    if not isinstance(tree, _READ_ONLY_ROOTS):
-        return "modifying"
-    return "modifying" if tree.find(*_DATA_MODIFYING_NODES) is not None else "read_only"
+    return "read_only" if is_read_only_query(tree) else "modifying"
 
 
 def _exec_verbatim(conn, sql: str) -> Any:
@@ -287,8 +253,9 @@ def _server_profile(conn, *, engine: Any, dialect: SqlDialect) -> ServerProfile:
             return cached
         base_row = _first_row(_exec_verbatim(conn, profile_sql))
         profile = dialect.parse_server_profile(base_row=base_row)
-        correlated_sql = dialect.correlated_setting_sql(profile)
-        if correlated_sql is not None:
+        correlated = dialect.correlated_setting_probe(profile)
+        if correlated is not None:
+            correlated_sql = correlated.sql(dialect=dialect.sqlglot_name)
             try:
                 correlated_row = _first_row(_exec_verbatim(conn, correlated_sql))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
@@ -310,8 +277,9 @@ async def _server_profile_async(conn, *, engine: Any, dialect: SqlDialect) -> Se
             return cached
         base_row = _first_row(await _exec_verbatim_async(conn, profile_sql))
         profile = dialect.parse_server_profile(base_row=base_row)
-        correlated_sql = dialect.correlated_setting_sql(profile)
-        if correlated_sql is not None:
+        correlated = dialect.correlated_setting_probe(profile)
+        if correlated is not None:
+            correlated_sql = correlated.sql(dialect=dialect.sqlglot_name)
             try:
                 correlated_row = _first_row(await _exec_verbatim_async(conn, correlated_sql))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
@@ -332,15 +300,16 @@ def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> Iterator[list[StatementTimeoutSkippedWarning]]:
     """Put the dialect's timeout on ``conn`` for the block; yields the skips to report."""
-    if not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = conn.connection.dbapi_connection
     prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
     try:
         skipped: list[StatementTimeoutSkippedWarning] = []
-        timeout_sql = dialect.statement_timeout_sql(timeout_seconds)
-        if timeout_sql is not None:
+        timeout = dialect.statement_timeout(timeout_seconds)
+        if timeout is not None:
+            timeout_sql = timeout.sql(dialect=dialect.sqlglot_name)
             try:
                 _exec_verbatim(conn, timeout_sql)
             except sqlalchemy.exc.DBAPIError:
@@ -358,15 +327,18 @@ async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
 ) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
     """Async sibling of ``_statement_timeout``."""
-    if not dialect.timeout_permitted(await _server_profile_async(conn, engine=engine, dialect=dialect)):
+    if dialect.timeout_reads_profile and not dialect.timeout_permitted(
+        await _server_profile_async(conn, engine=engine, dialect=dialect),
+    ):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
         return
     dbapi_connection = (await conn.get_raw_connection()).dbapi_connection
     prior = dialect.set_connection_timeout(dbapi_connection, timeout_seconds)
     try:
         skipped: list[StatementTimeoutSkippedWarning] = []
-        timeout_sql = dialect.statement_timeout_sql(timeout_seconds)
-        if timeout_sql is not None:
+        timeout = dialect.statement_timeout(timeout_seconds)
+        if timeout is not None:
+            timeout_sql = timeout.sql(dialect=dialect.sqlglot_name)
             try:
                 await _exec_verbatim_async(conn, timeout_sql)
             except sqlalchemy.exc.DBAPIError:
@@ -393,11 +365,22 @@ def _read_only_transaction_sql(db_type: str | None) -> str | None:
     return None
 
 
-def _probe_sync(conn: Any, *, sql: str, db_type: str | None) -> dict[str, ResultColumnType]:
-    """Type ``sql``'s result on ``conn``: the dialect's describe statement, else the probe's cursor or census."""
+def type_probe_of(sql: str, *, db_type: str | None) -> TypeProbe:
+    """``sql`` as a type probe: a ``TypeProbe`` as is, other text parsed in the datasource's dialect and bounded."""
+    if isinstance(sql, TypeProbe):
+        return sql
     dialect = dialect_for_ds_type(db_type)
-    probe_sql = _build_type_probe_sql(sql, db_type)
-    describe = dialect.describe_result_statement(exp.National(this=probe_sql))
+    try:
+        query = parse_query(sql=sql, target_dialect=dialect)
+    except SqlglotError as exc:
+        raise UnparseableTypeProbeError(sql=sql, dialect=dialect.sqlglot_name) from exc
+    return render_type_probe(query, dialect=dialect)
+
+
+def _probe_sync(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str, ResultColumnType]:
+    """Type ``probe``'s result on ``conn``: the dialect's describe statement, else the probe's cursor or census."""
+    dialect = dialect_for_ds_type(db_type)
+    describe = dialect.describe_result_statement(exp.National(this=probe.sql))
     if describe is not None:
         try:
             described = _exec_verbatim(conn, describe.sql(dialect=dialect.sqlglot_name))
@@ -405,20 +388,19 @@ def _probe_sync(conn: Any, *, sql: str, db_type: str | None) -> dict[str, Result
         except sqlalchemy.exc.DBAPIError as exc:
             if not dialect.result_undescribable(exc):
                 raise
-    result = _exec_verbatim(conn, probe_sql)
+    result = _exec_verbatim(conn, probe.sql)
     columns = list(result.keys())
-    census_sql = _census_sql(sql, db_type=db_type, columns=columns)
+    census_sql = probe.census_sql(columns, dialect=dialect)
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
     return dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
 
 
-async def _probe_async(conn: Any, *, sql: str, db_type: str | None) -> dict[str, ResultColumnType]:
+async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str, ResultColumnType]:
     """Async sibling of ``_probe_sync``."""
     dialect = dialect_for_ds_type(db_type)
-    probe_sql = _build_type_probe_sql(sql, db_type)
-    describe = dialect.describe_result_statement(exp.National(this=probe_sql))
+    describe = dialect.describe_result_statement(exp.National(this=probe.sql))
     if describe is not None:
         try:
             described = await _exec_verbatim_async(conn, describe.sql(dialect=dialect.sqlglot_name))
@@ -426,9 +408,9 @@ async def _probe_async(conn: Any, *, sql: str, db_type: str | None) -> dict[str,
         except sqlalchemy.exc.DBAPIError as exc:
             if not dialect.result_undescribable(exc):
                 raise
-    result = await _exec_verbatim_async(conn, probe_sql)
+    result = await _exec_verbatim_async(conn, probe.sql)
     columns = list(result.keys())
-    census_sql = _census_sql(sql, db_type=db_type, columns=columns)
+    census_sql = probe.census_sql(columns, dialect=dialect)
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
@@ -441,6 +423,7 @@ def get_result_column_types_sync(
     sql: str, *, engine: sa.Engine, db_type: str | None = None, datasource_name: str | None = None,
 ) -> dict[str, ResultColumnType]:
     """Column types of ``sql``'s result over an existing engine, read-only (rolled back) so a probe can't mutate."""
+    probe = type_probe_of(sql, db_type=db_type)
     with engine.connect() as conn, _statement_timeout(
         conn, engine=engine, dialect=dialect_for_ds_type(db_type),
         datasource_name=datasource_name or str(engine.url), timeout_seconds=_TYPE_PROBE_TIMEOUT_SECONDS,
@@ -448,7 +431,7 @@ def get_result_column_types_sync(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             _exec_verbatim(conn, ro_sql)
-        types = _probe_sync(conn, sql=sql, db_type=db_type)
+        types = _probe_sync(conn, probe=probe, db_type=db_type)
         conn.rollback()
     return types
 
@@ -468,7 +451,8 @@ def get_column_types_sync(
 
 
 async def _get_result_column_types_async(
-    sql: str,
+    probe: TypeProbe,
+    *,
     engine,
     db_type: str | None,
     datasource_name: str | None = None,
@@ -481,7 +465,7 @@ async def _get_result_column_types_async(
         ro_sql = _read_only_transaction_sql(db_type)
         if ro_sql:
             await _exec_verbatim_async(conn, ro_sql)
-        types = await _probe_async(conn, sql=sql, db_type=db_type)
+        types = await _probe_async(conn, probe=probe, db_type=db_type)
         await conn.rollback()
     return types
 
@@ -784,22 +768,23 @@ class SlayerSQLClient:
 
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         """The SLayer type and database type name of each of ``sql``'s result columns."""
+        probe = type_probe_of(sql, db_type=self.datasource.type)
         try:
-            return await self._get_result_column_types(sql=sql)
+            return await self._get_result_column_types(probe=probe)
         except Exception as exc:
             await self._typed(exc)
             raise
 
-    async def _get_result_column_types(self, *, sql: str) -> dict[str, ResultColumnType]:
+    async def _get_result_column_types(self, *, probe: TypeProbe) -> dict[str, ResultColumnType]:
         db_type = self.datasource.type
         async_engine = self._async_engine_here()
         if async_engine is not None:
             return await _get_result_column_types_async(
-                sql=sql, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
+                probe, engine=async_engine, db_type=db_type, datasource_name=self.datasource.name,
             )
         return await self._blocking(
             get_result_column_types_sync,
-            sql=sql,
+            probe,
             db_type=db_type,
             engine=self._get_sync_engine_for_client(),
             datasource_name=self.datasource.name,
@@ -1305,8 +1290,8 @@ def _execute_sql_sync(
 
 
 def _fetch_rows(result, *, dialect: SqlDialect) -> list[dict[str, Any]]:
-    """A row-returning result's rows, each cell read by its dialect reader and each driver tuple as a Python list;
-    a statement returning none (DDL) yields ``[]``."""
+    """A row-returning result's rows, each cell read by its dialect reader and each driver tuple as a Python
+    list; a statement returning none (DDL) yields ``[]``."""
     if not result.returns_rows:
         return []
     columns = list(result.keys())

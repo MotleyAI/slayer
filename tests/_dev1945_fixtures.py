@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -174,7 +174,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 def month_td(column: str = "created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=ColumnRef(name=column), granularity=TimeGranularity.MONTH,
+        dimension=column, granularity=TimeGranularity.MONTH,
     )]
 
 

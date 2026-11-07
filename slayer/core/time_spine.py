@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Mapping, Optional, Sequence
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.syntax import text_paths
 
 TIME_SPINE_MODEL = "time_spine"
 TIME_SPINE_COLUMN = "timestamp"
@@ -78,20 +78,19 @@ def names_spine(ref: str) -> bool:
     return ref.split(".")[0] == TIME_SPINE_MODEL
 
 
-_SPINE_REF = re.compile(rf"(?<![\w.]){TIME_SPINE_MODEL}\.")
-
-
-def mentions_spine(text: str) -> bool:
-    """A formula / filter text reading the spine."""
-    return bool(_SPINE_REF.search(text))
+def reads_spine(text: str, *, root: Optional[str]) -> bool:
+    """A Mode-B text reading the spine by a dotted path from ``root``."""
+    return any(len(path) > 1 and path[0] == TIME_SPINE_MODEL for path in text_paths(text, root=root))
 
 
 def is_spine_query(query: SlayerQuery) -> bool:
     """A query rooted at the spine, or reading it in a time dimension, dimension or filter."""
     dims = [getattr(d, "expression", None) or getattr(d, "full_name", "") for d in query.dimensions or []]
-    return query.source_model_name == TIME_SPINE_MODEL or any(
-        names_spine(td.dimension.full_name) for td in query.time_dimensions or []
-    ) or any(mentions_spine(t) for t in [*dims, *(query.filters or [])])
+    tds = [td.dimension for td in query.time_dimensions or []]
+    root = query.source_model_name
+    return root == TIME_SPINE_MODEL or any(
+        reads_spine(t, root=root) for t in [*dims, *tds, *(query.filters or [])]
+    )
 
 
 def query_host(model: SlayerModel, *, query: SlayerQuery) -> SlayerModel:

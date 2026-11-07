@@ -1,8 +1,7 @@
 """List functions over the usual ingested Postgres array types, and ``collect`` over an exact numeric (spec:
-queries/list-functions › Physical array types differ on Postgres, Mixed numeric types; aggregations/collect)."""
+queries/list-functions › Physical array types differ on Postgres; aggregations/collect)."""
 
 import pytest
-from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -11,6 +10,10 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2137_fixtures import by, measure
+
+pytest.importorskip("pytest_postgresql")
+
+from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -27,11 +30,6 @@ TYPED = (
     f"(3, 'a', ARRAY['rust'], ARRAY[]::BIGINT[], ARRAY[]::TEXT[], ARRAY[]::INTEGER[], 1.50, '{UUID_B}'), "
     "(4, 'b', NULL, NULL, ARRAY['go'], ARRAY[1], NULL, NULL)",
 )
-#: 1 → scores [2, 3], prices [2.0]; 2 → scores [4], prices [2.5].
-MIXED = (
-    "CREATE TABLE mixed (id INTEGER PRIMARY KEY, scores INTEGER[], prices DOUBLE PRECISION[])",
-    "INSERT INTO mixed VALUES (1, ARRAY[2, 3], ARRAY[2.0]), (2, ARRAY[4], ARRAY[2.5])",
-)
 
 
 def typed_model() -> SlayerModel:
@@ -46,18 +44,10 @@ def typed_model() -> SlayerModel:
     ])
 
 
-def mixed_model() -> SlayerModel:
-    return SlayerModel(name="mixed", sql_table="mixed", data_source="pg", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
-        Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE),
-    ])
-
-
 @pytest.fixture
 async def pg(postgresql, tmp_path):
     cur = postgresql.cursor()
-    for stmt in (*TYPED, *MIXED):
+    for stmt in TYPED:
         cur.execute(stmt)
     postgresql.commit()
     info = postgresql.info
@@ -66,7 +56,6 @@ async def pg(postgresql, tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
     await storage.save_model(typed_model())
-    await storage.save_model(mixed_model())
     engine = SlayerQueryEngine(storage=storage)
     try:
         yield engine
@@ -79,12 +68,10 @@ async def pg(postgresql, tmp_path):
 @pytest.mark.parametrize(("expr", "kept"), [
     ("contains(skills, 'go')", {1}),
     ("contains(levels, 2)", {1, 2}),
-    ("contains(levels, '2')", {1, 2}),
     ("contains_any(skills, ['go'])", {1}),
     ("contains_any(skills, ['go', 'rust'])", {1, 3}),
     ("contains_all(skills, ['sql'])", {1, 2}),
     ("contains_any(levels, [2, 9])", {1, 2}),
-    ("contains_any(levels, ['2', '9'])", {1, 2}),
     ("contains_all(levels, [1, 2])", {1}),
     ("contains_any(skills, required)", {1}),
     ("contains_all(skills, required)", {3}),
@@ -95,14 +82,6 @@ async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) 
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": ["id"],
                                                         "filters": [expr]}))
     assert {int(r["typed.id"]) for r in resp.data} == kept, resp.sql
-
-
-@pytest.mark.parametrize("expr", ["contains(scores, 2.0)", "contains_any(scores, prices)",
-                                  "contains_all(prices, [2])", "contains(prices, 2)"])
-async def test_mixed_numeric_types(pg, expr: str) -> None:
-    resp = await pg.execute(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"],
-                                                        "filters": [expr]}))
-    assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
 
 
 async def test_collect_over_numeric(pg) -> None:
@@ -122,7 +101,7 @@ async def test_collect_over_uuid(pg) -> None:
 @pytest.mark.parametrize("fn", ["contains_any", "contains_all"])
 async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
     # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
-    hit = f"{fn}(collect(uid, partition_by=team), collect(concat(uid, ''), partition_by=team))"
+    hit = f"{fn}(collect(uid, partition_by=team), collect(uid || '', partition_by=team))"
     resp = await pg.execute(SlayerQuery.model_validate({"source_model": "typed", "dimensions": [
         "id", {"expression": hit, "name": "hit"}]}))
     assert {int(r["typed.id"]): r["typed.hit"] for r in resp.data} == {

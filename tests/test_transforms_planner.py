@@ -45,13 +45,13 @@ from slayer.core.keys import (
 )
 from slayer.core.keys import Grain
 from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.projection import _iter_slot_deps
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ class TestIterSlotDepsTransformAux:
         # time_key can be a TimeTruncKey too — same dep yield rule.
         inner = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
         tt = TimeTruncKey(
-            column=ColumnKey(path=(), leaf="created_at"),
+            source=ColumnKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
         )
         tk = TransformKey(op="cumsum", input=inner, time_key=tt)
@@ -363,7 +363,7 @@ class TestIterSlotDepsTransformAux:
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -385,7 +385,7 @@ class TestTransformLayersPopulation:
             measures=[{"formula": "cumsum(amount:sum)"}],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -412,7 +412,7 @@ class TestTransformLayersPopulation:
             measures=[{"formula": "time_shift(amount:sum, periods=-1)"}],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -431,7 +431,7 @@ class TestTransformLayersPopulation:
             measures=[{"formula": "change(amount:sum)"}],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -450,7 +450,7 @@ class TestTransformLayersPopulation:
             measures=[{"formula": "cumsum(change(amount:sum))"}],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -475,7 +475,7 @@ class TestTransformLayersPopulation:
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -512,7 +512,7 @@ class TestTransformInnerIdentity:
             measures=[{"formula": "change(amount:sum)"}],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -539,7 +539,7 @@ class TestTransformInnerIdentity:
             ],
             time_dimensions=[
                 TimeDimension(
-                    dimension=ColumnRef(name="created_at"),
+                    dimension="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

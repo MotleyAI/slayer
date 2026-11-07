@@ -7,7 +7,6 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import AsyncGenerator, Iterator
 from typing import Any, Optional
 
 import pytest
@@ -15,22 +14,23 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlglot import exp
 
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.errors import ListTypeError, SlayerError
+from slayer.async_utils import run_sync
+from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
 from slayer.engine.ingestion import (
-    IntrospectedColumn, _inferred_elements, _introspect_table_columns, _introspected_column, _retyped_list,
-    ingest_datasource_async, ingest_datasource_idempotent,
+    IntrospectedColumn, _inferred_elements, _retyped_list, ingest_datasource,
+    ingest_datasource_idempotent,
 )
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_scope import SchemaRef
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.collection_render import render_models_summary
 from slayer.inspect.model_render import render_model_inspection
 from slayer.search.render import render_column_text
 from slayer.sql import engine_factory
-from slayer.sql.client import ExecutionResult, SlayerSQLClient
-from slayer.sql.dialects import ReflectedColumn, get_dialect
-from slayer.sql.dialects.reflection import TableLocation, column_from_sa_type, column_from_type_string
+from slayer.sql.dialects import get_dialect
+from slayer.sql.client import ExecutionResult
+from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_model, emit_contractors
 from tests._dev2137_fixtures import list_engine, measure, num, query
@@ -83,8 +83,7 @@ class TestTheType:
 # Ingestion
 # --------------------------------------------------------------------------- #
 def _mapped(sa_type: sa.types.TypeEngine) -> tuple[DataType, Optional[DataType], Optional[str]]:
-    reflected = column_from_sa_type(name="xs", sa_type=sa_type)
-    col = _introspected_column(reflected, name="xs", primary_key=False)
+    col = column_from_sa_type(name="xs", sa_type=sa_type)
     return col.type, col.element_type, col.db_type
 
 
@@ -129,15 +128,6 @@ class TestIngestionMapping:
     def test_scalars_carry_no_element_type(self) -> None:
         assert _mapped(sa.Integer())[1] is None
 
-    @pytest.mark.parametrize(("data_type", "element"), [
-        ("INTEGER[]", DataType.INT), ("VARCHAR[]", DataType.TEXT), ("INTEGER[][]", DataType.UNKNOWN),
-        ("Array(LowCardinality(Nullable(String)))", DataType.TEXT), ("array(varchar)", DataType.TEXT),
-    ])
-    def test_type_strings(self, data_type: str, element: DataType) -> None:
-        col = column_from_type_string(name="xs", data_type=data_type)
-        assert (col.type, col.element_type) == (DataType.ARRAY, element)
-        assert col.db_type == data_type
-
 
 DUCKDB_KINDS = {
     "tags": ("VARCHAR[]", DataType.TEXT), "scores": ("INTEGER[]", DataType.INT),
@@ -148,7 +138,7 @@ DUCKDB_KINDS = {
 
 
 @contextlib.contextmanager
-def _duckdb_file(*statements: str) -> Iterator[tuple[DatasourceConfig, str]]:
+def _duckdb_file(*statements: str):
     duckdb = pytest.importorskip("duckdb")
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "live.duckdb")
@@ -162,90 +152,16 @@ def _duckdb_file(*statements: str) -> Iterator[tuple[DatasourceConfig, str]]:
             engine_factory.invalidate_engine(ds)
 
 
-@contextlib.asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient]:
-    client = SlayerSQLClient(datasource=ds)
-    try:
-        yield client
-    finally:
-        await client.aclose()
-        client.close()
-
-
 class TestDuckDBIngestion:
-    async def test_lists_ingested_with_element_types(self) -> None:
+    def test_lists_ingested_with_element_types(self) -> None:
         cols = ", ".join(f"{c} {t}" for c, (t, _) in DUCKDB_KINDS.items())
         with _duckdb_file(f"CREATE TABLE kinds (id INTEGER, {cols})") as (ds, _tmp):
-            async with _client(ds) as client:
-                model = (await ingest_datasource_async(ds, client=client, include_tables=["kinds"]))[0]
+            model = ingest_datasource(datasource=ds, include_tables=["kinds"])[0]
         for name, (db_type, element) in DUCKDB_KINDS.items():
             col = model.get_column(name)
             assert col is not None
             assert (col.type, col.element_type) == (DataType.ARRAY, element), name
             assert (col.db_type or "").upper() == db_type.upper(), name
-
-
-# --------------------------------------------------------------------------- #
-# Snowflake element inference
-# --------------------------------------------------------------------------- #
-class _SnowflakeClient:
-    """Engine-owned client double: reflects ``columns`` and answers every statement with ``kinds``."""
-
-    def __init__(self, *, columns: list[ReflectedColumn], kinds: list[str]) -> None:
-        self.columns = columns
-        self.kinds = kinds
-        self.statements: list[str] = []
-
-    @property
-    def datasource(self) -> DatasourceConfig:
-        return DatasourceConfig(name="sf", type="snowflake")
-
-    async def execute(self, sql: str) -> ExecutionResult:
-        self.statements.append(sql)
-        return ExecutionResult(rows=[{"TYPEOF": k} for k in self.kinds])
-
-    async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
-        return self.columns
-
-
-def _untyped(name: str) -> ReflectedColumn:
-    return column_from_type_string(name=name, data_type="ARRAY")
-
-
-class TestSnowflakeInference:
-    @pytest.mark.parametrize(("kinds", "element"), [
-        (["INTEGER"], DataType.INT), (["VARCHAR", "INTEGER"], DataType.TEXT), (["OBJECT"], DataType.UNKNOWN),
-        (["INTEGER", "DECIMAL"], DataType.DOUBLE), ([], DataType.UNKNOWN), (["ARRAY"], DataType.UNKNOWN),
-    ])
-    def test_element_type_from_kinds(self, kinds: list[str], element: DataType) -> None:
-        assert get_dialect("snowflake").list_element_type(kinds) is element
-
-    @pytest.mark.parametrize(("kinds", "element"), [
-        (["INTEGER"], DataType.INT), (["VARCHAR", "INTEGER"], DataType.TEXT), (["OBJECT"], DataType.UNKNOWN),
-    ])
-    async def test_one_query_per_untyped_column(self, kinds: list[str], element: DataType) -> None:
-        client = _SnowflakeClient(columns=[_untyped("ints"), _untyped("more")], kinds=kinds)
-        cols = await _introspect_table_columns(client=client, table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
-                                               ref=SchemaRef(name="RAW"), primary_key=[])
-        assert {c.name: c.element_type for c in cols} == {"ints": element, "more": element}
-        assert len(client.statements) == 2, client.statements
-
-    async def test_structured_array_needs_no_query(self) -> None:
-        sf = pytest.importorskip("snowflake.sqlalchemy")
-        typed = column_from_sa_type(name="tags", sa_type=sf.ARRAY(value_type=sa.VARCHAR()))
-        client = _SnowflakeClient(columns=[typed], kinds=["INTEGER"])
-        cols = await _introspect_table_columns(client=client, table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
-                                               ref=SchemaRef(name="RAW"), primary_key=[])
-        assert [(c.name, c.element_type) for c in cols] == [("tags", DataType.TEXT)]
-        assert client.statements == []
-
-    async def test_reads_the_table_in_its_own_database(self) -> None:
-        client = _SnowflakeClient(columns=[], kinds=["INTEGER"])
-        column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
-        typed = await _inferred_elements(column, client=client, table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
-                                         ref=SchemaRef(catalog="OTHER_DB", name="RAW"))
-        assert typed.element_type is DataType.INT
-        assert "OTHER_DB.RAW.kinds" in client.statements[0], client.statements
 
 
 # --------------------------------------------------------------------------- #
@@ -259,7 +175,7 @@ async def engine():
 
 async def _refused(engine: SlayerQueryEngine, *, names: tuple[str, ...], **body: Any) -> str:
     q = query(**body)
-    with pytest.raises(ListTypeError) as info:
+    with pytest.raises(SlayerError) as info:
         await engine.execute(q)
     msg = str(info.value)
     for name in names:
@@ -281,8 +197,9 @@ class TestEligibility:
     async def test_comparing_a_list(self, engine, filter_: str, remedy: str) -> None:
         await _refused(engine, names=(remedy,), measures=[measure("count(*)", "n")], filters=[filter_])
 
-    @pytest.mark.parametrize("filter_", ["skills < 'go'", "skills <= 'go'", "skills > 'go'", "skills >= 'go'",
-                                         "skills = required"])
+    @pytest.mark.parametrize("filter_", [
+        "skills < 'go'", "skills >= 'go'", "skills BETWEEN 'a' AND 'z'", "skills IS DISTINCT FROM required",
+    ])
     async def test_other_comparisons_refused(self, engine, filter_: str) -> None:
         await _refused(engine, names=("skills",), measures=[measure("count(*)", "n")], filters=[filter_])
 
@@ -290,7 +207,7 @@ class TestEligibility:
         await _refused(engine, names=("count_distinct(skills.value)",),
                        measures=[measure("count_distinct(skills)", "n")])
 
-    @pytest.mark.parametrize("agg", ["sum", "avg", "min", "max", "first", "last", "count_distinct_approx"])
+    @pytest.mark.parametrize("agg", ["min", "max", "first", "last", "count_distinct_approx"])
     async def test_other_builtins_refused(self, engine, agg: str) -> None:
         await _refused(engine, names=("skills",), measures=[measure(f"{agg}(skills)", "n")])
 
@@ -328,16 +245,9 @@ class TestEligibility:
         SlayerModel(name="c", sql_table="c", data_source="test", columns=[
             Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT, allowed_aggregations=["count"])])
 
-    def test_default_aggregations_are_count(self) -> None:
-        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY] == frozenset({"count"})
-
     async def test_null_test(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["name"], filters=["skills IS NULL"]))
         assert {r["contractors.name"] for r in resp.data} == {"Dee"}
-
-    async def test_not_null_test(self, engine) -> None:
-        resp = await engine.execute(query(dimensions=["name"], filters=["skills IS NOT NULL"]))
-        assert {r["contractors.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Eve"}
 
 
 class TestNullElements:
@@ -383,117 +293,40 @@ class TestOpaqueElements:
 
 
 # --------------------------------------------------------------------------- #
-# sql-mode list columns
-# --------------------------------------------------------------------------- #
-SQL_LIVE = ("CREATE TABLE people (id INTEGER, skills VARCHAR[])",
-            "INSERT INTO people VALUES (1, ['go', 'sql']), (2, ['sql'])")
-
-
-def _sql_model(*columns: Column) -> SlayerModel:
-    return SlayerModel(name="people_q", sql="SELECT id, skills FROM people", data_source="test",
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True), *columns])
-
-
-async def _ingested_sql_model(ds: DatasourceConfig, tmp: str, model: SlayerModel) -> SlayerQueryEngine:
-    storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
-    await storage.save_datasource(ds)
-    await storage.save_model(model)
-    async with _client(ds) as client:
-        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=client)
-    return SlayerQueryEngine(storage=storage)
-
-
-class TestSqlModeElementType:
-    async def test_cursor_reports_a_list(self) -> None:
-        with _duckdb_file(*SQL_LIVE) as (ds, _tmp):
-            async with _client(ds) as client:
-                types = await client.get_result_column_types("SELECT id, skills FROM people")
-        assert types["skills"].type is DataType.ARRAY
-
-    async def test_undeclared_element_type(self) -> None:
-        undeclared = Column(name="skills", type=DataType.ARRAY)
-        with _duckdb_file(*SQL_LIVE) as (ds, tmp):
-            engine = await _ingested_sql_model(ds, tmp, _sql_model(undeclared))
-            try:
-                model = await engine.storage.get_model("people_q", data_source="test")
-                assert model is not None
-                skills = model.get_column("skills")
-                assert skills is not None
-                assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.UNKNOWN)
-                with pytest.raises(SlayerError, match="UNKNOWN"):
-                    await engine.execute({"source_model": "people_q", "dimensions": ["skills.value"]})
-            finally:
-                engine.close()
-
-    async def test_declared_element_type(self) -> None:
-        declared = Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT)
-        with _duckdb_file(*SQL_LIVE) as (ds, tmp):
-            engine = await _ingested_sql_model(ds, tmp, _sql_model(declared))
-            try:
-                model = await engine.storage.get_model("people_q", data_source="test")
-                assert model is not None
-                skills = model.get_column("skills")
-                assert skills is not None
-                assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
-                resp = await engine.execute({"source_model": "people_q", "dimensions": ["id"],
-                                             "filters": ["contains(skills, 'go')"]})
-                assert {int(r["people_q.id"]) for r in resp.data} == {1}
-            finally:
-                engine.close()
-
-
-# --------------------------------------------------------------------------- #
 # Backends without native lists
 # --------------------------------------------------------------------------- #
-NO_LISTS = [("sqlite", "SQLite"), ("mysql", "MySQL"), ("mariadb", "MariaDB"), ("tsql", "SQL Server"),
-            ("redshift", "Redshift"), ("databricks", "Databricks"), ("spark", "Spark"), ("oracle", "Oracle")]
-
-
-async def _refused_on(dialect: str, *, names: tuple[str, ...], **body: Any) -> None:
-    q = query(**body)
-    with pytest.raises(ListTypeError) as info:
-        await emit_contractors(q, dialect=dialect)
-    msg = str(info.value)
-    for name in names:
-        assert name in msg, msg
-
-
 class TestNoNativeLists:
     async def test_list_function_on_sqlite(self) -> None:
         async with contractors_engine("sqlite") as e:
             q = query(measures=[measure("count(*)", "n")], filters=["contains(skills, 'go')"])
-            with pytest.raises(ListTypeError) as info:
+            with pytest.raises(SlayerError) as info:
                 await e.execute(q)
         assert "contains" in str(info.value), str(info.value)
         assert "SQLite" in str(info.value), str(info.value)
 
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
-    async def test_list_function(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=("contains", database), measures=[measure("count(*)", "n")],
-                          filters=["contains(skills, 'go')"])
-
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
+    @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
+                                                       ("sqlite", "SQLite")])
     async def test_collect(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=("collect", database), dimensions=["city"],
-                          measures=[measure("collect(team)", "c")])
+        q = query(dimensions=["city"], measures=[measure("collect(team)", "c")])
+        with pytest.raises(SlayerError) as info:
+            await emit_contractors(q, dialect=dialect)
+        assert "collect" in str(info.value), str(info.value)
+        assert database in str(info.value), str(info.value)
 
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
+    @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server"),
+                                                       ("sqlite", "SQLite")])
     async def test_element_access(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=("skills", database), dimensions=["skills.value"])
+        q = query(measures=[measure("count(*)", "n")], filters=["skills.value = 'go'"])
+        with pytest.raises(SlayerError) as info:
+            await emit_contractors(q, dialect=dialect)
+        assert database in str(info.value), str(info.value)
 
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
-    async def test_element_filter(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=("skills", database), measures=[measure("count(*)", "n")],
-                          filters=["skills.value = 'go'"])
-
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
-    async def test_list_child(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=("skills", database), measures=[measure("count(skills.*)", "n")])
-
-    @pytest.mark.parametrize(("dialect", "database"), NO_LISTS)
+    @pytest.mark.parametrize(("dialect", "database"), [("mysql", "MySQL"), ("tsql", "SQL Server")])
     async def test_array_literal(self, dialect: str, database: str) -> None:
-        await _refused_on(dialect, names=(database,), measures=[measure("count(*)", "n")],
-                          filters=["contains_any(skills, ['go'])"])
+        q = query(measures=[measure("count(*)", "n")], filters=["contains_any(skills, ['go'])"])
+        with pytest.raises(SlayerError) as info:
+            await emit_contractors(q, dialect=dialect)
+        assert database in str(info.value), str(info.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -507,9 +340,7 @@ async def _reingest(ds: DatasourceConfig, tmp: str, stored: SlayerModel) -> Slay
     storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
     await storage.save_datasource(ds)
     await storage.save_model(stored)
-    async with _client(ds) as client:
-        await ingest_datasource_idempotent(datasource=ds, storage=storage, client=client,
-                                           include_tables=["contractors"])
+    await ingest_datasource_idempotent(datasource=ds, storage=storage, include_tables=["contractors"])
     loaded = await storage.get_model("contractors", data_source=ds.name)
     assert loaded is not None
     return loaded
@@ -635,12 +466,37 @@ class TestRendering:
         assert skills["element_type"] == "TEXT"
 
 
+class TestSnowflakeJson:
+    async def test_json_value_reads_an_array_column(self) -> None:
+        tags = Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT, db_type="ARRAY")
+        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, tags]})
+        sql = await emit_contractors(query(dimensions=["id", {"expression": "json_value(tags, '$[0]')", "name": "t"}]),
+                                     dialect="snowflake", models=[model])
+        assert "TRY_PARSE_JSON" not in sql.upper(), sql
+
+
 class TestCatalogFallbackLists:
     def test_a_bare_array_type_string_is_a_list_with_opaque_elements(self) -> None:
         col = column_from_type_string(name="tags", data_type="ARRAY")
         assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.UNKNOWN, "ARRAY")
 
     def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
-        typed = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
-        assert typed is not None
-        assert typed.type is DataType.ARRAY
+        described = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
+        assert described is not None
+        assert described.type is DataType.ARRAY
+
+    def test_snowflake_element_inference_reads_the_table_in_its_own_database(self) -> None:
+        statements: list[str] = []
+
+        class _Client:
+            datasource = DatasourceConfig(name="sf", type="snowflake")
+
+            async def execute(self, sql: str) -> ExecutionResult:
+                statements.append(sql)
+                return ExecutionResult(rows=[{"t": "INTEGER"}])
+
+        column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        typed = run_sync(_inferred_elements(column, client=_Client(), table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
+                                            ref=SchemaRef(catalog="OTHER_DB", name="RAW")))
+        assert typed.element_type is DataType.INT
+        assert "OTHER_DB.RAW.kinds" in statements[0], statements

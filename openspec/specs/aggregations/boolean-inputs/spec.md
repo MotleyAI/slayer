@@ -19,8 +19,8 @@ boolean-valued. The same recognition SHALL drive binding gates, result typing an
 
 #### Scenario: Mixed-type coalesce is not boolean
 - **WHEN** a measure is written `sum(coalesce(flag, amount))` with `flag` BOOLEAN and `amount` INT
-- **THEN** it is aggregated as a plain numeric expression, with no boolean lowering and no
-  boolean typing
+- **THEN** the input is not boolean-valued: it is typed INT, `flag` reads as its integer inside
+  the `coalesce`, and the sum aggregates it as a plain number
 
 #### Scenario: nullif follows its first argument
 - **WHEN** a measure is written `sum(nullif(flag, false))`
@@ -28,14 +28,18 @@ boolean-valued. The same recognition SHALL drive binding gates, result typing an
 
 ### Requirement: Numeric aggregations lower a boolean input to an integer
 Every numeric aggregation — `sum`, `avg`, `min`, `max`, `median`, `percentile`, `weighted_avg`,
-`stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop` — over a
-boolean-valued input SHALL aggregate the input's integer value — true as 1, false as 0, NULL as
-NULL — so NULL inputs are ignored as for any aggregate.
+`stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop` — SHALL read
+every boolean-valued input as its integer value — true as 1, false as 0, NULL as NULL — so NULL
+inputs are ignored as for any aggregate. The inputs are the aggregated value and every parameter
+the aggregation reads: `weighted_avg`'s `weight=`, the `other=` of `corr` / `covar_samp` /
+`covar_pop`, `percentile`'s `p=` (a number literal, which the rule leaves unchanged), and every
+placeholder of a model-level aggregation that reuses a built-in aggregation's name.
 `min` and `max` SHALL return a BOOLEAN, converted back within the aggregate expression itself,
 so the aggregate is boolean wherever it appears (projection, post-aggregation filter, ordering,
 arithmetic). The count family (`count`, `count_distinct`, `count_distinct_approx`), `first`,
-`last` and custom aggregations SHALL receive the boolean input unchanged. A boolean-valued
-input SHALL remain boolean in every non-aggregate position (dimension, row filter).
+`last` (value and ranking key) and custom aggregations (`{value}` and every placeholder) SHALL
+receive every boolean input unchanged. A boolean-valued input SHALL remain boolean in every
+non-aggregate position (dimension, row filter).
 
 #### Scenario: Sum counts the trues
 - **WHEN** a query over rows whose `flag` values are `true, true, false, NULL, false` selects
@@ -77,18 +81,53 @@ input SHALL remain boolean in every non-aggregate position (dimension, row filte
   float, since its integer `AVG` truncates), `min` / `max` convert
   the aggregate back to the dialect's boolean type, and no aggregate receives the raw boolean
 
+#### Scenario: Boolean weight
+- **WHEN** a query on `orders` selects `weighted_avg(amount, weight=status = 'paid')`
+- **THEN** it returns the plain average of the paid orders' amounts on SQLite, DuckDB and
+  Postgres, never a database error
+
+#### Scenario: Boolean other
+- **WHEN** a query on `orders` selects `covar_samp(amount, other=status = 'paid')` and
+  `corr(amount, other=status = 'paid')`
+- **THEN** each equals the same statistic over `amount` and the integer `1` / `0` of the
+  comparison, on SQLite, DuckDB and Postgres
+
+#### Scenario: Boolean parameter under FILTER
+- **WHEN** a measure is `weighted_avg(amount, weight=status = 'paid') FILTER (WHERE amount > 10)`
+- **THEN** it equals the plain average of the paid orders' amounts above 10
+
+#### Scenario: Boolean parameter in every aggregation shape
+- **WHEN** `weighted_avg(amount, weight=status = 'paid')` is evaluated with `window=` over a
+  month time dimension, with `partition_by=`, cross-model from a query rooted at `customers`
+  (`weighted_avg(orders.amount, weight=orders.status = 'paid')`), and by the association producer
+  under `to_many_handling: "associate"`
+- **THEN** each returns the plain average of the paid amounts in its window, partition, customer
+  or entity, never a database error
+
+#### Scenario: Emitted parameter SQL on every dialect
+- **WHEN** SQL is generated for `weighted_avg(amount, weight=flag)` and
+  `covar_samp(amount, other=flag)` on each supported dialect
+- **THEN** each parameter enters the aggregate as the integer form of `flag`, never the raw boolean
+
+#### Scenario: Custom aggregation receives the raw boolean
+- **WHEN** a model defines a custom aggregation `true_amount` with formula
+  `SUM(CASE WHEN {flag} THEN {value} END)` and a query selects
+  `true_amount(amount, flag=status = 'paid')`
+- **THEN** `{flag}` reaches the formula as the boolean and the query returns the paid orders'
+  amount total on Postgres and DuckDB
+
 ### Requirement: Boolean aggregation result types and formats
 The result of an aggregation over a boolean-valued input SHALL be typed and formatted as:
 `sum` → INT with INTEGER format; `avg` → DOUBLE with PERCENT format unless the source column
 declares a format, which wins; `min` / `max` → BOOLEAN; every other numeric aggregation → DOUBLE,
 as over an INT source; the count family → INT; `first` / `last` and custom aggregations → the
 source type. Every surface that reports an aggregate's
-type — query response metadata, stage schemas consumed by a later stage, and the SQL facade's
+type — the query plan, stage schemas consumed by a later stage, and the SQL facade's
 metric catalogue — SHALL report the same type for the same column and aggregation.
 
 #### Scenario: Sum is an integer measure
 - **WHEN** a query selects `sum(flag)`
-- **THEN** the measure's response type is INT and its format INTEGER, and no cast to BOOLEAN
+- **THEN** the measure's type is INT and its response format INTEGER, and no cast to BOOLEAN
   wraps the aggregate
 
 #### Scenario: Avg displays as a percentage

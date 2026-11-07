@@ -42,6 +42,7 @@ from slayer.core.join_walker import (
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.core.scope import resolve_generated_column
+from slayer.core.syntax import drop_root_hop
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
@@ -103,9 +104,10 @@ def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     scope_node_ids: dict[int, ScopeType] = {}
     for scope in traverse_scope(wrapper):
         scope_node_ids[id(scope.expression)] = scope.scope_type
+    bound = _comprehension_bound_ids(parsed)
     if not scope_node_ids:
         # No SELECTs in the fragment at all — every column is root-scope.
-        return {id(c) for c in parsed.find_all(exp.Column)}
+        return {id(c) for c in parsed.find_all(exp.Column)} - bound
     # Re-walk the WRAPPER (which holds copies) — but we need ids from the
     # ORIGINAL parsed tree. Pair them up positionally: find_all yields
     # nodes in document order on both wrapper.this[0] and parsed.
@@ -132,7 +134,20 @@ def root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
             node = node.parent
         if scope_type == ScopeType.ROOT:
             root_ids.add(id(p_col))
-    return root_ids
+    return root_ids - bound
+
+
+def _comprehension_bound_ids(parsed: exp.Expr) -> set[int]:
+    """Ids of the names a list comprehension (``[e FOR e IN xs IF p]``) binds, wherever they appear in it."""
+    bound: set[int] = set()
+    for node in parsed.find_all(exp.Comprehension):
+        var = node.expression
+        if not isinstance(var, exp.Column):
+            continue
+        for part in (node.this, var, node.args.get("condition")):
+            if isinstance(part, exp.Expr):
+                bound |= {id(c) for c in part.find_all(exp.Column) if not c.table and c.name == var.name}
+    return bound
 
 
 class _PathSink(Protocol):
@@ -235,9 +250,7 @@ def resolve_ref_target(
     so here it simply fails to resolve (best-effort skip). Returns ``None``
     when a hop is not a join / not reachable / ambiguous / revisiting.
     """
-    quals = list(qualifiers)
-    if quals and quals[0] == source_model.name:
-        quals = quals[1:]
+    quals = drop_root_hop(qualifiers, source_model.spelling)
     if not quals:
         return source_model
     try:
@@ -271,12 +284,10 @@ def _resolve_qualifiers(
     ``reference`` and the ``column`` being expanded) for a revisiting hop — all
     fail closed.
     """
-    quals = list(qualifiers)
-    if quals and quals[0] in (owner_alias, source_model.name):
-        quals = quals[1:]
-    if not quals:
+    root = owner_alias if tuple(qualifiers[:1]) == (owner_alias,) else source_model.spelling
+    path = drop_root_hop(qualifiers, root)
+    if not path:
         return ()
-    path = tuple(quals)
     # A definition is judged from its model as stored: it never sees a query frame's product hops.
     source_model = source_model.with_unrelated(frozenset()) if source_model.unrelated_datasets else source_model
     dataset = unreachable_target(root=source_model, token=path[0], models_by_name=models_by_name)

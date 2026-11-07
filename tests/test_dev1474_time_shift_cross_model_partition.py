@@ -205,7 +205,7 @@ def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
     return SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
-            dimension=ColumnRef(name="ordered_at"),
+            dimension="ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
         dimensions=[ColumnRef(name="stores.name")],
@@ -248,7 +248,7 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
             dimensions=[ColumnRef(name="stores.regions.name")],
@@ -277,7 +277,7 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status_up")],
@@ -309,7 +309,7 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="stores.tier")],
@@ -338,9 +338,9 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="delivery_at"),
+                TimeDimension(dimension="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
@@ -370,7 +370,7 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="stores.name")],
@@ -394,7 +394,7 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="stores.opened_at"),
+                dimension="stores.opened_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -427,7 +427,7 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -455,7 +455,7 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
@@ -504,7 +504,7 @@ class TestShiftedCteNullSafeJoinBack:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status")],
@@ -539,7 +539,7 @@ class TestLocalOnlyTimeShiftUnchanged:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="ordered_at"),
+                dimension="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[ColumnRef(name="status")],
@@ -574,9 +574,9 @@ class TestJoinedSecondaryTimeDimension:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="stores.opened_at"),
+                TimeDimension(dimension="stores.opened_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
@@ -777,9 +777,9 @@ class TestSecondaryTimeDimensionExecution:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="ordered_at"),
+                TimeDimension(dimension="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension=ColumnRef(name="delivery_at"),
+                TimeDimension(dimension="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",

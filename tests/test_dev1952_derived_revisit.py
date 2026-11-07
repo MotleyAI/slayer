@@ -44,7 +44,7 @@ from slayer.engine import join_safety
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import parse_expr
+from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.param_binding import resolve_default_qualifier_path
 from slayer.sql.column_expansion import (

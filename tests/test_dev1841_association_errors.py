@@ -16,7 +16,6 @@ import pytest
 from slayer.core.errors import SlayerError
 
 from tests._dev1841_fixtures import (
-    ColumnRef,
     ModelMeasure,
     TimeDimension,
     TimeGranularity,
@@ -38,7 +37,7 @@ CM = ModelMeasure(formula="customers.spend:sum", name="cm")
 #: (which would fire before association eligibility) must NOT satisfy it.
 _COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
 _SIGNUP_TD = [TimeDimension(
-    dimension=ColumnRef(name="customers.signup_at"),
+    dimension="customers.signup_at",
     granularity=TimeGranularity.MONTH)]
 
 

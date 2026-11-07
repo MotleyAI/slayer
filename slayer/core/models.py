@@ -10,39 +10,23 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     field_validator,
     model_validator,
 )
 from sqlalchemy.engine import URL as _SA_URL
 
-from slayer.core.enums import (
-    BUILTIN_AGGREGATION_FORMULAS,
-    BUILTIN_AGGREGATIONS,
-    DEFAULT_AGGREGATIONS_BY_TYPE,
-    GRANULARITY_NAMES,
-    LIST_AGGREGATIONS,
-    DataType,
-    JoinCardinality,
-    JoinType,
-    ObjectKind,
-    PRIMARY_KEY_AGGREGATIONS,
-    RANKED_AGGREGATIONS,
-    RESERVED_DATE_SYNTAX_NAMES,
-    _coerce_legacy_datatype,
-    builtin_empty_value,
-    type_display,
-)
+from slayer.core.enums import BUILTIN_AGGREGATION_FORMULAS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, JoinCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import AmbiguousAggregationError, GranularityDefinitionError, JoinKeyError
 from slayer.core.format import NumberFormat
-from slayer.core.formula import ALL_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
-from slayer.core.keys import SCALAR_FUNCTIONS
+from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema
+from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 
@@ -169,7 +153,9 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
 
 
 def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
-    """``element_type`` is rejected off a list and never itself a list (a model requires it on a list)."""
+    """``element_type`` is required on a list, rejected elsewhere, and never itself a list."""
+    if data_type is DataType.ARRAY and element_type is None:
+        raise ValueError(f"Column {name!r} is a list (type ARRAY) and needs an element_type.")
     if data_type is not DataType.ARRAY and element_type is not None:
         raise ValueError(
             f"Column {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
@@ -196,18 +182,21 @@ class Column(BaseModel):
     """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
     name: str
     sql: str | None = None
-    type: DataType = DataType.TEXT
+    type: DataType = Field(
+        default=DataType.TEXT,
+        description="TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN (opaque), or ARRAY (a list).",
+    )
     element_type: DataType | None = Field(
         default=None,
-        description="A list's element type.",
+        description="A list's element type: required with ARRAY, forbidden otherwise; any type but ARRAY.",
     )
     db_type: str | None = Field(
         default=None,
         description=(
             "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
             "retained when the declared DataType loses information. Populated "
-            "by ingestion for UNKNOWN (opaque) and exact NUMERIC/DECIMAL "
-            "columns; None when the mapped type carries everything needed."
+            "by ingestion for UNKNOWN (opaque), exact NUMERIC/DECIMAL, JSON, "
+            "zoned-timestamp and list columns; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False
@@ -537,8 +526,8 @@ def aggregation_definition(*, owner: "SlayerModel | None", agg: str) -> Aggregat
 
 
 def shadows_library_function(aggregation: Aggregation) -> bool:
-    """Whether ``aggregation`` takes a Mode-B function name."""
-    return aggregation.name.lower() in SCALAR_FUNCTIONS
+    """Whether ``aggregation`` takes a Mode-B function or function-spelling name."""
+    return aggregation.name.lower() in RESERVED_SCALAR_NAMES
 
 
 def builtin_semantics(definition: Aggregation | None) -> bool:
@@ -735,6 +724,12 @@ class SlayerModel(BaseModel):
     measures: list[ModelMeasure] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerModel"]) -> "SlayerModel":
+        with migrating_document(data.get("name") if isinstance(data, dict) else None):
+            return handler(data)
+
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
@@ -833,17 +828,6 @@ class SlayerModel(BaseModel):
                 f"separate model over the same table (or a view) and join to "
                 f"that."
             )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_list_element_types(self) -> "SlayerModel":
-        """A list column needs an ``element_type``; an sql-mode model's undeclared one is ``UNKNOWN``."""
-        for c in self.columns:
-            if c.type is not DataType.ARRAY or c.element_type is not None:
-                continue
-            if not self.sql:
-                raise ValueError(f"Column {c.name!r} is a list (type ARRAY) and needs an element_type.")
-            c.element_type = DataType.UNKNOWN
         return self
 
     @model_validator(mode="after")
@@ -1196,7 +1180,7 @@ class DatasourceConfig(BaseModel):
 
 def reserved_granularity_names() -> dict[str, str]:
     """Names a custom granularity may not take, lowercased, with the kind they belong to."""
-    out: dict[str, str] = dict.fromkeys(SCALAR_FUNCTIONS, "Mode-B function")
+    out: dict[str, str] = dict.fromkeys(RESERVED_SCALAR_NAMES, "Mode-B function")
     out.update(dict.fromkeys(RESERVED_DATE_SYNTAX_NAMES, "Mode-B date function"))
     out.update(dict.fromkeys(ALL_TRANSFORMS, "transform"))
     out.update(dict.fromkeys(BUILTIN_AGGREGATIONS, "aggregation"))

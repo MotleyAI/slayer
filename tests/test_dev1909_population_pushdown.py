@@ -28,7 +28,7 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.core.models import Column, DataType
-from slayer.core.query import ColumnRef, TimeDimension
+from slayer.core.query import TimeDimension
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
@@ -80,13 +80,13 @@ _SLAYER_WARNS = (
 
 def _orders_month_td():
     return [TimeDimension(
-        dimension=ColumnRef(name="orders.ordered_at"),
+        dimension="orders.ordered_at",
         granularity=TimeGranularity.MONTH)]
 
 
 def _signup_month_td():
     return [TimeDimension(
-        dimension=ColumnRef(name="signup_at"),
+        dimension="signup_at",
         granularity=TimeGranularity.MONTH)]
 
 

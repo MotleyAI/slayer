@@ -201,7 +201,7 @@ class TestScopeClosureInvariant:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _gen(query, _orders())
@@ -214,7 +214,7 @@ class TestScopeClosureInvariant:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[
                 ModelMeasure(formula="amount:sum"),
                 ModelMeasure(formula="time_shift(amount:sum, -1)", name="prev"),
@@ -368,7 +368,7 @@ class TestScopeDefectPins:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                dimension="created_at", granularity=TimeGranularity.MONTH)],
             measures=[ModelMeasure(formula="amount:sum(window='90d')", name="rev_w")],
         )
         sql = await _gen(query, _orders())
@@ -394,7 +394,7 @@ class TestScopeDefectPins:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+                dimension="created_at", granularity=TimeGranularity.MONTH)],
             dimensions=[ColumnRef(name="customers.region_id")],
             measures=[
                 ModelMeasure(formula="amount:sum"),

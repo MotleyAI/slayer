@@ -23,7 +23,8 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.schema_drift import _live_columns_for_sql_model
-from slayer.sql.client import ResultColumnType, SlayerSQLClient, build_sql_model_trial_query
+from slayer.sql.client import ResultColumnType, SlayerSQLClient, TypeProbe, render_type_probe, sql_model_trial_query
+from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
@@ -74,18 +75,23 @@ def _op_error(message: str) -> sqlalchemy.exc.OperationalError:
 
 
 def _raise(exc: BaseException):
-    async def _get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:  # noqa: ANN001
+    async def _get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ANN001
         raise exc
 
     return _get_result_column_types
 
 
 def _capture(sink: list[str]):
-    async def _get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:  # noqa: ANN001
-        sink.append(sql)
+    async def _get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ANN001
+        sink.append(probe.sql)
         return {}
 
     return _get_result_column_types
+
+
+def _trial(sql: str) -> str:
+    """The trial probe a SQLite datasource runs for model SQL ``sql``."""
+    return render_type_probe(sql_model_trial_query(sql, dialect=SqliteDialect()), dialect=SqliteDialect()).sql
 
 
 def _validator_logs(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
@@ -102,36 +108,41 @@ def test_error_type_subclasses_slayererror_and_valueerror() -> None:
 
 
 class _CapturingClient:
-    """Duck-typed SlayerSQLClient: records the SQL handed to get_result_column_types."""
+    """Duck-typed SlayerSQLClient: records the probe SQL handed to get_result_column_types."""
+
+    datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
 
     def __init__(self, sink: list[str]) -> None:
         self._sink = sink
 
-    async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
-        self._sink.append(sql)
+    async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
+        self._sink.append(probe.sql)
         return {"id": ResultColumnType(type=DataType.DOUBLE)}
 
 
 class TestSchemaDriftReusesSharedBuilder:
     """Schema drift's live probe must go through the same
-    ``build_sql_model_trial_query`` helper (single trial-query shape)."""
+    ``sql_model_trial_query`` builder (single trial-query shape)."""
 
-    async def test_live_columns_uses_build_sql_model_trial_query(self) -> None:
+    async def test_live_columns_uses_sql_model_trial_query(self) -> None:
         seen: list[str] = []
         model = _sql_model("SELECT id FROM orders;")  # trailing ';' exercises strip
         await _live_columns_for_sql_model(model=model, client=_CapturingClient(seen))
-        assert seen == [build_sql_model_trial_query("SELECT id FROM orders;")]
+        assert seen == [_trial("SELECT id FROM orders;")]
 
     async def test_live_columns_take_the_probed_type(self) -> None:
         class _IntClient:
-            async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:  # noqa: ARG002
+            datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
+
+            async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ARG002
                 return {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
 
         live = await _live_columns_for_sql_model(
             model=_sql_model("SELECT id FROM orders"),
             client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
         )
-        assert live == {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
+        assert live is not None
+        assert live.result_column_types() == {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
 
 
 class TestRejectAndAccept:
@@ -188,7 +199,7 @@ class TestRejectAndAccept:
         seen: list[str] = []
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _capture(seen))
         await engine.save_model(_sql_model("SELECT id FROM orders"))
-        assert seen == [build_sql_model_trial_query("SELECT id FROM orders")]
+        assert seen == [_trial("SELECT id FROM orders")]
 
 
 class TestGatesSkipProbe:
@@ -366,8 +377,8 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, sql: str) -> dict[str, ResultColumnType]:
-            executed.append(sql)
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
+            executed.append(probe.sql)
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
@@ -391,8 +402,8 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, sql: str) -> dict[str, ResultColumnType]:
-            executed.append(sql)
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
+            executed.append(probe.sql)
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
@@ -408,8 +419,8 @@ class TestNonReadOnlySqlRejected:
         engine, storage = await _make_engine(tmp_path)
         executed: list[str] = []
 
-        async def _spy(self, sql: str) -> dict[str, ResultColumnType]:
-            executed.append(sql)
+        async def _spy(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
+            executed.append(probe.sql)
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)

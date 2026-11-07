@@ -308,12 +308,10 @@ class TestExpressionSourceTyping:
             await gen(query, models=models)
         assert "unparseable" in str(ei.value)
 
-    async def test_first_over_expression_keeps_its_error(self):
+    async def test_first_over_expression_is_the_ranked_aggregate(self):
         query = orders_q(measures=[
             ModelMeasure(formula="first(amount - customers.discount, ordered_at)", name="m")])
-        with pytest.raises(ValueError, match="not supported over an expression") as ei:
-            await gen(query)
-        assert "cross-model" not in str(ei.value).lower()
+        assert "ROW_NUMBER" in (await gen(query)).upper()
 
     async def test_fully_attached_source_accepted(self, exec_backend):
         # Regression guard (DEV-1847): the expression gate must not reject it.

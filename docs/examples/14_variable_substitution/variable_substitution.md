@@ -8,9 +8,9 @@ without any string-building on the client side.
 
 Substitution spans SLayer's [two expression layers](../../concepts/references.md):
 
-- **Mode B — the DSL.** A query's `filters` reference dimension and measure
-  names. A `{var}` here is filled from the query's `variables` and applied as a
-  post-aggregation predicate on named entities. Measure formulas, computed
+- **Mode B — the DSL.** A `{var}` in a query's `filters` binds a literal value
+  from the query's `variables` (`'{s}'` for text, a bare number or boolean, a list
+  as a whole `IN` list), never a name. Measure formulas, computed
   dimensions, `order` expressions, `date_range` bounds and the source model's saved
   measures take placeholders too (`"measures": ["sum(order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A model's `sql` and `filters`, and every `Column`'s `sql`
