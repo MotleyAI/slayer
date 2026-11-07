@@ -70,7 +70,7 @@ When its argument is a list, `length(L)` SHALL return the size of its element se
 
 ### Requirement: Array literals and list variables
 
-A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as a dimension, or as an operand of `=`). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
+A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, accepted wherever a list is accepted and rejected with a typed error elsewhere (for example as an operand of `=` beside a scalar). Its elements SHALL be non-NULL literals of one type family. `[]` SHALL be accepted where the other operand gives it an element type, and rejected where nothing does. A `{variable}` holding a list SHALL be accepted wherever an array literal is.
 
 #### Scenario: NULL element in a literal
 - **WHEN** a filter is `contains_any(skills, ['go', NULL])`
@@ -82,7 +82,7 @@ A bracketed list of literals `['go', 'sql']` SHALL be a list-valued expression, 
 
 #### Scenario: A literal as a dimension
 - **WHEN** a dimension is `['go', 'sql']`
-- **THEN** the query fails with a typed error naming the list type
+- **THEN** every row carries `['go', 'sql']`
 
 ### Requirement: Arguments match the element type
 
