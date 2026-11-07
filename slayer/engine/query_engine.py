@@ -1326,7 +1326,8 @@ class SlayerQueryEngine:
         warnings.extend(_collect_semi_join_pushed_warnings(planned_list=plans, labels=labels))
         warnings.extend(_collect_degenerate_warnings(planned_list=plans, labels=labels))
         warnings.extend(_granularity_conflict_warnings(planned_list=plans, labels=labels))
-        warnings.extend(WholeListWarning(operation=r.operation, list=r.list) for p in plans for r in p.whole_list_reads)
+        warnings.extend(WholeListWarning(operation=r.operation, list=r.list)
+                        for r in dict.fromkeys(r for p in plans for r in p.whole_list_reads))
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))

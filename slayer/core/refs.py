@@ -293,11 +293,23 @@ def _leaf_display(key: ValueKey) -> str | None:
     return None
 
 
+def _listed_display(key: ValueKey) -> str | None:
+    """Display of a key reading or holding several values, else ``None``."""
+    if isinstance(key, InKey):
+        values = ", ".join(key_display(v) for v in key.values)
+        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
+    if isinstance(key, ArrayLiteralKey):
+        return f"[{', '.join(key_display(v) for v in key.values)}]"
+    if isinstance(key, ListSetKey):
+        return key_display(key.source)
+    return None
+
+
 def key_display(key: ValueKey) -> str:
     """User-facing formula text of any key kind."""
-    leaf = _leaf_display(key)
-    if leaf is not None:
-        return leaf
+    shown = _leaf_display(key) or _listed_display(key)
+    if shown is not None:
+        return shown
     if isinstance(key, TimeTruncKey):
         return f"{key.granularity}({key_display(key.source)})"
     if isinstance(key, AggregateKey):
@@ -312,15 +324,8 @@ def key_display(key: ValueKey) -> str:
         return f"{'TRY_CAST' if key.try_ else 'CAST'}({key_display(key.source)} AS {key.type_text})"
     if isinstance(key, TimePointCmpKey):
         return _time_point_cmp_display(key)
-    if isinstance(key, InKey):
-        values = ", ".join(key_display(v) for v in key.values)
-        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
     if isinstance(key, SqlFragmentKey):
         return _fragment_display(key)
-    if isinstance(key, ArrayLiteralKey):
-        return f"[{', '.join(key_display(v) for v in key.values)}]"
-    if isinstance(key, ListSetKey):
-        return key_display(key.source)
     raise TypeError(f"key_display has no rule for {type(key).__name__}")
 
 

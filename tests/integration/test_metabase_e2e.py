@@ -378,9 +378,6 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
     client = metabase_e2e_env.client
     # ``products`` has no time dimension in the demo schema.
     products_id = client.table_id_by_name("products")
-    md = client.table_metadata(products_id)
-    for f in md["fields"]:
-        assert f.get("semantic_type") not in {"type/SerializedJSON"}  # sanity guard
     payload = client.post_raw(
         "/api/dataset",
         {

@@ -467,6 +467,27 @@ class TestListVariables:
         assert await names(engine, "team IN ({teams})", variables={"teams": ["A", "C"]}) == {
             "Ann", "Bob", "Fay", "Gil"}
 
+    async def test_list_variables_as_items(self, engine: SlayerQueryEngine) -> None:
+        assert await names(engine, "skills IN ({a}, {b})", variables={"a": ["go"], "b": ["sql"]}) == {"Bob", "Eve"}
+
+    async def test_scalar_variables_as_items(self, engine: SlayerQueryEngine) -> None:
+        assert await names(engine, "id IN (1, {b}, {c})", variables={"b": 2, "c": 5}) == {"Ann", "Bob", "Eve"}
+
+    @pytest.mark.parametrize("formula", ["count(*) FILTER (WHERE team IN ({v}))",
+                                         "count(*) FILTER (WHERE skills IN ({v}))"])
+    async def test_an_unnamed_measure_keeps_its_key_across_values(self, duck: SlayerQueryEngine,
+                                                                  formula: str) -> None:
+        keys = [
+            list((await duck.execute(query(measures=[{"formula": formula}], variables={"v": v}))).data[0])
+            for v in (["A"], ["B", "C"])
+        ]
+        assert keys[0] == keys[1]
+        assert keys[0][0].endswith("_v"), keys
+
+    async def test_list_and_scalar_variables_as_items_are_refused(self, duck: SlayerQueryEngine) -> None:
+        with pytest.raises(ValueError, match="right-hand side"):
+            await names(duck, "skills IN ({a}, {b})", variables={"a": ["go"], "b": 2})
+
 
 class TestInGrammar:
     def test_several_array_literals_parse(self) -> None:
@@ -721,6 +742,12 @@ class TestWarning:
         assert len(payloads) == 2, [p.human_message() for p in payloads]
         assert any("count_distinct(skills.value)" in p.human_message() for p in payloads)
         assert len(_python_warnings(caught)) == 2
+
+    async def test_one_warning_across_stages(self, duck: SlayerQueryEngine) -> None:
+        resp = await duck.execute([STAGE, {"source_model": "s", "dimensions": ["skills"],
+                                           "measures": [measure("sum(n)", "t")]}])
+        payloads = whole_list_payloads(resp)
+        assert len(payloads) == 1, [p.human_message() for p in payloads]
 
     @pytest.mark.parametrize("body", [
         {"dimensions": ["id", "skills"], "distinct_dimension_values": False},

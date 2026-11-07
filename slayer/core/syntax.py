@@ -990,18 +990,23 @@ def _in_rhs_elements(items: List[Any]) -> TupleLit | _ListItems:
                 "e.g. tags in (['a'], ['b', 'c'])."
             )
         return _ListItems(items)
-    elements: List[Literal] = []
-    for item in items:
-        if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
-                and isinstance(item.operand.value, Decimal)):
-            item = Literal(value=-item.operand.value)
-        if not isinstance(item, Literal):
-            raise _Problem(
-                "every element on the right-hand side of in / not in must be a literal (string, number, or "
-                f"boolean); got {type(item).__name__}."
-            )
-        elements.append(item)
-    return TupleLit(elements=tuple(elements))
+    elements = [_in_scalar_item(item) for item in items]
+    if any(isinstance(item, Placeholder) for item in elements):
+        # Each variable's value decides once bound whether its item is a list or a scalar.
+        return _ListItems(elements)
+    return TupleLit(elements=tuple(cast(Literal, item) for item in elements))
+
+
+def _in_scalar_item(item: Any) -> Literal | Placeholder:
+    if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
+            and isinstance(item.operand.value, Decimal)):
+        item = Literal(value=-item.operand.value)
+    if not isinstance(item, (Literal, Placeholder)):
+        raise _Problem(
+            "every element on the right-hand side of in / not in must be a literal (string, number, or "
+            f"boolean); got {type(item).__name__}."
+        )
+    return item
 
 
 def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
@@ -2179,7 +2184,7 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
         return str(parsed.value)
     if isinstance(parsed, TemporalLiteral):
         return f"{parsed.kind.upper()} '{parsed.text}'"
-    if isinstance(parsed, Placeholder):
+    if isinstance(parsed, (Placeholder, BoundVariable)):
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
         return f"({', '.join(canonical_measure_text(e) for e in parsed.elements)})"
