@@ -85,7 +85,7 @@ The examples below use `orders(id PK, status, amount)` = (1,'done',100), (2,'don
   reports both models as read
 
 #### Scenario: Every supported dialect renders the filtered dataset
-- **WHEN** the queries above are rendered for each supported SQL dialect
+- **WHEN** the queries above are rendered for each supported SQL dialect that supports the features they use
 - **THEN** each renders valid SQL for that dialect
 
 ### Requirement: A model filter's joined reads restrict by association
