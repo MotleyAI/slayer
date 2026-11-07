@@ -197,6 +197,12 @@ class TestAssociation:
     async def test_missing_joined_row_reads_as_null(self, engine):
         assert await _ids(engine, source="ups_or_big_orders") == {1, 3, 4}
 
+    async def test_filter_entries_read_the_same_associated_rows(self, engine):
+        assert await _ids(engine, source="split_entry_orders") == set()
+
+    async def test_filter_entries_match_one_anded_entry(self, engine):
+        assert await _ids(engine, source="split_entry_orders") == await _ids(engine, source="joint_entry_orders")
+
 
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 class TestInlinedAndAssociationFormsAgree:

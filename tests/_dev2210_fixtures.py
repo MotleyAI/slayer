@@ -90,6 +90,8 @@ def table_models() -> list[SlayerModel]:
         _orders("done_orders", filters=["status = 'done'"]),
         _orders("ups_orders", joins=to_shipments, filters=["shipments.carrier = 'ups'"]),
         _orders("ups_or_big_orders", joins=to_shipments, filters=["shipments.carrier = 'ups' or amount > 350"]),
+        _orders("split_entry_orders", joins=to_shipments, filters=["shipments.id = 20", "shipments.id = 21"]),
+        _orders("joint_entry_orders", joins=to_shipments, filters=["shipments.id = 20 and shipments.id = 21"]),
         SlayerModel(name="shipments", data_source="test", sql_table="shipments", columns=[
             _id(), Column(name="order_ref", type=DataType.INT), Column(name="carrier", type=DataType.TEXT),
         ]),

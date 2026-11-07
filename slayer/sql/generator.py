@@ -5231,14 +5231,16 @@ class SQLGenerator:
         allocator: AliasAllocator, bundle,
     ) -> Expression:
         """``(SELECT rows.* FROM backing AS rows [joins] WHERE …) AS alias``: an entry crossing only
-        proven to-one hops inlines its joins; any other restricts by a correlated ``EXISTS``."""
+        proven to-one hops inlines its joins; the others restrict together by one correlated ``EXISTS``."""
         limit = self._dialect.max_identifier_bytes
 
         def path_alias(path: Tuple[str, ...]) -> str:
             return allocator.alias_for(root=rows, path=path, limit=limit)
 
         inlined: Dict[Tuple[str, ...], list] = {}
+        associated: Dict[Tuple[str, ...], list] = {}
         conditions: List[Expression] = []
+        association: List[Expression] = []
         for text in filters:
             frame = self._scope_frame(model=model, relation=rows, bundle=bundle, allocator=allocator)
             predicate = frame.enter_predicate(text, location=f"model filter {text!r} on model {model.name!r}")
@@ -5249,12 +5251,17 @@ class SQLGenerator:
                 for chain in chains.values() for edge, target in chain
             )
             if paths and (self._force_association_filters or not proven):
-                conditions.append(_stamp_association(self._association_exists(
-                    model=model, chains=chains, predicate=predicate, path_alias=path_alias, bundle=bundle,
-                ), model=model))
+                associated.update(chains)
+                association.append(_grouped(predicate))
                 continue
             inlined.update(chains)
             conditions.append(_grouped(predicate))
+        associated_predicate = _conjunction(association)
+        if associated_predicate is not None:
+            conditions.append(_stamp_association(self._association_exists(
+                model=model, chains=associated, predicate=associated_predicate,
+                path_alias=path_alias, bundle=bundle,
+            ), model=model))
         joins = []
         for path, chain in inlined.items():
             edge, target = chain[-1]
@@ -5269,7 +5276,7 @@ class SQLGenerator:
     def _association_exists(
         self, *, model, chains, predicate: Expression, path_alias: Callable[[Tuple[str, ...]], str], bundle,
     ) -> Expression:
-        """``EXISTS`` over the null-extending joins a filter entry reads, keyed on the row's own columns."""
+        """``EXISTS`` over the null-extending joins the associated filter entries read, keyed on the row's own columns."""
         hops = []
         for path, chain in chains.items():
             edge, target = chain[-1]

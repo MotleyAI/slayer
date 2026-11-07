@@ -90,7 +90,7 @@ The examples below use `orders(id PK, status, amount)` = (1,'done',100), (2,'don
 
 ### Requirement: A model filter's joined reads restrict by association
 A model filter reading a joined model SHALL restrict the model's rows by association: a row passes when
-the filter holds for some combination of its associated rows, a missing associated row reading as NULL.
+its filters together hold for some combination of its associated rows, a missing associated row reading as NULL.
 A filtered dataset SHALL never contain a row more than once because of a hop its filter crosses, whatever
 the hop's arity. Inlining the joined reads as joins SHALL be a pure optimization used only when every hop
 they cross is proven to-one, and SHALL return the same rows as the association form.
@@ -105,6 +105,10 @@ they cross is proven to-one, and SHALL return the same rows as the association f
 #### Scenario: A filter mixing own and joined columns reads a missing joined row as NULL
 - **WHEN** a filter is `shipments.carrier = 'ups' or amount > 350` and order `4` has no shipment
 - **THEN** order `4` passes
+
+#### Scenario: Filter entries read the same associated rows
+- **WHEN** a model on table `orders` joining `shipments` has filters `shipments.id = 20` and `shipments.id = 21`
+- **THEN** no order passes, exactly as with the single filter `shipments.id = 20 and shipments.id = 21`
 
 #### Scenario: Inlined and association forms agree on proven to-one hops
 - **WHEN** a model's filter reads only through proven to-one hops and the query is rendered both with
