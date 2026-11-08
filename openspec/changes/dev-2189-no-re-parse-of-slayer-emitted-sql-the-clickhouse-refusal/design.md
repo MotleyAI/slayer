@@ -112,7 +112,9 @@ method, discovered from the class so a new entry is guarded without a list. Insi
 law records each `_finish_statement` result and each render of an `exp.Query` root, and
 fails when `Dialect.parse` / `parse_into` receives a string **equal** to a recorded one
 (the probe showed containment false-positives). Exempt: the three validators, the
-DEV-1972 value layer (renders inside `VALUE_LAYER_EXEMPT` are not recorded), and test
+DEV-1972 value layer and the OSI importer's renders of an author's expression into
+persisted model text (renders inside `VALUE_LAYER_EXEMPT` / `AUTHORING_RENDERS` are not
+recorded), and test
 doubles standing in for the database, which may read the SQL sent to them (`as_database`). Self-tests: a
 planted re-parse fails directly in `_prepare_pipeline` and three calls below it; the
 validators pass; a parse after the execution returns passes; every target resolves.
