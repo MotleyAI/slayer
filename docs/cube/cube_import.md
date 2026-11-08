@@ -2,8 +2,8 @@
 
 SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) data models —
 cubes and views, in **YAML or JavaScript** — and convert them to SLayer models.
-The conversion is **fully offline**: data types come from Cube's declared
-dimension / measure types, so no database connection is required. Everything that
+The conversion works offline (data types then come from Cube's declared dimension /
+measure types) and types from the live schema when `--datasource` resolves. Everything that
 can't be mapped cleanly is captured in a structured JSON report rather than
 silently dropped.
 

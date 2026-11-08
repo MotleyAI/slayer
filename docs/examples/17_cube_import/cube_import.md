@@ -1,9 +1,9 @@
 # From Cube to SLayer
 
 SLayer imports [Cube](https://cube.dev) data models — cubes and views, in **YAML
-or JavaScript** — and turns them into queryable SLayer models. The conversion is
-**fully offline**: column types come from Cube's own dimension / measure
-declarations, so no database connection is needed to import. This example runs
+or JavaScript** — and turns them into queryable SLayer models. The conversion works
+**offline**: with no reachable datasource, column types come from Cube's own
+dimension / measure declarations. This example runs
 the whole path on a small jaffle-shop-flavored project.
 
 ## The one-liner

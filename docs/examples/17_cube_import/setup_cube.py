@@ -1,9 +1,9 @@
 """Setup helper for the Cube -> SLayer demo notebook.
 
-Self-contained and **fully offline**: builds a tiny jaffle-shop-flavored DuckDB
+Self-contained and **offline**: builds a tiny jaffle-shop-flavored DuckDB
 with deterministic rows, and imports the committed ``cube_project`` (YAML cubes +
-a view + a JS ``FILTER_PARAMS`` cube) into SLayer models. Cube import needs no
-database connection — types come from the Cube declarations — so the DuckDB is
+a view + a JS ``FILTER_PARAMS`` cube) into SLayer models. The import runs before
+the datasource exists, so types come from the Cube declarations and the DuckDB is
 only used to *query* the imported models.
 
 Two import paths are exposed: :func:`import_cube_cli` runs the real
